@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -65,14 +66,58 @@ func TestPostgresMigrationsAndCredentialLifecycle(t *testing.T) {
 		t.Fatalf("migrations are not idempotent: %v", err)
 	}
 
-	passwordHash, err := HashPassword("integration-password-123")
+	const ownerPassword = "integration-password-123"
+	passwordHash, err := HashPassword(ownerPassword)
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, created, err := store.BootstrapOwner(ctx, "owner", "Integration Owner", passwordHash)
-	if err != nil || !created {
-		t.Fatalf("bootstrap owner: created=%v err=%v", created, err)
+	bootstrapServer := NewServer(Config{MasterKey: []byte("0123456789abcdef0123456789abcdef"), CookieSecure: false,
+		SessionTTL: time.Hour, Timezone: "UTC"}, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer bootstrapServer.Close()
+	httpServer := httptest.NewServer(bootstrapServer.Handler())
+	defer httpServer.Close()
+	statusResponse, err := http.Get(httpServer.URL + "/api/v1/auth/bootstrap")
+	if err != nil {
+		t.Fatal(err)
 	}
+	var bootstrapStatus struct {
+		Required  bool   `json:"required"`
+		CSRFToken string `json:"csrf_token"`
+	}
+	if err := json.NewDecoder(statusResponse.Body).Decode(&bootstrapStatus); err != nil {
+		statusResponse.Body.Close()
+		t.Fatal(err)
+	}
+	statusResponse.Body.Close()
+	if statusResponse.StatusCode != http.StatusOK || !bootstrapStatus.Required || bootstrapStatus.CSRFToken == "" || len(statusResponse.Cookies()) != 1 {
+		t.Fatalf("unexpected bootstrap status: code=%d body=%#v cookies=%d", statusResponse.StatusCode, bootstrapStatus, len(statusResponse.Cookies()))
+	}
+	body := `{"username":"owner","display_name":"Integration Owner","password":"` + ownerPassword + `","password_confirmation":"` + ownerPassword + `"}`
+	bootstrapRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v1/auth/bootstrap", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrapRequest.Header.Set("Content-Type", "application/json")
+	bootstrapRequest.Header.Set("X-Bootstrap-CSRF-Token", bootstrapStatus.CSRFToken)
+	bootstrapRequest.AddCookie(statusResponse.Cookies()[0])
+	bootstrapResponse, err := http.DefaultClient.Do(bootstrapRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bootstrapResult struct {
+		User      domain.User `json:"user"`
+		CSRFToken string      `json:"csrf_token"`
+	}
+	if err := json.NewDecoder(bootstrapResponse.Body).Decode(&bootstrapResult); err != nil {
+		bootstrapResponse.Body.Close()
+		t.Fatal(err)
+	}
+	bootstrapResponse.Body.Close()
+	if bootstrapResponse.StatusCode != http.StatusCreated || bootstrapResult.User.Role != domain.RoleOwner || bootstrapResult.CSRFToken == "" {
+		t.Fatalf("web bootstrap failed: code=%d response=%#v", bootstrapResponse.StatusCode, bootstrapResult)
+	}
+	owner := bootstrapResult.User
+	var created bool
 	if _, created, err = store.BootstrapOwner(ctx, "other", "Other", passwordHash); err != nil || created {
 		t.Fatalf("second bootstrap was not rejected: created=%v err=%v", created, err)
 	}

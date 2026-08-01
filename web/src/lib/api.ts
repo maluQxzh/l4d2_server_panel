@@ -32,6 +32,7 @@ import type {
 
 const baseURL = (import.meta.env.VITE_API_BASE || "/api/v1").replace(/\/$/, "");
 let csrfToken = "";
+let bootstrapCsrfToken = "";
 
 export class ApiError extends Error {
   status: number;
@@ -140,6 +141,21 @@ async function waitForTransfer(path: string): Promise<TransferChunk> {
 }
 
 export const api = {
+  bootstrapStatus: async () => {
+    const result = await request<{ required: boolean; csrf_token?: string }>("/auth/bootstrap");
+    bootstrapCsrfToken = result.required ? result.csrf_token || "" : "";
+    return result;
+  },
+  bootstrapOwner: async (payload: { username: string; display_name: string; password: string; password_confirmation: string }) => {
+    const result = await request<{ user: User; csrf_token: string }>("/auth/bootstrap", {
+      method: "POST",
+      headers: { "X-Bootstrap-CSRF-Token": bootstrapCsrfToken },
+      body: JSON.stringify(payload),
+    });
+    bootstrapCsrfToken = "";
+    setCsrfToken(result.csrf_token);
+    return result;
+  },
   login: async (credentials: { username: string; password: string; totp_code?: string; recovery_code?: string }) => {
     const result = await request<{ user: User; csrf_token: string }>("/auth/login", {
       method: "POST",

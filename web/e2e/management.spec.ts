@@ -3,6 +3,9 @@ import { createHash } from "node:crypto";
 
 test.beforeEach(async ({ page }) => {
   await page.routeWebSocket("**/api/v1/events**", () => undefined);
+  await page.route("**/api/v1/auth/bootstrap", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({ required: false }),
+  }));
 });
 
 const owner = {

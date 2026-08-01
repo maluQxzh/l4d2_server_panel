@@ -15,6 +15,24 @@ describe("API 客户端", () => {
     expect(init?.credentials).toBe("include");
   });
 
+  it("首启所有者使用独立的初始化 CSRF 令牌", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ required: true, csrf_token: "bootstrap-csrf" }), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        user: { id: "owner-1", username: "admin", display_name: "系统管理员", role: "owner", totp_enabled: false, created_at: "2026-08-01T00:00:00Z" },
+        csrf_token: "session-csrf",
+      }), { status: 201, headers: { "Content-Type": "application/json" } }));
+
+    await api.bootstrapStatus();
+    await api.bootstrapOwner({ username: "admin", display_name: "系统管理员", password: "correct-horse-battery-staple", password_confirmation: "correct-horse-battery-staple" });
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/auth/bootstrap");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/auth/bootstrap");
+    const headers = new Headers(fetchMock.mock.calls[1][1]?.headers);
+    expect(headers.get("X-Bootstrap-CSRF-Token")).toBe("bootstrap-csrf");
+    expect(headers.get("Idempotency-Key")).toBeTruthy();
+  });
+
   it("解析统一错误结构", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ error: { code: "forbidden", message: "权限不足" } }), { status: 403, headers: { "Content-Type": "application/json" } }));
     await expect(api.nodes()).rejects.toMatchObject({ status: 403, code: "forbidden", message: "权限不足" } satisfies Partial<ApiError>);

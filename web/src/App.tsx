@@ -18,11 +18,13 @@ const NodesPage = lazyNamed(() => import("./pages/NodesPage"), "NodesPage");
 const NotificationsPage = lazyNamed(() => import("./pages/NotificationsPage"), "NotificationsPage");
 const PublicStatusPage = lazyNamed(() => import("./pages/PublicStatusPage"), "PublicStatusPage");
 const SettingsPage = lazyNamed(() => import("./pages/SettingsPage"), "SettingsPage");
+const SetupPage = lazyNamed(() => import("./pages/SetupPage"), "SetupPage");
 
 function ProtectedLayout() {
   const auth = useAuth();
   const location = useLocation();
   if (auth.loading) return <div className="app-loading"><div className="brand-mark">L4</div><LoadingBlock label="正在建立安全会话…" /></div>;
+  if (auth.bootstrapRequired) return <Navigate to="/setup" replace />;
   if (!auth.authenticated) return <Navigate to="/login" replace state={{ from: location }} />;
   return <RealtimeProvider><AppShell><Outlet /></AppShell></RealtimeProvider>;
 }
@@ -35,6 +37,7 @@ export function App() {
   return (
     <Suspense fallback={<div className="app-loading"><LoadingBlock label="正在装载界面…" /></div>}>
       <Routes>
+        <Route path="/setup" element={<SetupPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/status" element={<PublicStatusPage />} />
         <Route element={<ProtectedLayout />}>

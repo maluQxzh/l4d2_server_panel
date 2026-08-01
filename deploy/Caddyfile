@@ -4,7 +4,7 @@
 	}
 }
 
-{$PANEL_DOMAIN:localhost} {
+(panel_proxy) {
 	encode zstd gzip
 
 	header {
@@ -26,4 +26,12 @@
 		output stdout
 		format json
 	}
+}
+
+http://{$PANEL_DOMAIN:localhost} {
+	redir https://{$PANEL_DOMAIN:localhost}:{$PANEL_HTTPS_PORT:443}{uri} permanent
+}
+
+https://{$PANEL_DOMAIN:localhost} {
+	import panel_proxy
 }

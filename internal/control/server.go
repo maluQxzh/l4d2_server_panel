@@ -23,7 +23,10 @@ import (
 //go:embed static/*
 var embeddedStatic embed.FS
 
-const sessionCookieName = "l4d2panel_session"
+const (
+	sessionCookieName   = "l4d2panel_session"
+	bootstrapCookieName = "l4d2panel_bootstrap"
+)
 
 type contextKey int
 
@@ -174,6 +177,8 @@ func (s *Server) routes() http.Handler {
 		r.Get("/openapi.json", s.handleOpenAPI)
 		r.Get("/public/servers", s.handlePublicServers)
 		r.Post("/agent/enroll", s.handleAgentEnroll)
+		r.Get("/auth/bootstrap", s.handleBootstrapStatus)
+		r.Post("/auth/bootstrap", s.handleBootstrapOwner)
 		r.Post("/auth/login", s.handleLogin)
 		r.Group(func(r chi.Router) {
 			r.Use(s.authenticate)

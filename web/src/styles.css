@@ -698,6 +698,9 @@ h1, h2, h3, p { margin-top: 0; }
 .login-features small { color: var(--text-faint); font-size: 9px; }
 .login-panel { min-height: 100vh; padding: 32px; display: grid; place-items: center; background: rgba(10,15,13,.7); }
 .login-form { width: min(390px, 100%); padding: clamp(25px, 4vw, 42px); background: rgba(18,25,22,.86); border: 1px solid #293630; border-radius: 15px; box-shadow: 0 32px 100px rgba(0,0,0,.45); backdrop-filter: blur(20px); }
+.login-page--setup { overflow: auto; }
+.setup-form { width: min(440px, 100%); }
+.setup-notice { margin: -8px 0 18px; padding: 11px 12px; color: #d9c18d; background: var(--orange-soft); border: 1px solid rgba(229,169,63,.2); border-radius: 7px; font-size: 10px; line-height: 1.65; }
 .login-form__heading { margin-bottom: 26px; }
 .login-icon { width: 43px; height: 43px; margin-bottom: 17px; display: grid; place-items: center; color: var(--green); background: var(--green-soft); border-radius: 10px; }
 .login-form h2 { margin-bottom: 6px; font-size: 21px; }

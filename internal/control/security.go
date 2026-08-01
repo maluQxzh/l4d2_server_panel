@@ -98,6 +98,12 @@ func deriveCSRFToken(masterKey []byte, sessionToken string) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
+func deriveBootstrapCSRFToken(masterKey []byte, bootstrapToken string) string {
+	mac := hmac.New(sha256.New, masterKey)
+	_, _ = mac.Write([]byte("l4d2panel:bootstrap-csrf:v1:" + bootstrapToken))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
 func encryptSecret(key []byte, plaintext string) (string, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {

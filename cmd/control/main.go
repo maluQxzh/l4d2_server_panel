@@ -132,18 +132,19 @@ func run(logger *slog.Logger) error {
 	if needsBootstrap {
 		password := cfg.BootstrapPassword
 		if password == "" {
-			return errors.New("no owner exists; run the bootstrap-owner command with the password on standard input")
-		}
-		hash, err := control.HashPassword(password)
-		if err != nil {
-			return err
-		}
-		user, created, err := store.BootstrapOwner(ctx, cfg.BootstrapUsername, cfg.BootstrapName, hash)
-		if err != nil {
-			return err
-		}
-		if created {
-			logger.Info("bootstrap owner created", "username", user.Username)
+			logger.Warn("no owner exists; open the web interface to complete first-run setup", "setup_path", "/setup")
+		} else {
+			hash, err := control.HashPassword(password)
+			if err != nil {
+				return err
+			}
+			user, created, err := store.BootstrapOwner(ctx, cfg.BootstrapUsername, cfg.BootstrapName, hash)
+			if err != nil {
+				return err
+			}
+			if created {
+				logger.Info("bootstrap owner created from legacy environment", "username", user.Username)
+			}
 		}
 	}
 

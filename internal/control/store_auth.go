@@ -89,11 +89,18 @@ func (s *Store) NeedsBootstrap(ctx context.Context) (bool, error) {
 }
 
 func (s *Store) BootstrapOwner(ctx context.Context, username, displayName, passwordHash string) (domain.User, bool, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	// Read Committed is intentional: a transaction waiting for the advisory
+	// lock must take a fresh snapshot after the preceding bootstrap commits.
+	// A Serializable snapshot could be fixed before the wait and still observe
+	// an empty users table afterwards.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return domain.User{}, false, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('l4d2panel:bootstrap-owner',0))`); err != nil {
+		return domain.User{}, false, err
+	}
 	var count int
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&count); err != nil {
 		return domain.User{}, false, err

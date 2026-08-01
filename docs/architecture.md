@@ -91,6 +91,8 @@ Agent 永久清理时只接收 Control 墓碑中的 `root_index + entry_name`，
 
 ## 身份、权限与 API 一致性
 
+数据库没有任何用户时，Control 仍可正常启动，并把浏览器引导到 `/setup`。公开的引导状态接口只发放一个短期、HttpOnly、SameSite=Strict 的专用 Cookie 和由该 Cookie 派生的独立 CSRF 令牌；提交首个所有者时使用 PostgreSQL 事务级 advisory lock 串行化竞争请求，锁后重新检查用户数量，因此只有第一个提交能成功。成功响应同时创建普通浏览器会话并永久关闭网页引导入口。部署者应在可信网络中完成该一次性初始化。
+
 浏览器使用 HttpOnly/Secure/SameSite=Strict Cookie；写请求另外校验 `X-CSRF-Token`。API Token 通过 Bearer 认证，不使用 CSRF，但必须有过期时间，并可限定权限、节点和实例。TOTP 和 API Token 管理只允许交互式浏览器会话；团队账号与角色绑定还要求全局所有者的 `root_security` 权限，所有者 API Token 也不能执行这些操作。
 
 角色绑定可位于全局、节点或实例。资源列表、详情、任务、指标、通知、审计和 WebSocket 事件都会再次按绑定过滤。更改账号密码、禁用账号或替换绑定会撤销其现有会话与 API Token。Control 内的登出、Token 吊销和账号权限变更还会递增授权代际，使在线事件流在通知后的下一帧前重验；每 1 秒数据库重验用于覆盖数据库提交到进程内通知之间的极短调度窗口、到期、进程外数据库变更和代际通知丢失，避免把日志速率放大成身份查询速率。

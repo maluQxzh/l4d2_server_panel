@@ -2,6 +2,9 @@ import { expect, test, type Page } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
   await page.routeWebSocket("**/api/v1/events**", () => undefined);
+  await page.route("**/api/v1/auth/bootstrap", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({ required: false }),
+  }));
 });
 
 const owner = {
@@ -20,6 +23,47 @@ async function json(page: Page, pattern: string, body: unknown, status = 200) {
     body: JSON.stringify(body),
   }));
 }
+
+test("首次启动通过网站创建首个所有者", async ({ page }) => {
+  await page.unroute("**/api/v1/auth/bootstrap");
+  let authenticated = false;
+  let initialized = false;
+  await page.route("**/api/v1/auth/bootstrap", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ required: !initialized, csrf_token: initialized ? undefined : "bootstrap-csrf" }) });
+      return;
+    }
+    expect(route.request().headers()["x-bootstrap-csrf-token"]).toBe("bootstrap-csrf");
+    expect(route.request().headers()["idempotency-key"]).toBeTruthy();
+    expect(route.request().postDataJSON()).toMatchObject({
+      username: "admin", display_name: "系统管理员",
+      password: "correct-horse-battery-staple", password_confirmation: "correct-horse-battery-staple",
+    });
+    initialized = true;
+    authenticated = true;
+    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ user: { ...owner, totp_enabled: false }, csrf_token: "session-csrf" }) });
+  });
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({
+    status: authenticated ? 200 : 401,
+    contentType: "application/json",
+    body: JSON.stringify(authenticated ? { user: { ...owner, totp_enabled: false }, csrf_token: "session-csrf" } : { error: { code: "unauthorized", message: "authentication required" } }),
+  }));
+  await json(page, "**/api/v1/nodes", { items: [] });
+  await json(page, "**/api/v1/instances", { items: [] });
+  await json(page, "**/api/v1/metrics**", { items: [], resolution: "1m" });
+  await json(page, "**/api/v1/jobs", { items: [] });
+  await json(page, "**/api/v1/audit**", { items: [] });
+  await json(page, "**/api/v1/notifications", { items: [] });
+
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/setup$/);
+  await expect(page.getByRole("heading", { name: "创建首个所有者", exact: true })).toBeVisible();
+  await page.getByLabel("密码", { exact: true }).fill("correct-horse-battery-staple");
+  await page.getByLabel("确认密码", { exact: true }).fill("correct-horse-battery-staple");
+  await page.getByRole("button", { name: /创建并进入面板/ }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("heading", { name: /作战总览/ })).toBeVisible();
+});
 
 test("公开状态页只展示脱敏服务器信息", async ({ page }) => {
   await json(page, "**/api/v1/public/servers", {

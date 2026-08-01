@@ -5,7 +5,7 @@ React 19 + TypeScript + Vite 的 L4D2 多节点管理界面。所有业务数据
 ## 本地开发
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
@@ -22,6 +22,7 @@ npm run build
 
 ## 接口约定
 
+- 首次初始化：`GET|POST /api/v1/auth/bootstrap`，仅数据库无用户时可创建首个所有者
 - 认证：`/api/v1/auth/login|me|logout`
 - 资源：`/api/v1/nodes`、`instances`、`jobs`、`audit`
 - 实时事件：`/api/v1/events?cursor=N`

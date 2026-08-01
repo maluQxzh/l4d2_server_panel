@@ -41,21 +41,31 @@ openssl rand -hex 32
 
 将 `openssl rand -base64 32` 的输出写入 `MASTER_KEY`；可将十六进制输出用作仅含 URL 安全字符的 `POSTGRES_PASSWORD`。令 `PANEL_DOMAIN` 和 `PUBLIC_URL` 指向当前主机。Caddy 为可公开解析的域名申请并续期 HTTPS 证书；`localhost` 使用 Caddy 的本地证书行为。
 
-编辑完 `.env` 后先构建应用，再通过标准输入创建首个所有者；密码不会出现在命令参数或 `.env` 中：
+中心端对外端口不限定为 80/443。下面的配置把宿主机 HTTP/HTTPS 端口改为 8080/8443；使用非标准 HTTPS 端口时，`PUBLIC_URL` 必须包含端口：
+
+```dotenv
+PANEL_DOMAIN=panel.example.com
+PUBLIC_URL=https://panel.example.com:8443
+HTTP_PORT=8080
+HTTPS_PORT=8443
+```
+
+Caddy 容器内部仍监听 80/443，并把外部 HTTP 端口跳转到配置的外部 HTTPS 端口。公开 CA 的自动证书签发通常仍要求公网 80/443 能到达 Caddy；若网络只开放自定义端口，请通过上游反向代理终止 TLS，或自行提供证书。
+
+编辑完 `.env` 后构建并启动中心端：
 
 ```bash
 docker compose build app
-read -rsp '首个所有者密码: ' OWNER_PASSWORD && printf '\n'
-printf '%s' "$OWNER_PASSWORD" | docker compose run --rm -T app bootstrap-owner --username admin --display-name '系统管理员'
-unset OWNER_PASSWORD
 docker compose up -d
 ```
 
-`bootstrap-owner` 会先执行数据库迁移；如果数据库中已经存在所有者，它会拒绝创建，后续账号应从已认证的团队管理 API/页面维护。`BOOTSTRAP_USERNAME`、`BOOTSTRAP_PASSWORD` 和 `BOOTSTRAP_DISPLAY_NAME` 环境变量仍兼容旧的启动时自动引导流程，但不再是推荐方式；如果使用兼容流程，创建成功后立即从 `.env` 删除明文密码并重新部署容器。
+打开 `PUBLIC_URL`。数据库中没有用户时，网站会自动进入 `/setup`，在页面中设置首个所有者的用户名、显示名称和密码，成功后直接进入控制台。初始化链接不使用预置密码；应在可信网络中完成首次初始化，不要把一个尚未初始化的中心端长时间暴露到公网。初始化接口使用 15 分钟有效的 HttpOnly/SameSite 引导 Cookie 和独立 CSRF 令牌，并在数据库中串行化创建操作；仅第一个成功请求可以建立所有者。
+
+无界面的自动化部署仍可使用 `docker compose run --rm -T app bootstrap-owner ...` 命令。旧版 `BOOTSTRAP_USERNAME`、`BOOTSTRAP_PASSWORD` 和 `BOOTSTRAP_DISPLAY_NAME` 启动环境变量也继续兼容，但不再写入示例配置或作为推荐流程。数据库已有任意用户后，网页初始化和命令行引导都会拒绝再次创建，后续账号应从已认证的团队管理页面维护。
 
 数据库迁移在 Control 启动时按文件名顺序执行。迁移失败或已应用迁移的校验和变化会中止启动，不会自动降级。涉及实例写锁的升级还会先检查旧数据；如果同一实例已有多个可能仍在执行的写任务，会给出处理提示并安全中止，而不会猜测性覆盖任务状态。升级前应备份 PostgreSQL 命名卷。
 
-使用刚创建的所有者账号登录。PostgreSQL 默认不向宿主机发布端口。
+PostgreSQL 默认不向宿主机发布端口。
 
 生产环境保持 `COOKIE_SECURE=true` 并使用 HTTPS。仅本机开发、直接运行 Control 时才可临时设为 `false`。
 

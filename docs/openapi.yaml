@@ -37,6 +37,53 @@ paths:
             application/json:
               schema: { type: object, additionalProperties: true }
 
+  /auth/bootstrap:
+    get:
+      tags: [Auth]
+      security: []
+      summary: 查询是否需要创建首个所有者
+      description: |
+        数据库没有用户时返回 `required=true`，设置 15 分钟有效的 HttpOnly/SameSite=Strict
+        引导 Cookie，并返回只用于本端点的 CSRF 令牌。已有用户时返回 `required=false`。
+      responses:
+        "200":
+          description: 首次初始化状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BootstrapStatus" }
+        "500":
+          description: 无法读取初始化状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    post:
+      tags: [Auth]
+      security: []
+      summary: 创建首个所有者并登录
+      description: |
+        仅数据库没有用户时可用。引导 Cookie 与 `X-Bootstrap-CSRF-Token` 必须匹配；
+        并发请求由数据库锁串行化，只有第一个成功请求能创建账号。成功后设置普通会话 Cookie。
+      parameters:
+        - name: X-Bootstrap-CSRF-Token
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BootstrapOwnerRequest" }
+      responses:
+        "201":
+          description: 首个所有者创建成功并写入 HttpOnly 会话 Cookie
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
   /auth/login:
     post:
       tags: [Auth]
@@ -1850,6 +1897,26 @@ components:
           properties:
             code: { type: string }
             message: { type: string }
+
+    BootstrapStatus:
+      type: object
+      required: [required]
+      properties:
+        required: { type: boolean }
+        csrf_token:
+          type: string
+          description: 仅在 required=true 时返回，且只能与配套引导 Cookie 一起使用。
+
+    BootstrapOwnerRequest:
+      type: object
+      required: [username, display_name, password, password_confirmation]
+      properties:
+        username: { type: string, minLength: 1, maxLength: 128 }
+        display_name: { type: string, minLength: 1, maxLength: 128 }
+        password:
+          { type: string, minLength: 12, maxLength: 1024, writeOnly: true }
+        password_confirmation:
+          { type: string, minLength: 12, maxLength: 1024, writeOnly: true }
 
     LoginRequest:
       type: object

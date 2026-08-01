@@ -20,6 +20,7 @@ export function LoginPage() {
   const [error, setError] = useState("");
 
   if (!auth.loading && auth.authenticated) return <Navigate to="/" replace />;
+  if (!auth.loading && auth.bootstrapRequired) return <Navigate to="/setup" replace />;
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();

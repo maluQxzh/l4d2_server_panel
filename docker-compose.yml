@@ -40,10 +40,10 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12}
-      BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-admin}
-      # 仅首启且数据库中尚无所有者时需要；建号后可从 .env 删除。
+      # 仅用于兼容旧版自动化；新部署通过网站 /setup 创建首个所有者。
+      BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-}
       BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-}
-      BOOTSTRAP_DISPLAY_NAME: ${BOOTSTRAP_DISPLAY_NAME:-系统管理员}
+      BOOTSTRAP_DISPLAY_NAME: ${BOOTSTRAP_DISPLAY_NAME:-}
       SESSION_TTL: ${SESSION_TTL:-12h}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       TZ: ${TZ:-Asia/Hong_Kong}
@@ -72,6 +72,7 @@ services:
     restart: unless-stopped
     environment:
       PANEL_DOMAIN: ${PANEL_DOMAIN:-localhost}
+      PANEL_HTTPS_PORT: ${HTTPS_PORT:-443}
     ports:
       - "${HTTP_PORT:-80}:80"
       - "${HTTPS_PORT:-443}:443"
