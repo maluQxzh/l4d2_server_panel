@@ -4,9 +4,11 @@
 
 Control 是唯一可信协调者，负责身份、资源权限、期望状态、任务队列、审计、事件和告警。PostgreSQL 保存持久状态；Agent 保存实际进程状态、本地注册表和任务幂等日志。中心端当前只支持一个 Control 实例：在线 Agent 连接和派发状态保存在该进程内，不能把多个 Control 副本放在负载均衡器后。
 
-React 前端被编译进 Control 镜像并同域提供。浏览器 REST 接口位于 `/api/v1`，实时事件位于 `/api/v1/events`，Agent 注册使用 `/api/v1/agent/enroll`，长期连接使用 `/agent/v1/connect`。Caddy 终止 TLS 并反向代理 HTTP/WebSocket；PostgreSQL 只在 Compose 内部网络可见。
+React 前端被编译进 Control 二进制并同域提供。浏览器 REST 接口位于 `/api/v1`，实时事件位于 `/api/v1/events`，Agent 注册使用 `/api/v1/agent/enroll`，长期连接使用 `/agent/v1/connect`。Caddy 终止 TLS 并反向代理 HTTP/WebSocket。
 
 中心 Compose 栈始终运行 Linux 容器，可部署在 Linux Docker Engine 或 macOS Docker Desktop。Control 镜像提供 `linux/amd64` 与 `linux/arm64` 构建路径，Docker Desktop 在 Intel Mac 和 Apple Silicon 上自动选择对应架构；这不会把 macOS 加入 Agent 或游戏服节点的支持平台。
+
+Windows 10/11 x64 与 Windows Server 2019+ 还可使用原生 MSI，不依赖 Docker/WSL2。MSI 将 PostgreSQL 17、Control、Caddy 注册为 `l4d2panel-postgres`、`l4d2panel-control`、`l4d2panel-caddy` 三个独立虚拟账号服务。Control 和受管 PostgreSQL 分别只监听 `127.0.0.1:8080` 与 `127.0.0.1:55432`，外部入口只能到 Caddy 所选端口；程序与持久数据分属 ProgramFiles/ProgramData。Control 服务命令行只包含严格 JSON 配置路径，秘密位于受 ACL 限制的配置文件。原生部署仍是同一套单 Control/单 PostgreSQL 架构，不构成 HA。
 
 ## 节点协议与任务流
 

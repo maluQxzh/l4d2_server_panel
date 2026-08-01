@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="L4D2 Panel Center"
+           Manufacturer="L4D2 Panel Contributors"
+           Version="$(var.PanelVersion)"
+           UpgradeCode="A94E6423-853E-4DF6-A6C5-A82F68EE46B4"
+           Language="2052"
+           Scope="perMachine">
+    <SummaryInformation Description="L4D2 Panel native Windows Control plane" Manufacturer="L4D2 Panel Contributors" />
+    <MajorUpgrade DowngradeErrorMessage="已安装更新版本的 L4D2 Panel Center。" Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="DATABASE_MODE" Value="managed" Secure="yes" />
+    <Property Id="PROXY_MODE" Value="caddy" Secure="yes" />
+    <Property Id="PANEL_DOMAIN" Value="localhost" Secure="yes" />
+    <Property Id="HTTP_PORT" Value="8088" Secure="yes" />
+    <Property Id="HTTPS_PORT" Value="8443" Secure="yes" />
+    <Property Id="RESPONSE_FILE" Secure="yes" />
+    <Property Id="SKIP_START" Value="$false" Secure="yes" />
+    <Property Id="SKIP_MIGRATE" Value="$false" Secure="yes" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/l4d2-panel/l4d2panel" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="打开网站并创建首个所有者" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+
+    <Launch Condition="VersionNT64 &gt;= v10.0" Message="需要 Windows 10/11 x64 或 Windows Server 2019 及更高版本。" />
+    <Launch Condition="NativeMachine = 34404" Message="首版 Windows 原生中心端仅支持 x64，不支持 ARM64。" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="CompanyFolder" Name="L4D2Panel">
+        <Directory Id="INSTALLFOLDER" Name="Control">
+          <Component Id="InstallScriptComponent" Bitness="always64">
+            <File Id="InstallScript" Source="Install-L4D2PanelCenter.ps1" KeyPath="yes" />
+          </Component>
+          <Component Id="UpdateScriptComponent" Bitness="always64">
+            <File Id="UpdateScript" Source="Update-L4D2PanelCenter.ps1" />
+          </Component>
+          <Component Id="PurgeScriptComponent" Bitness="always64">
+            <File Id="PurgeScript" Source="Remove-L4D2PanelCenterData.ps1" />
+          </Component>
+          <Component Id="InstallerOptionsComponent" Bitness="always64">
+            <RegistryKey Root="HKLM" Key="SOFTWARE\L4D2Panel\Installer">
+              <RegistryValue Name="DatabaseMode" Type="string" Value="[DATABASE_MODE]" KeyPath="yes" />
+              <RegistryValue Name="ProxyMode" Type="string" Value="[PROXY_MODE]" />
+              <RegistryValue Name="PanelDomain" Type="string" Value="[PANEL_DOMAIN]" />
+              <RegistryValue Name="HttpPort" Type="integer" Value="[HTTP_PORT]" />
+              <RegistryValue Name="HttpsPort" Type="integer" Value="[HTTPS_PORT]" />
+              <RegistryValue Name="ResponseFile" Type="string" Value="[RESPONSE_FILE]" />
+              <RegistryValue Name="SkipStart" Type="string" Value="[SKIP_START]" />
+              <RegistryValue Name="SkipMigrate" Type="string" Value="[SKIP_MIGRATE]" />
+            </RegistryKey>
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Complete" Title="L4D2 Panel Center" Level="1">
+      <ComponentRef Id="InstallScriptComponent" />
+      <ComponentRef Id="UpdateScriptComponent" />
+      <ComponentRef Id="PurgeScriptComponent" />
+      <ComponentRef Id="InstallerOptionsComponent" />
+      <Files Include="$(var.PayloadDir)\**" Directory="INSTALLFOLDER" />
+    </Feature>
+
+    <UI>
+      <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+      <Dialog Id="CenterOptionsDlg" Width="370" Height="270" Title="[ProductName] 安装选项">
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="25" Transparent="yes" NoPrefix="yes" Text="中心端连接设置" />
+        <Control Id="DatabaseLabel" Type="Text" X="20" Y="40" Width="100" Height="15" Text="数据库模式：" />
+        <Control Id="DatabaseMode" Type="RadioButtonGroup" X="120" Y="35" Width="220" Height="38" Property="DATABASE_MODE">
+          <RadioButtonGroup Property="DATABASE_MODE">
+            <RadioButton Value="managed" X="0" Y="0" Width="210" Height="17" Text="内置 PostgreSQL 17（推荐）" />
+            <RadioButton Value="external" X="0" Y="18" Width="210" Height="17" Text="外部 PostgreSQL 17" />
+          </RadioButtonGroup>
+        </Control>
+        <Control Id="ResponseLabel" Type="Text" X="20" Y="80" Width="100" Height="15" Text="安全响应文件：" />
+        <Control Id="ResponseFile" Type="Edit" X="120" Y="77" Width="220" Height="18" Property="RESPONSE_FILE" />
+        <Control Id="ProxyLabel" Type="Text" X="20" Y="108" Width="100" Height="15" Text="访问入口：" />
+        <Control Id="ProxyMode" Type="RadioButtonGroup" X="120" Y="103" Width="220" Height="38" Property="PROXY_MODE">
+          <RadioButtonGroup Property="PROXY_MODE">
+            <RadioButton Value="caddy" X="0" Y="0" Width="210" Height="17" Text="内置 Caddy HTTPS（推荐）" />
+            <RadioButton Value="external" X="0" Y="18" Width="210" Height="17" Text="同机外部反向代理" />
+          </RadioButtonGroup>
+        </Control>
+        <Control Id="DomainLabel" Type="Text" X="20" Y="151" Width="100" Height="15" Text="域名/localhost：" />
+        <Control Id="Domain" Type="Edit" X="120" Y="148" Width="220" Height="18" Property="PANEL_DOMAIN" />
+        <Control Id="HttpLabel" Type="Text" X="20" Y="179" Width="100" Height="15" Text="HTTP 端口：" />
+        <Control Id="HttpPort" Type="Edit" X="120" Y="176" Width="70" Height="18" Property="HTTP_PORT" Integer="yes" />
+        <Control Id="HttpsLabel" Type="Text" X="200" Y="179" Width="70" Height="15" Text="HTTPS：" />
+        <Control Id="HttpsPort" Type="Edit" X="270" Y="176" Width="70" Height="18" Property="HTTPS_PORT" Integer="yes" />
+        <Control Id="Hint" Type="Text" X="20" Y="205" Width="320" Height="26" Text="外部数据库密码只能放在已禁用继承并限制 ACL 的 JSON 响应文件中。" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="上一步" />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="下一步" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="取消">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="CenterOptionsDlg" Order="3" />
+      <Publish Dialog="CenterOptionsDlg" Control="Back" Event="NewDialog" Value="InstallDirDlg" />
+      <Publish Dialog="CenterOptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="DATABASE_MODE = &quot;managed&quot; OR RESPONSE_FILE &lt;&gt; &quot;&quot;" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="CenterOptionsDlg" Order="3" />
+      <Publish Dialog="ExitDialog" Control="Finish" Property="WixShellExecTarget" Value="https://[PANEL_DOMAIN]:[HTTPS_PORT]/setup" Order="1" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="OpenSetup" Order="2" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+
+    <CustomAction Id="OpenSetup" BinaryRef="Wix4UtilCA_X64" DllEntry="WixShellExec" Impersonate="yes" Return="ignore" />
+
+    <SetProperty Id="ConfigureCenter"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoP -NonI -EP Bypass -F &quot;[#InstallScript]&quot; -FromMsi"
+                 Before="ConfigureCenter" Sequence="execute" />
+    <CustomAction Id="ConfigureCenter" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Impersonate="no" Return="check" />
+
+    <SetProperty Id="RemoveCenterServices"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#InstallScript]&quot; -Action RemoveServices"
+                 Before="RemoveCenterServices" Sequence="execute" />
+    <CustomAction Id="RemoveCenterServices" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Impersonate="no" Return="check" />
+
+    <InstallExecuteSequence>
+      <Custom Action="ConfigureCenter" After="InstallFiles" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="RemoveCenterServices" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

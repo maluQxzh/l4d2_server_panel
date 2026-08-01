@@ -19,6 +19,7 @@ Read `README.md` before substantial work. For protocol, persistence, authorizati
 - `web`: React 19, TypeScript, Vite, Vitest, and Playwright application.
 - `docs/openapi.yaml`: public API contract. `docs/architecture.md` and `docs/security.md` describe invariants and threat boundaries.
 - `scripts`: Windows and Linux Agent installers.
+- `packaging/windows`: WiX 7 native Windows Control MSI, installer, upgrade, and explicit data-purge scripts.
 
 ## Required toolchain
 
@@ -81,7 +82,7 @@ go test ./internal/control -run TestPostgresMigrationsAndCredentialLifecycle -co
 RUN_FLEET_ACCEPTANCE=1 go test ./internal/control -run TestFleetScaleAcceptance -count=1 -timeout=2m
 ```
 
-For Agent or platform changes, test on Windows and Linux and cross-build both amd64 targets with `CGO_ENABLED=0`. Installer changes require PowerShell parser validation and `sh -n`; CI additionally runs ShellCheck. Container changes require `docker compose config --quiet` and production image builds for both `linux/amd64` and `linux/arm64`.
+For Agent or platform changes, test on Windows and Linux and cross-build both amd64 targets with `CGO_ENABLED=0`. Installer changes require PowerShell parser validation and `sh -n`; CI additionally runs ShellCheck. Native Windows Center packaging changes require an x64 Control cross-build, WiX 7 compilation with OSMF/EULA compliance, and MSI VM smoke tests when release payloads are available. Container changes require `docker compose config --quiet` and production image builds for both `linux/amd64` and `linux/arm64`.
 
 If the local environment lacks PostgreSQL, Docker, SteamCMD, or a supported game host, report the skipped gate explicitly. Never describe mocked Playwright flows or cross-compilation as a real App 222860 end-to-end validation.
 

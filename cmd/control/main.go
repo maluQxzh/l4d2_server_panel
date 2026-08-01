@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -20,37 +22,111 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	var err error
-	switch {
-	case len(os.Args) == 1:
-		err = run(logger)
-	case os.Args[1] == "serve":
-		err = run(logger)
-	case os.Args[1] == "bootstrap-owner":
-		err = runBootstrapOwner(logger, os.Args[2:], os.Stdin)
-	default:
-		err = fmt.Errorf("unknown command %q (expected serve or bootstrap-owner)", os.Args[1])
-	}
-	if err != nil {
+	if err := runCLI(logger, os.Args[1:], os.Stdin); err != nil {
 		logger.Error("control plane stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
-func runBootstrapOwner(logger *slog.Logger, args []string, stdin io.Reader) error {
-	cfg, err := control.ConfigFromEnv()
-	if err != nil {
-		return err
+func runCLI(logger *slog.Logger, args []string, stdin io.Reader) error {
+	if len(args) == 0 {
+		return runConsole(logger, "")
 	}
+	switch args[0] {
+	case "serve":
+		configPath, err := parseConfigOnly("serve", args[1:])
+		if err != nil {
+			return err
+		}
+		if shouldRunAsService() {
+			return runWindowsService(configPath)
+		}
+		return runConsole(logger, configPath)
+	case "migrate":
+		configPath, err := parseConfigOnly("migrate", args[1:])
+		if err != nil {
+			return err
+		}
+		return runMigrate(configPath)
+	case "doctor":
+		configPath, err := parseConfigOnly("doctor", args[1:])
+		if err != nil {
+			return err
+		}
+		return runDoctor(configPath, os.Stdout)
+	case "bootstrap-owner":
+		return runBootstrapOwner(logger, args[1:], stdin)
+	case "service":
+		return runServiceCommand(args[1:])
+	case "version", "--version", "-version":
+		fmt.Printf("%s (%s, %s)\n", version.Version, version.Commit, version.Date)
+		return nil
+	default:
+		return usageError()
+	}
+}
+
+func usageError() error {
+	return errors.New("usage: l4d2panel-control <serve|migrate|doctor|bootstrap-owner|service|version> [options]")
+}
+
+func parseConfigOnly(command string, args []string) (string, error) {
+	flags := flag.NewFlagSet(command, flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	configPath := flags.String("config", "", "path to strict JSON configuration")
+	if err := flags.Parse(args); err != nil {
+		return "", err
+	}
+	if flags.NArg() != 0 {
+		return "", fmt.Errorf("%s does not accept positional arguments", command)
+	}
+	return absoluteConfigPath(*configPath)
+}
+
+func absoluteConfigPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve config path: %w", err)
+	}
+	return abs, nil
+}
+
+func loadConfig(path string) (control.Config, error) {
+	if path == "" {
+		return control.ConfigFromEnv()
+	}
+	return control.ConfigFromFile(path)
+}
+
+func runBootstrapOwner(logger *slog.Logger, args []string, stdin io.Reader) error {
 	flags := flag.NewFlagSet("bootstrap-owner", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	username := flags.String("username", cfg.BootstrapUsername, "owner username")
-	displayName := flags.String("display-name", cfg.BootstrapName, "owner display name")
+	configPath := flags.String("config", "", "path to strict JSON configuration")
+	username := flags.String("username", "", "owner username")
+	displayName := flags.String("display-name", "", "owner display name")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return errors.New("bootstrap-owner does not accept positional arguments")
+	}
+	absConfig, err := absoluteConfigPath(*configPath)
+	if err != nil {
+		return err
+	}
+	cfg, err := loadConfig(absConfig)
+	if err != nil {
+		return err
+	}
+	if *username == "" {
+		*username = cfg.BootstrapUsername
+	}
+	if *displayName == "" {
+		*displayName = cfg.BootstrapName
 	}
 	password, err := readBootstrapPassword(stdin)
 	if err != nil {
@@ -110,13 +186,17 @@ func readBootstrapPassword(reader io.Reader) (string, error) {
 	return password, nil
 }
 
-func run(logger *slog.Logger) error {
-	cfg, err := control.ConfigFromEnv()
+func runConsole(logger *slog.Logger, configPath string) error {
+	cfg, err := loadConfig(configPath)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	return serveControl(ctx, cfg, logger)
+}
+
+func serveControl(ctx context.Context, cfg control.Config, logger *slog.Logger) error {
 	store, err := control.OpenStore(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -171,4 +251,57 @@ func run(logger *slog.Logger) error {
 		}
 		return err
 	}
+}
+
+func runMigrate(configPath string) error {
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	store, err := control.OpenStore(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	return store.Migrate(ctx, cfg.MigrationsDir)
+}
+
+type doctorResult struct {
+	OK                  bool   `json:"ok"`
+	PostgreSQLVersion   int    `json:"postgresql_version_num"`
+	PostgreSQLMajor     int    `json:"postgresql_major"`
+	MigrationPrivileges bool   `json:"migration_privileges"`
+	ConfiguredListen    string `json:"configured_listen"`
+}
+
+func runDoctor(configPath string, output io.Writer) error {
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store, err := control.OpenStore(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	versionNumber, err := store.DatabaseServerVersion(ctx)
+	if err != nil {
+		return err
+	}
+	major := versionNumber / 10000
+	if major != 17 {
+		return fmt.Errorf("PostgreSQL 17 is required; connected server reports major version %d", major)
+	}
+	if err := store.CheckMigrationPrivileges(ctx); err != nil {
+		return err
+	}
+	result := doctorResult{
+		OK: true, PostgreSQLVersion: versionNumber, PostgreSQLMajor: major,
+		MigrationPrivileges: true, ConfiguredListen: cfg.ListenAddress,
+	}
+	return json.NewEncoder(output).Encode(result)
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -18,6 +19,31 @@ func TestReadBootstrapPasswordAcceptsSingleLineFromStdin(t *testing.T) {
 		if err != nil || got != test.want {
 			t.Fatalf("readBootstrapPassword(%q) = %q, %v; want %q", test.input, got, err, test.want)
 		}
+	}
+}
+
+func TestControlServiceConfigurationContainsOnlyConfigPath(t *testing.T) {
+	configPath := filepath.Join(`C:\ProgramData`, "L4D2Panel", "control.json")
+	cfg := controlServiceConfiguration(configPath)
+	if cfg.Name != controlServiceName || cfg.UserName != `NT SERVICE\l4d2panel-control` {
+		t.Fatalf("unexpected service identity: %+v", cfg)
+	}
+	want := []string{"serve", "--config", configPath}
+	if strings.Join(cfg.Arguments, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected service arguments: %#v", cfg.Arguments)
+	}
+	for _, argument := range cfg.Arguments {
+		if strings.Contains(argument, "postgres://") || strings.Contains(argument, "master_key") {
+			t.Fatalf("secret leaked into service arguments: %q", argument)
+		}
+	}
+}
+
+func TestDefaultControlConfigPathUsesProgramDataConfigDirectory(t *testing.T) {
+	t.Setenv("ProgramData", filepath.Join("C:", "ProgramData-Test"))
+	want := filepath.Join("C:", "ProgramData-Test", "L4D2Panel", "config", "control.json")
+	if got := defaultControlConfigPath(); got != want {
+		t.Fatalf("defaultControlConfigPath() = %q; want %q", got, want)
 	}
 }
 

@@ -13,6 +13,11 @@
 /.env
 /data/
 /tmp/
+/dist/
+/packaging/windows/bin/
+/packaging/windows/obj/
+/packaging/windows/payload/*
+!/packaging/windows/payload/.gitkeep
 *.log
 
 # Editors / OS

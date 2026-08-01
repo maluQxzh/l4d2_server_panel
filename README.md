@@ -1,6 +1,6 @@
 # L4D2 Panel
 
-面向《求生之路 2》专用服务器的自托管多节点管理面板。一个 Linux 容器化中心控制台通过节点主动建立的 WSS 连接管理 Windows 与 Linux Agent；节点不需要开放面板管理端口，游戏端口仍由管理员按实例开放。
+面向《求生之路 2》专用服务器的自托管多节点管理面板。中心控制台可通过 Linux/macOS Docker 或 Windows x64 原生 MSI 部署，并通过节点主动建立的 WSS 连接管理 Windows 与 Linux Agent；节点不需要开放面板管理端口，游戏端口仍由管理员按实例开放。
 
 ## 当前实现
 
@@ -85,6 +85,14 @@ PostgreSQL 默认不向宿主机发布端口。
 
 生产环境保持 `COOKIE_SECURE=true` 并使用 HTTPS。仅本机开发、直接运行 Control 时才可临时设为 `false`。
 
+## Windows 原生部署中心端
+
+Windows 10/11 x64 和 Windows Server 2019+ 可以直接安装发布页中的 `l4d2panel-center-*-windows-x64.msi`，不需要 Docker、WSL2 或 Windows 容器。向导默认安装受管 PostgreSQL 17、Control 和 Caddy；程序位于 `%ProgramFiles%\L4D2Panel\Control`，数据库、配置、证书、日志与升级检查点位于 `%ProgramData%\L4D2Panel`。
+
+向导允许选择域名或 `localhost` 以及任意未占用的 HTTP/HTTPS 端口，不限定为 80/443。安装完成后访问显示的 `/setup` 地址创建首个所有者。受管数据库只监听 `127.0.0.1:55432`，Control 只监听 `127.0.0.1:8080`；只有内置 Caddy 选中的入口端口会加入 Windows 防火墙。
+
+外部 PostgreSQL 密码不能作为 MSI 命令行属性传递，必须放在禁用 ACL 继承、仅管理员与 SYSTEM 可读的响应文件中。普通卸载保留 ProgramData；升级使用安装目录中的 `Update-L4D2PanelCenter.ps1`，它会先校验 MSI、执行 `pg_dump` 并保存配置/证书检查点。完整的交互安装、`/qn`、外部数据库/代理、升级与彻底清理说明见 [Windows 中心端安装说明](docs/windows-center-installation.md)。
+
 ## 注册节点
 
 先在“节点”页面创建短期一次性注册令牌。Linux 节点：
@@ -166,7 +174,7 @@ RUN_FLEET_ACCEPTANCE=1 \
 go test ./internal/control -run TestFleetScaleAcceptance -count=1 -timeout=2m
 ```
 
-CI 还执行上述 20/100 模拟验收、Go race 测试、Windows/Linux Agent 交叉构建、安装脚本静态检查、Playwright、`docker compose config` 和镜像构建。上述自动化不等同于真实游戏验证：发布前仍需分别在受支持的 Windows、Ubuntu 和 Debian 主机上运行安装器，并用真实 SteamCMD 安装/启动 App 222860，验证 A2S、RCON、更新、备份恢复和重启。当前开发工作站未对真实 Docker Compose 集群或 Steam 服务完成端到端运行验证。
+CI 还执行上述 20/100 模拟验收、Go race 测试、Windows/Linux Agent 交叉构建、安装脚本静态检查、Playwright、`docker compose config`，并同时构建 `linux/amd64` 与 `linux/arm64` 中心镜像。Windows 发布作业组装固定版本 PostgreSQL/Caddy 载荷，生成 MSI、SHA-256、CycloneDX SBOM 和第三方许可证清单，并执行静默安装、三个服务、回环监听、`/readyz`、`/setup` 与保留数据卸载冒烟测试；配置签名证书时还会签署并验证 EXE/MSI，否则产物明确标记 `unsigned`。上述自动化不等同于真实游戏验证：发布前仍需分别在受支持的 Windows、Ubuntu 和 Debian 主机上运行安装器，并用真实 SteamCMD 安装/启动 App 222860，验证 A2S、RCON、更新、备份恢复和重启。当前开发工作站未对真实 Docker Compose 集群或 Steam 服务完成端到端运行验证。
 
 ## API 与参考资料
 
