@@ -5,13 +5,15 @@ param(
     [Parameter(Mandatory)][string]$MsiPath,
     [Parameter(Mandatory)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$Sha256,
     [string]$SignerThumbprint = '',
-    [string]$InstallRoot = "$env:ProgramFiles\L4D2Panel\Control",
+    [string]$InstallRoot = '',
     [string]$DataRoot = "$env:ProgramData\L4D2Panel"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = $PSScriptRoot }
 
 $msi = (Get-Item -LiteralPath $MsiPath).FullName
 $actualHash = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash
@@ -29,6 +31,28 @@ $configPath = "$DataRoot\config\control.json"
 if (-not (Test-Path -LiteralPath $configPath)) { throw "Control configuration not found: $configPath" }
 $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
 if ($config.schema_version -ne 1) { throw 'Unsupported Control configuration schema.' }
+if ([string]$config.listen_address -notmatch '^127\.0\.0\.1:([0-9]{1,5})$') {
+    throw 'Control listen_address must use an IPv4 loopback port.'
+}
+$controlPort = [int]$Matches[1]
+if ($controlPort -lt 1 -or $controlPort -gt 65535) { throw 'Control listen_address contains an invalid port.' }
+
+function Wait-ControlReady {
+    param([Parameter(Mandatory)][int]$Port, [ValidateRange(1, 300)][int]$TimeoutSeconds = 45)
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $lastError = $null
+    do {
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/readyz" -TimeoutSec 5
+            if ($response.StatusCode -eq 200) { return }
+            $lastError = "HTTP $($response.StatusCode)"
+        } catch {
+            $lastError = $_.Exception.Message
+        }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Control readiness check timed out on 127.0.0.1:$Port. Last error: $lastError"
+}
 
 $systemDrive = Get-PSDrive -Name ([IO.Path]::GetPathRoot($DataRoot).Substring(0, 1))
 if ($systemDrive.Free -lt 2GB) { throw 'At least 2 GiB free disk space is required for an upgrade checkpoint.' }
@@ -80,7 +104,7 @@ if (Get-Service -Name l4d2panel-postgres -ErrorAction SilentlyContinue) {
     Stop-Service -Name l4d2panel-postgres -Force
 }
 
-$msiArguments = @('/i', $msi, '/qn', '/norestart', 'SKIP_START=$true', 'SKIP_MIGRATE=$true', "UPGRADE_CHECKPOINT=$checkpoint")
+$msiArguments = @('/i', "`"$msi`"", '/qn', '/norestart', 'SKIP_START=true', 'SKIP_MIGRATE=true', "`"UPGRADE_CHECKPOINT=$checkpoint`"")
 $installer = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList $msiArguments -Wait -PassThru
 if ($installer.ExitCode -notin @(0, 3010)) {
     Write-Error "MSI failed with exit code $($installer.ExitCode). Services remain stopped. Checkpoint: $checkpoint"
@@ -93,8 +117,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Database migration failed.' }
     Start-Service -Name l4d2panel-control
     (Get-Service -Name l4d2panel-control).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-    $ready = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8080/readyz' -TimeoutSec 15
-    if ($ready.StatusCode -ne 200) { throw 'Control readiness check failed.' }
+    Wait-ControlReady -Port $controlPort
     $caddyService = Get-Service -Name l4d2panel-caddy -ErrorAction SilentlyContinue
     if ($caddyService) {
         Start-Service -Name l4d2panel-caddy

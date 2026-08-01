@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Package Name="L4D2 Panel Center"
            Manufacturer="L4D2 Panel Contributors"
            Version="$(var.PanelVersion)"
@@ -9,22 +10,24 @@
            Scope="perMachine">
     <SummaryInformation Description="L4D2 Panel native Windows Control plane" Manufacturer="L4D2 Panel Contributors" />
     <MajorUpgrade DowngradeErrorMessage="已安装更新版本的 L4D2 Panel Center。" Schedule="afterInstallInitialize" />
-    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="$(var.CompressionLevel)" />
 
     <Property Id="DATABASE_MODE" Value="managed" Secure="yes" />
     <Property Id="PROXY_MODE" Value="caddy" Secure="yes" />
     <Property Id="PANEL_DOMAIN" Value="localhost" Secure="yes" />
+    <Property Id="CONTROL_PORT" Value="18080" Secure="yes" />
     <Property Id="HTTP_PORT" Value="8088" Secure="yes" />
     <Property Id="HTTPS_PORT" Value="8443" Secure="yes" />
     <Property Id="RESPONSE_FILE" Secure="yes" />
-    <Property Id="SKIP_START" Value="$false" Secure="yes" />
-    <Property Id="SKIP_MIGRATE" Value="$false" Secure="yes" />
+    <Property Id="SKIP_START" Value="false" Secure="yes" />
+    <Property Id="SKIP_MIGRATE" Value="false" Secure="yes" />
     <Property Id="ARPHELPLINK" Value="https://github.com/l4d2-panel/l4d2panel" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="打开网站并创建首个所有者" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
 
+    <util:QueryNativeMachine />
     <Launch Condition="VersionNT64 &gt;= v10.0" Message="需要 Windows 10/11 x64 或 Windows Server 2019 及更高版本。" />
-    <Launch Condition="NativeMachine = 34404" Message="首版 Windows 原生中心端仅支持 x64，不支持 ARM64。" />
+    <Launch Condition="WIX_NATIVE_MACHINE = 34404" Message="首版 Windows 原生中心端仅支持 x64，不支持 ARM64。" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="CompanyFolder" Name="L4D2Panel">
@@ -43,6 +46,7 @@
               <RegistryValue Name="DatabaseMode" Type="string" Value="[DATABASE_MODE]" KeyPath="yes" />
               <RegistryValue Name="ProxyMode" Type="string" Value="[PROXY_MODE]" />
               <RegistryValue Name="PanelDomain" Type="string" Value="[PANEL_DOMAIN]" />
+              <RegistryValue Name="ControlPort" Type="integer" Value="[CONTROL_PORT]" />
               <RegistryValue Name="HttpPort" Type="integer" Value="[HTTP_PORT]" />
               <RegistryValue Name="HttpsPort" Type="integer" Value="[HTTPS_PORT]" />
               <RegistryValue Name="ResponseFile" Type="string" Value="[RESPONSE_FILE]" />
@@ -84,11 +88,13 @@
         </Control>
         <Control Id="DomainLabel" Type="Text" X="20" Y="151" Width="100" Height="15" Text="域名/localhost：" />
         <Control Id="Domain" Type="Edit" X="120" Y="148" Width="220" Height="18" Property="PANEL_DOMAIN" />
-        <Control Id="HttpLabel" Type="Text" X="20" Y="179" Width="100" Height="15" Text="HTTP 端口：" />
-        <Control Id="HttpPort" Type="Edit" X="120" Y="176" Width="70" Height="18" Property="HTTP_PORT" Integer="yes" />
-        <Control Id="HttpsLabel" Type="Text" X="200" Y="179" Width="70" Height="15" Text="HTTPS：" />
-        <Control Id="HttpsPort" Type="Edit" X="270" Y="176" Width="70" Height="18" Property="HTTPS_PORT" Integer="yes" />
-        <Control Id="Hint" Type="Text" X="20" Y="205" Width="320" Height="26" Text="外部数据库密码只能放在已禁用继承并限制 ACL 的 JSON 响应文件中。" />
+        <Control Id="ControlPortLabel" Type="Text" X="20" Y="179" Width="100" Height="15" Text="Control 内部端口：" />
+        <Control Id="ControlPort" Type="Edit" X="120" Y="176" Width="70" Height="18" Property="CONTROL_PORT" Integer="yes" />
+        <Control Id="HttpLabel" Type="Text" X="20" Y="207" Width="100" Height="15" Text="HTTP 端口：" />
+        <Control Id="HttpPort" Type="Edit" X="120" Y="204" Width="70" Height="18" Property="HTTP_PORT" Integer="yes" />
+        <Control Id="HttpsLabel" Type="Text" X="200" Y="207" Width="70" Height="15" Text="HTTPS：" />
+        <Control Id="HttpsPort" Type="Edit" X="270" Y="204" Width="70" Height="18" Property="HTTPS_PORT" Integer="yes" />
+        <Control Id="Hint" Type="Text" X="20" Y="227" Width="320" Height="13" Text="外部数据库密码只能放在受 ACL 保护的 JSON 响应文件中。" />
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="上一步" />
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="下一步" />
         <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="取消">
@@ -110,13 +116,19 @@
                  Before="ConfigureCenter" Sequence="execute" />
     <CustomAction Id="ConfigureCenter" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Impersonate="no" Return="check" />
 
+    <SetProperty Id="RollbackCenterServices"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#InstallScript]&quot; -Action RemoveServices"
+                 Before="RollbackCenterServices" Sequence="execute" />
+    <CustomAction Id="RollbackCenterServices" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="rollback" Impersonate="no" Return="ignore" />
+
     <SetProperty Id="RemoveCenterServices"
                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#InstallScript]&quot; -Action RemoveServices"
                  Before="RemoveCenterServices" Sequence="execute" />
     <CustomAction Id="RemoveCenterServices" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec" Execute="deferred" Impersonate="no" Return="check" />
 
     <InstallExecuteSequence>
-      <Custom Action="ConfigureCenter" After="InstallFiles" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="RollbackCenterServices" Before="ConfigureCenter" Condition="NOT Installed AND NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="ConfigureCenter" After="WriteRegistryValues" Condition="NOT REMOVE~=&quot;ALL&quot;" />
       <Custom Action="RemoveCenterServices" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
   </Package>

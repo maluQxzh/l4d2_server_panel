@@ -6,7 +6,8 @@
     <Cultures>zh-CN</Cultures>
     <PanelVersion Condition="'$(PanelVersion)' == ''">0.1.0</PanelVersion>
     <PayloadDir Condition="'$(PayloadDir)' == ''">$(MSBuildThisFileDirectory)payload</PayloadDir>
-    <DefineConstants>PanelVersion=$(PanelVersion);PayloadDir=$(PayloadDir)</DefineConstants>
+    <CompressionLevel Condition="'$(CompressionLevel)' == ''">high</CompressionLevel>
+    <DefineConstants>PanelVersion=$(PanelVersion);PayloadDir=$(PayloadDir);CompressionLevel=$(CompressionLevel)</DefineConstants>
     <!-- WiX 7 builds require explicit EULA acceptance. Maintainers must first
          satisfy the OSMF terms, including sponsorship when applicable. -->
     <AcceptEula>wix7</AcceptEula>

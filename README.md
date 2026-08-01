@@ -89,7 +89,7 @@ PostgreSQL 默认不向宿主机发布端口。
 
 Windows 10/11 x64 和 Windows Server 2019+ 可以直接安装发布页中的 `l4d2panel-center-*-windows-x64.msi`，不需要 Docker、WSL2 或 Windows 容器。向导默认安装受管 PostgreSQL 17、Control 和 Caddy；程序位于 `%ProgramFiles%\L4D2Panel\Control`，数据库、配置、证书、日志与升级检查点位于 `%ProgramData%\L4D2Panel`。
 
-向导允许选择域名或 `localhost` 以及任意未占用的 HTTP/HTTPS 端口，不限定为 80/443。安装完成后访问显示的 `/setup` 地址创建首个所有者。受管数据库只监听 `127.0.0.1:55432`，Control 只监听 `127.0.0.1:8080`；只有内置 Caddy 选中的入口端口会加入 Windows 防火墙。
+向导允许选择域名或 `localhost`、Control 回环监听端口以及任意未占用的 HTTP/HTTPS 入口端口，不限定为 80/443。Control 默认监听 `127.0.0.1:18080`，可避开本机已有服务；安装器会同步 Control 配置、Caddy 上游与健康检查地址。安装完成后访问显示的 `/setup` 地址创建首个所有者。受管数据库只监听 `127.0.0.1:55432`；只有内置 Caddy 选中的入口端口会加入 Windows 防火墙。
 
 外部 PostgreSQL 密码不能作为 MSI 命令行属性传递，必须放在禁用 ACL 继承、仅管理员与 SYSTEM 可读的响应文件中。普通卸载保留 ProgramData；升级使用安装目录中的 `Update-L4D2PanelCenter.ps1`，它会先校验 MSI、执行 `pg_dump` 并保存配置/证书检查点。完整的交互安装、`/qn`、外部数据库/代理、升级与彻底清理说明见 [Windows 中心端安装说明](docs/windows-center-installation.md)。
 

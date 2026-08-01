@@ -58,6 +58,16 @@ func TestPostgresMigrationsAndCredentialLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	serverVersion, err := store.DatabaseServerVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if serverVersion/10000 != 17 {
+		t.Fatalf("expected PostgreSQL 17, got server_version_num %d", serverVersion)
+	}
+	if err := store.CheckMigrationPrivileges(ctx); err != nil {
+		t.Fatal(err)
+	}
 	migrationsDir := filepath.Join("..", "..", "migrations")
 	if err := store.Migrate(ctx, migrationsDir); err != nil {
 		t.Fatal(err)

@@ -8,7 +8,7 @@ React 前端被编译进 Control 二进制并同域提供。浏览器 REST 接�
 
 中心 Compose 栈始终运行 Linux 容器，可部署在 Linux Docker Engine 或 macOS Docker Desktop。Control 镜像提供 `linux/amd64` 与 `linux/arm64` 构建路径，Docker Desktop 在 Intel Mac 和 Apple Silicon 上自动选择对应架构；这不会把 macOS 加入 Agent 或游戏服节点的支持平台。
 
-Windows 10/11 x64 与 Windows Server 2019+ 还可使用原生 MSI，不依赖 Docker/WSL2。MSI 将 PostgreSQL 17、Control、Caddy 注册为 `l4d2panel-postgres`、`l4d2panel-control`、`l4d2panel-caddy` 三个独立虚拟账号服务。Control 和受管 PostgreSQL 分别只监听 `127.0.0.1:8080` 与 `127.0.0.1:55432`，外部入口只能到 Caddy 所选端口；程序与持久数据分属 ProgramFiles/ProgramData。Control 服务命令行只包含严格 JSON 配置路径，秘密位于受 ACL 限制的配置文件。原生部署仍是同一套单 Control/单 PostgreSQL 架构，不构成 HA。
+Windows 10/11 x64 与 Windows Server 2019+ 还可使用原生 MSI，不依赖 Docker/WSL2。MSI 将 PostgreSQL 17、Control、Caddy 注册为 `l4d2panel-postgres`、`l4d2panel-control`、`l4d2panel-caddy` 三个独立虚拟账号服务。Control 仅在可配置的 IPv4 回环端口监听（默认 `127.0.0.1:18080`），受管 PostgreSQL 固定监听 `127.0.0.1:55432`，外部入口只能到 Caddy 所选端口；程序与持久数据分属 ProgramFiles/ProgramData。Control 服务命令行只包含严格 JSON 配置路径，秘密位于受 ACL 限制的配置文件。原生部署仍是同一套单 Control/单 PostgreSQL 架构，不构成 HA。
 
 ## 节点协议与任务流
 

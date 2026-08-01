@@ -16,11 +16,11 @@
 
 1. 校验发布页提供的 MSI SHA-256；正式签名产物还应在文件属性中验证 Authenticode 签名和时间戳。文件名带 `-unsigned` 的包只用于开发测试。
 2. 运行 MSI，选择数据库模式。推荐“内置 PostgreSQL 17”；外部数据库必须是 PostgreSQL 17，远程地址必须启用 `sslmode=require`、`verify-ca` 或 `verify-full`。
-3. 选择内置 Caddy 或同机外部反向代理，填写域名/`localhost` 和入口端口。端口可以不是 80/443；公网 ACME 通常仍要求 CA 能访问标准验证端口，无法满足时应由现有网关终止 TLS。
+3. 选择内置 Caddy 或同机外部反向代理，填写域名/`localhost`、Control 内部端口和入口端口。端口可以不是 80/443；这些端口必须互不冲突。公网 ACME 通常仍要求 CA 能访问标准验证端口，无法满足时应由现有网关终止 TLS。
 4. 安装器检查系统架构、端口、数据库权限与版本，执行迁移，再检查 Control `/readyz` 和 Caddy 配置。ACME 因 DNS 或公网入口未就绪时不会删除已初始化的数据库，诊断信息保留在安装日志和 Caddy 日志中。
 5. 打开安装结果显示的 `https://域名[:端口]/setup`，在可信网络中创建第一个所有者。只有第一个成功的初始化请求能创建所有者。
 
-受管 PostgreSQL 固定监听 `127.0.0.1:55432` 并使用 SCRAM-SHA-256；Control 固定监听 `127.0.0.1:8080`。不要为这两个端口创建入站防火墙规则。使用外部代理时，应代理 HTTP 和 WebSocket 到 `127.0.0.1:8080`，保留 `Host`、`X-Forwarded-Proto`，并只从回环地址连接。
+受管 PostgreSQL 固定监听 `127.0.0.1:55432` 并使用 SCRAM-SHA-256；Control 仅监听安装时选择的 IPv4 回环端口，默认是 `127.0.0.1:18080`。不要为这两个内部端口创建入站防火墙规则。使用外部代理时，应将 HTTP 和 WebSocket 代理到所选 Control 端口，保留 `Host`、`X-Forwarded-Proto`，并只从回环地址连接。
 
 ## 静默安装
 
@@ -29,7 +29,8 @@
 ```powershell
 msiexec /i .\l4d2panel-center-0.1.0-windows-x64.msi /qn /norestart `
   DATABASE_MODE=managed PROXY_MODE=caddy `
-  PANEL_DOMAIN=panel.example.com HTTP_PORT=9080 HTTPS_PORT=9443
+  PANEL_DOMAIN=panel.example.com CONTROL_PORT=18080 `
+  HTTP_PORT=9080 HTTPS_PORT=9443
 ```
 
 外部数据库只能通过响应文件提供完整 URL：
@@ -40,7 +41,8 @@ icacls C:\Secure\database.json /inheritance:r
 icacls C:\Secure\database.json /grant:r "*S-1-5-32-544:F" "*S-1-5-18:F"
 msiexec /i .\l4d2panel-center-0.1.0-windows-x64.msi /qn /norestart `
   DATABASE_MODE=external PROXY_MODE=external PANEL_DOMAIN=panel.example.com `
-  HTTP_PORT=9080 HTTPS_PORT=9443 RESPONSE_FILE=C:\Secure\database.json
+  CONTROL_PORT=18080 HTTP_PORT=9080 HTTPS_PORT=9443 `
+  RESPONSE_FILE=C:\Secure\database.json
 ```
 
 响应文件格式固定为 `schema_version: 1` 和 `database_url` 两个字段；未知字段、继承 ACL 或额外可读身份都会被拒绝。数据库密码、主密钥不得写入 MSI 属性、服务命令行或安装日志。安装器自动生成的数据库密码和 32 字节主密钥只写入受限 Control 配置。

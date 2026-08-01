@@ -58,6 +58,21 @@ Do not weaken or remove pinned security versions merely to make an older local t
 - Do not commit `.env`, credentials, runtime data, `tmp`, `bin`, `web/node_modules`, `web/dist`, Playwright output, or local logs.
 - Preserve unrelated work already present in the workspace; do not use reset/checkout to erase it.
 
+## Current project status (2026-08-01)
+
+- The main Go Control/Agent, React web application, PostgreSQL persistence, Docker deployment, and Windows/Linux Agent packaging are present. Treat the project as under active development rather than production-complete.
+- Linux and macOS center deployments use Docker Compose. The first owner is created at `/setup`, and the published HTTP/HTTPS ports are configurable.
+- The native Windows center installer is implemented as a WiX 7 x64 MSI for Windows 10/11 and Windows Server 2019+. It bundles PostgreSQL 17.10 and Caddy 2.11.3, while retaining external PostgreSQL and external reverse-proxy modes.
+- The MSI supports a configurable internal `CONTROL_PORT` (default `18080`) and configurable public HTTP/HTTPS ports (defaults `8088`/`8443`). The generated Control configuration, Caddy upstream, and readiness checks use the same internal port.
+- Windows services use the fixed names `l4d2panel-postgres`, `l4d2panel-control`, and `l4d2panel-caddy` with their corresponding virtual service accounts. Managed PostgreSQL and Control listen on loopback only; firewall rules cover only the selected public ports.
+- Installer hardening completed so far includes native x64 detection, payload checksum validation, corrected custom-action ordering, tolerant Boolean parsing, propagated file ACLs, service executable read permissions, first-install rollback cleanup, bounded readiness retries, disabled unwanted Caddy redirects, embedded Go timezone data, explicit PostgreSQL version casting, deterministic `initdb` locale, and safer updater argument/config discovery.
+- `packaging/windows/Build-WindowsMSI.ps1 -Fast` reuses cached payloads and WiX cabinets for frequent local iteration. Release builds omit `-Fast`. The bundled PostgreSQL payload is pruned to runtime files; pgAdmin, StackBuilder, development headers, and documentation are not included.
+- `packaging/windows/Test-WindowsMSI.ps1` performs structural package validation and runs as part of the build. `packaging/windows/Test-WindowsMSIInstall.ps1` performs an elevated real install/uninstall smoke test.
+- A real elevated smoke test passed on the current Windows workstation with a non-default install root and non-default Control/HTTP/HTTPS ports. It verified all three services, service accounts and ACLs, PostgreSQL 17 loopback-only listening, Control and Caddy HTTP 200 health/setup responses, public-only firewall rules, ordinary uninstall data retention, and explicit purge cleanup. No residual services, listeners, or test data remained afterward.
+- The current local release artifact is `dist/windows-center/l4d2panel-center-0.1.0-windows-x64-unsigned.msi` (build-specific SHA-256 `F83DDF472BB583D3D9C2173D36B5CEC5D5AC63E298197A7517BBF593DE2733E5`). `dist/` is ignored and artifacts must be rebuilt rather than committed. No Authenticode certificate is currently configured, so local packages are explicitly unsigned.
+- Current validation completed: `go test ./...`, `go vet ./...`, PowerShell parser checks, WiX XML parsing, WiX build with zero warnings/errors, structural MSI validation, and direct PostgreSQL `initdb`/SCRAM/database/Control `doctor`/migration/serve/readiness/setup checks.
+- Outstanding release gates include a real SteamCMD App 222860 install/start/A2S/RCON/update/restart test, the Windows 10/11 and Server 2019/2022/2025 VM matrix, Linux/macOS runtime revalidation, and signed release artifacts. The opt-in PostgreSQL integration suite also currently exposes an existing terminal-projection failure (`invalid job transition queued -> succeeded`) that must be fixed and rerun before release.
+
 ## Validation
 
 Run the smallest relevant tests while iterating, then the appropriate release checks before handoff.

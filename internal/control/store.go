@@ -105,7 +105,7 @@ func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 // before attempting migrations against an unsupported major version.
 func (s *Store) DatabaseServerVersion(ctx context.Context) (int, error) {
 	var version int
-	if err := s.pool.QueryRow(ctx, "SHOW server_version_num").Scan(&version); err != nil {
+	if err := s.pool.QueryRow(ctx, "SELECT current_setting('server_version_num')::integer").Scan(&version); err != nil {
 		return 0, fmt.Errorf("read PostgreSQL server version: %w", err)
 	}
 	return version, nil
