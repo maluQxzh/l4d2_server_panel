@@ -1,0 +1,18 @@
+{
+  "central_url": "https://panel.example.com",
+  "enrollment_token": "paste-one-time-token-here",
+  "credential": "",
+  "node_id": "",
+  "node_name": "game-node-01",
+  "instance_roots": [
+    "/srv/l4d2panel/instances"
+  ],
+  "steamcmd_path": "/var/lib/l4d2panel/steamcmd/steamcmd.sh",
+  "data_dir": "/var/lib/l4d2panel",
+  "heartbeat_interval": "10s",
+  "metrics_interval": "15s",
+  "reconnect_min_delay": "1s",
+  "reconnect_max_delay": "30s",
+  "steamcmd_concurrency": 1,
+  "insecure_skip_verify": false
+}

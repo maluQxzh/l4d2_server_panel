@@ -1,0 +1,22 @@
+# Go
+/bin/
+/coverage/
+*.test
+
+# Web
+/web/node_modules/
+/web/dist/
+/web/playwright-report/
+/web/test-results/
+
+# Runtime
+/.env
+/data/
+/tmp/
+*.log
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

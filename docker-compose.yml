@@ -1,0 +1,104 @@
+name: l4d2panel
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-l4d2panel}
+      POSTGRES_USER: ${POSTGRES_USER:-l4d2panel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [panel]
+    security_opt: [no-new-privileges:true]
+    shm_size: 256mb
+    stop_grace_period: 60s
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  app:
+    build:
+      context: .
+      args:
+        VERSION: ${PANEL_VERSION:-dev}
+        COMMIT: ${PANEL_COMMIT:-unknown}
+        BUILD_DATE: ${PANEL_BUILD_DATE:-unknown}
+    image: l4d2panel/control:${PANEL_VERSION:-dev}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-l4d2panel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-l4d2panel}?sslmode=disable
+      MASTER_KEY: ${MASTER_KEY:?请在 .env 中设置 MASTER_KEY}
+      PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12}
+      BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-admin}
+      # 仅首启且数据库中尚无所有者时需要；建号后可从 .env 删除。
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-}
+      BOOTSTRAP_DISPLAY_NAME: ${BOOTSTRAP_DISPLAY_NAME:-系统管理员}
+      SESSION_TTL: ${SESSION_TTL:-12h}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TZ: ${TZ:-Asia/Hong_Kong}
+    volumes:
+      - app_data:/app/data
+      - app_spool:/app/spool
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    networks: [panel]
+    stop_grace_period: 45s
+    logging: *default-logging
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      PANEL_DOMAIN: ${PANEL_DOMAIN:-localhost}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      app:
+        condition: service_healthy
+    networks: [panel]
+    stop_grace_period: 30s
+    logging: *default-logging
+
+volumes:
+  postgres_data:
+  app_data:
+  app_spool:
+  caddy_data:
+  caddy_config:
+
+networks:
+  panel:
+    driver: bridge

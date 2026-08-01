@@ -1,0 +1,11 @@
+.git
+.github
+.env
+bin
+data
+tmp
+coverage
+web/node_modules
+web/dist
+web/playwright-report
+*.log

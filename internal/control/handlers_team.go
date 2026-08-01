@@ -1,0 +1,233 @@
+package control
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/l4d2-panel/l4d2panel/internal/domain"
+)
+
+// updateTeamUserAndInvalidate keeps authorization invalidation in the Control
+// layer and deliberately bumps the generation whenever the store call returns.
+// In particular, UpdateTeamUser may have committed before its final user reload
+// fails. Conservatively invalidating on earlier failures is harmless and avoids
+// exposing transaction internals through the Store API.
+func (s *Server) updateTeamUserAndInvalidate(ctx context.Context, actorID, userID string, input UpdateTeamUserInput,
+	update func(context.Context, string, string, UpdateTeamUserInput) (domain.User, error),
+) (domain.User, error) {
+	updated, err := update(ctx, actorID, userID, input)
+	s.events.InvalidateAuthorization()
+	return updated, err
+}
+
+type roleBindingRequest struct {
+	Role       domain.Role `json:"role"`
+	ScopeType  string      `json:"scope_type"`
+	NodeID     string      `json:"node_id,omitempty"`
+	InstanceID string      `json:"instance_id,omitempty"`
+}
+
+// requireAccountSecurity is a defence-in-depth check for handlers that expose
+// account data or mutate credentials and role bindings. Routes apply the same
+// owner-only permission before invoking a handler, but keeping the check here
+// prevents a future route or direct handler call from widening this boundary.
+func requireAccountSecurity(w http.ResponseWriter, r *http.Request) (Principal, bool) {
+	principal := principalFromContext(r.Context())
+	if !principal.GlobalAllows(PermissionRootSecurity) {
+		writeError(w, http.StatusForbidden, "owner_permission_required", "only an owner can manage accounts")
+		return Principal{}, false
+	}
+	return principal, true
+}
+
+func bindingsFromRequest(role domain.Role, requests []roleBindingRequest) ([]domain.RoleBinding, error) {
+	if len(requests) == 0 {
+		if !validRole(role) {
+			return nil, errors.New("role or role_bindings is required")
+		}
+		return []domain.RoleBinding{{Role: role, ScopeType: "global"}}, nil
+	}
+	bindings := make([]domain.RoleBinding, 0, len(requests))
+	for _, request := range requests {
+		bindings = append(bindings, domain.RoleBinding{Role: request.Role, ScopeType: request.ScopeType,
+			NodeID: request.NodeID, InstanceID: request.InstanceID})
+	}
+	return normalizeRoleBindings(bindings)
+}
+
+func actorCanAssignBindings(principal Principal, bindings []domain.RoleBinding) bool {
+	for _, binding := range bindings {
+		if binding.Role == domain.RoleOwner {
+			if !principal.GlobalAllows(PermissionRootSecurity) {
+				return false
+			}
+			continue
+		}
+		if !principal.GlobalAllows(PermissionManage) {
+			return false
+		}
+	}
+	return true
+}
+
+func userHasOwnerBinding(user domain.User) bool {
+	if user.Role == domain.RoleOwner {
+		return true
+	}
+	for _, binding := range user.RoleBindings {
+		if binding.Role == domain.RoleOwner {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	principal, allowed := requireAccountSecurity(w, r)
+	if !allowed {
+		return
+	}
+	var request struct {
+		Username     string               `json:"username"`
+		DisplayName  string               `json:"display_name,omitempty"`
+		Password     string               `json:"password"`
+		Role         domain.Role          `json:"role,omitempty"`
+		RoleBindings []roleBindingRequest `json:"role_bindings,omitempty"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	bindings, err := bindingsFromRequest(request.Role, request.RoleBindings)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_role_bindings", err.Error())
+		return
+	}
+	if !actorCanAssignBindings(principal, bindings) {
+		writeError(w, http.StatusForbidden, "owner_permission_required", "only an owner can create another owner")
+		return
+	}
+	passwordHash, err := HashPassword(request.Password)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_password", err.Error())
+		return
+	}
+	user, err := s.store.CreateTeamUser(r.Context(), principal.User.ID, CreateTeamUserInput{Username: request.Username,
+		DisplayName: request.DisplayName, PasswordHash: passwordHash, Bindings: bindings})
+	if err != nil {
+		if errors.Is(err, errRootSecurityRequired) {
+			writeError(w, http.StatusForbidden, "owner_permission_required", "only an owner can manage accounts")
+			return
+		}
+		if errors.Is(err, ErrConflict) {
+			writeError(w, http.StatusConflict, "username_conflict", "username already exists")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_user", err.Error())
+		return
+	}
+	s.audit(r, "user.created", "user", user.ID, map[string]any{"username": user.Username, "role_bindings": user.RoleBindings})
+	writeJSON(w, http.StatusCreated, map[string]any{"user": user})
+}
+
+func (s *Server) handleUserRoleBindings(w http.ResponseWriter, r *http.Request) {
+	if _, allowed := requireAccountSecurity(w, r); !allowed {
+		return
+	}
+	user, err := s.store.TeamUser(r.Context(), chi.URLParam(r, "userID"))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": user.RoleBindings})
+}
+
+func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	principal, allowed := requireAccountSecurity(w, r)
+	if !allowed {
+		return
+	}
+	var request struct {
+		DisplayName  *string               `json:"display_name,omitempty"`
+		Password     *string               `json:"password,omitempty"`
+		Disabled     *bool                 `json:"disabled,omitempty"`
+		Role         *domain.Role          `json:"role,omitempty"`
+		RoleBindings *[]roleBindingRequest `json:"role_bindings,omitempty"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if request.DisplayName == nil && request.Password == nil && request.Disabled == nil && request.Role == nil && request.RoleBindings == nil {
+		writeError(w, http.StatusBadRequest, "invalid_user_update", "at least one field must be provided")
+		return
+	}
+	if request.Role != nil && request.RoleBindings != nil {
+		writeError(w, http.StatusBadRequest, "invalid_role_bindings", "provide role or role_bindings, not both")
+		return
+	}
+	userID := chi.URLParam(r, "userID")
+	current, err := s.store.TeamUser(r.Context(), userID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if userHasOwnerBinding(current) && !principal.GlobalAllows(PermissionRootSecurity) {
+		writeError(w, http.StatusForbidden, "owner_permission_required", "administrators cannot modify an owner")
+		return
+	}
+	if request.Disabled != nil && *request.Disabled && userID == principal.User.ID {
+		writeError(w, http.StatusConflict, "cannot_disable_self", "the current account cannot disable itself")
+		return
+	}
+	input := UpdateTeamUserInput{DisplayName: request.DisplayName, Disabled: request.Disabled}
+	if request.Password != nil {
+		hash, hashErr := HashPassword(*request.Password)
+		if hashErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid_password", hashErr.Error())
+			return
+		}
+		input.PasswordHash = &hash
+	}
+	if request.Role != nil || request.RoleBindings != nil {
+		var raw []roleBindingRequest
+		role := domain.Role("")
+		if request.Role != nil {
+			role = *request.Role
+		} else {
+			raw = *request.RoleBindings
+		}
+		bindings, bindingErr := bindingsFromRequest(role, raw)
+		if bindingErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid_role_bindings", bindingErr.Error())
+			return
+		}
+		if !actorCanAssignBindings(principal, bindings) {
+			writeError(w, http.StatusForbidden, "owner_permission_required", "only an owner can assign the owner role")
+			return
+		}
+		input.Bindings = &bindings
+	}
+	updated, err := s.updateTeamUserAndInvalidate(r.Context(), principal.User.ID, userID, input, s.store.UpdateTeamUser)
+	if err != nil {
+		if errors.Is(err, errRootSecurityRequired) {
+			writeError(w, http.StatusForbidden, "owner_permission_required", "only an owner can manage accounts")
+			return
+		}
+		status := http.StatusBadRequest
+		if errors.Is(err, ErrNotFound) {
+			status = http.StatusNotFound
+		} else if strings.Contains(err.Error(), "owner") {
+			status = http.StatusConflict
+		}
+		writeError(w, status, "invalid_user_update", err.Error())
+		return
+	}
+	metadata := map[string]any{"disabled": updated.Disabled, "role_bindings": updated.RoleBindings}
+	if request.Password != nil {
+		metadata["password_reset"] = true
+	}
+	s.audit(r, "user.updated", "user", updated.ID, metadata)
+	writeJSON(w, http.StatusOK, map[string]any{"user": updated})
+}

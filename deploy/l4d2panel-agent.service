@@ -1,0 +1,23 @@
+[Unit]
+Description=L4D2 Panel Node Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=l4d2panel
+Group=l4d2panel
+ExecStart=/opt/l4d2panel/bin/l4d2panel-agent run --config /etc/l4d2panel/agent.json
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/l4d2panel /srv/l4d2panel/instances /etc/l4d2panel
+LimitNOFILE=65535
+KillMode=mixed
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target

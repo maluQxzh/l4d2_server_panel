@@ -1,0 +1,3023 @@
+openapi: 3.1.0
+info:
+  title: L4D2 Panel API
+  version: 1.0.0
+  description: |
+    L4D2 多节点服务器管理面板的 REST 契约。路径均相对于 `/api/v1`。
+    安装、启停、更新、文件传输等长操作通常返回 `202` 与 `job_id`，再通过任务端点或
+    `/events` WebSocket 跟踪。Cookie 会话的写请求必须发送 `X-CSRF-Token`；Bearer API
+    Token 不使用 CSRF。要求交互式会话的端点不接受 API Token。
+servers:
+  - url: /api/v1
+tags:
+  - { name: Auth, description: 浏览器会话、TOTP 和 API Token }
+  - { name: Events, description: 带游标重放的浏览器 WebSocket }
+  - { name: Nodes, description: 节点注册、凭据和状态 }
+  - { name: Instances, description: 实例生命周期和游戏操作 }
+  - { name: Files, description: 实例内白名单文件 }
+  - { name: Transfers, description: 节点本地日志和备份的消费式分块传输 }
+  - { name: Schedules, description: 实例计划任务 }
+  - { name: Jobs, description: 持久化长任务 }
+  - { name: Monitoring, description: 原始和聚合指标 }
+  - { name: Notifications, description: 站内通知和外部投递 }
+  - { name: Users, description: 团队账号和范围角色绑定 }
+  - { name: Audit, description: 不可编辑审计事件 }
+  - { name: Public, description: 无需认证的公开状态 }
+paths:
+  /openapi.json:
+    get:
+      tags: [Public]
+      security: []
+      summary: 获取内置 API 路由摘要
+      description: 内置 JSON 只用于轻量发现；本文件及 `/api/openapi.yaml` 是完整契约。
+      responses:
+        "200":
+          description: OpenAPI 3.1 JSON 摘要
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: 创建浏览器会话
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: 登录成功并写入 HttpOnly 会话 Cookie
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: 当前主体
+      description: API Token 调用时 `api_token=true` 且 `csrf_token` 为空。
+      responses:
+        "200":
+          description: 当前用户和会话信息
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: 注销当前浏览器会话
+      description: 仅交互式会话；API Token 会收到 `interactive_session_required`。
+      x-interactive-session: true
+      parameters: [{ $ref: "#/components/parameters/CSRF" }]
+      responses:
+        "204": { description: 会话已删除且 Cookie 已失效 }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /auth/totp/setup:
+    post:
+      tags: [Auth]
+      summary: 生成待确认的 TOTP 秘钥
+      description: 仅交互式会话；秘钥和 otpauth URL 会在此响应返回。
+      x-interactive-session: true
+      parameters: [{ $ref: "#/components/parameters/CSRF" }]
+      responses:
+        "200":
+          description: 待确认的 TOTP 配置
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [secret, otpauth_url]
+                properties:
+                  secret: { type: string, writeOnly: true }
+                  otpauth_url: { type: string, format: uri, writeOnly: true }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /auth/totp/confirm:
+    post:
+      tags: [Auth]
+      summary: 确认 TOTP 并生成恢复码
+      description: 十个恢复码只在本次响应显示；数据库只保存摘要。
+      x-interactive-session: true
+      parameters: [{ $ref: "#/components/parameters/CSRF" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, pattern: "^[0-9]{6}$" }
+      responses:
+        "200":
+          description: TOTP 已启用
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled, recovery_codes]
+                properties:
+                  enabled: { type: boolean, const: true }
+                  recovery_codes:
+                    type: array
+                    minItems: 10
+                    maxItems: 10
+                    items: { type: string, writeOnly: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api-tokens:
+    get:
+      tags: [Auth]
+      summary: 列出当前用户的 API Token 元数据
+      description: 仅交互式会话；从不返回 Token 明文或摘要。
+      x-interactive-session: true
+      responses:
+        "200":
+          description: Token 列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/APIToken" },
+                    }
+    post:
+      tags: [Auth]
+      summary: 创建有期限且可限定资源的 API Token
+      description: 仅交互式会话；明文 `token` 只返回一次，权限不能超过当前用户绑定。
+      x-interactive-session: true
+      parameters: [{ $ref: "#/components/parameters/CSRF" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAPITokenRequest" }
+      responses:
+        "201":
+          description: Token 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [api_token, token]
+                properties:
+                  api_token: { $ref: "#/components/schemas/APIToken" }
+                  token: { type: string, pattern: "^l4d2p_", writeOnly: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api-tokens/{tokenId}:
+    delete:
+      tags: [Auth]
+      summary: 吊销当前用户的 API Token
+      x-interactive-session: true
+      parameters:
+        - { $ref: "#/components/parameters/TokenID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      responses:
+        "204": { description: 已吊销；重复吊销同一 Token 仍返回 204 }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /events:
+    get:
+      tags: [Events]
+      summary: 连接实时事件 WebSocket
+      description: |
+        必须请求 WebSocket Upgrade，Origin 必须同源。`cursor` 为最后成功处理的事件 ID；事件日志保留
+        30 天，以每页 500 条、单连接最多 5000 条补齐遗漏。持久事件 ID 出现缺口时立即补齐，另每 2 秒
+        检查遗漏尾部；瞬时控制台和指标帧不持久化并允许在慢客户端上丢弃。服务端按资源绑定过滤，权限
+        代际变化时立即重验主体，并每 1 秒从数据库兜底重验；实时日志热路径不执行逐事件身份或资源查询。
+        每 25 秒发送 Ping。
+      parameters:
+        - name: cursor
+          in: query
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+      responses:
+        "101":
+          { description: WebSocket 已建立，每个文本帧为一个 Event JSON 对象 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /agent/enroll:
+    post:
+      tags: [Nodes]
+      security: []
+      summary: Agent 使用一次性令牌注册
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentEnrollRequest" }
+      responses:
+        "201":
+          description: 长期节点凭据只返回一次
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [node_id, credential]
+                properties:
+                  node_id: { type: string, format: uuid }
+                  credential: { type: string, writeOnly: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /nodes:
+    get:
+      tags: [Nodes]
+      summary: 列出有权读取的节点
+      responses:
+        "200":
+          description: 节点列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/Node" },
+                    }
+
+  /nodes/enrollment-tokens:
+    post:
+      tags: [Nodes]
+      summary: 创建一次性节点注册令牌
+      description: 需要全局 manage；明文令牌只返回一次。
+      parameters: [{ $ref: "#/components/parameters/CSRF" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string }
+                name:
+                  {
+                    type: string,
+                    deprecated: true,
+                    description: label 的兼容别名,
+                  }
+                expires_in_minutes:
+                  { type: integer, minimum: 1, maximum: 10080, default: 30 }
+      responses:
+        "201":
+          description: 注册令牌
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, expires_at]
+                properties:
+                  token: { type: string, writeOnly: true }
+                  expires_at: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /nodes/{nodeId}:
+    parameters: [{ $ref: "#/components/parameters/NodeID" }]
+    get:
+      tags: [Nodes]
+      summary: 获取节点
+      responses:
+        "200":
+          description: 节点
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [node]
+                properties:
+                  node: { $ref: "#/components/schemas/Node" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Nodes]
+      summary: 修改节点名称或公开连接地址
+      parameters: [{ $ref: "#/components/parameters/CSRF" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                public_address:
+                  type: [string, "null"]
+                  description: 主机名、IPv4 或方括号 IPv6，不含 scheme、路径或端口；空字符串清除，null 表示不修改
+      responses:
+        "200":
+          description: 节点已修改
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [node]
+                properties:
+                  node: { $ref: "#/components/schemas/Node" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    delete:
+      tags: [Nodes]
+      summary: 吊销节点并断开 Agent
+      parameters: [{ $ref: "#/components/parameters/CSRF" }]
+      responses:
+        "204": { description: 节点状态已设为 revoked，实例和历史数据未删除 }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /nodes/{nodeId}/credential/rotate:
+    post:
+      tags: [Nodes]
+      summary: 轮换节点长期凭据
+      description: 新凭据只返回一次；旧连接会立即断开，管理员必须安全更新 Agent 配置。
+      parameters:
+        - { $ref: "#/components/parameters/NodeID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      responses:
+        "200":
+          description: 新凭据
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [credential]
+                properties:
+                  credential: { type: string, writeOnly: true }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /nodes/{nodeId}/discoveries:
+    post:
+      tags: [Nodes]
+      summary: 扫描节点白名单根内的 L4D2 安装
+      description: |
+        需要节点 manage 权限。扫描是有界、只读的节点任务，不跟随符号链接或 Windows 重解析点，
+        结果只返回根索引和相对路径。节点必须在线并声明 `discover_instances` 能力；同一节点已有活动扫描时会复用任务。
+      parameters:
+        - { $ref: "#/components/parameters/NodeID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DiscoveryRequest" }
+      responses:
+        "202":
+          description: 扫描任务已排队或复用
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /nodes/{nodeId}/discoveries/{jobId}:
+    get:
+      tags: [Nodes]
+      summary: 获取节点安装扫描任务
+      description: |
+        同时校验节点和任务的 read 权限。对该任务目标资源具备 operate 权限的调用者可在成功任务的
+        `job.result` 中读取 `DiscoveryResult`；在目标资源仅有 read 的调用者，其任务 payload/result 会被脱敏为空。
+      parameters:
+        - { $ref: "#/components/parameters/NodeID" }
+        - { $ref: "#/components/parameters/JobID" }
+      responses:
+        "200":
+          description: 扫描任务；成功结果遵循 DiscoveryResult
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job: { $ref: "#/components/schemas/DiscoveryJob" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /nodes/{nodeId}/quarantine:
+    get:
+      tags: [Nodes]
+      summary: 列出节点中仍受管理的隔离条目
+      description: |
+        需要节点 manage 权限。只返回 Control 在隔离删除成功时记录的安全元数据，不返回节点绝对路径。
+        `retention_expires_at` 到达前条目处于强制保留期；到期不会自动删除，仍须创建短效确认并提交永久清理。
+      parameters:
+        - { $ref: "#/components/parameters/NodeID" }
+      responses:
+        "200":
+          description: 尚未确认永久清理的隔离条目
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/QuarantineEntry" },
+                    }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /nodes/{nodeId}/quarantine/{entryId}/purge-confirmations:
+    post:
+      tags: [Nodes]
+      summary: 为已到期隔离条目创建一次性永久清理确认
+      description: |
+        仅交互式浏览器会话且需要节点 manage 权限。条目必须已经完成七天强制保留期。
+        明文令牌只返回一次、五分钟后过期，并以哈希形式绑定到当前用户和隔离条目。
+      x-interactive-session: true
+      parameters:
+        - { $ref: "#/components/parameters/NodeID" }
+        - { $ref: "#/components/parameters/QuarantineEntryID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      responses:
+        "201":
+          description: 一次性确认已创建
+          content:
+            application/json:
+              schema:
+                { $ref: "#/components/schemas/QuarantinePurgeConfirmation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /nodes/{nodeId}/quarantine/{entryId}/purge:
+    post:
+      tags: [Nodes]
+      summary: 确认并排队永久清理隔离条目
+      description: |
+        仅交互式浏览器会话。一次性令牌必须属于当前用户、节点和条目且仍在五分钟有效期内；消费和任务创建位于同一事务。
+        重复提交不会创建第二个任务；只有携带与首次请求相同的非空 Idempotency-Key，且节点、条目和确认令牌完全相同，才会返回原任务。
+        Agent 只接收根索引和严格 basename，并再次检查七天保留期、直属目录、符号链接与 Windows 重解析点后才删除。
+      x-interactive-session: true
+      parameters:
+        - { $ref: "#/components/parameters/NodeID" }
+        - { $ref: "#/components/parameters/QuarantineEntryID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QuarantinePurgeRequest" }
+      responses:
+        "202":
+          description: 永久清理任务已排队或为幂等重放
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances:
+    get:
+      tags: [Instances]
+      summary: 列出有权读取的实例
+      parameters:
+        - { name: node_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: 实例列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/Instance" },
+                    }
+    post:
+      tags: [Instances]
+      summary: 创建安装任务或导入已有实例
+      description: "`port=0` 时由 Control 在 27015–27999 事务分配。游戏端口与非零 tv_port 在同一节点互斥；显式冲突或池耗尽返回 409。导入需要相对 path 和 root_index。结构化配置不满足 InstanceConfig 的边界、安全 CVar 或启动参数规则时返回 `400 invalid_config`。"
+      parameters:
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateInstanceRequest" }
+      responses:
+        "202":
+          description: 实例记录和安装/导入任务已创建
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/JobReference" }
+                  - type: object
+                    required: [instance]
+                    properties:
+                      instance: { $ref: "#/components/schemas/Instance" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}:
+    parameters: [{ $ref: "#/components/parameters/InstanceID" }]
+    get:
+      tags: [Instances]
+      summary: 获取实例
+      responses:
+        "200":
+          description: 实例
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [instance]
+                properties:
+                  instance: { $ref: "#/components/schemas/Instance" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Instances]
+      summary: 更新名称或结构化配置并排队 configure
+      description: |
+        乐观并发版本位于 JSON 正文的 `version` 字段，不使用 `If-Match`。`config.server_password`
+        或顶层 `server_password` 只写入加密秘密存储，返回的配置不含明文。客户端应始终提交当前非零版本。
+        结构化配置不满足 InstanceConfig 的边界、安全 CVar 或启动参数规则时返回 `400 invalid_config`。
+      parameters:
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PatchInstanceRequest" }
+      responses:
+        "200":
+          description: 配置已保存且任务已排队
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/JobReference" }
+                  - type: object
+                    required: [instance]
+                    properties:
+                      instance: { $ref: "#/components/schemas/Instance" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [Instances]
+      summary: 解除管理或隔离实例目录
+      description: 实例必须先停止。`quarantine` 是默认模式；节点必须在线且 Agent 声明 `purge_quarantine` 能力。目录至少保留 7 天，到期后也不会自动删除，必须通过节点隔离 API 再次确认永久清理。`detach` 不受该能力门控。
+      parameters:
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - name: mode
+          in: query
+          schema:
+            { type: string, enum: [detach, quarantine], default: quarantine }
+      responses:
+        "202":
+          description: 删除/解除任务已排队
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/actions:
+    post:
+      tags: [Instances]
+      summary: 提交实例动作
+      description: |
+        权限按动作检查。`install_package/reinstall/toggle_package` 需要 manage；其余公开动作需要 operate。
+        创建、导入、配置、文件、日志传输、备份下载和状态探测使用各自的专用端点，不能把对应内部任务类型提交到此通用端点。
+        `delete` 与 `detach` 不属于通用动作，必须调用 `DELETE /instances/{instanceId}?mode=quarantine|detach`，
+        以执行节点在线和隔离清理能力门控。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InstanceActionRequest" }
+      responses:
+        "202":
+          description: 动作已排队；`create_schedule` 返回的 `job_id` 实际为 schedule ID
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/players:
+    get:
+      tags: [Instances]
+      summary: 获取最近 RCON 玩家列表并异步刷新
+      description: 返回最近成功缓存；读取同时以 10 秒幂等桶排队 `rcon.players`，因此数据可能短暂滞后。
+      parameters: [{ $ref: "#/components/parameters/InstanceID" }]
+      responses:
+        "200":
+          description: 玩家列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/Player" },
+                    }
+
+  /instances/{instanceId}/bans:
+    get:
+      tags: [Instances]
+      summary: 列出面板登记且仍有效的玩家封禁
+      description: |
+        数据来自成功的 `ban_player`/`unban_player` 任务结果，不是对服务器 ban 文件的实时反向扫描。
+        已到期记录由查询和后台清理排除。
+      parameters: [{ $ref: "#/components/parameters/InstanceID" }]
+      responses:
+        "200":
+          description: 有效封禁列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/PlayerBan" },
+                    }
+
+  /instances/{instanceId}/packages:
+    get:
+      tags: [Instances]
+      summary: 列出已登记的插件/VPK/Workshop 包
+      parameters: [{ $ref: "#/components/parameters/InstanceID" }]
+      responses:
+        "200":
+          description: 包元数据
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/AddonPackage" },
+                    }
+
+  /instances/{instanceId}/packages/{packageId}/versions:
+    get:
+      tags: [Instances]
+      summary: 列出包的节点本地历史版本
+      description: |
+        当前仅非 Workshop 单文件 VPK 和 SourceMod SMX 生成历史版本；每个目标最多保留最近 3 个。
+        响应不包含 Agent 数据目录中的存储路径。不存在历史记录（包括未知 packageId）时返回空数组。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/PackageID" }
+      responses:
+        "200":
+          description: 按创建时间倒序排列的包版本
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      maxItems: 3,
+                      items:
+                        { $ref: "#/components/schemas/AddonPackageVersion" },
+                    }
+
+  /instances/{instanceId}/packages/{packageId}/versions/{versionId}/rollback:
+    post:
+      tags: [Instances]
+      summary: 回退到一个节点本地包版本
+      description: |
+        需要实例 manage 权限。仅支持已启用、路径未变化的 VPK/SMX；已是当前版本会被拒绝。
+        VPK 回退还会把目标版本的虚拟内容路径与其他全部已启用 VPK 做不区分大小写的冲突检查，发现重叠时返回冲突且不替换文件。
+        Agent 在替换前保存当前文件，校验快照和 SHA-256，必要时停服并在完成后恢复运行；失败会恢复原文件。
+        成功回退会消费所选快照并把先前当前文件作为新的历史版本保存。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/PackageID" }
+        - { $ref: "#/components/parameters/PackageVersionID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "202":
+          description: 回退任务已排队
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/backups:
+    get:
+      tags: [Instances]
+      summary: 列出节点本地备份元数据
+      description: 需要目标实例 read 权限；归档排除含秘密的生成文件 l4d2panel.cfg。当前 v2 归档另含无秘密的来源启动快照，RCON/服务器密码不可表示；旧 v1 归档继续可恢复但没有该快照。每日任务产生的新周副本会独立投影到列表，名称以 weekly- 开头并可单独下载；不返回节点路径。
+      parameters: [{ $ref: "#/components/parameters/InstanceID" }]
+      responses:
+        "200":
+          description: 不包含节点文件路径
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/BackupSummary" },
+                    }
+
+  /instances/{instanceId}/backups/{backupId}/downloads:
+    post:
+      tags: [Transfers]
+      summary: 创建一个备份下载分块任务
+      description: 需要目标实例 operate 权限。备份仍保存在节点；Agent 校验备份目录边界、总大小和完整文件 SHA-256。单块最大 1 MiB。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/BackupID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BackupChunkRequest" }
+      responses:
+        "202":
+          description: 分块任务已创建；Location 和 poll_url 指向轮询端点
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransferReference" }
+        "416": { $ref: "#/components/responses/RangeNotSatisfiable" }
+
+  /instances/{instanceId}/backups/{backupId}/downloads/{jobId}:
+    get:
+      tags: [Transfers]
+      summary: 获取并消费备份分块
+      description: 需要目标实例 operate 权限。成功读取后该任务的加密正文被删除；下一块必须创建新任务。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/BackupID" }
+        - { $ref: "#/components/parameters/JobID" }
+      responses:
+        "206": { $ref: "#/components/responses/BinaryChunk" }
+        "202": { $ref: "#/components/responses/TransferPending" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "410": { $ref: "#/components/responses/Gone" }
+
+  /instances/{instanceId}/backup-uploads:
+    post:
+      tags: [Transfers]
+      summary: 创建可续传的跨节点备份上传会话
+      description: |
+        需要目标实例 operate 权限。Control 只保存会话元数据和加密任务块，正文分块直接暂存在目标 Agent；
+        会话初始有效期 24 小时，每个成功分块会把有效期续到当时起 24 小时。同一非空 Idempotency-Key
+        与完全相同的元数据重放返回 200 和原会话；冲突元数据返回 409。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateBackupUploadRequest" }
+      responses:
+        "201":
+          description: 上传会话已创建
+          headers:
+            Location:
+              { schema: { type: string }, description: 新会话的 GET 端点。 }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupUploadEnvelope" }
+        "200":
+          description: Idempotency-Key 重放原上传会话
+          headers:
+            Location:
+              { schema: { type: string }, description: 原会话的 GET 端点。 }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupUploadEnvelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/backup-uploads/{uploadId}:
+    get:
+      tags: [Transfers]
+      summary: 获取备份上传会话进度
+      description: 需要目标实例 operate 权限；响应不包含 Agent 路径或已上传正文。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/BackupUploadID" }
+      responses:
+        "200":
+          description: 上传会话
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [upload]
+                properties:
+                  upload: { $ref: "#/components/schemas/BackupUpload" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+    delete:
+      tags: [Transfers]
+      summary: 放弃备份上传会话并排队清理节点暂存
+      description: |
+        需要目标实例 operate 权限、CSRF（浏览器会话）和非空 Idempotency-Key；不接受请求正文。
+        仅 uploading、ready 或 failed 且没有活跃、cancel_pending 或终态尚未投影的 chunk/restore
+        任务时可执行。Control 在同一事务把会话标记为 expired，并创建实例范围但不占用游戏写锁的
+        backup.upload.abort 任务。Agent 只按 upload UUID 删除受信任暂存文件，不提供通用文件或 Shell 能力。
+        相同用户、键、实例和 upload 重放原任务且不重复发布 queued 事件；不同目标返回 409。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/BackupUploadID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/RequiredIdempotencyKey" }
+      responses:
+        "202":
+          description: 暂存清理任务已排队或幂等重放
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupUploadJobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/backup-uploads/{uploadId}/chunks:
+    post:
+      tags: [Transfers]
+      summary: 排队写入一个校验后的备份上传分块
+      description: |
+        需要目标实例 operate 权限和非空 Idempotency-Key。解码正文为 1–1048576 字节，块 SHA-256 必须匹配；
+        offset 必须等于会话当前 received_size 且不能越过总 size。客户端应等待该任务成功并通过 GET 观察
+        received_size 前进后再提交下一块。相同键只在 offset、块摘要和正文完全相同时重放原任务；
+        会话续期等服务端字段不参与请求身份。最后一块还会在 Agent 校验完整大小和会话 SHA-256 后原子完成暂存文件。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/BackupUploadID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/RequiredIdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BackupUploadChunkRequest" }
+      responses:
+        "202":
+          description: 分块写入任务已排队或重放
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupUploadJobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/backup-uploads/{uploadId}/complete:
+    post:
+      tags: [Transfers]
+      summary: 完成备份上传并排队恢复
+      description: |
+        需要目标实例 operate 权限。仅状态为 ready、received_size 等于 size 且未过期的会话可恢复；无请求正文。
+        恢复前仍会创建检查点并要求停服。v2 使用来源模式、地图、人数、高级参数、自动重启和安全 CVar，
+        但保留目标端口并用目标加密秘密重新生成配置；v1 保留目标启动资料。来源和目标平台不同时，Agent 先安装并验证
+        目标平台 Metamod/SourceMod，再最终覆盖来源可移植数据，避免官方默认配置覆盖用户文件；失败会回滚检查点和实例状态。
+        v2 成功后 Control 会再次验证无秘密启动投影、保存旧配置版本，并以 restore 任务 ID 幂等更新目标实例配置。
+        同一 Idempotency-Key 始终重放原任务（包括原失败任务）；失败或取消后会话续期 24 小时，改用新键可直接重试恢复而无需重新上传。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/BackupUploadID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "202":
+          description: restore 任务已排队或重放
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupUploadJobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/logs/search:
+    post:
+      tags: [Transfers]
+      summary: 创建节点本地日志的有限检索任务
+      description: 最多返回 1000 行和 384 KiB；关键字和结果在中心以主密钥加密暂存。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LogSearchRequest" }
+      responses:
+        "202":
+          description: 搜索任务已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransferReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /instances/{instanceId}/logs/search/{jobId}:
+    get:
+      tags: [Transfers]
+      summary: 获取并消费日志检索结果
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/JobID" }
+      responses:
+        "200":
+          description: 搜索结果；成功响应后正文从任务记录删除
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogSearchResponse" }
+        "202": { $ref: "#/components/responses/TransferPending" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "410": { $ref: "#/components/responses/Gone" }
+
+  /instances/{instanceId}/logs/downloads:
+    post:
+      tags: [Transfers]
+      summary: 创建日志分块下载任务
+      description: "`segment=0` 为当前日志，1–19 为轮转段；单块最大 1 MiB。"
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LogChunkRequest" }
+      responses:
+        "202":
+          description: 分块任务已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransferReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /instances/{instanceId}/logs/downloads/{jobId}:
+    get:
+      tags: [Transfers]
+      summary: 获取并消费日志分块
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/JobID" }
+      responses:
+        "206": { $ref: "#/components/responses/BinaryChunk" }
+        "202": { $ref: "#/components/responses/TransferPending" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "410": { $ref: "#/components/responses/Gone" }
+
+  /instances/{instanceId}/schedules:
+    get:
+      tags: [Schedules]
+      summary: 列出实例计划任务
+      parameters: [{ $ref: "#/components/parameters/InstanceID" }]
+      responses:
+        "200":
+          description: 计划列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/Schedule" },
+                    }
+
+  /instances/{instanceId}/schedules/{scheduleId}:
+    patch:
+      tags: [Schedules]
+      summary: 启用或停用计划
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/ScheduleID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: 计划已修改；重新启用会重新计算 next_run_at
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schedule]
+                properties:
+                  schedule: { $ref: "#/components/schemas/Schedule" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Schedules]
+      summary: 删除计划
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/ScheduleID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      responses:
+        "204": { description: 已删除 }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /instances/{instanceId}/files:
+    get:
+      tags: [Files]
+      summary: 列出白名单目录
+      description: 返回最近成功缓存并异步刷新；只列出 cfg、addons、logs 及其 left4dead2 对应目录。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { name: path, in: query, schema: { type: string, default: "" } }
+      responses:
+        "200":
+          description: 文件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/FileEntry" },
+                    }
+
+  /instances/{instanceId}/files/content:
+    get:
+      tags: [Files]
+      summary: 读取最多 8 MiB 的白名单文件
+      description: 需要实例 operate。若无缓存先返回 202；缓存超过 5 秒会在返回旧内容的同时附带 refresh_job_id。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/FilePath" }
+      responses:
+        "200":
+          description: UTF-8 文本用 content，其他文件用 content_base64
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileContentResponse" }
+        "202":
+          description: 正在读取
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job_id, path, status]
+                properties:
+                  job_id: { type: string, format: uuid }
+                  path: { type: string }
+                  status: { type: string, const: loading }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    put:
+      tags: [Files]
+      summary: 原子写入最多 8 MiB 的白名单文件
+      description: "`expected_sha256` 为空表示不做前置条件；明文/二进制正文在任务中加密保存。可执行和加载关键扩展名被拒绝，必须使用包管理流程。"
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/FilePath" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FileWriteRequest" }
+      responses:
+        "202":
+          description: 写入任务已排队
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    delete:
+      tags: [Files]
+      summary: 删除单个白名单文件
+      description: 不支持递归目录删除。`If-Match` 可传当前 SHA-256（可带双引号）。可执行和加载关键扩展名被拒绝，必须使用包管理流程。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/FilePath" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/IfMatchSHA256" }
+      responses:
+        "202":
+          description: 删除任务已排队
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /instances/{instanceId}/config-versions:
+    get:
+      tags: [Instances]
+      summary: 列出结构化配置版本和字段差异
+      parameters: [{ $ref: "#/components/parameters/InstanceID" }]
+      responses:
+        "200":
+          description: 当前配置在第一项；历史项按版本倒序
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/ConfigVersion" },
+                    }
+
+  /instances/{instanceId}/config-versions/{version}/rollback:
+    post:
+      tags: [Instances]
+      summary: 回滚到历史配置并生成新版本
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - {
+            name: version,
+            in: path,
+            required: true,
+            schema: { type: integer, minimum: 1 },
+          }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "202":
+          description: 新配置版本已创建，configure 任务已排队
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/JobReference" }
+                  - type: object
+                    required: [instance]
+                    properties:
+                      instance: { $ref: "#/components/schemas/Instance" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /jobs:
+    get:
+      tags: [Jobs]
+      summary: 列出有权读取的任务
+      parameters:
+        - { name: node_id, in: query, schema: { type: string, format: uuid } }
+        - {
+            name: instance_id,
+            in: query,
+            schema: { type: string, format: uuid },
+          }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, default: 100, maximum: 500 },
+          }
+      responses:
+        "200":
+          description: 任务列表；对任务目标资源仅有 read 的调用者看不到 payload/result，加密字段和 Agent 内部存储定位符永不返回
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    { type: array, items: { $ref: "#/components/schemas/Job" } }
+
+  /jobs/{jobId}:
+    get:
+      tags: [Jobs]
+      summary: 获取任务
+      parameters: [{ $ref: "#/components/parameters/JobID" }]
+      responses:
+        "200":
+          description: 任务
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job: { $ref: "#/components/schemas/Job" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /jobs/{jobId}/cancel:
+    post:
+      tags: [Jobs]
+      summary: 取消尚未完成的任务
+      parameters:
+        - { $ref: "#/components/parameters/JobID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      responses:
+        "200":
+          description: 数据库状态已取消；cancel_delivered 表示是否已把取消帧发送给运行 Agent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job, cancel_delivered]
+                properties:
+                  job: { $ref: "#/components/schemas/Job" }
+                  cancel_delivered: { type: boolean }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /metrics:
+    get:
+      tags: [Monitoring]
+      summary: 查询节点或实例指标
+      description: 必须提供 node_id 或 instance_id。默认/最大窗口分别为 raw 1h/24h、1m 24h/31d、1h 30d/366d。
+      parameters:
+        - { name: node_id, in: query, schema: { type: string, format: uuid } }
+        - {
+            name: instance_id,
+            in: query,
+            schema: { type: string, format: uuid },
+          }
+        - {
+            name: resolution,
+            in: query,
+            schema: { type: string, enum: [raw, 1m, 1h], default: 1m },
+          }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+      responses:
+        "200":
+          description: 最多 10000 个指标点
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MetricsResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: 列出有权读取的站内通知
+      parameters:
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 500, default: 100 },
+          }
+      responses:
+        "200":
+          description: 通知列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/NotificationView" },
+                    }
+
+  /notifications/{notificationId}/read:
+    post:
+      tags: [Notifications]
+      summary: 将一条可见通知标记为已读
+      parameters:
+        - { $ref: "#/components/parameters/NotificationID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      responses:
+        "204": { description: 已标记 }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /notification-channels:
+    get:
+      tags: [Notifications]
+      summary: 列出 SMTP/Webhook 渠道
+      description: 需要全局 manage；只返回 has_secret，不返回秘密。
+      responses:
+        "200":
+          description: 渠道列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items:
+                        { $ref: "#/components/schemas/NotificationChannel" },
+                    }
+    post:
+      tags: [Notifications]
+      summary: 创建 SMTP 或 Webhook 渠道
+      description: SMTP 强制 STARTTLS；Webhook 必须是 HTTPS 且秘密至少 16 字符，并禁止重定向、代理及私网/本地/CGNAT 目标。
+      parameters: [{ $ref: "#/components/parameters/CSRF" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              { $ref: "#/components/schemas/CreateNotificationChannelRequest" }
+      responses:
+        "201":
+          description: 渠道已创建，secret 不会返回
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [channel]
+                properties:
+                  channel: { $ref: "#/components/schemas/NotificationChannel" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /notification-channels/{channelId}:
+    delete:
+      tags: [Notifications]
+      summary: 软删除渠道并跳过待发送投递
+      parameters:
+        - { $ref: "#/components/parameters/ChannelID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      responses:
+        "204": { description: 已删除 }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /notification-deliveries:
+    get:
+      tags: [Notifications]
+      summary: 列出外部投递状态
+      description: 需要全局 manage。
+      parameters:
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 500, default: 100 },
+          }
+      responses:
+        "200":
+          description: 投递列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items:
+                        { $ref: "#/components/schemas/NotificationDelivery" },
+                    }
+
+  /notification-deliveries/{deliveryId}/attempts:
+    get:
+      tags: [Notifications]
+      summary: 列出一次投递的全部尝试
+      parameters: [{ $ref: "#/components/parameters/DeliveryID" }]
+      responses:
+        "200":
+          description: 尝试记录
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items:
+                        {
+                          $ref: "#/components/schemas/NotificationDeliveryAttempt",
+                        },
+                    }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /notification-deliveries/{deliveryId}/retry:
+    post:
+      tags: [Notifications]
+      summary: 手工重新排队 failed/pending 投递
+      parameters:
+        - { $ref: "#/components/parameters/DeliveryID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      responses:
+        "202": { description: 已重新排队；无响应正文 }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /users:
+    get:
+      tags: [Users]
+      summary: 列出团队成员和角色绑定
+      description: 仅交互式全局所有者会话（root_security）；包含禁用账号，不含密码或秘密。所有者 API Token 也不能调用。
+      x-interactive-session: true
+      responses:
+        "200":
+          description: 成员列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/User" },
+                    }
+    post:
+      tags: [Users]
+      summary: 创建团队成员
+      description: 仅交互式全局所有者会话（root_security）；`role` 创建一个全局绑定，也可用 role_bindings。所有者 API Token 也不能调用。
+      x-interactive-session: true
+      parameters: [{ $ref: "#/components/parameters/CSRF" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateUserRequest" }
+      responses:
+        "201":
+          description: 用户已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /users/{userId}:
+    patch:
+      tags: [Users]
+      summary: 修改成员、重置密码、禁用或替换全部绑定
+      description: |
+        仅交互式全局所有者会话（root_security），所有者 API Token 也不能调用。`role` 和 `role_bindings`
+        互斥；密码、禁用或绑定变化会撤销目标用户所有会话和 API Token；当前账号不能禁用自己。
+      x-interactive-session: true
+      parameters:
+        - { $ref: "#/components/parameters/UserID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateUserRequest" }
+      responses:
+        "200":
+          description: 用户已修改
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /users/{userId}/role-bindings:
+    get:
+      tags: [Users]
+      summary: 列出成员的全局、节点和实例绑定
+      description: 仅交互式全局所有者会话（root_security）；所有者 API Token 也不能调用。
+      x-interactive-session: true
+      parameters: [{ $ref: "#/components/parameters/UserID" }]
+      responses:
+        "200":
+          description: 角色绑定
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/RoleBinding" },
+                    }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /audit:
+    get:
+      tags: [Audit]
+      summary: 查询不可编辑审计事件
+      description: 非全局管理员需带可访问的 resource_id；非全局管理员看不到 remote_ip。
+      parameters:
+        - { name: resource_id, in: query, schema: { type: string } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, default: 100, maximum: 500 },
+          }
+      responses:
+        "200":
+          description: 审计事件，按时间倒序
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/AuditEvent" },
+                    }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /public/servers:
+    get:
+      tags: [Public]
+      security: []
+      summary: 列出显式公开实例的脱敏状态
+      responses:
+        "200":
+          description: 不包含玩家身份、节点路径、封禁或 RCON 数据
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    {
+                      type: array,
+                      items: { $ref: "#/components/schemas/PublicServer" },
+                    }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: l4d2panel_session
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: l4d2p_<secret>
+
+  parameters:
+    CSRF:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: Cookie 会话的写请求必需；Bearer API Token 调用时省略。
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 200 }
+      description: |
+        相同用户和键仅在资源、操作、正文及版本等规范化请求完全一致时重放已有任务；不同请求或旧版无请求指纹的任务返回 409。
+        空值表示不启用 HTTP 幂等映射。Control 在秘密加密前用部署主密钥计算 HMAC-SHA256 指纹，数据库不保存明文请求身份。
+    RequiredIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 200 }
+      description: 本操作必须提供；相同用户、键、目标和完整规范化分块请求只重放原任务，否则返回 409。
+    IfMatchSHA256:
+      name: If-Match
+      in: header
+      required: false
+      schema: { type: string, pattern: '^"?[A-Fa-f0-9]{64}"?$' }
+      description: 当前文件 SHA-256；不是实例配置版本。
+    NodeID:
+      {
+        name: nodeId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    QuarantineEntryID:
+      {
+        name: entryId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    InstanceID:
+      {
+        name: instanceId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    JobID:
+      {
+        name: jobId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    PackageID:
+      {
+        name: packageId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    PackageVersionID:
+      {
+        name: versionId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    BackupID:
+      {
+        name: backupId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    BackupUploadID:
+      {
+        name: uploadId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    ScheduleID:
+      {
+        name: scheduleId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    NotificationID:
+      {
+        name: notificationId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    ChannelID:
+      {
+        name: channelId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    DeliveryID:
+      {
+        name: deliveryId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    UserID:
+      {
+        name: userId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    TokenID:
+      {
+        name: tokenId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    FilePath:
+      name: path
+      in: query
+      required: true
+      schema: { type: string }
+      description: 位于 cfg/addons/logs 白名单内的相对路径；l4d2panel.cfg 被保留给结构化配置。
+
+  headers:
+    ChunkSHA256:
+      {
+        description: 本块 SHA-256,
+        schema: { type: string, pattern: "^[a-f0-9]{64}$" },
+      }
+    FileSHA256:
+      {
+        description: 完整文件 SHA-256,
+        schema: { type: string, pattern: "^[a-f0-9]{64}$" },
+      }
+    NextOffset:
+      { description: 下一块 offset, schema: { type: integer, format: int64 } }
+    TransferEOF: { description: 是否到达文件末尾, schema: { type: boolean } }
+
+  responses:
+    BadRequest:
+      description: 请求字段或 JSON 无效
+      content:
+        {
+          application/json:
+            { schema: { $ref: "#/components/schemas/ErrorResponse" } },
+        }
+    Unauthorized:
+      description: 未认证或凭据已过期/撤销
+      content:
+        {
+          application/json:
+            { schema: { $ref: "#/components/schemas/ErrorResponse" } },
+        }
+    Forbidden:
+      description: 权限、资源范围、CSRF 或交互式会话要求不满足
+      content:
+        {
+          application/json:
+            { schema: { $ref: "#/components/schemas/ErrorResponse" } },
+        }
+    NotFound:
+      description: 资源不存在或不在调用者可见范围
+      content:
+        {
+          application/json:
+            { schema: { $ref: "#/components/schemas/ErrorResponse" } },
+        }
+    Conflict:
+      description: 版本、端口、任务锁、状态或传输源发生冲突
+      content:
+        {
+          application/json:
+            { schema: { $ref: "#/components/schemas/ErrorResponse" } },
+        }
+    Gone:
+      description: 消费式日志/下载正文已读取
+      content:
+        {
+          application/json:
+            { schema: { $ref: "#/components/schemas/ErrorResponse" } },
+        }
+    RateLimited:
+      description: 登录尝试过多；响应含 Retry-After
+      headers:
+        Retry-After: { schema: { type: integer }, description: 重试等待秒数 }
+      content:
+        {
+          application/json:
+            { schema: { $ref: "#/components/schemas/ErrorResponse" } },
+        }
+    RangeNotSatisfiable:
+      description: offset 超过备份大小
+      content:
+        {
+          application/json:
+            { schema: { $ref: "#/components/schemas/ErrorResponse" } },
+        }
+    TransferPending:
+      description: "传输任务尚未完成；响应含 Retry-After: 1"
+      headers:
+        Retry-After: { schema: { type: integer, const: 1 } }
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [job_id, status, progress]
+            properties:
+              job_id: { type: string, format: uuid }
+              status: { $ref: "#/components/schemas/JobStatus" }
+              progress: { type: integer, minimum: 0, maximum: 100 }
+    BinaryChunk:
+      description: 一个已校验的消费式分块
+      headers:
+        X-Chunk-SHA256: { $ref: "#/components/headers/ChunkSHA256" }
+        X-File-SHA256: { $ref: "#/components/headers/FileSHA256" }
+        X-Next-Offset: { $ref: "#/components/headers/NextOffset" }
+        X-Transfer-EOF: { $ref: "#/components/headers/TransferEOF" }
+        ETag: { schema: { type: string } }
+        Content-Range: { schema: { type: string } }
+      content:
+        application/octet-stream:
+          schema: { type: string, format: binary, maxLength: 1048576 }
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 1, maxLength: 128 }
+        password:
+          { type: string, minLength: 1, maxLength: 1024, writeOnly: true }
+        totp_code: { type: string, pattern: "^[0-9]{6}$", writeOnly: true }
+        recovery_code:
+          type: string
+          pattern: "^[A-Za-z2-7 -]{16,25}$"
+          writeOnly: true
+          description: 与 totp_code 互斥；连字符和空格会被忽略，每个码只能使用一次。
+
+    AuthResponse:
+      type: object
+      required: [user, csrf_token]
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        csrf_token: { type: string }
+        api_token: { type: boolean, default: false }
+
+    Role: { type: string, enum: [owner, admin, operator, viewer] }
+    PermissionScope: { type: string, enum: [read, operate, manage] }
+
+    RoleBindingInput:
+      type: object
+      required: [role, scope_type]
+      properties:
+        role: { $ref: "#/components/schemas/Role" }
+        scope_type: { type: string, enum: [global, node, instance] }
+        node_id: { type: string, format: uuid }
+        instance_id: { type: string, format: uuid }
+      description: global 不带资源 ID；node 只带 node_id；instance 只带 instance_id；owner 仅允许 global。
+
+    RoleBinding:
+      allOf:
+        - { $ref: "#/components/schemas/RoleBindingInput" }
+        - type: object
+          required: [id, user_id, created_at]
+          properties:
+            id: { type: string, format: uuid }
+            user_id: { type: string, format: uuid }
+            created_by: { type: string, format: uuid }
+            created_at: { type: string, format: date-time }
+
+    User:
+      type: object
+      required:
+        [id, username, display_name, role, totp_enabled, disabled, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        display_name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        totp_enabled: { type: boolean }
+        disabled: { type: boolean }
+        bootstrap_owner: { type: boolean, readOnly: true }
+        role_bindings:
+          { type: array, items: { $ref: "#/components/schemas/RoleBinding" } }
+        created_at: { type: string, format: date-time }
+        last_login_at: { type: [string, "null"], format: date-time }
+
+    CreateUserRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 1, maxLength: 128 }
+        display_name: { type: string, maxLength: 128 }
+        password:
+          { type: string, minLength: 12, maxLength: 1024, writeOnly: true }
+        role: { $ref: "#/components/schemas/Role" }
+        role_bindings:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 500,
+            items: { $ref: "#/components/schemas/RoleBindingInput" },
+          }
+      description: role 或 role_bindings 至少提供一个；同时提供时 role_bindings 优先。
+
+    UpdateUserRequest:
+      type: object
+      minProperties: 1
+      properties:
+        display_name: { type: string, minLength: 1, maxLength: 128 }
+        password:
+          { type: string, minLength: 12, maxLength: 1024, writeOnly: true }
+        disabled: { type: boolean }
+        role: { $ref: "#/components/schemas/Role" }
+        role_bindings:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 500,
+            items: { $ref: "#/components/schemas/RoleBindingInput" },
+          }
+
+    APIToken:
+      type: object
+      required: [id, user_id, name, scopes, expires_at, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        name: { type: string }
+        scopes:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 3,
+            uniqueItems: true,
+            items: { $ref: "#/components/schemas/PermissionScope" },
+          }
+        node_id: { type: string, format: uuid }
+        instance_id: { type: string, format: uuid }
+        expires_at: { type: string, format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
+        last_used_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+
+    CreateAPITokenRequest:
+      type: object
+      required: [name, scopes, expires_at]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        scopes:
+          {
+            type: array,
+            minItems: 1,
+            maxItems: 3,
+            items: { $ref: "#/components/schemas/PermissionScope" },
+          }
+        node_id: { type: string, format: uuid }
+        instance_id:
+          {
+            type: string,
+            format: uuid,
+            description: 若同时给 node_id，实例必须属于该节点,
+          }
+        expires_at: { type: string, format: date-time }
+
+    AgentEnrollRequest:
+      type: object
+      required: [token, name, instance_root]
+      properties:
+        token: { type: string, writeOnly: true }
+        name: { type: string }
+        os: { type: string }
+        arch: { type: string }
+        agent_version: { type: string }
+        instance_root: { type: string }
+
+    Node:
+      type: object
+      required:
+        [
+          id,
+          name,
+          status,
+          os,
+          arch,
+          agent_version,
+          cpu_percent,
+          memory_used,
+          memory_total,
+          disk_used,
+          disk_total,
+          network_rx,
+          network_tx,
+          created_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { type: string, enum: [pending, online, offline, revoked] }
+        os: { type: string }
+        arch: { type: string }
+        agent_version: { type: string }
+        address: { type: string, description: Agent 最近来源地址；受权限保护 }
+        public_address: { type: string }
+        instance_root:
+          { type: string, description: Agent 报告的首个实例根；受权限保护 }
+        cpu_percent: { type: number }
+        memory_used: { type: integer, format: int64 }
+        memory_total: { type: integer, format: int64 }
+        disk_used: { type: integer, format: int64 }
+        disk_total: { type: integer, format: int64 }
+        network_rx: { type: integer, format: int64, minimum: 0, readOnly: true, description: Agent 最新节点级采样中的累计接收字节数。 }
+        network_tx: { type: integer, format: int64, minimum: 0, readOnly: true, description: Agent 最新节点级采样中的累计发送字节数。 }
+        last_seen_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+
+    QuarantineEntry:
+      type: object
+      description: 隔离条目的安全 Control 元数据；不包含节点绝对路径。
+      required:
+        [
+          id,
+          node_id,
+          source_job_id,
+          original_instance_id,
+          instance_name,
+          root_index,
+          entry_name,
+          quarantined_at,
+          retention_expires_at,
+          created_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        node_id: { type: string, format: uuid }
+        source_job_id: { type: string, format: uuid }
+        original_instance_id: { type: string, format: uuid }
+        instance_name: { type: string, minLength: 1, maxLength: 200 }
+        root_index: { type: integer, minimum: 0 }
+        entry_name:
+          type: string
+          maxLength: 200
+          pattern: "^[A-Za-z0-9._-]+-[0-9]{8}T[0-9]{6}Z$"
+          description: "`.quarantine` 下的直属 basename，不是路径。"
+        quarantined_at: { type: string, format: date-time }
+        retention_expires_at:
+          {
+            type: string,
+            format: date-time,
+            description: 七天强制保留期结束时间；到期不代表自动删除。,
+          }
+        purge_job_id: { type: string, format: uuid }
+        purged_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+
+    QuarantinePurgeConfirmation:
+      type: object
+      required: [confirmation_token, expires_at]
+      properties:
+        confirmation_token:
+          {
+            type: string,
+            pattern: "^qpc_",
+            writeOnly: true,
+            description: 五分钟有效且只返回一次。,
+          }
+        expires_at: { type: string, format: date-time }
+
+    QuarantinePurgeRequest:
+      type: object
+      required: [confirmation_token]
+      additionalProperties: false
+      properties:
+        confirmation_token: { type: string, pattern: "^qpc_", writeOnly: true }
+
+    DiscoveryRequest:
+      type: object
+      properties:
+        max_depth: { type: integer, minimum: 1, maximum: 8, default: 6 }
+        max_entries:
+          {
+            type: integer,
+            minimum: 1,
+            maximum: 20000,
+            default: 5000,
+            description: 整次扫描最多读取的目录条目数,
+          }
+
+    InstallationCandidate:
+      type: object
+      required:
+        [
+          root_index,
+          path,
+          name,
+          executable,
+          has_gameinfo,
+          has_appmanifest,
+          managed,
+          likely_running,
+          evidence,
+        ]
+      properties:
+        root_index: { type: integer, minimum: 0 }
+        path: { type: string, description: 所选实例根内使用斜杠的相对路径 }
+        name: { type: string }
+        executable: { type: string, enum: [srcds.exe, srcds_run, srcds_linux] }
+        has_gameinfo: { type: boolean }
+        has_appmanifest: { type: boolean }
+        managed: { type: boolean, description: 该目录是否已在本 Agent 注册表中 }
+        likely_running:
+          {
+            type: boolean,
+            description: 是否发现可执行路径属于该目录的活动 srcds 进程,
+          }
+        pid:
+          {
+            type: integer,
+            format: int32,
+            minimum: 1,
+            description: 仅 likely_running=true 时返回；受认证和权限保护,
+          }
+        evidence: { type: array, items: { type: string } }
+
+    DiscoveryResult:
+      type: object
+      required: [candidates, scanned_directories, skipped_links, truncated]
+      properties:
+        candidates:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/InstallationCandidate" }
+        scanned_directories: { type: integer, minimum: 0 }
+        skipped_links: { type: integer, minimum: 0 }
+        truncated:
+          { type: boolean, description: 达到目录或候选数量上限时为 true }
+
+    DiscoveryJob:
+      allOf:
+        - { $ref: "#/components/schemas/Job" }
+        - type: object
+          properties:
+            type: { type: string, const: discover_instances }
+            result:
+              oneOf:
+                - { $ref: "#/components/schemas/DiscoveryResult" }
+                - {
+                    type: object,
+                    maxProperties: 0,
+                    description: 任务未完成时的空结果,
+                  }
+
+    InstanceConfig:
+      type: object
+      properties:
+        hostname:
+          {
+            type: string,
+            maxLength: 256,
+            pattern: '^[^\u0000\r\n]*$',
+            description: Control 另按 UTF-8 字节限制为 256。,
+          }
+        server_password:
+          {
+            type: string,
+            maxLength: 256,
+            pattern: '^[^\u0000\r\n]*$',
+            writeOnly: true,
+            description: 空字符串表示不在本字段设置密码；明文不会回显。,
+          }
+        mode: { type: string, pattern: "^[A-Za-z0-9_-]*$" }
+        difficulty:
+          {
+            type: string,
+            pattern: "^(|[Ee][Aa][Ss][Yy]|[Nn][Oo][Rr][Mm][Aa][Ll]|[Hh][Aa][Rr][Dd]|[Ii][Mm][Pp][Oo][Ss][Ss][Ii][Bb][Ll][Ee])$",
+          }
+        max_players:
+          {
+            type: integer,
+            minimum: 0,
+            maximum: 32,
+            description: 0 使用默认值，否则为 1–32。,
+          }
+        start_map: { type: string, pattern: "^[A-Za-z0-9_-]*$" }
+        region:
+          {
+            type: string,
+            maxLength: 256,
+            pattern: '^[^\u0000\r\n]*$',
+            description: Control 另按 UTF-8 字节限制为 256。,
+          }
+        steam_group_id: { type: string, pattern: "^[0-9]{0,20}$" }
+        public_status: { type: boolean }
+        extra_args:
+          type: array
+          maxItems: 128
+          description: 每项不能为空且不得含 NUL、CR/LF 或分号；托管参数、`-basedir`、`-defaultgamedir` 与 `-tickrate` 会返回 invalid_config。
+          items:
+            {
+              type: string,
+              minLength: 1,
+              maxLength: 4096,
+              pattern: '^[^\u0000\r\n;]+$',
+            }
+        cvars:
+          type: object
+          maxProperties: 256
+          propertyNames: { pattern: "^[A-Za-z0-9_-]+$" }
+          additionalProperties:
+            { type: string, maxLength: 4096, pattern: '^[^\u0000\r\n]*$' }
+          description: CVar 名不得带首尾空白；`rcon_password` 与 `sv_password`（不区分大小写）被拒绝，必须使用加密秘密字段。值由 Control 另按 UTF-8 字节限制为 4096。
+        auto_restart: { type: boolean }
+        maintenance_cron:
+          type: string
+          maxLength: 100
+          pattern: '^[^\u0000\r\n]*$'
+          description: 空字符串表示未设置；否则必须是标准五段 cron（分、时、月日、月、周日），例如 `0 4 * * *`，不接受秒、`@every` 或 `CRON_TZ`。Control 按全局 TZ 解释；仅当更新探测为 available、节点在线且 Agent 已连接时在发生点后 5 分钟内幂等创建自动 update 批次，固定 maintenance=true 与 warning_seconds=[600,300,60]，同节点逐实例派发并生成审计和通知。
+      description: Control 在持久化前执行这些约束；原版 L4D2 不支持可调 tickrate，危险或与面板托管值冲突的高级参数直接返回 400 invalid_config，Agent 派发后仍会再次校验。
+
+    Instance:
+      type: object
+      required:
+        [
+          id,
+          node_id,
+          name,
+          status,
+          host,
+          port,
+          players,
+          max_players,
+          update_available,
+          version,
+          config,
+          created_at,
+          updated_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        node_id: { type: string, format: uuid }
+        node_public_address:
+          type: string
+          readOnly: true
+          description: 所属节点显式配置的公开连接地址；仅为 public_address 投影，不包含 Agent 来源地址、节点路径、scheme、URL 路径或端口。
+        name: { type: string }
+        status:
+          {
+            type: string,
+            enum:
+              [
+                installing,
+                stopped,
+                starting,
+                running,
+                stopping,
+                updating,
+                degraded,
+                external,
+              ],
+          }
+        path: { type: string, readOnly: true }
+        host: { type: string }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        tv_port: { type: integer, minimum: 0, maximum: 65535 }
+        pid: { type: integer, readOnly: true }
+        map: { type: string }
+        mode: { type: string }
+        players: { type: integer }
+        max_players: { type: integer }
+        build_id: { type: string }
+        update_available: { type: boolean, readOnly: true, description: 最近一次 30 分钟更新探测是否发现较新的公开构建。 }
+        available_build: { type: string, readOnly: true, description: 最近一次更新探测返回的公开构建 ID。 }
+        last_update_checked_at: { type: [string, "null"], format: date-time, readOnly: true }
+        version: { type: integer, minimum: 1 }
+        config: { $ref: "#/components/schemas/InstanceConfig" }
+        started_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateInstanceRequest:
+      type: object
+      required: [node_id, name, config]
+      properties:
+        node_id: { type: string, format: uuid }
+        name: { type: string, minLength: 1, maxLength: 128 }
+        operation: { type: string, enum: [install, import], default: install }
+        path:
+          { type: string, description: 导入时为所选根内相对路径；安装时可省略 }
+        root_index: { type: integer, minimum: 0, description: 导入时必需 }
+        executable:
+          {
+            type: string,
+            enum: [srcds.exe, srcds_run, srcds_linux],
+            description: 导入时可传扫描候选返回的受支持可执行文件名；省略时由 Agent 按平台选择,
+          }
+        host: { type: string, default: 0.0.0.0 }
+        port:
+          {
+            type: integer,
+            minimum: 0,
+            maximum: 65535,
+            default: 0,
+            description: 0 表示在 27015–27999 自动分配,
+          }
+        tv_port:
+          {
+            type: integer,
+            minimum: 0,
+            maximum: 65535,
+            default: 0,
+            description: 0 表示禁用；非零值与同节点所有游戏/SourceTV 端口互斥,
+          }
+        config: { $ref: "#/components/schemas/InstanceConfig" }
+
+    PatchInstanceRequest:
+      type: object
+      required: [version]
+      properties:
+        name: { type: string, maxLength: 128 }
+        config: { $ref: "#/components/schemas/InstanceConfig" }
+        server_password:
+          {
+            type: string,
+            maxLength: 256,
+            pattern: '^[^\u0000\r\n]*$',
+            writeOnly: true,
+            description: 空字符串清除密码；Control 另按 UTF-8 字节限制为 256。,
+          }
+        version:
+          {
+            type: integer,
+            minimum: 1,
+            description: 当前 Instance.version；位于 JSON 正文,
+          }
+
+    InstanceActionType:
+      type: string
+      enum:
+        - backup
+        - ban_player
+        - broadcast
+        - change_map
+        - create_schedule
+        - install_package
+        - kick_player
+        - rcon
+        - reinstall
+        - restart
+        - restore
+        - start
+        - stop
+        - toggle_package
+        - unban_player
+        - update
+        - validate
+
+    DirectInstanceActionType:
+      allOf:
+        - { $ref: "#/components/schemas/InstanceActionType" }
+      description: 通用动作端点支持的公开动作；内部 Agent 任务类型不在此枚举中。
+
+    SchedulableInstanceActionType:
+      type: string
+      enum: [start, stop, restart, update, validate, backup, broadcast]
+      description: 计划任务只允许不含秘密的生命周期、备份和安全广播动作。
+
+    InstanceActionRequest:
+      type: object
+      required: [type]
+      properties:
+        type: { $ref: "#/components/schemas/DirectInstanceActionType" }
+        payload: { $ref: "#/components/schemas/InstanceActionPayload" }
+
+    InstanceActionPayload:
+      type: object
+      additionalProperties: true
+      description: |
+        动作特定参数；秘密字段会在持久化前加密或脱敏。玩家动作约定：
+        `kick_player` 传 name；`ban_player` 传 steam_id、可选 duration_minutes（0–525600，0 为永久）
+        和最多 200 字符单行 reason；`unban_player` 传 steam_id。常用动作约定：
+        `rcon` 传 command；`broadcast` 传 message；`change_map` 传 map；`backup` 可传 kind、
+        retention_daily、retention_weekly；`restore` 推荐传 backup_id，其内部归档定位符会加密持久化，服务端会附加当前结构化配置并在派发时注入加密秘密以重新生成 l4d2panel.cfg；`toggle_package` 传 package_id 和 enabled；
+        `install_package` 传 kind，以及 source、source_id 或 name + content_base64（原始文件最大 8 MiB），
+        VPK 安装（含 Workshop 批次）及 `toggle_package` 重新启用会把虚拟内容路径与全部已启用 VPK 做不区分大小写的冲突检查，
+        同包替换只排除自身旧清单；发现其他重叠时拒绝。第三方原生包另传 acknowledge_native_risk=true；`stop`/`restart`/`update` 可传 maintenance 和
+        warning_seconds；仅 external 实例的直接 restart 可选传一次性 existing_rcon_password，用于让旧进程优雅退出。
+        广播使用 Agent 固定安全文案。`create_schedule` 传 name、cron、timezone、action、enabled 和嵌套 payload；
+        仅允许 start/stop/restart/update/validate/backup/broadcast。计划 broadcast 的 message 位于外层（为空时使用 name），
+        其他计划动作只会从嵌套 payload 复制其动作白名单字段。
+      properties:
+        name: { type: string }
+        command:
+          { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
+        message:
+          {
+            type: string,
+            minLength: 1,
+            maxLength: 200,
+            description: 广播文本；计划广播还要求 UTF-8 正文不超过 256 字节,
+          }
+        map: { type: string }
+        steam_id: { type: string }
+        duration_minutes:
+          { type: integer, minimum: 0, maximum: 525600, default: 0 }
+        reason: { type: string, maxLength: 200 }
+        kind: { type: string }
+        source: { type: string }
+        source_id: { type: string }
+        content_base64:
+          type: string
+          contentEncoding: base64
+          writeOnly: true
+          description: 本机上传包；Base64 解码后的原始文件最大 8 MiB，必须同时提供安全的文件名 name。
+        acknowledge_native_risk: { type: boolean, default: false }
+        package_id: { type: string, format: uuid }
+        enabled: { type: boolean }
+        backup_id: { type: string, format: uuid }
+        retention_daily: { type: integer, minimum: 1 }
+        retention_weekly: { type: integer, minimum: 1 }
+        maintenance: { type: boolean, default: false }
+        warning_seconds:
+          { type: array, items: { type: integer, minimum: 1, maximum: 3600 } }
+        timeout_seconds: { type: integer, minimum: 1, maximum: 300 }
+        existing_rcon_password:
+          type: string
+          writeOnly: true
+          description: 仅 external 实例的直接 restart 可用；加密入任务，只用于旧进程 RCON quit，不替换面板生成的新 RCON 密钥。
+        cron: { type: string }
+        timezone: { type: string }
+        action: { $ref: "#/components/schemas/SchedulableInstanceActionType" }
+        payload: { $ref: "#/components/schemas/ScheduledInputPayload" }
+
+    ScheduledInputPayload:
+      type: object
+      additionalProperties: false
+      description: |
+        按 action 仅使用对应字段：start 使用 health_timeout_seconds；stop 使用 timeout_seconds、maintenance、
+        warning_seconds；restart/update/validate 可使用前述全部生命周期字段；backup 使用 kind 和保留数量。
+        broadcast 的 message 位于 create_schedule 外层，不使用此对象。
+      properties:
+        timeout_seconds: { type: integer, minimum: 1, maximum: 300 }
+        health_timeout_seconds: { type: integer, minimum: 1, maximum: 300 }
+        maintenance: { type: boolean }
+        warning_seconds:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { type: integer, minimum: 1, maximum: 3600 }
+        kind: { type: string, enum: [daily, weekly] }
+        retention_daily: { type: integer, minimum: 1, maximum: 365 }
+        retention_weekly: { type: integer, minimum: 1, maximum: 52 }
+
+    ScheduledStoredPayload:
+      type: object
+      additionalProperties: false
+      description: 已按 action 校验并持久化的计划参数；broadcast 计划只包含 message。
+      properties:
+        timeout_seconds: { type: integer, minimum: 1, maximum: 300 }
+        health_timeout_seconds: { type: integer, minimum: 1, maximum: 300 }
+        maintenance: { type: boolean }
+        warning_seconds:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { type: integer, minimum: 1, maximum: 3600 }
+        kind: { type: string, enum: [daily, weekly] }
+        retention_daily: { type: integer, minimum: 1, maximum: 365 }
+        retention_weekly: { type: integer, minimum: 1, maximum: 52 }
+        message:
+          {
+            type: string,
+            minLength: 1,
+            maxLength: 200,
+            pattern: '^[^;"\\\r\n\x00]+$',
+            description: 同时不超过 256 个 UTF-8 字节,
+          }
+
+    Player:
+      type: object
+      properties:
+        id: {}
+        name: { type: string }
+        steam_id: { type: string }
+        ping: { type: integer }
+        bot: { type: boolean }
+        connected: { type: string }
+        connected_at: { type: string, format: date-time }
+
+    PlayerBan:
+      type: object
+      required: [id, instance_id, reason, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        instance_id: { type: string, format: uuid }
+        steam_id: { type: string }
+        ip_address: { type: string }
+        reason: { type: string, maxLength: 200 }
+        created_by: { type: string, format: uuid }
+        expires_at:
+          {
+            type: [string, "null"],
+            format: date-time,
+            description: null 表示永久封禁,
+          }
+        created_at: { type: string, format: date-time }
+
+    AddonPackage:
+      type: object
+      required:
+        [
+          id,
+          instance_id,
+          name,
+          kind,
+          source,
+          sha256,
+          enabled,
+          risk,
+          installed_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        instance_id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { type: string }
+        version: { type: string }
+        source: { type: string }
+        source_id: { type: string }
+        sha256: { type: string }
+        path:
+          {
+            type: string,
+            readOnly: true,
+            description: 实例目录内的相对目标路径,
+          }
+        enabled: { type: boolean }
+        risk: { type: string }
+        installed_by: { type: string, format: uuid }
+        installed_at: { type: string, format: date-time }
+
+    AddonPackageVersion:
+      type: object
+      required:
+        [id, package_id, instance_id, sha256, size, target_path, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        package_id: { type: string, format: uuid }
+        instance_id: { type: string, format: uuid }
+        version: { type: string, description: 被保存版本的标签；可能为空 }
+        sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+        size: { type: integer, format: int64, minimum: 0 }
+        target_path: { type: string, description: 实例目录内的相对目标路径 }
+        created_at: { type: string, format: date-time }
+
+    BackupSummary:
+      type: object
+      required: [id, name, size, platform, checksum, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name:
+          {
+            type: string,
+            description: Agent 生成的归档名；自动周副本以 weekly- 开头,
+          }
+        size: { type: integer, format: int64 }
+        platform: { type: string, example: linux/amd64 }
+        checksum: { type: string, pattern: "^[a-f0-9]{64}$" }
+        created_at: { type: string, format: date-time }
+
+    BackupUploadStatus:
+      type: string
+      enum: [uploading, ready, restoring, succeeded, failed, expired]
+
+    BackupUpload:
+      type: object
+      description: Control 跟踪且正文暂存在目标 Agent 的上传会话；不暴露文件路径或分块正文。
+      required:
+        [
+          id,
+          instance_id,
+          name,
+          platform,
+          size,
+          sha256,
+          received_size,
+          status,
+          expires_at,
+          created_at,
+          updated_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        instance_id: { type: string, format: uuid }
+        name: { type: string, maxLength: 180 }
+        platform: { type: string, enum: [windows/amd64, linux/amd64] }
+        size: { type: integer, format: int64, minimum: 1, maximum: 21474836480 }
+        sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+        received_size: { type: integer, format: int64, minimum: 0 }
+        status: { $ref: "#/components/schemas/BackupUploadStatus" }
+        last_chunk_job_id: { type: string, format: uuid }
+        restore_job_id: { type: string, format: uuid }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BackupUploadEnvelope:
+      type: object
+      required: [upload, idempotent_replay]
+      properties:
+        upload: { $ref: "#/components/schemas/BackupUpload" }
+        idempotent_replay: { type: boolean }
+
+    CreateBackupUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [name, platform, size, sha256]
+      properties:
+        name:
+          type: string
+          maxLength: 180
+          pattern: '^[^/\\\u0000\r\n]+[.][Zz][Ii][Pp]$'
+          description: 去除首尾空白后的安全 basename；Control 另按 UTF-8 字节限制为 180。
+        platform: { type: string, enum: [windows/amd64, linux/amd64] }
+        size: { type: integer, format: int64, minimum: 1, maximum: 21474836480 }
+        sha256: { type: string, pattern: "^[A-Fa-f0-9]{64}$" }
+
+    BackupUploadChunkRequest:
+      type: object
+      additionalProperties: false
+      required: [offset, chunk_sha256, content_base64]
+      properties:
+        offset: { type: integer, format: int64, minimum: 0 }
+        chunk_sha256: { type: string, pattern: "^[A-Fa-f0-9]{64}$" }
+        content_base64:
+          {
+            type: string,
+            contentEncoding: base64,
+            writeOnly: true,
+            description: 解码后必须为 1–1048576 字节；中心数据库仅保存主密钥加密正文并在任务终态清除。,
+          }
+
+    BackupUploadJobReference:
+      type: object
+      required: [job_id, status, idempotent_replay]
+      properties:
+        job_id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/JobStatus" }
+        idempotent_replay: { type: boolean }
+
+    FileEntry:
+      type: object
+      required: [name, path, type, size, modified_at]
+      properties:
+        name: { type: string }
+        path: { type: string }
+        type: { type: string, enum: [file, directory] }
+        size: { type: integer, format: int64 }
+        modified_at: { type: string, format: date-time }
+
+    FileContentResponse:
+      type: object
+      required: [path, size, sha256, fresh_at]
+      properties:
+        path: { type: string }
+        size: { type: integer, format: int64 }
+        sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+        fresh_at: { type: string, format: date-time }
+        refresh_job_id: { type: string, format: uuid }
+        content: { type: string }
+        content_base64: { type: string, contentEncoding: base64 }
+
+    FileWriteRequest:
+      type: object
+      properties:
+        content: { type: string, maxLength: 8388608 }
+        content_base64: { type: string, contentEncoding: base64 }
+        expected_sha256: { type: string, pattern: "^[A-Fa-f0-9]{64}$" }
+      description: content 与 content_base64 互斥；空对象创建/覆盖为空文本文件。
+
+    ConfigFieldChange:
+      type: object
+      properties:
+        before: {}
+        after: {}
+
+    ConfigVersion:
+      type: object
+      required: [id, instance_id, version, config, current, created_at, diff]
+      properties:
+        id: { type: string }
+        instance_id: { type: string, format: uuid }
+        version: { type: integer }
+        config: { $ref: "#/components/schemas/InstanceConfig" }
+        created_by: { type: string, format: uuid }
+        created_name: { type: string }
+        created_at: { type: string, format: date-time }
+        current: { type: boolean }
+        diff:
+          {
+            type: object,
+            additionalProperties:
+              { $ref: "#/components/schemas/ConfigFieldChange" },
+          }
+
+    Schedule:
+      type: object
+      required:
+        [
+          id,
+          instance_id,
+          name,
+          cron,
+          timezone,
+          action,
+          enabled,
+          misfire_policy,
+          created_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        instance_id: { type: string, format: uuid }
+        name: { type: string }
+        cron: { type: string, description: 五字段标准 cron }
+        timezone: { type: string }
+        action: { $ref: "#/components/schemas/SchedulableInstanceActionType" }
+        payload: { $ref: "#/components/schemas/ScheduledStoredPayload" }
+        enabled: { type: boolean }
+        misfire_policy: { type: string, const: skip }
+        last_run_at: { type: [string, "null"], format: date-time }
+        next_run_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+
+    JobStatus:
+      {
+        type: string,
+        enum: [queued, dispatched, running, succeeded, failed, canceled],
+      }
+    Job:
+      type: object
+      required: [id, node_id, type, status, progress, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        node_id: { type: string, format: uuid }
+        instance_id: { type: string, format: uuid }
+        type: { type: string }
+        status: { $ref: "#/components/schemas/JobStatus" }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        message: { type: string }
+        payload: { type: object, additionalProperties: true }
+        result: { type: object, additionalProperties: true, readOnly: true }
+        idempotency_key: { type: string }
+        requested_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        started_at: { type: [string, "null"], format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+
+    JobReference:
+      type: object
+      required: [job_id]
+      properties:
+        job_id: { type: string, format: uuid }
+        idempotent_replay: { type: boolean, default: false }
+
+    TransferReference:
+      type: object
+      required: [job_id, status, poll_url]
+      properties:
+        job_id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/JobStatus" }
+        poll_url: { type: string }
+
+    LogSearchRequest:
+      type: object
+      properties:
+        since: { type: string, format: date-time }
+        until: { type: string, format: date-time }
+        keyword: { type: string, maxLength: 256 }
+        limit: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+
+    LogEntry:
+      type: object
+      required: [stream, message]
+      properties:
+        at: { type: string, format: date-time }
+        stream: { type: string }
+        message: { type: string }
+
+    LogSearchResponse:
+      type: object
+      required: [items, returned, matched, truncated]
+      properties:
+        items:
+          {
+            type: array,
+            maxItems: 1000,
+            items: { $ref: "#/components/schemas/LogEntry" },
+          }
+        returned: { type: integer }
+        matched: { type: integer }
+        truncated: { type: boolean }
+
+    LogChunkRequest:
+      type: object
+      properties:
+        segment: { type: integer, minimum: 0, maximum: 19, default: 0 }
+        offset: { type: integer, format: int64, minimum: 0, default: 0 }
+        length:
+          { type: integer, minimum: 1, maximum: 1048576, default: 1048576 }
+        expected_sha256: { type: string, pattern: "^[A-Fa-f0-9]{64}$" }
+
+    BackupChunkRequest:
+      type: object
+      properties:
+        offset: { type: integer, format: int64, minimum: 0, default: 0 }
+        length:
+          { type: integer, minimum: 1, maximum: 1048576, default: 1048576 }
+        expected_sha256:
+          {
+            type: string,
+            pattern: "^[A-Fa-f0-9]{64}$",
+            description: 兼容字段；服务端以备份登记的完整哈希验证传输源,
+          }
+
+    MetricPoint:
+      type: object
+      required:
+        [
+          node_id,
+          collected_at,
+          cpu_percent,
+          memory_used,
+          memory_total,
+          disk_used,
+          disk_total,
+          network_rx,
+          network_tx,
+          players,
+          sample_count,
+        ]
+      properties:
+        node_id: { type: string, format: uuid }
+        instance_id: { type: string, format: uuid }
+        collected_at: { type: string, format: date-time }
+        cpu_percent: { type: number }
+        memory_used: { type: integer, format: int64 }
+        memory_total: { type: integer, format: int64 }
+        disk_used: { type: integer, format: int64 }
+        disk_total: { type: integer, format: int64 }
+        network_rx: { type: integer, format: int64 }
+        network_tx: { type: integer, format: int64 }
+        players: { type: integer }
+        sample_count: { type: integer, minimum: 1 }
+
+    MetricsResponse:
+      type: object
+      required: [items, resolution, from, to]
+      properties:
+        items:
+          {
+            type: array,
+            maxItems: 10000,
+            items: { $ref: "#/components/schemas/MetricPoint" },
+          }
+        resolution: { type: string, enum: [raw, 1m, 1h] }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+
+    NotificationView:
+      type: object
+      required: [id, level, title, message, read, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        level: { type: string }
+        title: { type: string }
+        message: { type: string }
+        read: { type: boolean }
+        created_at: { type: string, format: date-time }
+        resource: { type: string }
+        metadata: { type: object, additionalProperties: true }
+
+    NotificationChannel:
+      type: object
+      required:
+        [id, name, kind, enabled, config, has_secret, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { type: string, enum: [smtp, webhook] }
+        enabled: { type: boolean }
+        config: { type: object, additionalProperties: true }
+        has_secret: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateNotificationChannelRequest:
+      type: object
+      required: [name, kind, config]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        kind: { type: string, enum: [smtp, webhook] }
+        enabled: { type: boolean, default: true }
+        config:
+          type: object
+          additionalProperties: true
+          description: Webhook 使用不含凭据、查询或片段的 HTTPS url，投递只连接 DNS 结果中的公网地址；SMTP 使用 host/port/from/to，可选 username。
+        secret:
+          {
+            type: string,
+            writeOnly: true,
+            description: SMTP 密码或至少 16 字符的 Webhook 签名密钥,
+          }
+
+    NotificationDelivery:
+      type: object
+      required:
+        [
+          id,
+          notification_id,
+          channel_id,
+          channel_name,
+          status,
+          attempt_count,
+          next_attempt_at,
+          updated_at,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        notification_id: { type: string, format: uuid }
+        channel_id: { type: string, format: uuid }
+        channel_name: { type: string }
+        status:
+          {
+            type: string,
+            enum: [pending, delivering, succeeded, failed, skipped],
+          }
+        attempt_count: { type: integer, minimum: 0, maximum: 6 }
+        next_attempt_at: { type: string, format: date-time }
+        last_error: { type: string }
+        response_code: { type: integer }
+        delivered_at: { type: [string, "null"], format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    NotificationDeliveryAttempt:
+      type: object
+      required: [attempt, succeeded, attempted_at]
+      properties:
+        attempt: { type: integer, minimum: 1, maximum: 6 }
+        succeeded: { type: boolean }
+        response_code: { type: integer }
+        error: { type: string }
+        attempted_at: { type: string, format: date-time }
+
+    AuditEvent:
+      type: object
+      required: [id, actor_name, action, resource_type, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        actor_id: { type: string, format: uuid }
+        actor_name: { type: string }
+        action: { type: string }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        remote_ip: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+
+    Event:
+      type: object
+      required: [id, type, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        type: { type: string }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        data: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+
+    PublicServer:
+      type: object
+      required: [id, name, status, address, players, max_players]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { type: string }
+        address: { type: string }
+        map: { type: string }
+        mode: { type: string }
+        players: { type: integer }
+        max_players: { type: integer }
+        started_at: { type: [string, "null"], format: date-time }
+
+security:
+  - sessionCookie: []
+  - bearerToken: []
