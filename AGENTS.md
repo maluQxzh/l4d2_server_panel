@@ -25,7 +25,7 @@ Read `README.md` before substantial work. For protocol, persistence, authorizati
 - Go 1.25.12 or a later security patch in the 1.25 line.
 - Node.js 24 with `npm ci` based on `web/package-lock.json`.
 - PostgreSQL 17 for database integration and fleet-acceptance tests.
-- Docker Engine 24+ and Docker Compose v2 for production-style validation.
+- Docker Engine 24+ on Linux or Docker Desktop on macOS, with Docker Compose v2, for production-style validation.
 
 Do not weaken or remove pinned security versions merely to make an older local toolchain pass.
 
@@ -81,7 +81,7 @@ go test ./internal/control -run TestPostgresMigrationsAndCredentialLifecycle -co
 RUN_FLEET_ACCEPTANCE=1 go test ./internal/control -run TestFleetScaleAcceptance -count=1 -timeout=2m
 ```
 
-For Agent or platform changes, test on Windows and Linux and cross-build both amd64 targets with `CGO_ENABLED=0`. Installer changes require PowerShell parser validation and `sh -n`; CI additionally runs ShellCheck. Container changes require `docker compose config --quiet` and a production image build.
+For Agent or platform changes, test on Windows and Linux and cross-build both amd64 targets with `CGO_ENABLED=0`. Installer changes require PowerShell parser validation and `sh -n`; CI additionally runs ShellCheck. Container changes require `docker compose config --quiet` and production image builds for both `linux/amd64` and `linux/arm64`.
 
 If the local environment lacks PostgreSQL, Docker, SteamCMD, or a supported game host, report the skipped gate explicitly. Never describe mocked Playwright flows or cross-compilation as a real App 222860 end-to-end validation.
 

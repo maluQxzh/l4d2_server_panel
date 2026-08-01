@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:24-alpine AS web-build
+FROM --platform=$BUILDPLATFORM node:24-alpine AS web-build
 WORKDIR /src/web
 COPY web/package*.json ./
 RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM golang:1.25.12-alpine AS go-build
+FROM --platform=$BUILDPLATFORM golang:1.25.12-alpine AS go-build
 WORKDIR /src
 RUN apk add --no-cache ca-certificates git
 COPY go.mod go.sum* ./
@@ -17,8 +17,8 @@ COPY --from=web-build /src/web/dist ./internal/control/static
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+ARG TARGETOS
+ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -trimpath \
     -ldflags="-s -w -X github.com/l4d2-panel/l4d2panel/internal/version.Version=${VERSION} -X github.com/l4d2-panel/l4d2panel/internal/version.Commit=${COMMIT} -X github.com/l4d2-panel/l4d2panel/internal/version.Date=${BUILD_DATE}" \

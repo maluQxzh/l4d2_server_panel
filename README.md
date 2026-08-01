@@ -31,7 +31,12 @@
 
 ## 快速部署中心端
 
-要求 Linux Docker Engine 24+ 与 Docker Compose v2。复制环境变量示例，替换所有占位值：
+支持以下中心端 Docker 主机：
+
+- Linux：Docker Engine 24+ 与 Docker Compose v2。
+- macOS：带 Docker Compose v2 的 Docker Desktop，支持 Apple Silicon 和 Intel Mac。中心端仍运行在 Linux 容器中；macOS 只作为中心端宿主机，不属于游戏节点 Agent 的支持平台。
+
+在 Linux Shell 或 macOS“终端”中复制环境变量示例，并替换所有占位值：
 
 ```bash
 cp .env.example .env
@@ -51,6 +56,17 @@ HTTPS_PORT=8443
 ```
 
 Caddy 容器内部仍监听 80/443，并把外部 HTTP 端口跳转到配置的外部 HTTPS 端口。公开 CA 的自动证书签发通常仍要求公网 80/443 能到达 Caddy；若网络只开放自定义端口，请通过上游反向代理终止 TLS，或自行提供证书。
+
+macOS 本机试用时可使用下面的配置，避开可能已被其他应用占用的 80/443：
+
+```dotenv
+PANEL_DOMAIN=localhost
+PUBLIC_URL=https://localhost:8443
+HTTP_PORT=8080
+HTTPS_PORT=8443
+```
+
+`localhost` 使用 Caddy 容器内的本地 CA，macOS 和浏览器默认不会自动信任该 CA，首次访问可能显示证书警告。正式部署应使用可公开解析的域名和受信任证书。Docker Desktop 会按 Mac 架构自动构建 `linux/arm64` 或 `linux/amd64` 中心镜像，不需要 Rosetta。
 
 编辑完 `.env` 后构建并启动中心端：
 

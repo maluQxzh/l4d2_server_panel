@@ -6,6 +6,8 @@ Control 是唯一可信协调者，负责身份、资源权限、期望状态、
 
 React 前端被编译进 Control 镜像并同域提供。浏览器 REST 接口位于 `/api/v1`，实时事件位于 `/api/v1/events`，Agent 注册使用 `/api/v1/agent/enroll`，长期连接使用 `/agent/v1/connect`。Caddy 终止 TLS 并反向代理 HTTP/WebSocket；PostgreSQL 只在 Compose 内部网络可见。
 
+中心 Compose 栈始终运行 Linux 容器，可部署在 Linux Docker Engine 或 macOS Docker Desktop。Control 镜像提供 `linux/amd64` 与 `linux/arm64` 构建路径，Docker Desktop 在 Intel Mac 和 Apple Silicon 上自动选择对应架构；这不会把 macOS 加入 Agent 或游戏服节点的支持平台。
+
 ## 节点协议与任务流
 
 1. 有全局管理权限的交互式管理员创建短期一次性注册令牌。
