@@ -2,12 +2,12 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
@@ -28,8 +28,8 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) (Event, error) {
 	if len(raw) > 256<<10 {
 		raw, _ = json.Marshal(map[string]any{"truncated": true})
 	}
-	err = s.pool.QueryRow(ctx, `INSERT INTO event_log(type,resource_type,resource_id,data) VALUES($1,$2,$3,$4)
-		RETURNING id,created_at`, event.Type, event.ResourceType, event.ResourceID, raw).Scan(&event.ID, &event.CreatedAt)
+	err = s.db.QueryRowContext(ctx, `INSERT INTO event_log(type,resource_type,resource_id,data) VALUES(?1,?2,?3,?4)
+		RETURNING id,created_at`, event.Type, event.ResourceType, event.ResourceID, string(raw)).Scan(&event.ID, &event.CreatedAt)
 	return event, err
 }
 
@@ -66,16 +66,16 @@ func (s *Store) EventsAfter(ctx context.Context, cursor int64, limit int) ([]Eve
 	if limit < 1 || limit > 1000 {
 		limit = 500
 	}
-	var rows pgx.Rows
+	var rows *sql.Rows
 	var err error
 	if cursor == 0 {
 		// A new client needs the most recent window, not the oldest events ever
 		// written. Return that window in ascending order so cursors remain usable.
-		rows, err = s.pool.Query(ctx, `SELECT id,type,resource_type,resource_id,data,created_at FROM (
-			SELECT id,type,resource_type,resource_id,data,created_at FROM event_log ORDER BY id DESC LIMIT $1
+		rows, err = s.db.QueryContext(ctx, `SELECT id,type,resource_type,resource_id,data,created_at FROM (
+			SELECT id,type,resource_type,resource_id,data,created_at FROM event_log ORDER BY id DESC LIMIT ?1
 		) recent ORDER BY id`, limit)
 	} else {
-		rows, err = s.pool.Query(ctx, `SELECT id,type,resource_type,resource_id,data,created_at FROM event_log WHERE id>$1 ORDER BY id LIMIT $2`, cursor, limit)
+		rows, err = s.db.QueryContext(ctx, `SELECT id,type,resource_type,resource_id,data,created_at FROM event_log WHERE id>?1 ORDER BY id LIMIT ?2`, cursor, limit)
 	}
 	if err != nil {
 		return nil, err
@@ -107,9 +107,9 @@ func (s *Store) WriteAudit(ctx context.Context, event domain.AuditEvent) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO audit_events(id,actor_id,actor_name,action,resource_type,resource_id,remote_ip,metadata,created_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, event.ID, nullableUUID(event.ActorID), event.ActorName, event.Action,
-		event.ResourceType, event.ResourceID, event.RemoteIP, raw, event.CreatedAt)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO audit_events(id,actor_id,actor_name,action,resource_type,resource_id,remote_ip,metadata,created_at)
+		VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)`, event.ID, nullableUUID(event.ActorID), event.ActorName, event.Action,
+		event.ResourceType, event.ResourceID, event.RemoteIP, string(raw), event.CreatedAt)
 	return err
 }
 
@@ -117,8 +117,8 @@ func (s *Store) ListAudit(ctx context.Context, resourceID string, limit int) ([]
 	if limit < 1 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id,COALESCE(actor_id::text,''),actor_name,action,resource_type,resource_id,remote_ip,metadata,created_at
-		FROM audit_events WHERE ($1='' OR resource_id=$1) ORDER BY created_at DESC,id DESC LIMIT $2`, resourceID, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(actor_id,''),actor_name,action,resource_type,resource_id,remote_ip,metadata,created_at
+		FROM audit_events WHERE (?1='' OR resource_id=?1) ORDER BY created_at DESC,id DESC LIMIT ?2`, resourceID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -142,10 +142,10 @@ func (s *Store) ListAudit(ctx context.Context, resourceID string, limit int) ([]
 func (s *Store) AuditByID(ctx context.Context, id string) (domain.AuditEvent, error) {
 	var event domain.AuditEvent
 	var raw []byte
-	err := s.pool.QueryRow(ctx, `SELECT id,COALESCE(actor_id::text,''),actor_name,action,resource_type,resource_id,remote_ip,metadata,created_at
-		FROM audit_events WHERE id=$1`, id).Scan(&event.ID, &event.ActorID, &event.ActorName, &event.Action,
+	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(actor_id,''),actor_name,action,resource_type,resource_id,remote_ip,metadata,created_at
+		FROM audit_events WHERE id=?1`, id).Scan(&event.ID, &event.ActorID, &event.ActorName, &event.Action,
 		&event.ResourceType, &event.ResourceID, &event.RemoteIP, &raw, &event.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return domain.AuditEvent{}, ErrNotFound
 	}
 	if err == nil {

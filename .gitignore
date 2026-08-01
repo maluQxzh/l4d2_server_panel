@@ -19,6 +19,18 @@
 /packaging/windows/payload/*
 !/packaging/windows/payload/.gitkeep
 *.log
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite.lock
+*.sqlite3.lock
+*.sqlite.bak
+*.sqlite3.bak
+*.sqlite.backup
+*.sqlite3.backup
 
 # Editors / OS
 .idea/

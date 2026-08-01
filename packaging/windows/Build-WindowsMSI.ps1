@@ -1,8 +1,6 @@
 #Requires -Version 7.4
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string]$PostgreSqlArchive,
-    [Parameter(Mandatory)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$PostgreSqlSha256,
     [string]$Version = '0.1.0',
     [string]$Configuration = 'Release',
     [ValidateSet('none', 'low', 'medium', 'high', 'mszip')][string]$CompressionLevel = 'high',
@@ -39,7 +37,11 @@ if ($Clean) {
     if (Test-Path -LiteralPath $cabinetCache) { Remove-Item -LiteralPath $cabinetCache -Recurse -Force }
     if (Test-Path -LiteralPath $downloadCache) { Remove-Item -LiteralPath $downloadCache -Recurse -Force }
 }
+if (Test-Path -LiteralPath $cabinetCache) { Remove-Item -LiteralPath $cabinetCache -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $payload, $cacheState, $downloadCache, $cabinetCache | Out-Null
+foreach ($legacyPath in @("$payload\postgresql", "$staging\postgres-extract", "$cacheState\postgresql.sha256")) {
+    if (Test-Path -LiteralPath $legacyPath) { Remove-Item -LiteralPath $legacyPath -Recurse -Force }
+}
 
 function Assert-Hash {
     param([string]$Path, [string]$Expected)
@@ -61,58 +63,6 @@ function Invoke-Sign {
     if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed: $Path" }
     & $signtool verify /pa /all $Path
     if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed: $Path" }
-}
-
-$postgresArchivePath = (Resolve-Path $PostgreSqlArchive).Path
-Assert-Hash -Path $postgresArchivePath -Expected $PostgreSqlSha256
-$archiveName = [IO.Path]::GetFileName($postgresArchivePath)
-if ($archiveName -notmatch '^postgresql-17\.[0-9]+.*windows-x64.*\.zip$') {
-    throw 'PostgreSQL payload must be a pinned PostgreSQL 17.x Windows x64 binary ZIP.'
-}
-$postgresPayload = "$payload\postgresql"
-$postgresMarker = "$cacheState\postgresql.sha256"
-$postgresCacheKey = $PostgreSqlSha256.ToLowerInvariant()
-$postgresReady = (Test-Path -LiteralPath "$postgresPayload\bin\postgres.exe") -and
-    (Test-Path -LiteralPath $postgresMarker) -and
-    ((Get-Content -LiteralPath $postgresMarker -Raw).Trim() -eq $postgresCacheKey)
-if (-not $postgresReady) {
-    if (Test-Path -LiteralPath $postgresPayload) { Remove-Item -LiteralPath $postgresPayload -Recurse -Force }
-    New-Item -ItemType Directory -Force -Path $postgresPayload | Out-Null
-    $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
-    if ($tar) {
-        & $tar.Source -xf $postgresArchivePath -C $postgresPayload --strip-components 1
-        if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL archive extraction failed.' }
-    } else {
-        $postgresExtract = "$staging\postgres-extract"
-        if (Test-Path -LiteralPath $postgresExtract) { Remove-Item -LiteralPath $postgresExtract -Recurse -Force }
-        Expand-Archive -LiteralPath $postgresArchivePath -DestinationPath $postgresExtract
-        $pgRoot = Get-ChildItem -LiteralPath $postgresExtract -Directory | Select-Object -First 1
-        if (-not $pgRoot) { throw 'PostgreSQL archive layout is not recognized.' }
-        Copy-Item -Path "$($pgRoot.FullName)\*" -Destination $postgresPayload -Recurse -Force
-        Remove-Item -LiteralPath $postgresExtract -Recurse -Force
-    }
-    if (-not (Test-Path -LiteralPath "$postgresPayload\bin\postgres.exe")) {
-        throw 'PostgreSQL archive layout is not recognized.'
-    }
-    Set-Content -LiteralPath $postgresMarker -Value $postgresCacheKey -Encoding ascii
-}
-
-# The upstream Windows ZIP also carries pgAdmin, StackBuilder, headers, and
-# documentation. The managed center needs only the PostgreSQL server, command
-# line tools, libraries, and share data; excluding unrelated desktop/developer
-# payload avoids shipping hundreds of MiB and prevents MSI font-table warnings.
-foreach ($relativePath in @(
-    'pgAdmin 4',
-    'StackBuilder',
-    'doc',
-    'include',
-    'share\doc',
-    'pgAdmin_3rd_party_licenses.txt',
-    'pgAdmin_license.txt',
-    'StackBuilder_3rd_party_licenses.txt'
-)) {
-    $unneededPath = Join-Path $postgresPayload $relativePath
-    if (Test-Path -LiteralPath $unneededPath) { Remove-Item -LiteralPath $unneededPath -Recurse -Force }
 }
 
 $caddyVersion = '2.11.3'
@@ -155,16 +105,26 @@ try {
 }
 $migrationsPayload = "$payload\migrations"
 if (Test-Path -LiteralPath $migrationsPayload) { Remove-Item -LiteralPath $migrationsPayload -Recurse -Force }
-Copy-Item -LiteralPath "$repoRoot\migrations" -Destination $migrationsPayload -Recurse
+New-Item -ItemType Directory -Force -Path "$migrationsPayload\sqlite" | Out-Null
+Copy-Item -Path "$repoRoot\migrations\sqlite\*.sql" -Destination "$migrationsPayload\sqlite" -Force
 
 Invoke-Sign -Path "$payload\l4d2panel-control.exe"
 Invoke-Sign -Path "$payload\caddy\caddy.exe"
-Get-ChildItem -LiteralPath "$payload\postgresql" -Recurse -Filter *.exe | ForEach-Object { Invoke-Sign -Path $_.FullName }
+
+$goModuleCache = (& go env GOMODCACHE).Trim()
+if (-not $goModuleCache) { throw 'Unable to locate the Go module cache for third-party licenses.' }
+$licensePayload = "$payload\licenses"
+if (Test-Path -LiteralPath $licensePayload) { Remove-Item -LiteralPath $licensePayload -Recurse -Force }
+New-Item -ItemType Directory -Force -Path $licensePayload | Out-Null
+Copy-Item -LiteralPath "$goModuleCache\modernc.org\sqlite@v1.55.0\LICENSE" -Destination "$licensePayload\modernc-sqlite-LICENSE.txt"
+Copy-Item -LiteralPath "$goModuleCache\modernc.org\libc@v1.74.1\LICENSE" -Destination "$licensePayload\modernc-libc-LICENSE.txt"
+Copy-Item -LiteralPath "$goModuleCache\modernc.org\libc@v1.74.1\LICENSE-3RD-PARTY.md" -Destination "$licensePayload\modernc-libc-LICENSE-3RD-PARTY.md"
 
 $components = @(
     [ordered]@{ type='application'; name='l4d2panel-control'; version=$Version; licenses=@(@{license=@{id='AGPL-3.0-or-later'}}) },
     [ordered]@{ type='application'; name='caddy'; version=$caddyVersion; licenses=@(@{license=@{id='Apache-2.0'}}) },
-    [ordered]@{ type='application'; name='postgresql'; version=([regex]::Match($archiveName, '17\.[0-9]+').Value); licenses=@(@{license=@{id='PostgreSQL'}}) }
+    [ordered]@{ type='library'; name='modernc.org/sqlite'; version='1.55.0'; properties=@(@{name='embedded.sqlite.version';value='3.53.3'}); licenses=@(@{license=@{id='BSD-3-Clause'}}) },
+    [ordered]@{ type='library'; name='modernc.org/libc'; version='1.74.1'; licenses=@(@{license=@{id='BSD-3-Clause'}}) }
 )
 $sbom = [ordered]@{
     bomFormat='CycloneDX'; specVersion='1.5'; serialNumber="urn:uuid:$([guid]::NewGuid())"; version=1
@@ -176,7 +136,8 @@ $sbom | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath "$payload\sbom.cdx.j
 L4D2 Panel Center third-party payload
 
 Caddy $caddyVersion - Apache License 2.0 - https://github.com/caddyserver/caddy
-PostgreSQL $([regex]::Match($archiveName, '17\.[0-9]+').Value) - PostgreSQL License - https://www.postgresql.org/
+modernc.org/sqlite v1.55.0 (SQLite 3.53.3) - BSD-3-Clause - https://modernc.org/sqlite
+modernc.org/libc v1.74.1 - BSD-3-Clause - https://modernc.org/libc
 
 The release pipeline retains upstream LICENSE files inside each payload directory.
 "@ | Set-Content -LiteralPath "$payload\THIRD-PARTY-NOTICES.txt" -Encoding utf8NoBOM

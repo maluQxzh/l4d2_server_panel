@@ -16,13 +16,13 @@
 ## 架构
 
 ```text
-浏览器 ──HTTPS/WSS──> Caddy ──> Control API ──> PostgreSQL
+浏览器 ──HTTPS/WSS──> Caddy ──> Control API ──> 本机 SQLite（WAL）
                                       ▲
                                       │ WSS（Agent 主动连接）
                            Windows/Linux Agent ──> srcds / SteamCMD
 ```
 
-- 中心端：Go、React、PostgreSQL 17、Caddy；首版为单控制平面实例。
+- 中心端：Go、React、本机 SQLite、Caddy；硬性限定单控制平面实例。
 - 节点端：单个 Go Agent，以 Windows Service 或 systemd service 运行。
 - 游戏实例：每个实例使用独立目录；Agent API 仅允许访问配置的实例根目录和自己的数据目录。当前同一节点的 Agent 与所有游戏进程共用一个低权限服务账号，目录分离不是每实例 OS 沙箱；在部署相互不信任的原生插件或租户前必须另做主机/账号隔离。
 - 本地数据：实例备份和完整进程日志保存在节点。中心只保存备份元数据、任务/审计、通知和聚合指标；网页下载使用一次性、最大 1 MiB 的校验分块。
@@ -41,10 +41,9 @@
 ```bash
 cp .env.example .env
 openssl rand -base64 32
-openssl rand -hex 32
 ```
 
-将 `openssl rand -base64 32` 的输出写入 `MASTER_KEY`；可将十六进制输出用作仅含 URL 安全字符的 `POSTGRES_PASSWORD`。令 `PANEL_DOMAIN` 和 `PUBLIC_URL` 指向当前主机。Caddy 为可公开解析的域名申请并续期 HTTPS 证书；`localhost` 使用 Caddy 的本地证书行为。
+将输出写入 `MASTER_KEY`，并令 `PANEL_DOMAIN` 和 `PUBLIC_URL` 指向当前主机。Caddy 为可公开解析的域名申请并续期 HTTPS 证书；`localhost` 使用 Caddy 的本地证书行为。
 
 中心端对外端口不限定为 80/443。下面的配置把宿主机 HTTP/HTTPS 端口改为 8080/8443；使用非标准 HTTPS 端口时，`PUBLIC_URL` 必须包含端口：
 
@@ -79,19 +78,19 @@ docker compose up -d
 
 无界面的自动化部署仍可使用 `docker compose run --rm -T app bootstrap-owner ...` 命令。旧版 `BOOTSTRAP_USERNAME`、`BOOTSTRAP_PASSWORD` 和 `BOOTSTRAP_DISPLAY_NAME` 启动环境变量也继续兼容，但不再写入示例配置或作为推荐流程。数据库已有任意用户后，网页初始化和命令行引导都会拒绝再次创建，后续账号应从已认证的团队管理页面维护。
 
-数据库迁移在 Control 启动时按文件名顺序执行。迁移失败或已应用迁移的校验和变化会中止启动，不会自动降级。涉及实例写锁的升级还会先检查旧数据；如果同一实例已有多个可能仍在执行的写任务，会给出处理提示并安全中止，而不会猜测性覆盖任务状态。升级前应备份 PostgreSQL 命名卷。
+SQLite 数据库位于 `app_data` 卷的 `/app/data/l4d2panel.sqlite3`。迁移在 Control 启动时按文件名顺序、以立即写事务执行；迁移失败、未知迁移或已应用迁移校验和变化都会中止启动。SQLite 文件、WAL 与 SHM 必须位于容器本机持久卷，禁止放到 NFS、CIFS 或 SMB bind mount。中心端不支持多个 Control 共享数据库。
 
-PostgreSQL 默认不向宿主机发布端口。
+停机备份可运行 `docker compose run --rm -T app backup-database --output /app/data/control-backup.sqlite3`；输出文件必须不存在，命令会先执行 `quick_check`，再生成一致性副本。
 
 生产环境保持 `COOKIE_SECURE=true` 并使用 HTTPS。仅本机开发、直接运行 Control 时才可临时设为 `false`。
 
 ## Windows 原生部署中心端
 
-Windows 10/11 x64 和 Windows Server 2019+ 可以直接安装发布页中的 `l4d2panel-center-*-windows-x64.msi`，不需要 Docker、WSL2 或 Windows 容器。向导默认安装受管 PostgreSQL 17、Control 和 Caddy；程序位于 `%ProgramFiles%\L4D2Panel\Control`，数据库、配置、证书、日志与升级检查点位于 `%ProgramData%\L4D2Panel`。
+Windows 10/11 x64 和 Windows Server 2019+ 可以直接安装发布页中的 `l4d2panel-center-*-windows-x64.msi`，不需要 Docker、WSL2 或 Windows 容器。向导安装 Control 和 Caddy；程序位于 `%ProgramFiles%\L4D2Panel\Control`，SQLite 数据库、配置、证书、日志与升级检查点位于 `%ProgramData%\L4D2Panel`。
 
-向导允许选择域名或 `localhost`、Control 回环监听端口以及任意未占用的 HTTP/HTTPS 入口端口，不限定为 80/443。Control 默认监听 `127.0.0.1:18080`，可避开本机已有服务；安装器会同步 Control 配置、Caddy 上游与健康检查地址。安装完成后访问显示的 `/setup` 地址创建首个所有者。受管数据库只监听 `127.0.0.1:55432`；只有内置 Caddy 选中的入口端口会加入 Windows 防火墙。
+向导允许选择域名或 `localhost`、Control 回环监听端口以及任意未占用的 HTTP/HTTPS 入口端口，不限定为 80/443。Control 默认监听 `127.0.0.1:18080`；SQLite 不监听网络端口，只有内置 Caddy 选中的入口端口会加入 Windows 防火墙。安装完成后访问显示的 `/setup` 地址创建首个所有者。
 
-外部 PostgreSQL 密码不能作为 MSI 命令行属性传递，必须放在禁用 ACL 继承、仅管理员与 SYSTEM 可读的响应文件中。普通卸载保留 ProgramData；升级使用安装目录中的 `Update-L4D2PanelCenter.ps1`，它会先校验 MSI、执行 `pg_dump` 并保存配置/证书检查点。完整的交互安装、`/qn`、外部数据库/代理、升级与彻底清理说明见 [Windows 中心端安装说明](docs/windows-center-installation.md)。
+安装器仅授予 Control 服务 SID、Administrators 和 SYSTEM 访问 SQLite 数据目录。普通卸载保留 ProgramData；升级使用安装目录中的 `Update-L4D2PanelCenter.ps1`，它会停止 Control/Caddy，并先用 SQLite Backup API 创建检查点。完整的交互安装、`/qn`、外部代理、升级与彻底清理说明见 [Windows 中心端安装说明](docs/windows-center-installation.md)。
 
 ## 注册节点
 
@@ -130,7 +129,7 @@ Windows 节点以管理员 PowerShell 运行：
 
 ## 本地开发
 
-需要 Go 1.25.12 或更高补丁版本、Node.js 24、PostgreSQL 17：
+需要 Go 1.25.12 或更高补丁版本、Node.js 24；SQLite 通过无 CGO 的 Go 驱动嵌入：
 
 ```bash
 go mod download
@@ -166,15 +165,14 @@ npm audit --audit-level=high
 npm run build
 ```
 
-有 PostgreSQL 17 时可运行 20 节点/100 实例的中心端模拟验收。它会在独立临时 schema 中通过真实 HTTP 路由注册节点、并发创建实例、重放幂等请求，并通过 WebSocket 游标验证持久事件；结束后自动删除 schema，不连接 Agent、SteamCMD 或游戏服：
+20 节点/100 实例的中心端模拟验收使用独立临时 SQLite 文件，通过真实 HTTP 路由注册节点、并发创建实例、重放幂等请求，并通过 WebSocket 游标验证持久事件；它不连接 Agent、SteamCMD 或游戏服：
 
 ```bash
-TEST_DATABASE_URL='postgres://user:password@127.0.0.1:5432/l4d2panel_test?sslmode=disable' \
 RUN_FLEET_ACCEPTANCE=1 \
 go test ./internal/control -run TestFleetScaleAcceptance -count=1 -timeout=2m
 ```
 
-CI 还执行上述 20/100 模拟验收、Go race 测试、Windows/Linux Agent 交叉构建、安装脚本静态检查、Playwright、`docker compose config`，并同时构建 `linux/amd64` 与 `linux/arm64` 中心镜像。Windows 发布作业组装固定版本 PostgreSQL/Caddy 载荷，生成 MSI、SHA-256、CycloneDX SBOM 和第三方许可证清单，并执行静默安装、三个服务、回环监听、`/readyz`、`/setup` 与保留数据卸载冒烟测试；配置签名证书时还会签署并验证 EXE/MSI，否则产物明确标记 `unsigned`。上述自动化不等同于真实游戏验证：发布前仍需分别在受支持的 Windows、Ubuntu 和 Debian 主机上运行安装器，并用真实 SteamCMD 安装/启动 App 222860，验证 A2S、RCON、更新、备份恢复和重启。当前开发工作站未对真实 Docker Compose 集群或 Steam 服务完成端到端运行验证。
+CI 还执行上述 20/100 模拟验收、Go race 测试、Windows/Linux Control 与 Agent 无 CGO 交叉构建、安装脚本静态检查、Playwright、`docker compose config`，并同时构建 `linux/amd64` 与 `linux/arm64` 中心镜像；Compose 作业会实际启动、停止并重启 Control，确认 SQLite 卷可独立通过 `doctor`。Windows 发布作业组装 Control/Caddy，生成不超过 35 MiB 的 MSI、SHA-256、CycloneDX SBOM 和第三方许可证清单，并执行静默安装、两个服务、SQLite ACL、`/readyz`、`/setup`、首个所有者、repair/upgrade 与保留数据卸载冒烟测试。上述自动化不等同于真实游戏验证：发布前仍需分别在受支持的 Windows、Ubuntu 和 Debian 主机上运行安装器，并用真实 SteamCMD 安装/启动 App 222860，验证 A2S、RCON、更新、备份恢复和重启。
 
 ## API 与参考资料
 

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +19,7 @@ import (
 
 type Config struct {
 	ListenAddress     string
-	DatabaseURL       string
+	DatabasePath      string
 	MigrationsDir     string
 	BootstrapUsername string
 	BootstrapPassword string
@@ -33,13 +34,13 @@ type Config struct {
 }
 
 func ConfigFromEnv() (Config, error) {
-	return buildConfig(configFile{})
+	return buildConfig(configFile{}, "")
 }
 
 type configFile struct {
 	SchemaVersion  int       `json:"schema_version"`
 	ListenAddress  string    `json:"listen_address"`
-	DatabaseURL    string    `json:"database_url"`
+	DatabasePath   string    `json:"database_path"`
 	MigrationsDir  string    `json:"migrations_dir"`
 	MasterKey      string    `json:"master_key"`
 	CookieSecure   *bool     `json:"cookie_secure"`
@@ -82,10 +83,10 @@ func ConfigFromFile(path string) (Config, error) {
 	if err := ensureJSONEOF(decoder); err != nil {
 		return Config{}, fmt.Errorf("decode control config: %w", err)
 	}
-	if source.SchemaVersion != 1 {
+	if source.SchemaVersion != 2 {
 		return Config{}, fmt.Errorf("unsupported control config schema_version %d", source.SchemaVersion)
 	}
-	return buildConfig(source)
+	return buildConfig(source, filepath.Dir(path))
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {
@@ -100,11 +101,11 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 	return err
 }
 
-func buildConfig(source configFile) (Config, error) {
+func buildConfig(source configFile, configDir string) (Config, error) {
 	cfg := Config{
 		ListenAddress:     valueDefault(source.ListenAddress, ":8080"),
-		DatabaseURL:       strings.TrimSpace(source.DatabaseURL),
-		MigrationsDir:     valueDefault(source.MigrationsDir, "migrations"),
+		DatabasePath:      valueDefault(source.DatabasePath, filepath.Join("data", "l4d2panel.sqlite3")),
+		MigrationsDir:     valueDefault(source.MigrationsDir, filepath.Join("migrations", "sqlite")),
 		BootstrapUsername: envAnyDefault([]string{"BOOTSTRAP_USERNAME", "CONTROL_BOOTSTRAP_USERNAME"}, "admin"),
 		BootstrapPassword: envAnyDefault([]string{"BOOTSTRAP_PASSWORD", "CONTROL_BOOTSTRAP_PASSWORD"}, ""),
 		BootstrapName:     envAnyDefault([]string{"BOOTSTRAP_DISPLAY_NAME", "CONTROL_BOOTSTRAP_DISPLAY_NAME"}, "System Administrator"),
@@ -131,7 +132,10 @@ func buildConfig(source configFile) (Config, error) {
 	masterKeyRaw := strings.TrimSpace(source.MasterKey)
 
 	cfg.ListenAddress = envAnyDefault([]string{"LISTEN_ADDR", "CONTROL_LISTEN"}, cfg.ListenAddress)
-	cfg.DatabaseURL = envAnyDefault([]string{"DATABASE_URL", "CONTROL_DATABASE_URL"}, cfg.DatabaseURL)
+	if databasePath := envAnyDefault([]string{"DATABASE_PATH", "CONTROL_DATABASE_PATH"}, ""); databasePath != "" {
+		cfg.DatabasePath = databasePath
+		configDir = ""
+	}
 	cfg.MigrationsDir = envAnyDefault([]string{"MIGRATIONS_DIR", "CONTROL_MIGRATIONS_DIR"}, cfg.MigrationsDir)
 	cfg.CookieSecure = envAnyBool([]string{"COOKIE_SECURE", "CONTROL_COOKIE_SECURE"}, cfg.CookieSecure)
 	cfg.PublicURL = strings.TrimRight(envAnyDefault([]string{"PUBLIC_URL", "CONTROL_PUBLIC_URL"}, cfg.PublicURL), "/")
@@ -161,9 +165,22 @@ func buildConfig(source configFile) (Config, error) {
 		}
 		cfg.TrustedProxyNets = append(cfg.TrustedProxyNets, network)
 	}
-	if cfg.DatabaseURL == "" {
-		return Config{}, errors.New("DATABASE_URL is required")
+	if !filepath.IsAbs(cfg.DatabasePath) {
+		base := configDir
+		if base == "" {
+			var err error
+			base, err = os.Getwd()
+			if err != nil {
+				return Config{}, fmt.Errorf("resolve database working directory: %w", err)
+			}
+		}
+		cfg.DatabasePath = filepath.Join(base, cfg.DatabasePath)
 	}
+	absDatabasePath, err := filepath.Abs(cfg.DatabasePath)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve database path: %w", err)
+	}
+	cfg.DatabasePath = absDatabasePath
 	key, err := decodeKey(masterKeyRaw)
 	if err != nil {
 		return Config{}, err

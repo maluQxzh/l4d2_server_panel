@@ -2,33 +2,33 @@
 
 ## 控制平面
 
-Control 是唯一可信协调者，负责身份、资源权限、期望状态、任务队列、审计、事件和告警。PostgreSQL 保存持久状态；Agent 保存实际进程状态、本地注册表和任务幂等日志。中心端当前只支持一个 Control 实例：在线 Agent 连接和派发状态保存在该进程内，不能把多个 Control 副本放在负载均衡器后。
+Control 是唯一可信协调者，负责身份、资源权限、期望状态、任务队列、审计、事件和告警。本机 SQLite（WAL）保存持久状态；Agent 保存实际进程状态、本地注册表和任务幂等日志。中心端硬性限定一个 Control 实例：数据库旁的 OS 独占锁阻止第二个 Control 或维护命令同时打开数据库，不能把多个 Control 副本放在负载均衡器后。
 
 React 前端被编译进 Control 二进制并同域提供。浏览器 REST 接口位于 `/api/v1`，实时事件位于 `/api/v1/events`，Agent 注册使用 `/api/v1/agent/enroll`，长期连接使用 `/agent/v1/connect`。Caddy 终止 TLS 并反向代理 HTTP/WebSocket。
 
 中心 Compose 栈始终运行 Linux 容器，可部署在 Linux Docker Engine 或 macOS Docker Desktop。Control 镜像提供 `linux/amd64` 与 `linux/arm64` 构建路径，Docker Desktop 在 Intel Mac 和 Apple Silicon 上自动选择对应架构；这不会把 macOS 加入 Agent 或游戏服节点的支持平台。
 
-Windows 10/11 x64 与 Windows Server 2019+ 还可使用原生 MSI，不依赖 Docker/WSL2。MSI 将 PostgreSQL 17、Control、Caddy 注册为 `l4d2panel-postgres`、`l4d2panel-control`、`l4d2panel-caddy` 三个独立虚拟账号服务。Control 仅在可配置的 IPv4 回环端口监听（默认 `127.0.0.1:18080`），受管 PostgreSQL 固定监听 `127.0.0.1:55432`，外部入口只能到 Caddy 所选端口；程序与持久数据分属 ProgramFiles/ProgramData。Control 服务命令行只包含严格 JSON 配置路径，秘密位于受 ACL 限制的配置文件。原生部署仍是同一套单 Control/单 PostgreSQL 架构，不构成 HA。
+Windows 10/11 x64 与 Windows Server 2019+ 还可使用原生 MSI，不依赖 Docker/WSL2。MSI 只注册 `l4d2panel-control` 与 `l4d2panel-caddy` 两个独立虚拟账号服务。Control 仅在可配置的 IPv4 回环端口监听（默认 `127.0.0.1:18080`），SQLite 不监听端口，外部入口只能到 Caddy 所选端口；程序与持久数据分属 ProgramFiles/ProgramData。Control 服务命令行只包含严格 JSON 配置路径，秘密和数据库位于受 ACL 限制的目录。
 
 ## 节点协议与任务流
 
 1. 有全局管理权限的交互式管理员创建短期一次性注册令牌。
 2. Agent 通过 HTTPS 交换节点 ID 和长期凭据，将凭据原子写入本机受限配置，并移除一次性令牌。
 3. Agent 主动建立带 Bearer 节点凭据的 WSS，发送协议版本、平台、能力、实例根、心跳和指标。
-4. 用户写操作先在 PostgreSQL 创建任务，再通过连接派发；节点离线时任务保持排队。
+4. 用户写操作先在 SQLite 立即事务中创建任务，再通过连接派发；节点离线时任务保持排队。
 5. Agent 在执行前原子持久化任务 ID 以及实例、类型和 payload 的指纹。同一 ID 的重复任务返回已有状态/结果，不重复副作用；同一 ID 携带不同工作会被拒绝。Agent 重启会把未完成任务记为失败，而不是猜测性重跑。
 6. Agent 上报进度和最终结果；Control 持久化结果、成功应用资源/失败/取消投影并发布事件后发送 `job_ack`。任一步失败都会中止确认并关闭会话，以便重连重放；Agent 只在收到确认后删除终态日志，确认丢失时同样重放到中心成功确认。
-7. Control 发布过滤并脱敏的浏览器事件；浏览器以每页 500 条、单连接最多 5000 条按事件游标补齐遗漏。单 Control 进程把持久事件的提交与进程内广播串行化，防止并发事务按相反顺序提交后让游标永久跳过较小 ID；瞬时事件绕过该串行锁。持久事件 ID 出现缺口时立即从 PostgreSQL 补齐，另每 2 秒检查没有后续事件可暴露的丢失尾部；瞬时日志和指标允许对慢客户端丢弃。
+7. Control 发布过滤并脱敏的浏览器事件；浏览器以每页 500 条、单连接最多 5000 条按事件游标补齐遗漏。单 Control 进程把持久事件的提交与进程内广播串行化；`event_log.id` 使用不会因清理复用的 `AUTOINCREMENT` 游标。持久事件 ID 出现缺口时立即从 SQLite 补齐，另每 2 秒检查丢失尾部；瞬时日志和指标允许对慢客户端丢弃。
 
 任务状态固定为 `queued → dispatched → running → succeeded|failed|canceled`。Control 数据库和 Agent 都限制每个实例同时只有一个写操作；A2S/玩家/更新探测、目录列表、文件读取以及日志/备份分块不占实例写锁。SteamCMD 并发由每个 Agent 的 `steamcmd_concurrency`（1–4，默认 1）控制。
 
 协议按主次版本兼容：主版本必须一致，Control 接受当前次版本和前一个次版本。能力协商用于 `check_update`、`discover_instances`、`purge_quarantine` 等增量命令，避免把新任务派给旧 Agent。`job_ack` 是可忽略的增量消息；不认识它的前一版本 Agent 会保持既有行为而不会断开连接。
 
-Control 在持久化或发布前校验所有 Agent 入站消息。心跳最多 256 KiB/512 个实例；指标最多 512 KiB/512 个样本，同一批不得重复实例，数值范围与“已用不超过总量”关系必须成立；日志只接受 `stdout/stderr`，单行 1–16 KiB、消息最多 128 KiB。指标和日志时间戳只接受过去 15 分钟到未来 2 分钟。所有消息中的实例 ID 必须属于当前 WSS 节点；`job_update` 还必须匹配任务节点/实例，结果中任意嵌套 `instance_id` 都不能跨实例。归属校验按 Agent 连接缓存 2 秒且最多 1024 项；同一实例的并发 miss 合并为一次 PostgreSQL 查询，未知/跨节点 ID 不做负缓存，正常实例删除会立即逐连接清除。运行进度消息最多 32 KiB、终态最多 12 MiB，重复进度丢弃、变化进度按每任务最快 250 ms 合并，终态不节流；每条连接最多跟踪 2048 个非终态节流记录并在 1 小时后回收。
+Control 在持久化或发布前校验所有 Agent 入站消息。心跳最多 256 KiB/512 个实例；指标最多 512 KiB/512 个样本，同一批不得重复实例，数值范围与“已用不超过总量”关系必须成立；日志只接受 `stdout/stderr`，单行 1–16 KiB、消息最多 128 KiB。指标和日志时间戳只接受过去 15 分钟到未来 2 分钟。所有消息中的实例 ID 必须属于当前 WSS 节点；`job_update` 还必须匹配任务节点/实例，结果中任意嵌套 `instance_id` 都不能跨实例。归属校验按 Agent 连接缓存 2 秒且最多 1024 项；同一实例的并发 miss 合并为一次 SQLite 查询，未知/跨节点 ID 不做负缓存，正常实例删除会立即逐连接清除。运行进度消息最多 32 KiB、终态最多 12 MiB，重复进度丢弃、变化进度按每任务最快 250 ms 合并，终态不节流。
 
 ## 实例生命周期
 
-- 新建实例时 Control 在节点级数据库事务锁内，从 27015–27999 中自动分配未登记游戏端口。`instance_port_reservations` 以 `(node_id, port)` 为唯一键，把游戏端口与非零 SourceTV 端口放进同一互斥空间；数据库触发器在插入/修改时维持预留，实例删除时级联释放。并发创建、显式跨列冲突和池耗尽不会静默改号，而是返回 `409 conflict`。Agent 随后仍检查节点上的实际端口占用。
+- 新建实例时 Control 在 SQLite 立即事务中读取节点全部预留端口，由 Go 从 27015–27999 选择候选并写入预留。`instance_port_reservations` 以 `(node_id, port)` 为唯一键，把游戏端口与非零 SourceTV 端口放进同一互斥空间，实例删除时级联释放。并发创建、显式跨列冲突和池耗尽不会静默改号，而是返回 `409 conflict`。Agent 随后仍检查节点上的实际端口占用。
 - 安装通过 SteamCMD App 222860 写入独立实例目录；`verify_start` 会实际启动并完成进程、A2S、RCON 检查后再恢复停止状态。
 - 节点发现 API 将 `discover_instances` 作为节点级持久任务排队，只对配置的实例根做有界广度优先只读扫描：深度 1–8（默认 6）、最多读取 1–20000 个目录条目（默认 5000）、最多返回 200 个候选；`.quarantine`、`.staging`、回收站和系统卷目录被排除，符号链接/重解析点不会跟随。结果只包含根索引和相对路径，不暴露任意主机路径。
 - 导入路径由 `root_index + path` 表示，必须位于 Agent 白名单实例根。导入会再次验证安装结构和活动进程的可执行路径。发现为外部运行中的实例以 `external` 状态只读接入；该状态代表所有权边界，即使外部进程随后退出也保持到显式受控重启。受控重启可提交一次性的 `existing_rcon_password`：中心加密持久化且只在派发时解封，Agent 用它向旧进程发送 `quit` 并短暂等待；未提供或优雅退出失败时，Agent 只有在重新匹配 PID 与实例内可执行路径后才强制结束进程树。随后 Agent 写入面板当前配置和新 RCON 密钥并启动受管进程，旧密码不会成为实例秘密。
@@ -95,7 +95,7 @@ Agent 永久清理时只接收 Control 墓碑中的 `root_index + entry_name`，
 
 ## 身份、权限与 API 一致性
 
-数据库没有任何用户时，Control 仍可正常启动，并把浏览器引导到 `/setup`。公开的引导状态接口只发放一个短期、HttpOnly、SameSite=Strict 的专用 Cookie 和由该 Cookie 派生的独立 CSRF 令牌；提交首个所有者时使用 PostgreSQL 事务级 advisory lock 串行化竞争请求，锁后重新检查用户数量，因此只有第一个提交能成功。成功响应同时创建普通浏览器会话并永久关闭网页引导入口。部署者应在可信网络中完成该一次性初始化。
+数据库没有任何用户时，Control 仍可正常启动，并把浏览器引导到 `/setup`。公开的引导状态接口只发放一个短期、HttpOnly、SameSite=Strict 的专用 Cookie 和由该 Cookie 派生的独立 CSRF 令牌；提交首个所有者时使用 SQLite 立即事务串行化竞争请求，事务内重新检查用户数量，因此只有第一个提交能成功。成功响应同时创建普通浏览器会话并永久关闭网页引导入口。
 
 浏览器使用 HttpOnly/Secure/SameSite=Strict Cookie；写请求另外校验 `X-CSRF-Token`。API Token 通过 Bearer 认证，不使用 CSRF，但必须有过期时间，并可限定权限、节点和实例。TOTP 和 API Token 管理只允许交互式浏览器会话；团队账号与角色绑定还要求全局所有者的 `root_security` 权限，所有者 API Token 也不能执行这些操作。
 
@@ -107,7 +107,7 @@ Agent 永久清理时只接收 Control 墓碑中的 `root_index + entry_name`，
 
 ## 当前边界
 
-- 单 Control、单 PostgreSQL，不支持控制平面高可用、Redis、Kubernetes 或共享 Depot。
+- 单 Control、单本机 SQLite，不支持控制平面高可用、网络文件系统、Redis、Kubernetes 或共享 Depot。
 - 无公开注册、计费、多租户、SSO、S3 和网页系统终端。
 - 同一节点的 Agent 和全部 srcds 实例当前共用一个低权限 OS 服务账号；独立目录与 PathGuard 只约束 Agent API，不构成每实例进程沙箱或租户安全边界。相互不信任的实例/原生扩展必须拆分到不同主机或另行配置 OS 级隔离，此项在多租户生产发布前属于阻断项。
 - 日志、备份与隔离文件依赖节点磁盘；中心数据库不能替代节点外备份。

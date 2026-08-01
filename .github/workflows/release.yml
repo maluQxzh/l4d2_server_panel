@@ -58,19 +58,6 @@ jobs:
         with:
           go-version: '1.25.12'
           cache: true
-      - name: Require pinned PostgreSQL payload configuration
-        shell: pwsh
-        env:
-          PG_URL: ${{ vars.POSTGRESQL_17_WINDOWS_X64_URL }}
-          PG_SHA256: ${{ vars.POSTGRESQL_17_WINDOWS_X64_SHA256 }}
-        run: |
-          if (-not $env:PG_URL -or $env:PG_SHA256 -notmatch '^[a-fA-F0-9]{64}$') {
-            throw 'Set repository variables POSTGRESQL_17_WINDOWS_X64_URL and POSTGRESQL_17_WINDOWS_X64_SHA256.'
-          }
-          Invoke-WebRequest -UseBasicParsing -Uri $env:PG_URL -OutFile postgresql-17.10-1-windows-x64-binaries.zip
-          if ((Get-FileHash postgresql-17.10-1-windows-x64-binaries.zip -Algorithm SHA256).Hash -ne $env:PG_SHA256) {
-            throw 'Pinned PostgreSQL archive hash mismatch.'
-          }
       - name: Import optional code-signing certificate
         shell: pwsh
         env:
@@ -85,26 +72,22 @@ jobs:
         shell: pwsh
         env:
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ vars.WINDOWS_SIGNING_TIMESTAMP_URL }}
-          PG_SHA256: ${{ vars.POSTGRESQL_17_WINDOWS_X64_SHA256 }}
         run: |
           $version = '${{ github.ref_name }}'.TrimStart('v').Split('-', 2)[0]
           ./packaging/windows/Build-WindowsMSI.ps1 `
-            -PostgreSqlArchive ./postgresql-17.10-1-windows-x64-binaries.zip `
-            -PostgreSqlSha256 $env:PG_SHA256 `
             -Version $version
       - name: Silent install and readiness smoke test
         shell: pwsh
         run: |
           $msi = Get-ChildItem dist/windows-center -Filter *.msi | Select-Object -First 1
-          $process = Start-Process msiexec.exe -ArgumentList @('/i', $msi.FullName, '/qn', '/norestart', 'DATABASE_MODE=managed', 'PROXY_MODE=caddy', 'PANEL_DOMAIN=localhost', 'CONTROL_PORT=18180', 'HTTP_PORT=18080', 'HTTPS_PORT=18443') -Wait -PassThru
+          $process = Start-Process msiexec.exe -ArgumentList @('/i', $msi.FullName, '/qn', '/norestart', 'PROXY_MODE=caddy', 'PANEL_DOMAIN=localhost', 'CONTROL_PORT=18180', 'HTTP_PORT=18080', 'HTTPS_PORT=18443') -Wait -PassThru
           if ($process.ExitCode -notin @(0, 3010)) { throw "MSI install failed: $($process.ExitCode)" }
-          foreach ($name in @('l4d2panel-postgres', 'l4d2panel-control', 'l4d2panel-caddy')) {
+          foreach ($name in @('l4d2panel-control', 'l4d2panel-caddy')) {
             if ((Get-Service $name).Status -ne 'Running') { throw "$name is not running" }
           }
           if ((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18180/readyz).StatusCode -ne 200) { throw 'Control is not ready.' }
           if ((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18180/setup).StatusCode -ne 200) { throw 'Setup page is unavailable.' }
-          $postgresListener = Get-NetTCPConnection -State Listen -LocalPort 55432
-          if ($postgresListener.LocalAddress -ne '127.0.0.1') { throw 'Managed PostgreSQL is not loopback-only.' }
+          if (Get-NetTCPConnection -State Listen -LocalPort 55432 -ErrorAction SilentlyContinue) { throw 'Legacy database port 55432 is listening.' }
           $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
           $bootstrap = Invoke-RestMethod -SkipCertificateCheck -WebSession $session -Uri https://localhost:18443/api/v1/auth/bootstrap
           if (-not $bootstrap.required -or -not $bootstrap.csrf_token) { throw 'First-owner setup is not available.' }

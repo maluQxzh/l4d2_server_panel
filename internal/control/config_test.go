@@ -9,10 +9,10 @@ import (
 )
 
 func TestConfigAcceptsDeploymentEnvironmentNames(t *testing.T) {
-	for _, name := range []string{"CONTROL_DATABASE_URL", "CONTROL_MASTER_KEY", "CONTROL_LISTEN", "CONTROL_MIGRATIONS_DIR", "CONTROL_COOKIE_SECURE"} {
+	for _, name := range []string{"CONTROL_DATABASE_PATH", "CONTROL_MASTER_KEY", "CONTROL_LISTEN", "CONTROL_MIGRATIONS_DIR", "CONTROL_COOKIE_SECURE"} {
 		t.Setenv(name, "")
 	}
-	t.Setenv("DATABASE_URL", "postgres://test")
+	t.Setenv("DATABASE_PATH", filepath.Join(t.TempDir(), "control.sqlite3"))
 	t.Setenv("MASTER_KEY", strings.Repeat("01", 32))
 	t.Setenv("LISTEN_ADDR", ":9000")
 	t.Setenv("MIGRATIONS_DIR", "/migrations")
@@ -30,7 +30,7 @@ func TestConfigAcceptsDeploymentEnvironmentNames(t *testing.T) {
 
 func TestConfigFromFileIsStrictAndEnvironmentWins(t *testing.T) {
 	for _, name := range []string{
-		"DATABASE_URL", "CONTROL_DATABASE_URL", "MASTER_KEY", "CONTROL_MASTER_KEY",
+		"DATABASE_PATH", "CONTROL_DATABASE_PATH", "MASTER_KEY", "CONTROL_MASTER_KEY",
 		"LISTEN_ADDR", "CONTROL_LISTEN", "MIGRATIONS_DIR", "CONTROL_MIGRATIONS_DIR",
 		"COOKIE_SECURE", "CONTROL_COOKIE_SECURE", "PUBLIC_URL", "CONTROL_PUBLIC_URL",
 		"TRUSTED_PROXIES", "CONTROL_TRUSTED_PROXIES", "TZ", "CONTROL_TIMEZONE",
@@ -40,9 +40,9 @@ func TestConfigFromFileIsStrictAndEnvironmentWins(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "control.json")
 	data := `{
-  "schema_version": 1,
+  "schema_version": 2,
   "listen_address": "127.0.0.1:8080",
-  "database_url": "postgres://panel:file-secret@127.0.0.1:55432/panel",
+  "database_path": "data\\control.sqlite3",
   "migrations_dir": "C:\\Program Files\\L4D2Panel\\Control\\migrations",
   "master_key": "` + strings.Repeat("ab", 32) + `",
   "cookie_secure": true,
@@ -71,15 +71,18 @@ func TestConfigFromFileIsStrictAndEnvironmentWins(t *testing.T) {
 	if len(cfg.TrustedProxyNets) != 1 || cfg.LogFile == "" {
 		t.Fatalf("missing file-only settings: %+v", cfg)
 	}
+	if cfg.DatabasePath != filepath.Join(filepath.Dir(path), "data", "control.sqlite3") {
+		t.Fatalf("database path was not resolved relative to config: %q", cfg.DatabasePath)
+	}
 }
 
 func TestConfigFromFileRejectsUnknownAndTrailingData(t *testing.T) {
-	t.Setenv("CONTROL_DATABASE_URL", "")
-	t.Setenv("DATABASE_URL", "")
+	t.Setenv("CONTROL_DATABASE_PATH", "")
+	t.Setenv("DATABASE_PATH", "")
 	for name, body := range map[string]string{
-		"unknown":  `{"schema_version":1,"unknown":true}`,
+		"unknown":  `{"schema_version":2,"unknown":true}`,
 		"missing":  `{"listen_address":"127.0.0.1:8080"}`,
-		"trailing": `{"schema_version":1} {"schema_version":1}`,
+		"trailing": `{"schema_version":2} {"schema_version":2}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "control.json")

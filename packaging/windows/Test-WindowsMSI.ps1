@@ -44,7 +44,6 @@ try {
         $properties[$row.Fields[0]] = $row.Fields[1]
     }
     $expectedProperties = [ordered]@{
-        DATABASE_MODE = 'managed'
         PROXY_MODE = 'caddy'
         PANEL_DOMAIN = 'localhost'
         CONTROL_PORT = '18080'
@@ -57,7 +56,7 @@ try {
         Assert-True ($properties.ContainsKey($entry.Key)) "MSI property $($entry.Key) is missing."
         Assert-True ($properties[$entry.Key] -ceq $entry.Value) "MSI property $($entry.Key) must be '$($entry.Value)', got '$($properties[$entry.Key])'."
     }
-    foreach ($forbidden in @('DATABASE_URL', 'MASTER_KEY', 'RCON_PASSWORD', 'SMTP_PASSWORD')) {
+    foreach ($forbidden in @('DATABASE_URL', 'DATABASE_MODE', 'RESPONSE_FILE', 'MASTER_KEY', 'RCON_PASSWORD', 'SMTP_PASSWORD')) {
         Assert-True (-not $properties.ContainsKey($forbidden)) "Sensitive property $forbidden must not be stored in the MSI."
     }
     $secure = @([string]$properties.SecureCustomProperties -split ';')
@@ -70,13 +69,11 @@ try {
         $registry[$row.Fields[2]] = $row.Fields
     }
     $expectedRegistry = [ordered]@{
-        DatabaseMode = '[DATABASE_MODE]'
         ProxyMode = '[PROXY_MODE]'
         PanelDomain = '[PANEL_DOMAIN]'
         ControlPort = '#[CONTROL_PORT]'
         HttpPort = '#[HTTP_PORT]'
         HttpsPort = '#[HTTPS_PORT]'
-        ResponseFile = '[RESPONSE_FILE]'
         SkipStart = '[SKIP_START]'
         SkipMigrate = '[SKIP_MIGRATE]'
     }
@@ -106,12 +103,17 @@ try {
 
     $controlProperties = @(Invoke-MsiQuery -Database $database -Sql 'SELECT `Property` FROM `Control` WHERE `Dialog_` = ''CenterOptionsDlg''' -FieldCount 1 | ForEach-Object { $_.Fields[0] })
     Assert-True ($controlProperties -contains 'CONTROL_PORT') 'The MSI UI does not expose CONTROL_PORT.'
+    Assert-True ($controlProperties -notcontains 'DATABASE_MODE' -and $controlProperties -notcontains 'RESPONSE_FILE') 'Legacy database-mode UI is still present.'
 
     $fileNames = @(Invoke-MsiQuery -Database $database -Sql 'SELECT `FileName` FROM `File`' -FieldCount 1 | ForEach-Object { ($_.Fields[0] -split '\|')[-1] })
-    Assert-True ($fileNames.Count -gt 500) "MSI payload is unexpectedly small ($($fileNames.Count) files)."
-    foreach ($requiredFile in @('Install-L4D2PanelCenter.ps1', 'Update-L4D2PanelCenter.ps1', 'Remove-L4D2PanelCenterData.ps1', 'l4d2panel-control.exe', 'caddy.exe', 'postgres.exe', 'initdb.exe', 'pg_ctl.exe', 'psql.exe', 'createdb.exe', 'pg_dump.exe')) {
+    Assert-True ($fileNames.Count -ge 8) "MSI payload is unexpectedly small ($($fileNames.Count) files)."
+    foreach ($requiredFile in @('Install-L4D2PanelCenter.ps1', 'Update-L4D2PanelCenter.ps1', 'Remove-L4D2PanelCenterData.ps1', 'l4d2panel-control.exe', 'caddy.exe', '001_control_plane.sql', 'modernc-sqlite-LICENSE.txt', 'modernc-libc-LICENSE.txt', 'modernc-libc-LICENSE-3RD-PARTY.md')) {
         Assert-True ($fileNames -contains $requiredFile) "Required MSI payload file $requiredFile is missing."
     }
+    foreach ($forbiddenFile in @('postgres.exe', 'initdb.exe', 'pg_ctl.exe', 'psql.exe', 'createdb.exe', 'pg_dump.exe')) {
+        Assert-True ($fileNames -notcontains $forbiddenFile) "Forbidden PostgreSQL payload file $forbiddenFile is present."
+    }
+    Assert-True ((Get-Item -LiteralPath $resolvedMsi).Length -le 35MB) 'MSI exceeds the 35 MiB size target.'
 
     $mediaCabinets = @(Invoke-MsiQuery -Database $database -Sql 'SELECT `Cabinet` FROM `Media`' -FieldCount 1 | ForEach-Object { $_.Fields[0] })
     Assert-True ($mediaCabinets.Count -ge 1 -and @($mediaCabinets | Where-Object { $_ -like '#*' }).Count -eq $mediaCabinets.Count) 'All MSI cabinets must be embedded.'

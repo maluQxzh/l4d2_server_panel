@@ -260,7 +260,7 @@ func (h *AgentHub) requireNodeInstances(ctx context.Context, nodeID string, inst
 
 	// Validation is serialized independently of the WebSocket write lock. A
 	// burst of concurrent frames for one new instance therefore produces one
-	// ownership query without delaying job dispatch writes behind PostgreSQL.
+	// ownership query without delaying job dispatch writes behind SQLite.
 	client.ownershipMu.Lock()
 	defer client.ownershipMu.Unlock()
 	if client.ownership == nil {

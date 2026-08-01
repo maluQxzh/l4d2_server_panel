@@ -62,7 +62,7 @@ $report = [ordered]@{
 
 Assert-True (-not (Test-Path -LiteralPath $installRootFull)) "Smoke-test install root already exists: $installRootFull"
 Assert-True (-not (Test-Path -LiteralPath $dataRootFull)) "Smoke-test data root already exists: $dataRootFull"
-foreach ($name in @('l4d2panel-postgres', 'l4d2panel-control', 'l4d2panel-caddy')) {
+foreach ($name in @('l4d2panel-control', 'l4d2panel-caddy')) {
     Assert-True (-not (Get-Service -Name $name -ErrorAction SilentlyContinue)) "Smoke-test service already exists: $name"
 }
 foreach ($port in @($ControlPort, $HttpPort, $HttpsPort, 55432, 2019)) {
@@ -70,19 +70,20 @@ foreach ($port in @($ControlPort, $HttpPort, $HttpsPort, 55432, 2019)) {
 }
 
 $installLog = [IO.Path]::ChangeExtension($ReportPath, '.install.log')
+$repairLog = [IO.Path]::ChangeExtension($ReportPath, '.repair.log')
 $uninstallLog = [IO.Path]::ChangeExtension($ReportPath, '.uninstall.log')
 $installed = $false
 try {
     $installArguments = @(
         '/i', $msi, '/qn', '/norestart', '/l*v', $installLog,
-        "INSTALLFOLDER=$installRootFull", 'DATABASE_MODE=managed', 'PROXY_MODE=caddy',
+        "INSTALLFOLDER=$installRootFull", 'PROXY_MODE=caddy',
         'PANEL_DOMAIN=localhost', "CONTROL_PORT=$ControlPort", "HTTP_PORT=$HttpPort", "HTTPS_PORT=$HttpsPort"
     )
     $report.install_exit_code = Invoke-MsiExec -Arguments $installArguments -Operation 'MSI smoke install'
     $installed = $true
 
     $services = @{}
-    foreach ($name in @('l4d2panel-postgres', 'l4d2panel-control', 'l4d2panel-caddy')) {
+    foreach ($name in @('l4d2panel-control', 'l4d2panel-caddy')) {
         $service = Get-Service -Name $name
         $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(45))
         $cim = Get-CimInstance Win32_Service -Filter "Name='$name'"
@@ -94,27 +95,28 @@ try {
     $report.checks.services = $services
 
     $configPath = Join-Path $dataRootFull 'config\control.json'
-    $statePath = Join-Path $dataRootFull 'config\install.json'
     $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-    $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-    Assert-True ($config.schema_version -eq 1 -and $config.listen_address -eq "127.0.0.1:$ControlPort") 'Control configuration has an unexpected schema or listen address.'
-    Assert-True ([string]$config.master_key -match '^[a-f0-9]{64}$') 'Control master key was not generated correctly.'
-    Assert-True ($state.schema_version -eq 2 -and $state.control_port -eq $ControlPort) 'Windows install state did not persist the Control port.'
-    Assert-True ((Get-Content -LiteralPath (Join-Path $dataRootFull 'postgres\data\PG_VERSION') -Raw).Trim() -eq '17') 'Managed PostgreSQL is not version 17.'
-    $report.checks.configuration = @{listen_address=$config.listen_address; install_state_schema=$state.schema_version; postgres_major=17}
+    Assert-True ($config.schema_version -eq 2 -and $config.listen_address -eq "127.0.0.1:$ControlPort") 'Control configuration has an unexpected schema or listen address.'
+    Assert-True ([string]$config.master_key -match '^[A-Za-z0-9+/]{43}=$') 'Control master key was not generated correctly.'
+    Assert-True ([string]$config.database_path -eq (Join-Path $dataRootFull 'data\l4d2panel.sqlite3')) 'Control database_path is incorrect.'
+    $report.checks.configuration = @{listen_address=$config.listen_address; schema_version=$config.schema_version; database_path=$config.database_path}
 
     $configIdentities = @((Get-Acl -LiteralPath $configPath).Access | ForEach-Object { $_.IdentityReference.Value })
     Assert-True ($configIdentities -contains 'NT SERVICE\l4d2panel-control') 'Control has no read ACL on its secret configuration.'
-    Assert-True ($configIdentities -notcontains 'NT SERVICE\l4d2panel-postgres' -and $configIdentities -notcontains 'NT SERVICE\l4d2panel-caddy') 'A non-Control service can read the secret Control configuration.'
-    $postgresConfigIdentities = @((Get-Acl -LiteralPath (Join-Path $dataRootFull 'postgres\data\postgresql.conf')).Access | ForEach-Object { $_.IdentityReference.Value })
-    Assert-True ($postgresConfigIdentities -contains 'NT SERVICE\l4d2panel-postgres') 'PostgreSQL configuration did not inherit its service ACL.'
+    Assert-True ($configIdentities -notcontains 'NT SERVICE\l4d2panel-caddy') 'Caddy can read the secret Control configuration.'
+    foreach ($sqliteFile in @('l4d2panel.sqlite3', 'l4d2panel.sqlite3-wal', 'l4d2panel.sqlite3-shm')) {
+        $path = Join-Path $dataRootFull "data\$sqliteFile"
+        Assert-True (Test-Path -LiteralPath $path) "$sqliteFile was not created."
+        $identities = @((Get-Acl -LiteralPath $path).Access | ForEach-Object { $_.IdentityReference.Value })
+        Assert-True ($identities -contains 'NT SERVICE\l4d2panel-control') "$sqliteFile is not writable by Control."
+        Assert-True ($identities -notcontains 'NT SERVICE\l4d2panel-caddy') "$sqliteFile is accessible to Caddy."
+    }
     $report.checks.secret_acl_isolation = $true
 
     $controlListener = Get-NetTCPConnection -State Listen -LocalPort $ControlPort
-    $postgresListener = Get-NetTCPConnection -State Listen -LocalPort 55432
     Assert-True (@($controlListener | Where-Object LocalAddress -ne '127.0.0.1').Count -eq 0) 'Control is not loopback-only.'
-    Assert-True (@($postgresListener | Where-Object LocalAddress -ne '127.0.0.1').Count -eq 0) 'Managed PostgreSQL is not loopback-only.'
-    $report.checks.loopback_listeners = @{control='127.0.0.1'; postgres='127.0.0.1'}
+    Assert-True (-not (Get-NetTCPConnection -State Listen -LocalPort 55432 -ErrorAction SilentlyContinue)) 'Legacy PostgreSQL port 55432 is listening.'
+    $report.checks.loopback_listeners = @{control='127.0.0.1'; legacy_database_port=$false}
 
     $ready = Wait-HttpStatus -Uri "http://127.0.0.1:$ControlPort/readyz"
     $setup = Wait-HttpStatus -Uri "http://127.0.0.1:$ControlPort/setup"
@@ -122,27 +124,55 @@ try {
     Assert-True ($LASTEXITCODE -eq 0 -and ($curlOutput | Out-String).Trim() -eq '200') 'Caddy HTTPS setup endpoint did not return HTTP 200.'
     $report.checks.http = @{ready=$ready.StatusCode; setup=$setup.StatusCode; caddy_https=200}
 
+    $webSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+    $bootstrap = Invoke-RestMethod -UseBasicParsing -WebSession $webSession -Uri "http://127.0.0.1:$ControlPort/api/v1/auth/bootstrap"
+    Assert-True ($bootstrap.required -and $bootstrap.csrf_token) 'First-owner bootstrap is not available.'
+    $ownerBody = @{
+        username = 'sqlite-smoke-owner'
+        display_name = 'SQLite Smoke Owner'
+        password = 'SQLite-Smoke-Owner-2026!'
+        password_confirmation = 'SQLite-Smoke-Owner-2026!'
+    } | ConvertTo-Json
+    $owner = Invoke-RestMethod -UseBasicParsing -WebSession $webSession -Method Post -ContentType 'application/json' `
+        -Headers @{'X-Bootstrap-CSRF-Token'=$bootstrap.csrf_token} -Body $ownerBody `
+        -Uri "http://127.0.0.1:$ControlPort/api/v1/auth/bootstrap"
+    Assert-True ($owner.user.role -eq 'owner') 'First owner was not created.'
+    $report.checks.first_owner_created = $true
+
     $firewallPorts = @(Get-NetFirewallRule -Group 'L4D2 Panel Center' | Get-NetFirewallPortFilter | ForEach-Object { [int]$_.LocalPort } | Sort-Object -Unique)
     Assert-True ($firewallPorts.Count -eq 2 -and $firewallPorts -contains $HttpPort -and $firewallPorts -contains $HttpsPort) 'Firewall rules do not match only the selected public ports.'
     $report.checks.firewall_ports = $firewallPorts
 
-    foreach ($serviceName in @('l4d2panel-postgres', 'l4d2panel-control', 'l4d2panel-caddy')) {
+    foreach ($serviceName in @('l4d2panel-control', 'l4d2panel-caddy')) {
         $acl = Get-Acl -LiteralPath $installRootFull
         Assert-True (@($acl.Access | Where-Object { $_.IdentityReference.Value -eq "NT SERVICE\$serviceName" -and $_.AccessControlType -eq 'Allow' }).Count -ge 1) "$serviceName has no read/execute ACL on the install root."
     }
     $report.checks.install_root_service_acl = $true
 
-    foreach ($pattern in @('postgres://l4d2panel:', 'database_url', 'master_key', 'PGPASSWORD')) {
+    foreach ($pattern in @('postgres://', 'database_url', 'master_key', 'PGPASSWORD', 'DATABASE_MODE')) {
         Assert-True (@(Select-String -LiteralPath $installLog -SimpleMatch -Pattern $pattern -ErrorAction SilentlyContinue).Count -eq 0) "MSI log contains sensitive pattern $pattern."
     }
     $report.checks.install_log_secret_redaction = $true
+
+    $repairArguments = @(
+        '/i', $msi, '/qn', '/norestart', '/l*v', $repairLog, 'REINSTALL=ALL', 'REINSTALLMODE=vomus',
+        "INSTALLFOLDER=$installRootFull", 'PROXY_MODE=caddy', 'PANEL_DOMAIN=localhost',
+        "CONTROL_PORT=$ControlPort", "HTTP_PORT=$HttpPort", "HTTPS_PORT=$HttpsPort"
+    )
+    $report.repair_exit_code = Invoke-MsiExec -Arguments $repairArguments -Operation 'MSI repair/upgrade simulation'
+    Wait-HttpStatus -Uri "http://127.0.0.1:$ControlPort/readyz" | Out-Null
+    $afterRepair = Invoke-RestMethod -UseBasicParsing -Uri "http://127.0.0.1:$ControlPort/api/v1/auth/bootstrap"
+    Assert-True (-not $afterRepair.required) 'Owner data was lost during repair/upgrade.'
+    $checkpoints = @(Get-ChildItem -LiteralPath (Join-Path $dataRootFull 'backups') -Filter 'upgrade-*.sqlite3')
+    Assert-True ($checkpoints.Count -ge 1) 'Repair/upgrade did not create an SQLite checkpoint.'
+    $report.checks.repair_preserved_data = $true
 
     $marker = Join-Path $dataRootFull 'smoke-preserve.marker'
     [IO.File]::WriteAllText($marker, 'preserve')
     $uninstallArguments = @('/x', $msi, '/qn', '/norestart', '/l*v', $uninstallLog)
     $report.uninstall_exit_code = Invoke-MsiExec -Arguments $uninstallArguments -Operation 'MSI smoke uninstall'
     $installed = $false
-    foreach ($name in @('l4d2panel-postgres', 'l4d2panel-control', 'l4d2panel-caddy')) {
+    foreach ($name in @('l4d2panel-control', 'l4d2panel-caddy')) {
         Assert-True (-not (Get-Service -Name $name -ErrorAction SilentlyContinue)) "$name remained after uninstall."
     }
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $installRootFull 'l4d2panel-control.exe'))) 'Program binaries remained after ordinary uninstall.'

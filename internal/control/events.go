@@ -11,16 +11,14 @@ import (
 type EventBroker struct {
 	store       *Store
 	appendEvent func(context.Context, Event) (Event, error)
-	// persistentMu orders PostgreSQL commit and in-process broadcast as one
-	// operation. PostgreSQL sequences allocate IDs before commit, so concurrent
-	// inserts could otherwise broadcast ID 2 before ID 1 and make clients advance
-	// their cursor past the later-committing event. Ephemeral frames bypass it.
+	// persistentMu orders SQLite commit and in-process broadcast as one operation
+	// so browser cursors observe the same order as durable events.
 	persistentMu sync.Mutex
 	mu           sync.RWMutex
 	next         uint64
 	subs         map[uint64]chan Event
 	// authorizationGeneration lets rare credential/resource mutations wake all
-	// live streams without coupling their hot event-delivery path to PostgreSQL.
+	// live streams without coupling their hot event-delivery path to SQLite.
 	// A periodic database revalidation remains the cross-check for expiry and
 	// changes made outside this Control process.
 	authorizationGeneration atomic.Uint64

@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,14 +10,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
 // QueueBackupUploadAbort expires an upload session and durably asks the target
-// Agent to remove its staging files. The upload advisory lock is shared with
-// chunk and restore creation, so no new writer can slip between the safety
-// checks and the status change.
+// Agent to remove its staging files. The immediate SQLite transaction is
+// shared with chunk and restore creation, so no new writer can slip between
+// the safety checks and the status change.
 func (s *Store) QueueBackupUploadAbort(ctx context.Context, instanceID, uploadID, requestedBy, idempotencyKey string) (domain.Job, bool, error) {
 	payload := map[string]any{"upload_id": strings.TrimSpace(uploadID)}
 	requestFingerprint, err := instanceJobRequestFingerprint(instanceID, "backup.upload.abort", payload)
@@ -46,33 +46,30 @@ func (s *Store) QueueBackupUploadAbortWithFingerprint(ctx context.Context, insta
 		return domain.Job{}, false, err
 	}
 
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.Job{}, false, err
 	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "backup-upload:"+uploadID); err != nil {
-		return domain.Job{}, false, err
-	}
+	defer tx.Rollback()
 
 	// Check the global per-requester key before looking at mutable session
 	// state. A retry therefore still returns its original abort job after the
 	// first request atomically changed the upload to expired.
-	existing, storedFingerprint, lookupErr := scanJobWithFingerprint(tx.QueryRow(ctx, `SELECT `+jobColumnsWithFingerprint+`
-		FROM jobs WHERE requested_by=$1 AND idempotency_key=$2`, requestedBy, idempotencyKey))
+	existing, storedFingerprint, lookupErr := scanJobWithFingerprint(tx.QueryRowContext(ctx, `SELECT `+jobColumnsWithFingerprint+`
+		FROM jobs WHERE requested_by=?1 AND idempotency_key=?2`, requestedBy, idempotencyKey))
 	if lookupErr == nil {
 		if !requestFingerprintsEqual(storedFingerprint, requestFingerprint) {
 			return domain.Job{}, false, ErrConflict
 		}
-		return existing, true, tx.Commit(ctx)
+		return existing, true, tx.Commit()
 	}
-	if !errors.Is(lookupErr, pgx.ErrNoRows) {
+	if !errors.Is(lookupErr, sql.ErrNoRows) {
 		return domain.Job{}, false, lookupErr
 	}
 
-	upload, err := scanBackupUpload(tx.QueryRow(ctx, `SELECT `+backupUploadColumns+`
-		FROM backup_uploads WHERE id=$1 AND instance_id=$2 FOR UPDATE`, uploadID, instanceID))
-	if errors.Is(err, pgx.ErrNoRows) {
+	upload, err := scanBackupUpload(tx.QueryRowContext(ctx, `SELECT `+backupUploadColumns+`
+		FROM backup_uploads WHERE id=?1 AND instance_id=?2`, uploadID, instanceID))
+	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Job{}, false, ErrNotFound
 	}
 	if err != nil {
@@ -86,18 +83,18 @@ func (s *Store) QueueBackupUploadAbortWithFingerprint(ctx context.Context, insta
 	// at received_size is also still capable of changing the public session when
 	// its result projection is replayed. Neither may race staging deletion.
 	var conflicting bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
 		SELECT 1 FROM jobs j
-		WHERE j.instance_id=$1 AND j.type IN ('backup.upload.chunk','restore')
-		  AND j.payload->>'upload_id'=$2
+		WHERE j.instance_id=?1 AND j.type IN ('backup.upload.chunk','restore')
+		  AND json_extract(j.payload,'$.upload_id')=?2
 		  AND (
 			j.status IN ('queued','dispatched','running')
-			OR (j.status='canceled' AND j.result @> '{"cancel_pending":true}'::jsonb)
+			OR (j.status='canceled' AND json_extract(j.result,'$.cancel_pending')=1)
 			OR (j.type='backup.upload.chunk' AND j.status IN ('succeeded','failed','canceled')
-				AND j.payload ? 'content_base64_ciphertext')
+				AND json_type(j.payload,'$.content_base64_ciphertext') IS NOT NULL)
 			OR (j.type='backup.upload.chunk' AND j.status='succeeded'
-				AND j.id IS DISTINCT FROM NULLIF($3,'')::uuid
-				AND j.payload->>'offset'=$4)
+				AND j.id IS NOT NULLIF(?3,'')
+				AND json_extract(j.payload,'$.offset')=?4)
 		  )
 	)`, instanceID, uploadID, upload.LastChunkJobID, fmt.Sprint(upload.ReceivedSize)).Scan(&conflicting); err != nil {
 		return domain.Job{}, false, err
@@ -111,8 +108,8 @@ func (s *Store) QueueBackupUploadAbortWithFingerprint(ctx context.Context, insta
 	// to agree with the upload status.
 	if upload.RestoreJobID != "" {
 		var restoreStatus domain.JobStatus
-		if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id=$1 AND instance_id=$2 AND type='restore'`, upload.RestoreJobID, instanceID).Scan(&restoreStatus); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id=?1 AND instance_id=?2 AND type='restore'`, upload.RestoreJobID, instanceID).Scan(&restoreStatus); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
 				return domain.Job{}, false, ErrConflict
 			}
 			return domain.Job{}, false, err
@@ -123,8 +120,8 @@ func (s *Store) QueueBackupUploadAbortWithFingerprint(ctx context.Context, insta
 	}
 
 	var nodeID string
-	if err := tx.QueryRow(ctx, `SELECT node_id FROM instances WHERE id=$1 FOR SHARE`, instanceID).Scan(&nodeID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT node_id FROM instances WHERE id=?1`, instanceID).Scan(&nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return domain.Job{}, false, ErrNotFound
 		}
 		return domain.Job{}, false, err
@@ -137,17 +134,17 @@ func (s *Store) QueueBackupUploadAbortWithFingerprint(ctx context.Context, insta
 	now := time.Now().UTC()
 	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, InstanceID: instanceID, Type: "backup.upload.abort",
 		Status: domain.JobQueued, Payload: payload, IdempotencyKey: idempotencyKey, RequestedBy: requestedBy, CreatedAt: now}
-	if _, err := tx.Exec(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, job.ID, job.NodeID, job.InstanceID, job.Type, job.Status,
-		raw, job.IdempotencyKey, job.RequestedBy, job.CreatedAt, requestFingerprint); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
+		VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)`, job.ID, job.NodeID, job.InstanceID, job.Type, job.Status,
+		string(raw), job.IdempotencyKey, job.RequestedBy, job.CreatedAt, requestFingerprint); err != nil {
+		if isSQLiteConstraint(err) {
 			return domain.Job{}, false, ErrConflict
 		}
 		return domain.Job{}, false, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE backup_uploads SET status='expired',expires_at=LEAST(expires_at,$2),updated_at=$2
-		WHERE id=$1`, uploadID, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE backup_uploads SET status='expired',expires_at=min(expires_at,?2),updated_at=?2
+		WHERE id=?1`, uploadID, now); err != nil {
 		return domain.Job{}, false, err
 	}
-	return job, false, tx.Commit(ctx)
+	return job, false, tx.Commit()
 }

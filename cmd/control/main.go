@@ -54,6 +54,8 @@ func runCLI(logger *slog.Logger, args []string, stdin io.Reader) error {
 			return err
 		}
 		return runDoctor(configPath, os.Stdout)
+	case "backup-database":
+		return runBackupDatabase(args[1:])
 	case "bootstrap-owner":
 		return runBootstrapOwner(logger, args[1:], stdin)
 	case "service":
@@ -67,7 +69,7 @@ func runCLI(logger *slog.Logger, args []string, stdin io.Reader) error {
 }
 
 func usageError() error {
-	return errors.New("usage: l4d2panel-control <serve|migrate|doctor|bootstrap-owner|service|version> [options]")
+	return errors.New("usage: l4d2panel-control <serve|migrate|doctor|backup-database|bootstrap-owner|service|version> [options]")
 }
 
 func parseConfigOnly(command string, args []string) (string, error) {
@@ -138,7 +140,7 @@ func runBootstrapOwner(logger *slog.Logger, args []string, stdin io.Reader) erro
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	store, err := control.OpenStore(ctx, cfg.DatabaseURL)
+	store, err := control.OpenStore(ctx, cfg.DatabasePath)
 	if err != nil {
 		return err
 	}
@@ -197,7 +199,7 @@ func runConsole(logger *slog.Logger, configPath string) error {
 }
 
 func serveControl(ctx context.Context, cfg control.Config, logger *slog.Logger) error {
-	store, err := control.OpenStore(ctx, cfg.DatabaseURL)
+	store, err := control.OpenStore(ctx, cfg.DatabasePath)
 	if err != nil {
 		return err
 	}
@@ -260,7 +262,7 @@ func runMigrate(configPath string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	store, err := control.OpenStore(ctx, cfg.DatabaseURL)
+	store, err := control.OpenStore(ctx, cfg.DatabasePath)
 	if err != nil {
 		return err
 	}
@@ -269,11 +271,17 @@ func runMigrate(configPath string) error {
 }
 
 type doctorResult struct {
-	OK                  bool   `json:"ok"`
-	PostgreSQLVersion   int    `json:"postgresql_version_num"`
-	PostgreSQLMajor     int    `json:"postgresql_major"`
-	MigrationPrivileges bool   `json:"migration_privileges"`
-	ConfiguredListen    string `json:"configured_listen"`
+	OK               bool   `json:"ok"`
+	DatabaseEngine   string `json:"database_engine"`
+	SQLiteVersion    string `json:"sqlite_version"`
+	DatabasePath     string `json:"database_path"`
+	DataDirectoryOK  bool   `json:"data_directory_writable"`
+	LocalFilesystem  bool   `json:"local_filesystem"`
+	ForeignKeys      bool   `json:"foreign_keys"`
+	JournalMode      string `json:"journal_mode"`
+	QuickCheck       string `json:"quick_check"`
+	SchemaStatus     string `json:"schema_status"`
+	ConfiguredListen string `json:"configured_listen"`
 }
 
 func runDoctor(configPath string, output io.Writer) error {
@@ -283,25 +291,60 @@ func runDoctor(configPath string, output io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	store, err := control.OpenStore(ctx, cfg.DatabaseURL)
+	store, err := control.OpenStore(ctx, cfg.DatabasePath)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-	versionNumber, err := store.DatabaseServerVersion(ctx)
+	sqliteVersion, err := store.SQLiteVersion(ctx)
 	if err != nil {
 		return err
 	}
-	major := versionNumber / 10000
-	if major != 17 {
-		return fmt.Errorf("PostgreSQL 17 is required; connected server reports major version %d", major)
+	foreignKeys, journalMode, err := store.SQLitePragmas(ctx)
+	if err != nil {
+		return err
 	}
-	if err := store.CheckMigrationPrivileges(ctx); err != nil {
+	if err := store.QuickCheck(ctx); err != nil {
+		return err
+	}
+	schemaStatus, err := store.SchemaStatusForMigrations(ctx, cfg.MigrationsDir)
+	if err != nil {
 		return err
 	}
 	result := doctorResult{
-		OK: true, PostgreSQLVersion: versionNumber, PostgreSQLMajor: major,
-		MigrationPrivileges: true, ConfiguredListen: cfg.ListenAddress,
+		OK: true, DatabaseEngine: "sqlite", SQLiteVersion: sqliteVersion,
+		DatabasePath: store.DatabasePath(), DataDirectoryOK: true, LocalFilesystem: true,
+		ForeignKeys: foreignKeys, JournalMode: journalMode, QuickCheck: "ok",
+		SchemaStatus: schemaStatus, ConfiguredListen: cfg.ListenAddress,
 	}
 	return json.NewEncoder(output).Encode(result)
+}
+
+func runBackupDatabase(args []string) error {
+	flags := flag.NewFlagSet("backup-database", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	configPath := flags.String("config", "", "path to strict JSON configuration")
+	output := flags.String("output", "", "new backup file path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || strings.TrimSpace(*output) == "" {
+		return errors.New("backup-database requires --output FILE and accepts no positional arguments")
+	}
+	absConfig, err := absoluteConfigPath(*configPath)
+	if err != nil {
+		return err
+	}
+	cfg, err := loadConfig(absConfig)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	store, err := control.OpenStore(ctx, cfg.DatabasePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	return store.BackupDatabase(ctx, *output)
 }

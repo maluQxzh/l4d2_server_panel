@@ -11,6 +11,7 @@ func TestValidJobTransition(t *testing.T) {
 		{domain.JobQueued, domain.JobDispatched},
 		{domain.JobQueued, domain.JobRunning},
 		{domain.JobQueued, domain.JobCanceled},
+		{domain.JobQueued, domain.JobSucceeded},
 		{domain.JobDispatched, domain.JobRunning},
 		{domain.JobDispatched, domain.JobSucceeded},
 		{domain.JobRunning, domain.JobSucceeded},
@@ -22,7 +23,6 @@ func TestValidJobTransition(t *testing.T) {
 		}
 	}
 	invalid := [][2]domain.JobStatus{
-		{domain.JobQueued, domain.JobSucceeded},
 		{domain.JobSucceeded, domain.JobRunning},
 		{domain.JobCanceled, domain.JobQueued},
 	}

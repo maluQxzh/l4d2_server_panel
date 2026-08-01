@@ -12,7 +12,7 @@ const encryptedValuePlaceholder = "[encrypted]"
 var errTransferResultConsumed = errors.New("transfer result is missing or was already consumed")
 
 // sealJobPayloadSecrets keeps commands and signed download URLs available to
-// an offline Agent without storing their clear text in PostgreSQL.
+// an offline Agent without storing their clear text in SQLite.
 func sealJobPayloadSecrets(masterKey []byte, jobType string, payload map[string]any) error {
 	switch jobType {
 	case "rcon":

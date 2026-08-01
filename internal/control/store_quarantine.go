@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
@@ -22,7 +22,7 @@ const (
 var controlQuarantineEntryPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+-(\d{8}T\d{6}Z)$`)
 
 const quarantineEntryColumns = `id,node_id,source_job_id,original_instance_id,instance_name,root_index,entry_name,
-	quarantined_at,retention_expires_at,COALESCE(purge_job_id::text,''),purged_at,created_at`
+	quarantined_at,retention_expires_at,COALESCE(purge_job_id,''),purged_at,created_at`
 
 func scanQuarantineEntry(row scanner) (domain.QuarantineEntry, error) {
 	var entry domain.QuarantineEntry
@@ -86,17 +86,17 @@ func (s *Store) ApplyInstanceRemovalResult(ctx context.Context, job domain.Job) 
 		}
 	}
 
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 	var instanceName, nodeID string
-	err = tx.QueryRow(ctx, `SELECT name,node_id FROM instances WHERE id=$1 FOR UPDATE`, job.InstanceID).Scan(&instanceName, &nodeID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err = tx.QueryRowContext(ctx, `SELECT name,node_id FROM instances WHERE id=?1`, job.InstanceID).Scan(&instanceName, &nodeID)
+	if errors.Is(err, sql.ErrNoRows) {
 		var existingID string
-		if lookupErr := tx.QueryRow(ctx, `SELECT id FROM quarantine_entries WHERE source_job_id=$1`, job.ID).Scan(&existingID); lookupErr == nil {
-			return tx.Commit(ctx)
+		if lookupErr := tx.QueryRowContext(ctx, `SELECT id FROM quarantine_entries WHERE source_job_id=?1`, job.ID).Scan(&existingID); lookupErr == nil {
+			return tx.Commit()
 		}
 		return ErrNotFound
 	}
@@ -117,9 +117,9 @@ func (s *Store) ApplyInstanceRemovalResult(ctx context.Context, job domain.Job) 
 			quarantinedAt = entryTimestamp
 		}
 		retentionExpiresAt := quarantinedAt.Add(quarantineRetention)
-		if _, err := tx.Exec(ctx, `INSERT INTO quarantine_entries(
+		if _, err := tx.ExecContext(ctx, `INSERT INTO quarantine_entries(
 			id,node_id,source_job_id,original_instance_id,instance_name,root_index,entry_name,quarantined_at,retention_expires_at)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(source_job_id) DO NOTHING`, entryID, nodeID, job.ID,
+			VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(source_job_id) DO NOTHING`, entryID, nodeID, job.ID,
 			job.InstanceID, instanceName, rootIndex, entryName, quarantinedAt, retentionExpiresAt); err != nil {
 			return err
 		}
@@ -130,15 +130,15 @@ func (s *Store) ApplyInstanceRemovalResult(ctx context.Context, job domain.Job) 
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE jobs SET result=$2 WHERE id=$1`, job.ID, resultRaw); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET result=?2 WHERE id=?1`, job.ID, string(resultRaw)); err != nil {
 		return err
 	}
-	if tag, err := tx.Exec(ctx, `DELETE FROM instances WHERE id=$1`, job.InstanceID); err != nil {
+	if tag, err := tx.ExecContext(ctx, `DELETE FROM instances WHERE id=?1`, job.InstanceID); err != nil {
 		return err
-	} else if tag.RowsAffected() != 1 {
+	} else if resultRowsAffected(tag) != 1 {
 		return ErrNotFound
 	}
-	return tx.Commit(ctx)
+	return tx.Commit()
 }
 
 func nonNegativeQuarantineRootIndex(value any) (int, bool) {
@@ -162,14 +162,14 @@ func nonNegativeQuarantineRootIndex(value any) (int, bool) {
 
 func (s *Store) ListQuarantineEntries(ctx context.Context, nodeID string) ([]domain.QuarantineEntry, error) {
 	var exists bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1)`, nodeID).Scan(&exists); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM nodes WHERE id=?1)`, nodeID).Scan(&exists); err != nil {
 		return nil, err
 	}
 	if !exists {
 		return nil, ErrNotFound
 	}
-	rows, err := s.pool.Query(ctx, `SELECT `+quarantineEntryColumns+` FROM quarantine_entries
-		WHERE node_id=$1 AND purged_at IS NULL ORDER BY quarantined_at DESC,id DESC`, nodeID)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+quarantineEntryColumns+` FROM quarantine_entries
+		WHERE node_id=?1 AND purged_at IS NULL ORDER BY quarantined_at DESC,id DESC`, nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -189,9 +189,9 @@ func (s *Store) CreateQuarantinePurgeConfirmation(ctx context.Context, nodeID, e
 	if uuid.Validate(nodeID) != nil || uuid.Validate(entryID) != nil || uuid.Validate(requestedBy) != nil {
 		return "", time.Time{}, ErrNotFound
 	}
-	entry, err := scanQuarantineEntry(s.pool.QueryRow(ctx, `SELECT `+quarantineEntryColumns+` FROM quarantine_entries
-		WHERE id=$1 AND node_id=$2 AND purged_at IS NULL`, entryID, nodeID))
-	if errors.Is(err, pgx.ErrNoRows) {
+	entry, err := scanQuarantineEntry(s.db.QueryRowContext(ctx, `SELECT `+quarantineEntryColumns+` FROM quarantine_entries
+		WHERE id=?1 AND node_id=?2 AND purged_at IS NULL`, entryID, nodeID))
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", time.Time{}, ErrNotFound
 	}
 	if err != nil {
@@ -207,8 +207,8 @@ func (s *Store) CreateQuarantinePurgeConfirmation(ctx context.Context, nodeID, e
 	raw := "qpc_" + random
 	now := time.Now().UTC()
 	expiresAt := now.Add(purgeConfirmationTokenTTL)
-	_, err = s.pool.Exec(ctx, `INSERT INTO quarantine_purge_confirmations(
-		id,quarantine_entry_id,requested_by,token_hash,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6)`,
+	_, err = s.db.ExecContext(ctx, `INSERT INTO quarantine_purge_confirmations(
+		id,quarantine_entry_id,requested_by,token_hash,expires_at,created_at) VALUES(?1,?2,?3,?4,?5,?6)`,
 		uuid.NewString(), entryID, requestedBy, tokenHash(raw), expiresAt, now)
 	return raw, expiresAt, err
 }
@@ -233,19 +233,19 @@ func (s *Store) QueueQuarantinePurgeWithFingerprint(ctx context.Context, nodeID,
 	if err := requireRequestFingerprint(idempotencyKey, requestFingerprint); err != nil {
 		return domain.Job{}, false, err
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.Job{}, false, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 
 	var confirmationID, confirmedEntryID, confirmedBy, confirmationJobID string
 	var expiresAt time.Time
 	var consumedAt *time.Time
-	err = tx.QueryRow(ctx, `SELECT id,quarantine_entry_id,requested_by,expires_at,consumed_at,COALESCE(job_id::text,'')
-		FROM quarantine_purge_confirmations WHERE token_hash=$1 FOR UPDATE`, tokenHash(confirmationToken)).Scan(
+	err = tx.QueryRowContext(ctx, `SELECT id,quarantine_entry_id,requested_by,expires_at,consumed_at,COALESCE(job_id,'')
+		FROM quarantine_purge_confirmations WHERE token_hash=?1`, tokenHash(confirmationToken)).Scan(
 		&confirmationID, &confirmedEntryID, &confirmedBy, &expiresAt, &consumedAt, &confirmationJobID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Job{}, false, ErrUnauthorized
 	}
 	if err != nil {
@@ -256,16 +256,16 @@ func (s *Store) QueueQuarantinePurgeWithFingerprint(ctx context.Context, nodeID,
 	}
 	if consumedAt != nil {
 		if idempotencyKey != "" && confirmationJobID != "" {
-			existing, storedFingerprint, lookupErr := scanJobWithFingerprint(tx.QueryRow(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE id=$1`, confirmationJobID))
+			existing, storedFingerprint, lookupErr := scanJobWithFingerprint(tx.QueryRowContext(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE id=?1`, confirmationJobID))
 			if lookupErr == nil && existing.IdempotencyKey == idempotencyKey && requestFingerprintsEqual(storedFingerprint, requestFingerprint) {
-				return existing, true, tx.Commit(ctx)
+				return existing, true, tx.Commit()
 			}
 		}
 		return domain.Job{}, false, fmt.Errorf("purge confirmation has already been consumed: %w", ErrConflict)
 	}
 
-	entry, err := scanQuarantineEntry(tx.QueryRow(ctx, `SELECT `+quarantineEntryColumns+` FROM quarantine_entries WHERE id=$1 FOR UPDATE`, entryID))
-	if errors.Is(err, pgx.ErrNoRows) || entry.NodeID != nodeID || entry.PurgedAt != nil {
+	entry, err := scanQuarantineEntry(tx.QueryRowContext(ctx, `SELECT `+quarantineEntryColumns+` FROM quarantine_entries WHERE id=?1`, entryID))
+	if errors.Is(err, sql.ErrNoRows) || entry.NodeID != nodeID || entry.PurgedAt != nil {
 		return domain.Job{}, false, ErrNotFound
 	}
 	if err != nil {
@@ -275,25 +275,25 @@ func (s *Store) QueueQuarantinePurgeWithFingerprint(ctx context.Context, nodeID,
 		return domain.Job{}, false, fmt.Errorf("quarantine entry is still within its seven-day minimum retention: %w", ErrConflict)
 	}
 	if idempotencyKey != "" {
-		existing, storedFingerprint, lookupErr := scanJobWithFingerprint(tx.QueryRow(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by=$1 AND idempotency_key=$2`, requestedBy, idempotencyKey))
+		existing, storedFingerprint, lookupErr := scanJobWithFingerprint(tx.QueryRowContext(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by=?1 AND idempotency_key=?2`, requestedBy, idempotencyKey))
 		if lookupErr == nil {
 			if !requestFingerprintsEqual(storedFingerprint, requestFingerprint) {
 				return domain.Job{}, false, ErrConflict
 			}
-			if _, err := tx.Exec(ctx, `UPDATE quarantine_entries SET purge_job_id=$2 WHERE id=$1`, entry.ID, existing.ID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE quarantine_entries SET purge_job_id=?2 WHERE id=?1`, entry.ID, existing.ID); err != nil {
 				return domain.Job{}, false, err
 			}
-			if _, err := tx.Exec(ctx, `UPDATE quarantine_purge_confirmations SET consumed_at=now(),job_id=$2 WHERE id=$1`, confirmationID, existing.ID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE quarantine_purge_confirmations SET consumed_at=unixepoch('subsec')*1000000,job_id=?2 WHERE id=?1`, confirmationID, existing.ID); err != nil {
 				return domain.Job{}, false, err
 			}
-			return existing, true, tx.Commit(ctx)
+			return existing, true, tx.Commit()
 		}
-		if !errors.Is(lookupErr, pgx.ErrNoRows) {
+		if !errors.Is(lookupErr, sql.ErrNoRows) {
 			return domain.Job{}, false, lookupErr
 		}
 	}
 	if entry.PurgeJobID != "" {
-		existing, lookupErr := scanJob(tx.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=$1`, entry.PurgeJobID))
+		existing, lookupErr := scanJob(tx.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=?1`, entry.PurgeJobID))
 		if lookupErr == nil && (existing.Status == domain.JobQueued || existing.Status == domain.JobDispatched || existing.Status == domain.JobRunning) {
 			if idempotencyKey != "" {
 				// A second key cannot be durably associated with the existing job.
@@ -301,22 +301,22 @@ func (s *Store) QueueQuarantinePurgeWithFingerprint(ctx context.Context, nodeID,
 				// proven equivalent.
 				return domain.Job{}, false, ErrConflict
 			}
-			if _, err := tx.Exec(ctx, `UPDATE quarantine_purge_confirmations SET consumed_at=now(),job_id=$2 WHERE id=$1`, confirmationID, existing.ID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE quarantine_purge_confirmations SET consumed_at=unixepoch('subsec')*1000000,job_id=?2 WHERE id=?1`, confirmationID, existing.ID); err != nil {
 				return domain.Job{}, false, err
 			}
-			return existing, true, tx.Commit(ctx)
+			return existing, true, tx.Commit()
 		}
-		if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+		if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
 			return domain.Job{}, false, lookupErr
 		}
-		if _, err := tx.Exec(ctx, `UPDATE quarantine_entries SET purge_job_id=NULL WHERE id=$1`, entry.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE quarantine_entries SET purge_job_id=NULL WHERE id=?1`, entry.ID); err != nil {
 			return domain.Job{}, false, err
 		}
 	}
 
 	var nodeStatus domain.NodeStatus
-	if err := tx.QueryRow(ctx, `SELECT status FROM nodes WHERE id=$1 FOR SHARE`, nodeID).Scan(&nodeStatus); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM nodes WHERE id=?1`, nodeID).Scan(&nodeStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return domain.Job{}, false, ErrNotFound
 		}
 		return domain.Job{}, false, err
@@ -337,21 +337,21 @@ func (s *Store) QueueQuarantinePurgeWithFingerprint(ctx context.Context, nodeID,
 		ID: uuid.NewString(), NodeID: nodeID, Type: "purge_quarantine", Status: domain.JobQueued, Payload: payload,
 		IdempotencyKey: idempotencyKey, RequestedBy: requestedBy, CreatedAt: time.Now().UTC(),
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
-		VALUES($1,$2,NULL,$3,$4,$5,NULLIF($6,''),$7,$8,NULLIF($9,''))`, job.ID, job.NodeID, job.Type, job.Status, payloadRaw,
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
+		VALUES(?1,?2,NULL,?3,?4,?5,NULLIF(?6,''),?7,?8,NULLIF(?9,''))`, job.ID, job.NodeID, job.Type, job.Status, string(payloadRaw),
 		job.IdempotencyKey, job.RequestedBy, job.CreatedAt, requestFingerprint); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
+		if isSQLiteConstraint(err) {
 			return domain.Job{}, false, ErrConflict
 		}
 		return domain.Job{}, false, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE quarantine_entries SET purge_job_id=$2 WHERE id=$1`, entry.ID, job.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE quarantine_entries SET purge_job_id=?2 WHERE id=?1`, entry.ID, job.ID); err != nil {
 		return domain.Job{}, false, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE quarantine_purge_confirmations SET consumed_at=now(),job_id=$2 WHERE id=$1`, confirmationID, job.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE quarantine_purge_confirmations SET consumed_at=unixepoch('subsec')*1000000,job_id=?2 WHERE id=?1`, confirmationID, job.ID); err != nil {
 		return domain.Job{}, false, err
 	}
-	return job, false, tx.Commit(ctx)
+	return job, false, tx.Commit()
 }
 
 func (s *Store) ApplyQuarantinePurgeResult(ctx context.Context, job domain.Job) error {
@@ -359,12 +359,12 @@ func (s *Store) ApplyQuarantinePurgeResult(ctx context.Context, job domain.Job) 
 	if uuid.Validate(entryID) != nil {
 		return errors.New("purge job has an invalid quarantine entry ID")
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE quarantine_entries SET purged_at=COALESCE(purged_at,now()),purge_job_id=$2
-		WHERE id=$1 AND node_id=$3 AND (purge_job_id=$2 OR purged_at IS NOT NULL)`, entryID, job.ID, job.NodeID)
+	tag, err := s.db.ExecContext(ctx, `UPDATE quarantine_entries SET purged_at=COALESCE(purged_at,unixepoch('subsec')*1000000),purge_job_id=?2
+		WHERE id=?1 AND node_id=?3 AND (purge_job_id=?2 OR purged_at IS NOT NULL)`, entryID, job.ID, job.NodeID)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if resultRowsAffected(tag) == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -375,17 +375,17 @@ func (s *Store) ReleaseQuarantinePurgeJob(ctx context.Context, job domain.Job) e
 	if uuid.Validate(entryID) != nil {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, `UPDATE quarantine_entries SET purge_job_id=NULL WHERE id=$1 AND node_id=$2 AND purge_job_id=$3 AND purged_at IS NULL`,
+	_, err := s.db.ExecContext(ctx, `UPDATE quarantine_entries SET purge_job_id=NULL WHERE id=?1 AND node_id=?2 AND purge_job_id=?3 AND purged_at IS NULL`,
 		entryID, job.NodeID, job.ID)
 	return err
 }
 
-func releaseQuarantinePurgeJobTx(ctx context.Context, tx pgx.Tx, job domain.Job) error {
+func releaseQuarantinePurgeJobTx(ctx context.Context, tx *sql.Tx, job domain.Job) error {
 	entryID := stringFromAny(job.Payload["quarantine_entry_id"])
 	if uuid.Validate(entryID) != nil {
 		return nil
 	}
-	_, err := tx.Exec(ctx, `UPDATE quarantine_entries SET purge_job_id=NULL
-		WHERE id=$1 AND node_id=$2 AND purge_job_id=$3 AND purged_at IS NULL`, entryID, job.NodeID, job.ID)
+	_, err := tx.ExecContext(ctx, `UPDATE quarantine_entries SET purge_job_id=NULL
+		WHERE id=?1 AND node_id=?2 AND purge_job_id=?3 AND purged_at IS NULL`, entryID, job.NodeID, job.ID)
 	return err
 }

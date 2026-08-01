@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,12 +10,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
-const jobColumns = `id,node_id,COALESCE(instance_id::text,''),type,status,progress,message,payload,result,
-	idempotency_key,COALESCE(requested_by::text,''),created_at,started_at,finished_at`
+const jobColumns = `id,node_id,COALESCE(instance_id,''),type,status,progress,message,payload,result,
+	idempotency_key,COALESCE(requested_by,''),created_at,started_at,finished_at`
 
 const jobColumnsWithFingerprint = jobColumns + `,request_fingerprint`
 
@@ -72,34 +72,34 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 	if err := requireRequestFingerprint(idempotencyKey, requestFingerprint); err != nil {
 		return domain.Job{}, false, err
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.Job{}, false, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 	if idempotencyKey != "" {
 		var existing domain.Job
 		var storedFingerprint string
 		var lookupErr error
 		if requestedBy == "" {
-			existing, storedFingerprint, lookupErr = scanJobWithFingerprint(tx.QueryRow(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by IS NULL AND idempotency_key=$1`, idempotencyKey))
+			existing, storedFingerprint, lookupErr = scanJobWithFingerprint(tx.QueryRowContext(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by IS NULL AND idempotency_key=?1`, idempotencyKey))
 		} else {
-			existing, storedFingerprint, lookupErr = scanJobWithFingerprint(tx.QueryRow(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by=$1 AND idempotency_key=$2`, requestedBy, idempotencyKey))
+			existing, storedFingerprint, lookupErr = scanJobWithFingerprint(tx.QueryRowContext(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by=?1 AND idempotency_key=?2`, requestedBy, idempotencyKey))
 		}
 		if lookupErr == nil {
 			if !requestFingerprintsEqual(storedFingerprint, requestFingerprint) {
 				return domain.Job{}, false, ErrConflict
 			}
-			return existing, true, tx.Commit(ctx)
+			return existing, true, tx.Commit()
 		}
-		if !errors.Is(lookupErr, pgx.ErrNoRows) {
+		if !errors.Is(lookupErr, sql.ErrNoRows) {
 			return domain.Job{}, false, lookupErr
 		}
 	}
 	var nodeID string
 	var instanceStatus domain.InstanceStatus
-	if err := tx.QueryRow(ctx, `SELECT node_id,status FROM instances WHERE id=$1 FOR SHARE`, instanceID).Scan(&nodeID, &instanceStatus); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT node_id,status FROM instances WHERE id=?1`, instanceID).Scan(&nodeID, &instanceStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return domain.Job{}, false, ErrNotFound
 		}
 		return domain.Job{}, false, err
@@ -113,12 +113,11 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 	}
 	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, InstanceID: instanceID, Type: action, Status: domain.JobQueued,
 		Payload: payload, IdempotencyKey: idempotencyKey, RequestedBy: requestedBy, CreatedAt: time.Now().UTC()}
-	_, err = tx.Exec(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
-		VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,NULLIF($10,''))`, job.ID, job.NodeID, job.InstanceID, job.Type, job.Status,
-		raw, job.IdempotencyKey, nullableUUID(job.RequestedBy), job.CreatedAt, requestFingerprint)
+	_, err = tx.ExecContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
+		VALUES(?1,?2,?3,?4,?5,?6,NULLIF(?7,''),?8,?9,NULLIF(?10,''))`, job.ID, job.NodeID, job.InstanceID, job.Type, job.Status,
+		string(raw), job.IdempotencyKey, nullableUUID(job.RequestedBy), job.CreatedAt, requestFingerprint)
 	if err != nil {
-		lower := strings.ToLower(err.Error())
-		if strings.Contains(lower, "jobs_instance_active_idx") || strings.Contains(lower, "duplicate key") {
+		if isSQLiteConstraint(err) {
 			return domain.Job{}, false, ErrConflict
 		}
 		return domain.Job{}, false, err
@@ -126,11 +125,11 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 	transient := map[string]string{"start": "starting", "stop": "stopping", "restart": "stopping", "update": "updating",
 		"validate": "updating", "install": "installing", "reinstall": "installing"}
 	if status := transient[action]; status != "" {
-		if _, err := tx.Exec(ctx, `UPDATE instances SET status=$2,updated_at=now() WHERE id=$1`, instanceID, status); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE instances SET status=?2,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, instanceID, status); err != nil {
 			return domain.Job{}, false, err
 		}
 	}
-	return job, false, tx.Commit(ctx)
+	return job, false, tx.Commit()
 }
 
 // QueueNodeJob persists a node-scoped operation using the same idempotency and
@@ -154,38 +153,35 @@ func (s *Store) QueueNodeJobWithFingerprint(ctx context.Context, nodeID, action 
 	if err := requireRequestFingerprint(idempotencyKey, requestFingerprint); err != nil {
 		return domain.Job{}, false, err
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.Job{}, false, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 	if idempotencyKey != "" {
 		var existing domain.Job
 		var storedFingerprint string
 		var lookupErr error
 		if requestedBy == "" {
-			existing, storedFingerprint, lookupErr = scanJobWithFingerprint(tx.QueryRow(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by IS NULL AND idempotency_key=$1`, idempotencyKey))
+			existing, storedFingerprint, lookupErr = scanJobWithFingerprint(tx.QueryRowContext(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by IS NULL AND idempotency_key=?1`, idempotencyKey))
 		} else {
-			existing, storedFingerprint, lookupErr = scanJobWithFingerprint(tx.QueryRow(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by=$1 AND idempotency_key=$2`, requestedBy, idempotencyKey))
+			existing, storedFingerprint, lookupErr = scanJobWithFingerprint(tx.QueryRowContext(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by=?1 AND idempotency_key=?2`, requestedBy, idempotencyKey))
 		}
 		if lookupErr == nil {
 			if !requestFingerprintsEqual(storedFingerprint, requestFingerprint) {
 				return domain.Job{}, false, ErrConflict
 			}
-			return existing, true, tx.Commit(ctx)
+			return existing, true, tx.Commit()
 		}
-		if !errors.Is(lookupErr, pgx.ErrNoRows) {
+		if !errors.Is(lookupErr, sql.ErrNoRows) {
 			return domain.Job{}, false, lookupErr
 		}
 	}
 	// Serialize scan creation without requiring a schema-level lock. This also
 	// closes the race between the active-job lookup and insert.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "node-job:"+nodeID+":"+action); err != nil {
-		return domain.Job{}, false, err
-	}
 	var status domain.NodeStatus
-	if err := tx.QueryRow(ctx, `SELECT status FROM nodes WHERE id=$1 FOR SHARE`, nodeID).Scan(&status); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM nodes WHERE id=?1`, nodeID).Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return domain.Job{}, false, ErrNotFound
 		}
 		return domain.Job{}, false, err
@@ -193,11 +189,11 @@ func (s *Store) QueueNodeJobWithFingerprint(ctx context.Context, nodeID, action 
 	if status == domain.NodeRevoked {
 		return domain.Job{}, false, ErrUnauthorized
 	}
-	if existing, lookupErr := scanJob(tx.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs
-		WHERE node_id=$1 AND instance_id IS NULL AND type=$2 AND status IN ('queued','dispatched','running')
+	if existing, lookupErr := scanJob(tx.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs
+		WHERE node_id=?1 AND instance_id IS NULL AND type=?2 AND status IN ('queued','dispatched','running')
 		ORDER BY created_at,id LIMIT 1`, nodeID, action)); lookupErr == nil {
-		return existing, true, tx.Commit(ctx)
-	} else if !errors.Is(lookupErr, pgx.ErrNoRows) {
+		return existing, true, tx.Commit()
+	} else if !errors.Is(lookupErr, sql.ErrNoRows) {
 		return domain.Job{}, false, lookupErr
 	}
 	raw, err := json.Marshal(payload)
@@ -206,15 +202,15 @@ func (s *Store) QueueNodeJobWithFingerprint(ctx context.Context, nodeID, action 
 	}
 	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, Type: action, Status: domain.JobQueued, Payload: payload,
 		IdempotencyKey: idempotencyKey, RequestedBy: requestedBy, CreatedAt: time.Now().UTC()}
-	if _, err := tx.Exec(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
-		VALUES($1,$2,NULL,$3,$4,$5,NULLIF($6,''),$7,$8,NULLIF($9,''))`, job.ID, job.NodeID, job.Type, job.Status, raw,
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
+		VALUES(?1,?2,NULL,?3,?4,?5,NULLIF(?6,''),?7,?8,NULLIF(?9,''))`, job.ID, job.NodeID, job.Type, job.Status, string(raw),
 		job.IdempotencyKey, nullableUUID(job.RequestedBy), job.CreatedAt, requestFingerprint); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
+		if isSQLiteConstraint(err) {
 			return domain.Job{}, false, ErrConflict
 		}
 		return domain.Job{}, false, err
 	}
-	return job, false, tx.Commit(ctx)
+	return job, false, tx.Commit()
 }
 
 func externalInstanceJobAllowed(action string, payload map[string]any) bool {
@@ -232,8 +228,8 @@ func externalInstanceJobAllowed(action string, payload map[string]any) bool {
 }
 
 func (s *Store) GetJob(ctx context.Context, id string) (domain.Job, error) {
-	job, err := scanJob(s.pool.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=$1`, id))
-	if errors.Is(err, pgx.ErrNoRows) {
+	job, err := scanJob(s.db.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=?1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Job{}, ErrNotFound
 	}
 	return job, err
@@ -249,14 +245,14 @@ func (s *Store) JobByIdempotencyKeyMatching(ctx context.Context, requestedBy, ke
 	if !validRequestFingerprint(expectedFingerprint) {
 		return domain.Job{}, errors.New("invalid request fingerprint")
 	}
-	var row pgx.Row
+	var row scanner
 	if requestedBy == "" {
-		row = s.pool.QueryRow(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by IS NULL AND idempotency_key=$1`, key)
+		row = s.db.QueryRowContext(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by IS NULL AND idempotency_key=?1`, key)
 	} else {
-		row = s.pool.QueryRow(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by=$1 AND idempotency_key=$2`, requestedBy, key)
+		row = s.db.QueryRowContext(ctx, `SELECT `+jobColumnsWithFingerprint+` FROM jobs WHERE requested_by=?1 AND idempotency_key=?2`, requestedBy, key)
 	}
 	job, storedFingerprint, err := scanJobWithFingerprint(row)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Job{}, ErrNotFound
 	}
 	if err != nil {
@@ -272,9 +268,9 @@ func (s *Store) ListJobs(ctx context.Context, nodeID, instanceID string, limit i
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	query := `SELECT ` + jobColumns + ` FROM jobs WHERE ($1='' OR node_id::text=$1) AND ($2='' OR instance_id::text=$2)
-		ORDER BY created_at DESC,id DESC LIMIT $3`
-	rows, err := s.pool.Query(ctx, query, nodeID, instanceID, limit)
+	query := `SELECT ` + jobColumns + ` FROM jobs WHERE (?1='' OR node_id=?1) AND (?2='' OR instance_id=?2)
+		ORDER BY created_at DESC,id DESC LIMIT ?3`
+	rows, err := s.db.QueryContext(ctx, query, nodeID, instanceID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -296,7 +292,7 @@ func ValidJobTransition(from, to domain.JobStatus) bool {
 	}
 	switch from {
 	case domain.JobQueued:
-		return to == domain.JobDispatched || to == domain.JobRunning || to == domain.JobCanceled || to == domain.JobFailed
+		return to == domain.JobDispatched || to == domain.JobRunning || to == domain.JobSucceeded || to == domain.JobCanceled || to == domain.JobFailed
 	case domain.JobDispatched:
 		return to == domain.JobRunning || to == domain.JobSucceeded || to == domain.JobCanceled || to == domain.JobFailed
 	case domain.JobRunning:
@@ -319,14 +315,13 @@ func latePendingCancellationUpdate(current domain.Job, to domain.JobStatus) bool
 	return current.Status == domain.JobCanceled && pending && !isTerminalJobStatus(to)
 }
 
-// jobProjectionTarget returns immutable routing fields without taking the job
-// row lock. A transaction that also changes instance state uses this preflight
-// to preserve the global instance -> job lock order. An Agent replay can
-// outlive an instance deletion, in which case instanceID is empty and there is
-// no remaining instance state to project.
+// jobProjectionTarget returns immutable routing fields before the immediate
+// projection transaction starts. An Agent replay can outlive an instance
+// deletion, in which case instanceID is empty and there is no remaining
+// instance state to project.
 func (s *Store) jobProjectionTarget(ctx context.Context, id string) (jobType, instanceID string, err error) {
-	err = s.pool.QueryRow(ctx, `SELECT type,COALESCE(instance_id::text,'') FROM jobs WHERE id=$1`, id).Scan(&jobType, &instanceID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err = s.db.QueryRowContext(ctx, `SELECT type,COALESCE(instance_id,'') FROM jobs WHERE id=?1`, id).Scan(&jobType, &instanceID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", ErrNotFound
 	}
 	return jobType, instanceID, err
@@ -344,17 +339,17 @@ func (s *Store) UpdateJob(ctx context.Context, id string, status domain.JobStatu
 			return domain.Job{}, err
 		}
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.Job{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 	lockInstanceFirst := projectionInstanceID != "" && (projectionType == "restore" || status == domain.JobCanceled)
 	instanceLocked := false
 	if lockInstanceFirst {
 		var lockedInstanceID string
-		lockErr := tx.QueryRow(ctx, `SELECT id::text FROM instances WHERE id=$1 FOR UPDATE`, projectionInstanceID).Scan(&lockedInstanceID)
-		if errors.Is(lockErr, pgx.ErrNoRows) {
+		lockErr := tx.QueryRowContext(ctx, `SELECT id FROM instances WHERE id=?1`, projectionInstanceID).Scan(&lockedInstanceID)
+		if errors.Is(lockErr, sql.ErrNoRows) {
 			// A replay can outlive an instance that was removed after the original
 			// projection and acknowledgement attempt. There is no remaining state
 			// to project in that case.
@@ -364,8 +359,8 @@ func (s *Store) UpdateJob(ctx context.Context, id string, status domain.JobStatu
 			instanceLocked = true
 		}
 	}
-	current, err := scanJob(tx.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=$1 FOR UPDATE`, id))
-	if errors.Is(err, pgx.ErrNoRows) {
+	current, err := scanJob(tx.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=?1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Job{}, ErrNotFound
 	}
 	if err != nil {
@@ -410,10 +405,10 @@ func (s *Store) UpdateJob(ctx context.Context, id string, status domain.JobStatu
 		result[jobProjectionPendingField] = true
 	}
 	resultRaw, _ := json.Marshal(result)
-	_, err = tx.Exec(ctx, `UPDATE jobs SET status=$2,progress=$3,message=$4,result=$5,
-		started_at=CASE WHEN $2='running' THEN COALESCE(started_at,now()) ELSE started_at END,
-		finished_at=CASE WHEN $2 IN ('succeeded','failed','canceled') THEN COALESCE(finished_at,now()) ELSE finished_at END
-		WHERE id=$1`, id, status, progress, message, resultRaw)
+	_, err = tx.ExecContext(ctx, `UPDATE jobs SET status=?2,progress=?3,message=?4,result=?5,
+		started_at=CASE WHEN ?2='running' THEN COALESCE(started_at,unixepoch('subsec')*1000000) ELSE started_at END,
+		finished_at=CASE WHEN ?2 IN ('succeeded','failed','canceled') THEN COALESCE(finished_at,unixepoch('subsec')*1000000) ELSE finished_at END
+		WHERE id=?1`, id, status, progress, message, string(resultRaw))
 	if err != nil {
 		return domain.Job{}, err
 	}
@@ -430,7 +425,7 @@ func (s *Store) UpdateJob(ctx context.Context, id string, status domain.JobStatu
 			return domain.Job{}, err
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return domain.Job{}, err
 	}
 	return s.GetJob(ctx, id)
@@ -445,14 +440,14 @@ func (s *Store) JobsForDispatch(ctx context.Context, nodeID string, limit int) (
 	// cannot hide normal work, and a large manual backlog cannot starve a due
 	// maintenance batch. One statement snapshot also prevents a concurrent
 	// cancellation from placing the same job in two groups.
-	rows, err := s.pool.Query(ctx, `WITH node_jobs AS (
+	rows, err := s.db.QueryContext(ctx, `WITH node_jobs AS (
 		SELECT jobs.*,(jobs.type='update' AND jobs.requested_by IS NULL
-			AND jobs.payload @> '{"maintenance":true}'::jsonb
+			AND json_extract(jobs.payload,'$.maintenance')=1
 			AND jobs.idempotency_key LIKE 'maintenance:update:%') AS automatic_maintenance
-		FROM jobs WHERE jobs.node_id=$1 AND (
+		FROM jobs WHERE jobs.node_id=?1 AND (
 			jobs.status IN ('queued','dispatched','running')
-			OR (jobs.status='canceled' AND jobs.result @> '{"cancel_pending":true}'::jsonb)
-			OR (jobs.status IN ('succeeded','failed') AND jobs.result @> '{"_projection_pending":true}'::jsonb)
+			OR (jobs.status='canceled' AND json_extract(jobs.result,'$.cancel_pending')=1)
+			OR (jobs.status IN ('succeeded','failed') AND json_extract(jobs.result,'$._projection_pending')=1)
 		)
 	), active_write_instances AS (
 		SELECT DISTINCT job.instance_id FROM node_jobs job WHERE job.instance_id IS NOT NULL
@@ -460,8 +455,8 @@ func (s *Store) JobsForDispatch(ctx context.Context, nodeID string, limit int) (
 	), automatic_busy AS (
 		SELECT EXISTS(SELECT 1 FROM node_jobs job WHERE job.automatic_maintenance AND (
 			job.status IN ('dispatched','running')
-			OR (job.status='canceled' AND job.result @> '{"cancel_pending":true}'::jsonb)
-			OR (job.status IN ('succeeded','failed') AND job.result @> '{"_projection_pending":true}'::jsonb)
+			OR (job.status='canceled' AND json_extract(job.result,'$.cancel_pending')=1)
+			OR (job.status IN ('succeeded','failed') AND json_extract(job.result,'$._projection_pending')=1)
 		)) AS busy
 	), automatic_candidate AS (
 		SELECT job.id FROM node_jobs job,automatic_busy
@@ -472,16 +467,18 @@ func (s *Store) JobsForDispatch(ctx context.Context, nodeID string, limit int) (
 		SELECT job.id,job.created_at FROM node_jobs job
 		WHERE NOT job.automatic_maintenance AND job.status IN ('queued','dispatched')
 			AND NOT (job.type='check_update' AND job.instance_id IN (SELECT instance_id FROM active_write_instances))
-		ORDER BY job.created_at,job.id LIMIT $2
+		ORDER BY job.created_at,job.id LIMIT ?2
+	), cancellation_candidates AS (
+		SELECT job.id,job.created_at FROM node_jobs job
+		WHERE job.status='canceled' AND json_extract(job.result,'$.cancel_pending')=1
+		ORDER BY job.created_at,job.id LIMIT ?2
 	), candidate_ids AS (
-		(SELECT id,0 AS dispatch_priority,created_at FROM ordinary_candidates)
+		SELECT id,0 AS dispatch_priority,created_at FROM ordinary_candidates
 		UNION ALL
-		(SELECT job.id,0 AS dispatch_priority,job.created_at FROM node_jobs job
-			WHERE job.id IN (SELECT id FROM automatic_candidate))
+		SELECT job.id,0 AS dispatch_priority,job.created_at FROM node_jobs job
+			WHERE job.id IN (SELECT id FROM automatic_candidate)
 		UNION ALL
-		(SELECT job.id,1 AS dispatch_priority,job.created_at FROM node_jobs job
-			WHERE job.status='canceled' AND job.result @> '{"cancel_pending":true}'::jsonb
-			ORDER BY job.created_at,job.id LIMIT $2)
+		SELECT id,1 AS dispatch_priority,created_at FROM cancellation_candidates
 	), dispatch_jobs AS (
 		SELECT jobs.*,candidate_ids.dispatch_priority FROM jobs JOIN candidate_ids USING(id)
 	)
@@ -506,52 +503,52 @@ func (s *Store) MarkDispatched(ctx context.Context, id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 	if (isAutomaticMaintenanceUpdate(preflight) || preflight.Type == "check_update") && preflight.InstanceID != "" {
 		var lockedID string
-		if err := tx.QueryRow(ctx, `SELECT id::text FROM instances WHERE id=$1 FOR UPDATE`, preflight.InstanceID).Scan(&lockedID); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM instances WHERE id=?1`, preflight.InstanceID).Scan(&lockedID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
 				return false, ErrNotFound
 			}
 			return false, err
 		}
 	}
-	current, err := scanJob(tx.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=$1 FOR UPDATE`, id))
-	if errors.Is(err, pgx.ErrNoRows) {
+	current, err := scanJob(tx.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=?1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, ErrNotFound
 	}
 	if err != nil {
 		return false, err
 	}
 	if current.Status != domain.JobQueued {
-		return false, tx.Commit(ctx)
+		return false, tx.Commit()
 	}
 	if isAutomaticMaintenanceUpdate(current) != isAutomaticMaintenanceUpdate(preflight) || current.InstanceID != preflight.InstanceID {
 		return false, errors.New("job dispatch identity changed while claiming")
 	}
 	if current.Type == "check_update" {
 		var activeWrite bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM jobs job WHERE job.instance_id=$1
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jobs job WHERE job.instance_id=?1
 			AND `+activeJobSQLPredicate+` AND `+instanceWriteJobSQLPredicate+`)`, current.InstanceID).Scan(&activeWrite); err != nil {
 			return false, err
 		}
 		if activeWrite {
-			return false, tx.Commit(ctx)
+			return false, tx.Commit()
 		}
 	}
-	if _, err := tx.Exec(ctx, `UPDATE jobs SET status='dispatched' WHERE id=$1`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status='dispatched' WHERE id=?1`, id); err != nil {
 		return false, err
 	}
 	if isAutomaticMaintenanceUpdate(current) {
-		if _, err := tx.Exec(ctx, `UPDATE instances SET status='updating',updated_at=now() WHERE id=$1`, current.InstanceID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE instances SET status='updating',updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, current.InstanceID); err != nil {
 			return false, err
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -562,24 +559,24 @@ func (s *Store) CancelJob(ctx context.Context, id string) (domain.Job, domain.Jo
 	if err != nil {
 		return domain.Job{}, "", err
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.Job{}, "", err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 	instanceLocked := false
 	if projectionInstanceID != "" {
 		var lockedInstanceID string
-		lockErr := tx.QueryRow(ctx, `SELECT id::text FROM instances WHERE id=$1 FOR UPDATE`, projectionInstanceID).Scan(&lockedInstanceID)
-		if errors.Is(lockErr, pgx.ErrNoRows) {
+		lockErr := tx.QueryRowContext(ctx, `SELECT id FROM instances WHERE id=?1`, projectionInstanceID).Scan(&lockedInstanceID)
+		if errors.Is(lockErr, sql.ErrNoRows) {
 		} else if lockErr != nil {
 			return domain.Job{}, "", lockErr
 		} else {
 			instanceLocked = true
 		}
 	}
-	current, err := scanJob(tx.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=$1 FOR UPDATE`, id))
-	if errors.Is(err, pgx.ErrNoRows) {
+	current, err := scanJob(tx.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=?1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Job{}, "", ErrNotFound
 	}
 	if err != nil {
@@ -596,7 +593,7 @@ func (s *Store) CancelJob(ctx context.Context, id string) (domain.Job, domain.Jo
 			// An ordinary queued cancellation or an Agent-confirmed canceled
 			// outcome is already terminal. A repeated HTTP request must not erase
 			// its immutable result fingerprint.
-			if err := tx.Commit(ctx); err != nil {
+			if err := tx.Commit(); err != nil {
 				return domain.Job{}, current.Status, err
 			}
 			return current, current.Status, nil
@@ -616,9 +613,9 @@ func (s *Store) CancelJob(ctx context.Context, id string) (domain.Job, domain.Jo
 		result["cancel_pending"] = true
 	}
 	resultRaw, _ := json.Marshal(result)
-	if _, err := tx.Exec(ctx, `UPDATE jobs SET status='canceled',message='canceled by operator',result=$2,
-		payload=CASE WHEN type='backup.upload.chunk' THEN payload-'content_base64_ciphertext' ELSE payload END,
-		finished_at=CASE WHEN $3 THEN finished_at ELSE COALESCE(finished_at,now()) END WHERE id=$1`, id, resultRaw, cancelPending); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status='canceled',message='canceled by operator',result=?2,
+		payload=CASE WHEN type='backup.upload.chunk' THEN json_remove(payload,'$.content_base64_ciphertext') ELSE payload END,
+		finished_at=CASE WHEN ?3 THEN finished_at ELSE COALESCE(finished_at,unixepoch('subsec')*1000000) END WHERE id=?1`, id, string(resultRaw), cancelPending); err != nil {
 		return domain.Job{}, current.Status, err
 	}
 	if !cancelPending {
@@ -630,7 +627,7 @@ func (s *Store) CancelJob(ctx context.Context, id string) (domain.Job, domain.Jo
 			return domain.Job{}, current.Status, err
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return domain.Job{}, current.Status, err
 	}
 	updated, err := s.GetJob(ctx, id)

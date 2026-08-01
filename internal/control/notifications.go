@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -49,6 +50,35 @@ type notificationDelivery struct {
 	Channel          NotificationChannel
 	SecretCiphertext string
 	Notification     domain.Notification
+}
+
+func insertNotificationDeliveriesTx(ctx context.Context, tx *sql.Tx, notificationID string, createdAt time.Time) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM notification_channels
+		WHERE enabled=1 AND deleted_at IS NULL ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	channelIDs := make([]string, 0)
+	for rows.Next() {
+		var channelID string
+		if err := rows.Scan(&channelID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		channelIDs = append(channelIDs, channelID)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, channelID := range channelIDs {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO notification_deliveries(
+			id,notification_id,channel_id,status,next_attempt_at,created_at,updated_at)
+			VALUES(?1,?2,?3,'pending',?4,?4,?4) ON CONFLICT(notification_id,channel_id) DO NOTHING`,
+			uuid.NewString(), notificationID, channelID, createdAt.UTC()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type NotificationDeliveryView struct {
@@ -195,11 +225,11 @@ func (s *Store) CreateNotificationChannel(ctx context.Context, masterKey []byte,
 	}
 	channel.ID = uuid.NewString()
 	configRaw, _ := json.Marshal(channel.Config)
-	err = s.pool.QueryRow(ctx, `INSERT INTO notification_channels(id,name,kind,enabled,config,secret_ciphertext,created_by)
-		VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING created_at,updated_at`, channel.ID, channel.Name, channel.Kind,
-		channel.Enabled, configRaw, ciphertext, nullableUUID(createdBy)).Scan(&channel.CreatedAt, &channel.UpdatedAt)
+	err = s.db.QueryRowContext(ctx, `INSERT INTO notification_channels(id,name,kind,enabled,config,secret_ciphertext,created_by)
+		VALUES(?1,?2,?3,?4,?5,?6,?7) RETURNING created_at,updated_at`, channel.ID, channel.Name, channel.Kind,
+		channel.Enabled, string(configRaw), ciphertext, nullableUUID(createdBy)).Scan(&channel.CreatedAt, &channel.UpdatedAt)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "notification_channels_name_idx") {
+		if isSQLiteConstraint(err) {
 			return NotificationChannel{}, ErrConflict
 		}
 		return NotificationChannel{}, err
@@ -209,7 +239,7 @@ func (s *Store) CreateNotificationChannel(ctx context.Context, masterKey []byte,
 }
 
 func (s *Store) ListNotificationChannels(ctx context.Context) ([]NotificationChannel, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,name,kind,enabled,config,secret_ciphertext<>'',created_at,updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,kind,enabled,config,secret_ciphertext<>'',created_at,updated_at
 		FROM notification_channels WHERE deleted_at IS NULL ORDER BY name,id`)
 	if err != nil {
 		return nil, err
@@ -229,33 +259,34 @@ func (s *Store) ListNotificationChannels(ctx context.Context) ([]NotificationCha
 }
 
 func (s *Store) DeleteNotificationChannel(ctx context.Context, id string) error {
-	tx, err := s.pool.Begin(ctx)
+	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `UPDATE notification_channels SET enabled=false,deleted_at=now(),updated_at=now() WHERE id=$1 AND deleted_at IS NULL`, id)
-	if err == nil && tag.RowsAffected() == 0 {
+	defer tx.Rollback()
+	tag, err := tx.ExecContext(ctx, `UPDATE notification_channels SET enabled=false,deleted_at=?2,updated_at=?2 WHERE id=?1 AND deleted_at IS NULL`, id, now)
+	if err == nil && resultRowsAffected(tag) == 0 {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE notification_deliveries SET status='skipped',last_error='channel deleted',updated_at=now()
-		WHERE channel_id=$1 AND status IN ('pending','delivering')`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE notification_deliveries SET status='skipped',last_error='channel deleted',updated_at=?2
+		WHERE channel_id=?1 AND status IN ('pending','delivering')`, id, now); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return tx.Commit()
 }
 
 func (s *Store) ListNotificationDeliveries(ctx context.Context, limit int) ([]NotificationDeliveryView, error) {
 	if limit < 1 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.pool.Query(ctx, `SELECT delivery.id,delivery.notification_id,delivery.channel_id,channel.name,delivery.status,
+	rows, err := s.db.QueryContext(ctx, `SELECT delivery.id,delivery.notification_id,delivery.channel_id,channel.name,delivery.status,
 		delivery.attempt_count,delivery.next_attempt_at,delivery.last_error,delivery.response_code,delivery.delivered_at,delivery.updated_at
 		FROM notification_deliveries delivery JOIN notification_channels channel ON channel.id=delivery.channel_id
-		ORDER BY delivery.updated_at DESC,delivery.id DESC LIMIT $1`, limit)
+		ORDER BY delivery.updated_at DESC,delivery.id DESC LIMIT ?1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -273,9 +304,10 @@ func (s *Store) ListNotificationDeliveries(ctx context.Context, limit int) ([]No
 }
 
 func (s *Store) RetryNotificationDelivery(ctx context.Context, id string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE notification_deliveries SET status='pending',next_attempt_at=now(),last_error='',updated_at=now()
-		WHERE id=$1 AND status IN ('failed','pending')`, id)
-	if err == nil && tag.RowsAffected() == 0 {
+	now := time.Now().UTC()
+	tag, err := s.db.ExecContext(ctx, `UPDATE notification_deliveries SET status='pending',next_attempt_at=?2,last_error='',updated_at=?2
+		WHERE id=?1 AND status IN ('failed','pending')`, id, now)
+	if err == nil && resultRowsAffected(tag) == 0 {
 		return ErrNotFound
 	}
 	return err
@@ -283,14 +315,14 @@ func (s *Store) RetryNotificationDelivery(ctx context.Context, id string) error 
 
 func (s *Store) NotificationDeliveryAttempts(ctx context.Context, id string) ([]NotificationDeliveryAttempt, error) {
 	var exists bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM notification_deliveries WHERE id=$1)`, id).Scan(&exists); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM notification_deliveries WHERE id=?1)`, id).Scan(&exists); err != nil {
 		return nil, err
 	}
 	if !exists {
 		return nil, ErrNotFound
 	}
-	rows, err := s.pool.Query(ctx, `SELECT attempt,succeeded,response_code,error,attempted_at
-		FROM notification_delivery_attempts WHERE delivery_id=$1 ORDER BY attempt`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT attempt,succeeded,response_code,error,attempted_at
+		FROM notification_delivery_attempts WHERE delivery_id=?1 ORDER BY attempt`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -307,22 +339,23 @@ func (s *Store) NotificationDeliveryAttempts(ctx context.Context, id string) ([]
 }
 
 func (s *Store) claimNotificationDeliveries(ctx context.Context, limit int) ([]notificationDelivery, error) {
-	tx, err := s.pool.Begin(ctx)
+	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
-	_, _ = tx.Exec(ctx, `UPDATE notification_deliveries SET status='pending',next_attempt_at=now(),updated_at=now(),
-		last_error='delivery lease expired' WHERE status='delivering' AND updated_at<now()-interval '5 minutes'`)
-	rows, err := tx.Query(ctx, `SELECT delivery.id,delivery.attempt_count+1,channel.id,channel.name,channel.kind,channel.enabled,
+	defer tx.Rollback()
+	_, _ = tx.ExecContext(ctx, `UPDATE notification_deliveries SET status='pending',next_attempt_at=?1,updated_at=?1,
+		last_error='delivery lease expired' WHERE status='delivering' AND updated_at<?2`, now, now.Add(-5*time.Minute))
+	rows, err := tx.QueryContext(ctx, `SELECT delivery.id,delivery.attempt_count+1,channel.id,channel.name,channel.kind,channel.enabled,
 		channel.config,channel.secret_ciphertext,channel.created_at,channel.updated_at,
 		notification.id,notification.severity,notification.type,notification.title,notification.message,notification.resource,
 		notification.metadata,notification.read_at,notification.created_at
 		FROM notification_deliveries delivery
 		JOIN notification_channels channel ON channel.id=delivery.channel_id
 		JOIN notifications notification ON notification.id=delivery.notification_id
-		WHERE delivery.status='pending' AND delivery.next_attempt_at<=now()
-		ORDER BY delivery.next_attempt_at,delivery.id FOR UPDATE OF delivery SKIP LOCKED LIMIT $1`, limit)
+		WHERE delivery.status='pending' AND delivery.next_attempt_at<=?2
+		ORDER BY delivery.next_attempt_at,delivery.id LIMIT ?1`, limit, now)
 	if err != nil {
 		return nil, err
 	}
@@ -347,11 +380,11 @@ func (s *Store) claimNotificationDeliveries(ctx context.Context, limit int) ([]n
 	}
 	rows.Close()
 	for _, item := range items {
-		if _, err := tx.Exec(ctx, `UPDATE notification_deliveries SET status='delivering',updated_at=now() WHERE id=$1`, item.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE notification_deliveries SET status='delivering',updated_at=?2 WHERE id=?1`, item.ID, now); err != nil {
 			return nil, err
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return items, nil
@@ -369,6 +402,7 @@ func retryDelay(attempt int) time.Duration {
 }
 
 func (s *Store) finishNotificationDelivery(ctx context.Context, item notificationDelivery, responseCode int, deliveryErr error) error {
+	now := time.Now().UTC()
 	succeeded := deliveryErr == nil
 	message := ""
 	if deliveryErr != nil {
@@ -377,30 +411,30 @@ func (s *Store) finishNotificationDelivery(ctx context.Context, item notificatio
 			message = message[:1000]
 		}
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `INSERT INTO notification_delivery_attempts(delivery_id,attempt,succeeded,response_code,error)
-		VALUES($1,$2,$3,$4,$5) ON CONFLICT(delivery_id,attempt) DO NOTHING`, item.ID, item.Attempt, succeeded, responseCode, message); err != nil {
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO notification_delivery_attempts(delivery_id,attempt,succeeded,response_code,error)
+		VALUES(?1,?2,?3,?4,?5) ON CONFLICT(delivery_id,attempt) DO NOTHING`, item.ID, item.Attempt, succeeded, responseCode, message); err != nil {
 		return err
 	}
 	if succeeded {
-		_, err = tx.Exec(ctx, `UPDATE notification_deliveries SET status='succeeded',attempt_count=$2,response_code=$3,
-			last_error='',delivered_at=now(),updated_at=now() WHERE id=$1 AND status='delivering'`, item.ID, item.Attempt, responseCode)
+		_, err = tx.ExecContext(ctx, `UPDATE notification_deliveries SET status='succeeded',attempt_count=?2,response_code=?3,
+			last_error='',delivered_at=?4,updated_at=?4 WHERE id=?1 AND status='delivering'`, item.ID, item.Attempt, responseCode, now)
 	} else if item.Attempt >= maxNotificationAttempts {
-		_, err = tx.Exec(ctx, `UPDATE notification_deliveries SET status='failed',attempt_count=$2,response_code=$3,
-			last_error=$4,updated_at=now() WHERE id=$1 AND status='delivering'`, item.ID, item.Attempt, responseCode, message)
+		_, err = tx.ExecContext(ctx, `UPDATE notification_deliveries SET status='failed',attempt_count=?2,response_code=?3,
+			last_error=?4,updated_at=?5 WHERE id=?1 AND status='delivering'`, item.ID, item.Attempt, responseCode, message, now)
 	} else {
-		_, err = tx.Exec(ctx, `UPDATE notification_deliveries SET status='pending',attempt_count=$2,response_code=$3,
-			last_error=$4,next_attempt_at=now()+make_interval(secs=>$5),updated_at=now() WHERE id=$1 AND status='delivering'`,
-			item.ID, item.Attempt, responseCode, message, int(retryDelay(item.Attempt).Seconds()))
+		_, err = tx.ExecContext(ctx, `UPDATE notification_deliveries SET status='pending',attempt_count=?2,response_code=?3,
+			last_error=?4,next_attempt_at=?5,updated_at=?6 WHERE id=?1 AND status='delivering'`,
+			item.ID, item.Attempt, responseCode, message, now.Add(retryDelay(item.Attempt)), now)
 	}
 	if err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return tx.Commit()
 }
 
 func webhookSignature(secret, timestamp string, body []byte) string {
@@ -563,7 +597,7 @@ func (s *Server) processNotificationDeliveries(ctx context.Context) {
 		go func() {
 			defer group.Done()
 			if !item.Channel.Enabled {
-				_, _ = s.store.pool.Exec(ctx, `UPDATE notification_deliveries SET status='skipped',last_error='channel disabled',updated_at=now() WHERE id=$1`, item.ID)
+				_, _ = s.store.db.ExecContext(ctx, `UPDATE notification_deliveries SET status='skipped',last_error='channel disabled',updated_at=?2 WHERE id=?1`, item.ID, time.Now().UTC())
 				return
 			}
 			deliveryCtx, cancel := context.WithTimeout(ctx, 20*time.Second)

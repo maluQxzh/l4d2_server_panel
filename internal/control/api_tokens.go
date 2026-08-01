@@ -2,13 +2,13 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
@@ -88,13 +88,44 @@ func newAPITokenSecret() (string, error) {
 	return apiTokenPrefix + secret, nil
 }
 
-const apiTokenColumns = `id,user_id,name,scopes,COALESCE(node_id::text,''),COALESCE(instance_id::text,''),
+const apiTokenColumns = `id,user_id,name,scope_mask,COALESCE(node_id,''),COALESCE(instance_id,''),
 	expires_at,revoked_at,last_used_at,created_at`
+
+func tokenScopeMask(scopes []string) int64 {
+	var mask int64
+	for _, scope := range scopes {
+		switch Permission(scope) {
+		case PermissionRead:
+			mask |= 1
+		case PermissionOperate:
+			mask |= 2
+		case PermissionManage:
+			mask |= 4
+		}
+	}
+	return mask
+}
+
+func tokenScopesFromMask(mask int64) []string {
+	scopes := make([]string, 0, 3)
+	if mask&1 != 0 {
+		scopes = append(scopes, string(PermissionRead))
+	}
+	if mask&2 != 0 {
+		scopes = append(scopes, string(PermissionOperate))
+	}
+	if mask&4 != 0 {
+		scopes = append(scopes, string(PermissionManage))
+	}
+	return scopes
+}
 
 func scanAPIToken(row scanner) (APIToken, error) {
 	var token APIToken
-	err := row.Scan(&token.ID, &token.UserID, &token.Name, &token.Scopes, &token.NodeID, &token.InstanceID,
+	var scopeMask int64
+	err := row.Scan(&token.ID, &token.UserID, &token.Name, &scopeMask, &token.NodeID, &token.InstanceID,
 		&token.ExpiresAt, &token.RevokedAt, &token.LastUsedAt, &token.CreatedAt)
+	token.Scopes = tokenScopesFromMask(scopeMask)
 	return token, err
 }
 
@@ -123,18 +154,15 @@ func (s *Store) ValidateAPITokenResources(ctx context.Context, nodeID, instanceI
 }
 
 func (s *Store) CreateAPIToken(ctx context.Context, token APIToken, digest []byte) (APIToken, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return APIToken{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 	// Bound active credentials per account and serialize concurrent creation.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, token.UserID); err != nil {
-		return APIToken{}, err
-	}
 	var active int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM api_tokens WHERE user_id=$1 AND revoked_at IS NULL
-		AND (expires_at IS NULL OR expires_at>now())`, token.UserID).Scan(&active); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM api_tokens WHERE user_id=?1 AND revoked_at IS NULL
+		AND (expires_at IS NULL OR expires_at>?2)`, token.UserID, time.Now().UTC()).Scan(&active); err != nil {
 		return APIToken{}, err
 	}
 	if active >= 100 {
@@ -142,17 +170,17 @@ func (s *Store) CreateAPIToken(ctx context.Context, token APIToken, digest []byt
 	}
 	token.ID = uuid.NewString()
 	token.CreatedAt = time.Now().UTC()
-	_, err = tx.Exec(ctx, `INSERT INTO api_tokens(id,user_id,token_hash,name,scopes,node_id,instance_id,expires_at,created_at)
-		VALUES($1,$2,$3,$4,$5,NULLIF($6,'')::uuid,NULLIF($7,'')::uuid,$8,$9)`, token.ID, token.UserID, digest,
-		token.Name, token.Scopes, token.NodeID, token.InstanceID, token.ExpiresAt, token.CreatedAt)
+	_, err = tx.ExecContext(ctx, `INSERT INTO api_tokens(id,user_id,token_hash,name,scope_mask,node_id,instance_id,expires_at,created_at)
+		VALUES(?1,?2,?3,?4,?5,NULLIF(?6,''),NULLIF(?7,''),?8,?9)`, token.ID, token.UserID, digest,
+		token.Name, tokenScopeMask(token.Scopes), token.NodeID, token.InstanceID, token.ExpiresAt, token.CreatedAt)
 	if err != nil {
 		return APIToken{}, err
 	}
-	return token, tx.Commit(ctx)
+	return token, tx.Commit()
 }
 
 func (s *Store) ListAPITokens(ctx context.Context, userID string) ([]APIToken, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+apiTokenColumns+` FROM api_tokens WHERE user_id=$1 ORDER BY created_at DESC,id`, userID)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+apiTokenColumns+` FROM api_tokens WHERE user_id=?1 ORDER BY created_at DESC,id`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -172,39 +200,42 @@ func (s *Store) RevokeAPIToken(ctx context.Context, userID, tokenID string) erro
 	if _, err := uuid.Parse(tokenID); err != nil {
 		return ErrNotFound
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE api_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE id=$1 AND user_id=$2`, tokenID, userID)
-	if err == nil && tag.RowsAffected() == 0 {
+	tag, err := s.db.ExecContext(ctx, `UPDATE api_tokens SET revoked_at=COALESCE(revoked_at,unixepoch('subsec')*1000000) WHERE id=?1 AND user_id=?2`, tokenID, userID)
+	if err == nil && resultRowsAffected(tag) == 0 {
 		return ErrNotFound
 	}
 	return err
 }
 
 func (s *Store) APITokenPrincipal(ctx context.Context, digest []byte) (Principal, error) {
-	return s.apiTokenPrincipal(ctx, `t.token_hash=$1`, digest)
+	return s.apiTokenPrincipal(ctx, `t.token_hash=?1`, digest)
 }
 
 func (s *Store) ActiveAPITokenByID(ctx context.Context, tokenID string) (Principal, error) {
-	return s.apiTokenPrincipal(ctx, `t.id=$1`, tokenID)
+	return s.apiTokenPrincipal(ctx, `t.id=?1`, tokenID)
 }
 
 func (s *Store) apiTokenPrincipal(ctx context.Context, predicate string, argument any) (Principal, error) {
 	var principal Principal
-	err := s.pool.QueryRow(ctx, `SELECT u.id,u.username,u.display_name,u.role,u.totp_enabled,u.created_at,u.last_login_at,u.is_bootstrap_owner,
-		t.id,t.scopes,COALESCE(t.node_id::text,''),COALESCE(t.instance_id::text,''),t.expires_at
+	var scopeMask int64
+	now := time.Now().UTC()
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.role,u.totp_enabled,u.created_at,u.last_login_at,u.is_bootstrap_owner,
+		t.id,t.scope_mask,COALESCE(t.node_id,''),COALESCE(t.instance_id,''),t.expires_at
 		FROM api_tokens t JOIN users u ON u.id=t.user_id WHERE `+predicate+`
-		AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>now()) AND NOT u.disabled`, argument).Scan(
+		AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>?2) AND NOT u.disabled`, argument, now).Scan(
 		&principal.User.ID, &principal.User.Username, &principal.User.DisplayName, &principal.User.Role,
 		&principal.User.TOTPEnabled, &principal.User.CreatedAt, &principal.User.LastLoginAt, &principal.User.BootstrapOwner, &principal.APITokenID,
-		&principal.TokenScopes, &principal.TokenNodeID, &principal.TokenInstanceID, &principal.ExpiresAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+		&scopeMask, &principal.TokenNodeID, &principal.TokenInstanceID, &principal.ExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
 		return Principal{}, ErrUnauthorized
 	}
 	if err == nil {
+		principal.TokenScopes = tokenScopesFromMask(scopeMask)
 		err = s.loadPrincipalBindings(ctx, &principal)
 	}
 	if err == nil {
-		_, _ = s.pool.Exec(ctx, `UPDATE api_tokens SET last_used_at=now() WHERE id=$1
-			AND (last_used_at IS NULL OR last_used_at<now()-interval '5 minutes')`, principal.APITokenID)
+		_, _ = s.db.ExecContext(ctx, `UPDATE api_tokens SET last_used_at=?2 WHERE id=?1
+			AND (last_used_at IS NULL OR last_used_at<?3)`, principal.APITokenID, now, now.Add(-5*time.Minute))
 	}
 	return principal, err
 }

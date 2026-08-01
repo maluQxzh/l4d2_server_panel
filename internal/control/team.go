@@ -2,27 +2,26 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
-const roleBindingColumns = `id,user_id,role,scope_type,COALESCE(node_id::text,''),
-	COALESCE(instance_id::text,''),COALESCE(created_by::text,''),created_at`
+const roleBindingColumns = `id,user_id,role,scope_type,COALESCE(node_id,''),
+	COALESCE(instance_id,''),COALESCE(created_by,''),created_at`
 
 var errRootSecurityRequired = errors.New("global owner permission is required")
 
-func requireRootSecurityActor(ctx context.Context, tx pgx.Tx, actorID string) error {
+func requireRootSecurityActor(ctx context.Context, tx *sql.Tx, actorID string) error {
 	var allowed bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(
 		SELECT 1 FROM users u JOIN role_bindings rb ON rb.user_id=u.id
-		WHERE u.id=$1 AND NOT u.disabled AND rb.scope_type='global' AND rb.role='owner'
+		WHERE u.id=?1 AND NOT u.disabled AND rb.scope_type='global' AND rb.role='owner'
 	)`, actorID).Scan(&allowed)
 	if err != nil {
 		return err
@@ -41,7 +40,7 @@ func scanRoleBinding(row scanner) (domain.RoleBinding, error) {
 }
 
 func (s *Store) RoleBindings(ctx context.Context, userID string) ([]domain.RoleBinding, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+roleBindingColumns+` FROM role_bindings WHERE user_id=$1
+	rows, err := s.db.QueryContext(ctx, `SELECT `+roleBindingColumns+` FROM role_bindings WHERE user_id=?1
 		ORDER BY CASE scope_type WHEN 'global' THEN 0 WHEN 'node' THEN 1 ELSE 2 END,created_at,id`, userID)
 	if err != nil {
 		return nil, err
@@ -147,16 +146,16 @@ func normalizeRoleBindings(bindings []domain.RoleBinding) ([]domain.RoleBinding,
 	return result, nil
 }
 
-func validateBindingResources(ctx context.Context, tx pgx.Tx, bindings []domain.RoleBinding) error {
+func validateBindingResources(ctx context.Context, tx *sql.Tx, bindings []domain.RoleBinding) error {
 	for _, binding := range bindings {
 		var exists bool
 		switch binding.ScopeType {
 		case "node":
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1)`, binding.NodeID).Scan(&exists); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM nodes WHERE id=?1)`, binding.NodeID).Scan(&exists); err != nil {
 				return err
 			}
 		case "instance":
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM instances WHERE id=$1)`, binding.InstanceID).Scan(&exists); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM instances WHERE id=?1)`, binding.InstanceID).Scan(&exists); err != nil {
 				return err
 			}
 		default:
@@ -169,10 +168,10 @@ func validateBindingResources(ctx context.Context, tx pgx.Tx, bindings []domain.
 	return nil
 }
 
-func insertRoleBindings(ctx context.Context, tx pgx.Tx, userID, actorID string, bindings []domain.RoleBinding) error {
+func insertRoleBindings(ctx context.Context, tx *sql.Tx, userID, actorID string, bindings []domain.RoleBinding) error {
 	for _, binding := range bindings {
-		_, err := tx.Exec(ctx, `INSERT INTO role_bindings(id,user_id,role,scope_type,node_id,instance_id,created_by)
-			VALUES($1,$2,$3,$4,NULLIF($5,'')::uuid,NULLIF($6,'')::uuid,NULLIF($7,'')::uuid)`,
+		_, err := tx.ExecContext(ctx, `INSERT INTO role_bindings(id,user_id,role,scope_type,node_id,instance_id,created_by)
+			VALUES(?1,?2,?3,?4,NULLIF(?5,''),NULLIF(?6,''),NULLIF(?7,''))`,
 			uuid.NewString(), userID, binding.Role, binding.ScopeType, binding.NodeID, binding.InstanceID, actorID)
 		if err != nil {
 			return err
@@ -204,11 +203,11 @@ func (s *Store) CreateTeamUser(ctx context.Context, actorID string, input Create
 	if len(input.DisplayName) > 128 {
 		return domain.User{}, errors.New("display_name must not exceed 128 bytes")
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.User{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 	if err := requireRootSecurityActor(ctx, tx, actorID); err != nil {
 		return domain.User{}, err
 	}
@@ -217,12 +216,11 @@ func (s *Store) CreateTeamUser(ctx context.Context, actorID string, input Create
 	}
 	user := domain.User{ID: uuid.NewString(), Username: input.Username, DisplayName: input.DisplayName,
 		Role: highestBindingRole(bindings), RoleBindings: bindings, CreatedAt: time.Now().UTC()}
-	_, err = tx.Exec(ctx, `INSERT INTO users(id,username,username_normalized,display_name,password_hash,role,created_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7)`, user.ID, user.Username, normalizeUsername(user.Username), user.DisplayName,
+	_, err = tx.ExecContext(ctx, `INSERT INTO users(id,username,username_normalized,display_name,password_hash,role,created_at)
+		VALUES(?1,?2,?3,?4,?5,?6,?7)`, user.ID, user.Username, normalizeUsername(user.Username), user.DisplayName,
 		input.PasswordHash, user.Role, user.CreatedAt)
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if isSQLiteConstraint(err) {
 			return domain.User{}, fmt.Errorf("username already exists: %w", ErrConflict)
 		}
 		return domain.User{}, err
@@ -230,7 +228,7 @@ func (s *Store) CreateTeamUser(ctx context.Context, actorID string, input Create
 	if err := insertRoleBindings(ctx, tx, user.ID, actorID, bindings); err != nil {
 		return domain.User{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return domain.User{}, err
 	}
 	stored, err := s.TeamUser(ctx, user.ID)
@@ -245,19 +243,19 @@ type UpdateTeamUserInput struct {
 }
 
 func (s *Store) UpdateTeamUser(ctx context.Context, actorID, userID string, input UpdateTeamUserInput) (domain.User, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.User{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 	if err := requireRootSecurityActor(ctx, tx, actorID); err != nil {
 		return domain.User{}, err
 	}
 	var bootstrap, disabled bool
 	var currentRole domain.Role
-	err = tx.QueryRow(ctx, `SELECT is_bootstrap_owner,disabled,role FROM users WHERE id=$1 FOR UPDATE`, userID).
+	err = tx.QueryRowContext(ctx, `SELECT is_bootstrap_owner,disabled,role FROM users WHERE id=?1`, userID).
 		Scan(&bootstrap, &disabled, &currentRole)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return domain.User{}, ErrNotFound
 	}
 	if err != nil {
@@ -290,8 +288,8 @@ func (s *Store) UpdateTeamUser(ctx context.Context, actorID, userID string, inpu
 	}
 	if (currentRole == domain.RoleOwner && (newRole != domain.RoleOwner || newDisabled)) || (input.Bindings != nil && !containsGlobalOwner(bindings)) {
 		var otherOwners int
-		if err := tx.QueryRow(ctx, `SELECT count(DISTINCT u.id) FROM users u JOIN role_bindings rb ON rb.user_id=u.id
-			WHERE u.id<>$1 AND NOT u.disabled AND rb.scope_type='global' AND rb.role='owner'`, userID).Scan(&otherOwners); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT count(DISTINCT u.id) FROM users u JOIN role_bindings rb ON rb.user_id=u.id
+			WHERE u.id<>?1 AND NOT u.disabled AND rb.scope_type='global' AND rb.role='owner'`, userID).Scan(&otherOwners); err != nil {
 			return domain.User{}, err
 		}
 		if otherOwners == 0 && currentRole == domain.RoleOwner {
@@ -303,40 +301,40 @@ func (s *Store) UpdateTeamUser(ctx context.Context, actorID, userID string, inpu
 		if value == "" || len(value) > 128 {
 			return domain.User{}, errors.New("display_name must be between 1 and 128 bytes")
 		}
-		if _, err := tx.Exec(ctx, `UPDATE users SET display_name=$2 WHERE id=$1`, userID, value); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET display_name=?2 WHERE id=?1`, userID, value); err != nil {
 			return domain.User{}, err
 		}
 	}
 	if input.PasswordHash != nil {
-		if _, err := tx.Exec(ctx, `UPDATE users SET password_hash=$2 WHERE id=$1`, userID, *input.PasswordHash); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash=?2 WHERE id=?1`, userID, *input.PasswordHash); err != nil {
 			return domain.User{}, err
 		}
 	}
 	if input.Disabled != nil {
-		if _, err := tx.Exec(ctx, `UPDATE users SET disabled=$2 WHERE id=$1`, userID, *input.Disabled); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET disabled=?2 WHERE id=?1`, userID, *input.Disabled); err != nil {
 			return domain.User{}, err
 		}
 	}
 	if input.Bindings != nil {
-		if _, err := tx.Exec(ctx, `DELETE FROM role_bindings WHERE user_id=$1`, userID); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM role_bindings WHERE user_id=?1`, userID); err != nil {
 			return domain.User{}, err
 		}
 		if err := insertRoleBindings(ctx, tx, userID, actorID, bindings); err != nil {
 			return domain.User{}, err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE users SET role=$2 WHERE id=$1`, userID, newRole); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET role=?2 WHERE id=?1`, userID, newRole); err != nil {
 			return domain.User{}, err
 		}
 	}
 	if input.PasswordHash != nil || (input.Disabled != nil && *input.Disabled) || bindingsChanged {
-		if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE user_id=$1`, userID); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id=?1`, userID); err != nil {
 			return domain.User{}, err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE api_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1`, userID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE api_tokens SET revoked_at=COALESCE(revoked_at,unixepoch('subsec')*1000000) WHERE user_id=?1`, userID); err != nil {
 			return domain.User{}, err
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return domain.User{}, err
 	}
 	return s.TeamUser(ctx, userID)
@@ -353,10 +351,10 @@ func containsGlobalOwner(bindings []domain.RoleBinding) bool {
 
 func (s *Store) TeamUser(ctx context.Context, userID string) (domain.User, error) {
 	var user domain.User
-	err := s.pool.QueryRow(ctx, `SELECT id,username,display_name,role,totp_enabled,created_at,last_login_at,disabled,is_bootstrap_owner
-		FROM users WHERE id=$1`, userID).Scan(&user.ID, &user.Username, &user.DisplayName, &user.Role, &user.TOTPEnabled,
+	err := s.db.QueryRowContext(ctx, `SELECT id,username,display_name,role,totp_enabled,created_at,last_login_at,disabled,is_bootstrap_owner
+		FROM users WHERE id=?1`, userID).Scan(&user.ID, &user.Username, &user.DisplayName, &user.Role, &user.TOTPEnabled,
 		&user.CreatedAt, &user.LastLoginAt, &user.Disabled, &user.BootstrapOwner)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return domain.User{}, ErrNotFound
 	}
 	if err != nil {
@@ -367,7 +365,7 @@ func (s *Store) TeamUser(ctx context.Context, userID string) (domain.User, error
 }
 
 func (s *Store) ListTeamUsers(ctx context.Context) ([]domain.User, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,username,display_name,role,totp_enabled,created_at,last_login_at,disabled,is_bootstrap_owner
+	rows, err := s.db.QueryContext(ctx, `SELECT id,username,display_name,role,totp_enabled,created_at,last_login_at,disabled,is_bootstrap_owner
 		FROM users ORDER BY created_at,id`)
 	if err != nil {
 		return nil, err

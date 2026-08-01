@@ -13,54 +13,56 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
-// TestFleetScaleAcceptance is an explicit, PostgreSQL-backed control-plane
+// TestFleetScaleAcceptance is an explicit SQLite control-plane
 // acceptance harness. It deliberately does not claim SteamCMD or game-server
 // coverage: simulated nodes never connect an Agent. Enable it in CI or locally
-// with RUN_FLEET_ACCEPTANCE=1 and TEST_DATABASE_URL.
+// with RUN_FLEET_ACCEPTANCE=1.
 func TestFleetScaleAcceptance(t *testing.T) {
 	if os.Getenv("RUN_FLEET_ACCEPTANCE") != "1" {
 		t.Skip("RUN_FLEET_ACCEPTANCE=1 is required")
 	}
-	databaseURL := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if databaseURL == "" {
-		t.Skip("TEST_DATABASE_URL is not configured")
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	admin, err := OpenStore(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	schema := "fleet_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	if _, err := admin.pool.Exec(ctx, `CREATE SCHEMA `+schema); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _, _ = admin.pool.Exec(context.Background(), `DROP SCHEMA IF EXISTS `+schema+` CASCADE`) }()
-
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-	store, err := OpenStore(ctx, parsed.String())
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "fleet.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations")); err != nil {
+	var maxWALBytes atomic.Int64
+	stopWALMonitor := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopWALMonitor:
+				return
+			case <-ticker.C:
+				if info, statErr := os.Stat(store.path + "-wal"); statErr == nil {
+					size := info.Size()
+					for {
+						previous := maxWALBytes.Load()
+						if size <= previous || maxWALBytes.CompareAndSwap(previous, size) {
+							break
+						}
+					}
+				}
+			}
+		}
+	}()
+	defer close(stopWALMonitor)
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
 		t.Fatal(err)
 	}
 	password := "fleet-acceptance-password"
@@ -110,14 +112,21 @@ func TestFleetScaleAcceptance(t *testing.T) {
 	created := make([]createdInstance, instanceCount)
 	errorsFound := make(chan error, nodeCount)
 	var workers sync.WaitGroup
+	var latencyMu sync.Mutex
+	writeLatencies := make([]time.Duration, 0, instanceCount)
+	acceptanceStarted := time.Now()
 	for nodeIndex, nodeID := range nodeIDs {
 		workers.Add(1)
 		go func(nodeIndex int, nodeID string) {
 			defer workers.Done()
 			for offset := 0; offset < instanceCount/nodeCount; offset++ {
 				index := nodeIndex*(instanceCount/nodeCount) + offset
+				started := time.Now()
 				response, requestErr := client.request(http.MethodPost, "/api/v1/instances", fleetInstanceRequest(nodeID, index),
 					fmt.Sprintf("fleet:create:%03d", index), http.StatusAccepted)
+				latencyMu.Lock()
+				writeLatencies = append(writeLatencies, time.Since(started))
+				latencyMu.Unlock()
 				if requestErr != nil {
 					errorsFound <- requestErr
 					return
@@ -130,8 +139,14 @@ func TestFleetScaleAcceptance(t *testing.T) {
 	workers.Wait()
 	close(errorsFound)
 	for workerErr := range errorsFound {
+		if strings.Contains(strings.ToUpper(workerErr.Error()), "SQLITE_BUSY") || strings.Contains(strings.ToLower(workerErr.Error()), "database is locked") {
+			t.Fatalf("fleet acceptance observed SQLITE_BUSY: %v", workerErr)
+		}
 		t.Fatal(workerErr)
 	}
+	sort.Slice(writeLatencies, func(i, j int) bool { return writeLatencies[i] < writeLatencies[j] })
+	p95 := writeLatencies[(len(writeLatencies)*95-1)/100]
+	t.Logf("SQLite fleet acceptance: elapsed=%s p95_instance_write=%s max_wal_bytes=%d", time.Since(acceptanceStarted), p95, maxWALBytes.Load())
 
 	// Replay a sample of create requests with the same key and body. They must
 	// return the original resources and cannot grow the job or instance tables.
@@ -148,7 +163,7 @@ func TestFleetScaleAcceptance(t *testing.T) {
 	}
 	for table, expected := range map[string]int{"nodes": nodeCount, "instances": instanceCount, "jobs": instanceCount, "schedules": instanceCount} {
 		var actual int
-		if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM `+table).Scan(&actual); err != nil || actual != expected {
+		if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM `+table).Scan(&actual); err != nil || actual != expected {
 			t.Fatalf("%s count=%d want=%d err=%v", table, actual, expected, err)
 		}
 	}

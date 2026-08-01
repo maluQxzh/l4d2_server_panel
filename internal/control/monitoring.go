@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
@@ -148,12 +148,12 @@ func (s *Store) Metrics(ctx context.Context, query metricQuery) ([]MetricPoint, 
 	}
 	// table/timestamp/sampleCount are selected only from the closed enum above;
 	// all caller-provided values remain parameters.
-	statement := `SELECT node_id::text,COALESCE(instance_id::text,''),` + timestamp + `,
+	statement := `SELECT node_id,COALESCE(instance_id,''),` + timestamp + `,
 		cpu_percent,memory_used,memory_total,disk_used,disk_total,network_rx,network_tx,players,` + sampleCount + `
-		FROM ` + table + ` WHERE ($1::uuid IS NULL OR node_id=$1)
-		AND ($2::uuid IS NULL OR instance_id=$2) AND ` + timestamp + ` >= $3 AND ` + timestamp + ` <= $4
+		FROM ` + table + ` WHERE (?1 IS NULL OR node_id=?1)
+		AND (?2 IS NULL OR instance_id=?2) AND ` + timestamp + ` >= ?3 AND ` + timestamp + ` <= ?4
 		ORDER BY ` + timestamp + `,node_id,instance_id NULLS FIRST LIMIT 10000`
-	rows, err := s.pool.Query(ctx, statement, nullableUUID(query.NodeID), nullableUUID(query.InstanceID), query.From, query.To)
+	rows, err := s.db.QueryContext(ctx, statement, nullableUUID(query.NodeID), nullableUUID(query.InstanceID), query.From, query.To)
 	if err != nil {
 		return nil, err
 	}
@@ -174,63 +174,64 @@ func (s *Store) Metrics(ctx context.Context, query metricQuery) ([]MetricPoint, 
 // overlap makes late samples and the currently-open bucket deterministic while
 // avoiding a full history scan every 30 seconds.
 func (s *Store) AggregateMetrics(ctx context.Context) error {
-	tx, err := s.pool.Begin(ctx)
+	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `WITH boundary AS (
-		SELECT COALESCE(max(bucket)-interval '2 minutes',now()-interval '30 days') AS from_time FROM metrics_1m
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `WITH boundary AS (
+		SELECT COALESCE(max(bucket)-120000000,?1) AS from_time FROM metrics_1m
 	), source AS (
-		SELECT node_id,instance_id,date_trunc('minute',collected_at) AS bucket,
-			avg(cpu_percent) AS cpu_percent,avg(memory_used)::bigint AS memory_used,max(memory_total) AS memory_total,
-			avg(disk_used)::bigint AS disk_used,max(disk_total) AS disk_total,max(network_rx) AS network_rx,
-			max(network_tx) AS network_tx,avg(players)::integer AS players,count(*)::integer AS sample_count
+		SELECT node_id,instance_id,(CAST(collected_at AS INTEGER)/60000000)*60000000 AS bucket,
+			avg(cpu_percent) AS cpu_percent,avg(memory_used) AS memory_used,max(memory_total) AS memory_total,
+			avg(disk_used) AS disk_used,max(disk_total) AS disk_total,max(network_rx) AS network_rx,
+			max(network_tx) AS network_tx,avg(players) AS players,count(*) AS sample_count
 		FROM metrics,boundary WHERE collected_at>=boundary.from_time
-		GROUP BY node_id,instance_id,date_trunc('minute',collected_at)
+		GROUP BY node_id,instance_id,(CAST(collected_at AS INTEGER)/60000000)*60000000
 	)
 	INSERT INTO metrics_1m(node_id,instance_id,bucket,cpu_percent,memory_used,memory_total,disk_used,disk_total,
 		network_rx,network_tx,players,sample_count)
 	SELECT node_id,instance_id,bucket,cpu_percent,memory_used,memory_total,disk_used,disk_total,
-		network_rx,network_tx,players,sample_count FROM source
-	ON CONFLICT(node_id,instance_id,bucket) DO UPDATE SET
+		network_rx,network_tx,players,sample_count FROM source WHERE 1
+	ON CONFLICT DO UPDATE SET
 		cpu_percent=EXCLUDED.cpu_percent,memory_used=EXCLUDED.memory_used,memory_total=EXCLUDED.memory_total,
 		disk_used=EXCLUDED.disk_used,disk_total=EXCLUDED.disk_total,network_rx=EXCLUDED.network_rx,
-		network_tx=EXCLUDED.network_tx,players=EXCLUDED.players,sample_count=EXCLUDED.sample_count`); err != nil {
+		network_tx=EXCLUDED.network_tx,players=EXCLUDED.players,sample_count=EXCLUDED.sample_count`, now.Add(-30*24*time.Hour)); err != nil {
 		return fmt.Errorf("aggregate one-minute metrics: %w", err)
 	}
-	if _, err = tx.Exec(ctx, `WITH boundary AS (
-		SELECT COALESCE(max(bucket)-interval '2 hours',now()-interval '1 year') AS from_time FROM metrics_1h
+	if _, err = tx.ExecContext(ctx, `WITH boundary AS (
+		SELECT COALESCE(max(bucket)-7200000000,?1) AS from_time FROM metrics_1h
 	), source AS (
-		SELECT node_id,instance_id,date_trunc('hour',bucket) AS bucket,
-			(sum(cpu_percent*sample_count)/NULLIF(sum(sample_count),0))::double precision AS cpu_percent,
-			(sum(memory_used*sample_count)/NULLIF(sum(sample_count),0))::bigint AS memory_used,max(memory_total) AS memory_total,
-			(sum(disk_used*sample_count)/NULLIF(sum(sample_count),0))::bigint AS disk_used,max(disk_total) AS disk_total,
+		SELECT node_id,instance_id,(CAST(bucket AS INTEGER)/3600000000)*3600000000 AS bucket,
+			(sum(cpu_percent*sample_count)/NULLIF(sum(sample_count),0)) AS cpu_percent,
+			(sum(memory_used*sample_count)/NULLIF(sum(sample_count),0)) AS memory_used,max(memory_total) AS memory_total,
+			(sum(disk_used*sample_count)/NULLIF(sum(sample_count),0)) AS disk_used,max(disk_total) AS disk_total,
 			max(network_rx) AS network_rx,max(network_tx) AS network_tx,
-			(sum(players*sample_count)/NULLIF(sum(sample_count),0))::integer AS players,sum(sample_count)::integer AS sample_count
+			(sum(players*sample_count)/NULLIF(sum(sample_count),0)) AS players,sum(sample_count) AS sample_count
 		FROM metrics_1m,boundary WHERE bucket>=boundary.from_time
-		GROUP BY node_id,instance_id,date_trunc('hour',bucket)
+		GROUP BY node_id,instance_id,(CAST(bucket AS INTEGER)/3600000000)*3600000000
 	)
 	INSERT INTO metrics_1h(node_id,instance_id,bucket,cpu_percent,memory_used,memory_total,disk_used,disk_total,
 		network_rx,network_tx,players,sample_count)
 	SELECT node_id,instance_id,bucket,cpu_percent,memory_used,memory_total,disk_used,disk_total,
-		network_rx,network_tx,players,sample_count FROM source
-	ON CONFLICT(node_id,instance_id,bucket) DO UPDATE SET
+		network_rx,network_tx,players,sample_count FROM source WHERE 1
+	ON CONFLICT DO UPDATE SET
 		cpu_percent=EXCLUDED.cpu_percent,memory_used=EXCLUDED.memory_used,memory_total=EXCLUDED.memory_total,
 		disk_used=EXCLUDED.disk_used,disk_total=EXCLUDED.disk_total,network_rx=EXCLUDED.network_rx,
-		network_tx=EXCLUDED.network_tx,players=EXCLUDED.players,sample_count=EXCLUDED.sample_count`); err != nil {
+		network_tx=EXCLUDED.network_tx,players=EXCLUDED.players,sample_count=EXCLUDED.sample_count`, now.Add(-365*24*time.Hour)); err != nil {
 		return fmt.Errorf("aggregate one-hour metrics: %w", err)
 	}
-	if _, err = tx.Exec(ctx, `DELETE FROM metrics WHERE collected_at<now()-interval '24 hours'`); err != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM metrics WHERE collected_at<?1`, now.Add(-24*time.Hour)); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `DELETE FROM metrics_1m WHERE bucket<now()-interval '30 days'`); err != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM metrics_1m WHERE bucket<?1`, now.Add(-30*24*time.Hour)); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `DELETE FROM metrics_1h WHERE bucket<now()-interval '1 year'`); err != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM metrics_1h WHERE bucket<?1`, now.Add(-365*24*time.Hour)); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return tx.Commit()
 }
 
 type monitoringTarget struct {
@@ -239,7 +240,7 @@ type monitoringTarget struct {
 }
 
 func (s *Store) RunningMonitoringTargets(ctx context.Context) ([]monitoringTarget, error) {
-	rows, err := s.pool.Query(ctx, `SELECT instance.id::text,instance.node_id::text FROM instances instance
+	rows, err := s.db.QueryContext(ctx, `SELECT instance.id,instance.node_id FROM instances instance
 		JOIN nodes node ON node.id=instance.node_id WHERE instance.status='running' AND node.status='online'
 		ORDER BY instance.id`)
 	if err != nil {
@@ -258,7 +259,7 @@ func (s *Store) RunningMonitoringTargets(ctx context.Context) ([]monitoringTarge
 }
 
 func (s *Store) UpdateMonitoringTargets(ctx context.Context) ([]monitoringTarget, error) {
-	rows, err := s.pool.Query(ctx, `SELECT instance.id::text,instance.node_id::text FROM instances instance
+	rows, err := s.db.QueryContext(ctx, `SELECT instance.id,instance.node_id FROM instances instance
 		JOIN nodes node ON node.id=instance.node_id WHERE node.status='online'
 		AND instance.status IN ('stopped','running','degraded')
 		AND NOT EXISTS (
@@ -300,10 +301,10 @@ func (s *Store) QueueSystemProbe(ctx context.Context, target monitoringTarget, j
 	if jobType == "check_update" {
 		return s.queueUpdateProbe(ctx, target, job, payload, requestFingerprint)
 	}
-	err = s.pool.QueryRow(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
-		VALUES($1,$2,$3,$4,$5,$6,$7,NULL,$8,$9) ON CONFLICT DO NOTHING RETURNING created_at`,
-		job.ID, job.NodeID, job.InstanceID, job.Type, job.Status, payload, key, job.CreatedAt, requestFingerprint).Scan(&job.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err = s.db.QueryRowContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
+		VALUES(?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9) ON CONFLICT DO NOTHING RETURNING created_at`,
+		job.ID, job.NodeID, job.InstanceID, job.Type, job.Status, string(payload), key, job.CreatedAt, requestFingerprint).Scan(&job.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
 		existing, lookupErr := s.JobByIdempotencyKeyMatching(ctx, "", key, requestFingerprint)
 		if lookupErr != nil {
 			return domain.Job{}, false, lookupErr
@@ -313,18 +314,17 @@ func (s *Store) QueueSystemProbe(ctx context.Context, target monitoringTarget, j
 	return job, false, err
 }
 
-// queueUpdateProbe uses the same instance row lock as automatic maintenance
-// batching and check_update dispatch. This closes the MVCC gap where a probe
-// could otherwise be inserted/claimed after a batch's active-job check but
-// before its update intent commits.
+// queueUpdateProbe uses the same immediate writer transaction as automatic
+// maintenance batching and check_update dispatch. A probe therefore cannot be
+// inserted after a batch's active-job check but before its update intent.
 func (s *Store) queueUpdateProbe(ctx context.Context, target monitoringTarget, job domain.Job, payload []byte, requestFingerprint string) (domain.Job, bool, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.Job{}, false, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 	var nodeID string
-	if err := tx.QueryRow(ctx, `SELECT node_id::text FROM instances WHERE id=$1 FOR UPDATE`, target.InstanceID).Scan(&nodeID); errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT node_id FROM instances WHERE id=?1`, target.InstanceID).Scan(&nodeID); errors.Is(err, sql.ErrNoRows) {
 		return domain.Job{}, false, ErrNotFound
 	} else if err != nil {
 		return domain.Job{}, false, err
@@ -332,37 +332,37 @@ func (s *Store) queueUpdateProbe(ctx context.Context, target monitoringTarget, j
 		return domain.Job{}, false, ErrConflict
 	}
 
-	existing, storedFingerprint, lookupErr := scanJobWithFingerprint(tx.QueryRow(ctx, `SELECT `+jobColumnsWithFingerprint+`
-		FROM jobs WHERE requested_by IS NULL AND idempotency_key=$1`, job.IdempotencyKey))
+	existing, storedFingerprint, lookupErr := scanJobWithFingerprint(tx.QueryRowContext(ctx, `SELECT `+jobColumnsWithFingerprint+`
+		FROM jobs WHERE requested_by IS NULL AND idempotency_key=?1`, job.IdempotencyKey))
 	if lookupErr == nil {
 		if existing.NodeID != target.NodeID || existing.InstanceID != target.InstanceID || existing.Type != "check_update" ||
 			!requestFingerprintsEqual(storedFingerprint, requestFingerprint) {
 			return domain.Job{}, false, ErrConflict
 		}
-		if err := tx.Commit(ctx); err != nil {
+		if err := tx.Commit(); err != nil {
 			return domain.Job{}, false, err
 		}
 		return existing, true, nil
 	}
-	if !errors.Is(lookupErr, pgx.ErrNoRows) {
+	if !errors.Is(lookupErr, sql.ErrNoRows) {
 		return domain.Job{}, false, lookupErr
 	}
 	var conflicting bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM jobs job WHERE job.instance_id=$1
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jobs job WHERE job.instance_id=?1
 		AND `+activeJobSQLPredicate+` AND (`+instanceWriteJobSQLPredicate+` OR job.type='check_update'))`, target.InstanceID).Scan(&conflicting); err != nil {
 		return domain.Job{}, false, err
 	}
 	if conflicting {
 		return domain.Job{}, false, ErrConflict
 	}
-	if err := tx.QueryRow(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
-		VALUES($1,$2,$3,$4,$5,$6,$7,NULL,$8,$9) ON CONFLICT DO NOTHING RETURNING created_at`,
-		job.ID, job.NodeID, job.InstanceID, job.Type, job.Status, payload, job.IdempotencyKey, job.CreatedAt, requestFingerprint).Scan(&job.CreatedAt); errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
+		VALUES(?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9) ON CONFLICT DO NOTHING RETURNING created_at`,
+		job.ID, job.NodeID, job.InstanceID, job.Type, job.Status, string(payload), job.IdempotencyKey, job.CreatedAt, requestFingerprint).Scan(&job.CreatedAt); errors.Is(err, sql.ErrNoRows) {
 		return domain.Job{}, false, ErrConflict
 	} else if err != nil {
 		return domain.Job{}, false, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return domain.Job{}, false, err
 	}
 	return job, false, nil
@@ -421,14 +421,14 @@ func (s *Store) ApplyUpdateCheckResult(ctx context.Context, job domain.Job) erro
 	// let its stale public-branch comparison resurrect update_available; the
 	// next probe, which dispatch gating holds until the write finishes, will
 	// observe the newly installed build.
-	tag, err := s.pool.Exec(ctx, `INSERT INTO instance_update_state(instance_id,installed_build,available_build,available,checked_at)
-		SELECT $1,$2,$3,$4,$5 WHERE NOT EXISTS (
-			SELECT 1 FROM jobs newer WHERE newer.instance_id=$1
-			AND newer.type IN ('install','reinstall','update','validate') AND newer.created_at>$6
+	tag, err := s.db.ExecContext(ctx, `INSERT INTO instance_update_state(instance_id,installed_build,available_build,available,checked_at)
+		SELECT ?1,?2,?3,?4,?5 WHERE NOT EXISTS (
+			SELECT 1 FROM jobs newer WHERE newer.instance_id=?1
+			AND newer.type IN ('install','reinstall','update','validate') AND newer.created_at>?6
 		) ON CONFLICT(instance_id) DO UPDATE SET installed_build=EXCLUDED.installed_build,
 		available_build=EXCLUDED.available_build,available=EXCLUDED.available,checked_at=EXCLUDED.checked_at`,
 		job.InstanceID, installed, availableBuild, available, jobProjectionTimestamp(job), job.CreatedAt)
-	if err != nil || !available || tag.RowsAffected() == 0 {
+	if err != nil || !available || resultRowsAffected(tag) == 0 {
 		return err
 	}
 	return s.CreateNotificationOnce(ctx, "info", "update.available", "Game update available",
@@ -437,8 +437,8 @@ func (s *Store) ApplyUpdateCheckResult(ctx context.Context, job domain.Job) erro
 }
 
 func (s *Store) clearAvailableUpdateAfterInstall(ctx context.Context, instanceID, installedBuild string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO instance_update_state(instance_id,installed_build,available_build,available,checked_at)
-		VALUES($1,$2,$2,false,now()) ON CONFLICT(instance_id) DO UPDATE SET
+	_, err := s.db.ExecContext(ctx, `INSERT INTO instance_update_state(instance_id,installed_build,available_build,available,checked_at)
+		VALUES(?1,?2,?2,false,unixepoch('subsec')*1000000) ON CONFLICT(instance_id) DO UPDATE SET
 		installed_build=COALESCE(NULLIF(EXCLUDED.installed_build,''),instance_update_state.installed_build),
 		available_build=COALESCE(NULLIF(EXCLUDED.available_build,''),instance_update_state.available_build),
 		available=false,checked_at=EXCLUDED.checked_at`, instanceID, installedBuild)

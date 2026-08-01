@@ -1,30 +1,6 @@
 name: l4d2panel
 
 services:
-  postgres:
-    image: postgres:17-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-l4d2panel}
-      POSTGRES_USER: ${POSTGRES_USER:-l4d2panel}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    networks: [panel]
-    security_opt: [no-new-privileges:true]
-    shm_size: 256mb
-    stop_grace_period: 60s
-    logging: &default-logging
-      driver: json-file
-      options:
-        max-size: 20m
-        max-file: "5"
-
   app:
     build:
       context: .
@@ -35,7 +11,7 @@ services:
     image: l4d2panel/control:${PANEL_VERSION:-dev}
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-l4d2panel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-l4d2panel}?sslmode=disable
+      DATABASE_PATH: /app/data/l4d2panel.sqlite3
       MASTER_KEY: ${MASTER_KEY:?请在 .env 中设置 MASTER_KEY}
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
@@ -55,9 +31,6 @@ services:
       - /tmp:size=64m,mode=1777
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    depends_on:
-      postgres:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -65,7 +38,11 @@ services:
       retries: 12
     networks: [panel]
     stop_grace_period: 45s
-    logging: *default-logging
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
 
   caddy:
     image: caddy:2.10-alpine
@@ -94,7 +71,6 @@ services:
     logging: *default-logging
 
 volumes:
-  postgres_data:
   app_data:
   app_spool:
   caddy_data:

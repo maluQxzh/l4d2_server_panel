@@ -33,7 +33,7 @@ func TestControlServiceConfigurationContainsOnlyConfigPath(t *testing.T) {
 		t.Fatalf("unexpected service arguments: %#v", cfg.Arguments)
 	}
 	for _, argument := range cfg.Arguments {
-		if strings.Contains(argument, "postgres://") || strings.Contains(argument, "master_key") {
+		if strings.Contains(argument, "master_key") {
 			t.Fatalf("secret leaked into service arguments: %q", argument)
 		}
 	}

@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
@@ -112,13 +112,13 @@ func restoredLaunchConfigFromResult(result map[string]any) (*restoredLaunchConfi
 // the current version in the caller's transaction. The source_job_id marker
 // makes the operation safe when an Agent replays an unacknowledged terminal
 // journal entry.
-func applyRestoredLaunchConfigTx(ctx context.Context, tx pgx.Tx, job domain.Job, restored restoredLaunchConfig) error {
-	current, err := scanInstance(tx.QueryRow(ctx, `SELECT `+instanceColumns+` FROM instances WHERE id=$1 FOR UPDATE`, job.InstanceID))
+func applyRestoredLaunchConfigTx(ctx context.Context, tx *sql.Tx, job domain.Job, restored restoredLaunchConfig) error {
+	current, err := scanInstance(tx.QueryRowContext(ctx, `SELECT `+instanceColumns+` FROM instances WHERE id=?1`, job.InstanceID))
 	if err != nil {
 		return err
 	}
 	var alreadyApplied bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM config_versions WHERE source_job_id=$1)`, job.ID).Scan(&alreadyApplied); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM config_versions WHERE source_job_id=?1)`, job.ID).Scan(&alreadyApplied); err != nil {
 		return err
 	}
 	if alreadyApplied {
@@ -132,21 +132,21 @@ func applyRestoredLaunchConfigTx(ctx context.Context, tx pgx.Tx, job domain.Job,
 	if err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx, `INSERT INTO config_versions(id,instance_id,version,config,created_by,source_job_id)
-		VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(source_job_id) DO NOTHING`, uuid.NewString(), current.ID,
-		current.Version, previous, nullableUUID(job.RequestedBy), job.ID)
+	tag, err := tx.ExecContext(ctx, `INSERT INTO config_versions(id,instance_id,version,config,created_by,source_job_id)
+		VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(source_job_id) DO NOTHING`, uuid.NewString(), current.ID,
+		current.Version, string(previous), nullableUUID(job.RequestedBy), job.ID)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if resultRowsAffected(tag) == 0 {
 		return nil
 	}
 	raw, err := json.Marshal(merged)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE instances SET config=$2,max_players=$3,version=version+1,updated_at=now() WHERE id=$1`,
-		current.ID, raw, merged.MaxPlayers); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE instances SET config=?2,max_players=?3,version=version+1,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`,
+		current.ID, string(raw), merged.MaxPlayers); err != nil {
 		return err
 	}
 	return nil
@@ -157,7 +157,7 @@ func applyRestoredLaunchConfigTx(ctx context.Context, tx pgx.Tx, job domain.Job,
 // commit. Callers must lock the instance before the job row so a concurrent
 // configuration write cannot wait on the partial active-job index while
 // holding the inverse lock order.
-func applyRestoreTerminalProjectionTx(ctx context.Context, tx pgx.Tx, job domain.Job) error {
+func applyRestoreTerminalProjectionTx(ctx context.Context, tx *sql.Tx, job domain.Job) error {
 	switch job.Status {
 	case domain.JobSucceeded:
 		restored, err := restoredLaunchConfigFromResult(job.Result)
@@ -174,7 +174,7 @@ func applyRestoreTerminalProjectionTx(ctx context.Context, tx pgx.Tx, job domain
 		return finishBackupUploadRestoreTx(ctx, tx, job, "failed")
 	case domain.JobCanceled:
 		if job.InstanceID != "" {
-			if _, err := tx.Exec(ctx, `UPDATE instances SET status='degraded',updated_at=now() WHERE id=$1`, job.InstanceID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE instances SET status='degraded',updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID); err != nil {
 				return err
 			}
 		}

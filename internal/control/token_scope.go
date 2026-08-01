@@ -138,7 +138,7 @@ func (p Principal) AllowsInstanceAction(action string) bool {
 // eventAllowed prevents a resource-scoped session or API token from learning
 // about unrelated resources through replayed or live WebSocket events. It is
 // deliberately database-free: high-volume log and metric frames must not turn
-// each subscriber into a PostgreSQL query multiplier. Producers attach the
+// each subscriber into a SQLite query multiplier. Producers attach the
 // node/instance scope to compact events; old or malformed events without enough
 // scope information fail closed for restricted principals.
 func (s *Server) eventAllowed(_ context.Context, principal Principal, event Event) bool {
@@ -260,10 +260,10 @@ func (s *Server) tokenAllowsAuditResource(ctx context.Context, principal Princip
 		return false
 	}
 	var instanceID, nodeID string
-	err := s.store.pool.QueryRow(ctx, `SELECT instance_id::text,node_id::text FROM (
-		SELECT s.instance_id,i.node_id FROM schedules s JOIN instances i ON i.id=s.instance_id WHERE s.id=$1
-		UNION ALL SELECT p.instance_id,i.node_id FROM addon_packages p JOIN instances i ON i.id=p.instance_id WHERE p.id=$1
-		UNION ALL SELECT b.instance_id,i.node_id FROM backups b JOIN instances i ON i.id=b.instance_id WHERE b.id=$1
+	err := s.store.db.QueryRowContext(ctx, `SELECT instance_id,node_id FROM (
+		SELECT s.instance_id,i.node_id FROM schedules s JOIN instances i ON i.id=s.instance_id WHERE s.id=?1
+		UNION ALL SELECT p.instance_id,i.node_id FROM addon_packages p JOIN instances i ON i.id=p.instance_id WHERE p.id=?1
+		UNION ALL SELECT b.instance_id,i.node_id FROM backups b JOIN instances i ON i.id=b.instance_id WHERE b.id=?1
 	) scoped LIMIT 1`, resourceID).Scan(&instanceID, &nodeID)
 	if err == nil {
 		return principal.AllowsInstancePermission(domain.Instance{ID: instanceID, NodeID: nodeID}, PermissionRead)

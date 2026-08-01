@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-func TestRedactDatabaseErrorRemovesURLAndPassword(t *testing.T) {
-	databaseURL := "postgresql://panel:p%40ssword@db.example.test/panel"
-	err := redactDatabaseError(errors.New("connect "+databaseURL+" failed with p@ssword"), databaseURL)
-	if strings.Contains(err.Error(), databaseURL) || strings.Contains(err.Error(), "p@ssword") || strings.Contains(err.Error(), "p%40ssword") {
-		t.Fatalf("database secret was not redacted: %v", err)
+func TestRedactDatabaseErrorRemovesPath(t *testing.T) {
+	databasePath := `C:\ProgramData\L4D2Panel\data\l4d2panel.sqlite3`
+	err := redactDatabaseError(errors.New("open "+databasePath+" failed"), databasePath)
+	if strings.Contains(err.Error(), databasePath) {
+		t.Fatalf("database path was not redacted: %v", err)
 	}
 }

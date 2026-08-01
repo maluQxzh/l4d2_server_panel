@@ -15,7 +15,7 @@ if ($Confirmation -cne $required) {
 $resolved = [IO.Path]::GetFullPath($DataRoot).TrimEnd('\')
 $expected = [IO.Path]::GetFullPath("$env:ProgramData\L4D2Panel").TrimEnd('\')
 if ($resolved -ne $expected) { throw "Cleanup target must be exactly $expected" }
-foreach ($serviceName in @('l4d2panel-caddy', 'l4d2panel-control', 'l4d2panel-postgres')) {
+foreach ($serviceName in @('l4d2panel-caddy', 'l4d2panel-control')) {
     if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
         throw "Service $serviceName still exists. Uninstall L4D2 Panel before purging data."
     }

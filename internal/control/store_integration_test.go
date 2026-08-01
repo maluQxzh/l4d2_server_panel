@@ -11,8 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,51 +22,26 @@ import (
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
-// TestPostgresMigrationsAndCredentialLifecycle is skipped during ordinary
-// unit tests. CI supplies TEST_DATABASE_URL and runs it against PostgreSQL 17.
-// Each invocation uses an isolated schema, so it is safe to repeat locally.
-func TestPostgresMigrationsAndCredentialLifecycle(t *testing.T) {
-	databaseURL := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if databaseURL == "" {
-		t.Skip("TEST_DATABASE_URL is not configured")
-	}
+func TestSQLiteMigrationsAndCredentialLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	admin, err := OpenStore(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	schema := "panel_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	if _, err := admin.pool.Exec(ctx, `CREATE SCHEMA `+schema); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _, _ = admin.pool.Exec(context.Background(), `DROP SCHEMA IF EXISTS `+schema+` CASCADE`) }()
-
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-	store, err := OpenStore(ctx, parsed.String())
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "control.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	serverVersion, err := store.DatabaseServerVersion(ctx)
+	sqliteVersion, err := store.SQLiteVersion(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if serverVersion/10000 != 17 {
-		t.Fatalf("expected PostgreSQL 17, got server_version_num %d", serverVersion)
+	if sqliteVersion == "" {
+		t.Fatal("SQLite version is empty")
 	}
-	if err := store.CheckMigrationPrivileges(ctx); err != nil {
+	if err := store.QuickCheck(ctx); err != nil {
 		t.Fatal(err)
 	}
-	migrationsDir := filepath.Join("..", "..", "migrations")
+	migrationsDir := filepath.Join("..", "..", "migrations", "sqlite")
 	if err := store.Migrate(ctx, migrationsDir); err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +174,7 @@ func TestPostgresMigrationsAndCredentialLifecycle(t *testing.T) {
 func testHeartbeatPreservesActiveWriteProjection(t *testing.T, ctx context.Context, store *Store, ownerID string) {
 	t.Helper()
 	nodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'heartbeat-projection','offline')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'heartbeat-projection','offline')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	instance, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: nodeID, Name: "heartbeat-projection", Port: 29325,
@@ -209,7 +182,7 @@ func testHeartbeatPreservesActiveWriteProjection(t *testing.T, ctx context.Conte
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='stopped' WHERE id=$1`, instance.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -251,7 +224,7 @@ func testHeartbeatPreservesActiveWriteProjection(t *testing.T, ctx context.Conte
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='starting' WHERE id=$1`, instance.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='starting' WHERE id=?1`, instance.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Heartbeat(ctx, nodeID, "heartbeat-test-agent", map[string]string{instance.ID: "stopped"}); err != nil {
@@ -279,23 +252,17 @@ func testHeartbeatPreservesActiveWriteProjection(t *testing.T, ctx context.Conte
 	// Reproduce the queue/heartbeat race: the job transaction owns the same
 	// instance row while its insert is not visible to the heartbeat statement.
 	// Heartbeat must wait, then take a fresh snapshot before applying status.
-	if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='starting' WHERE id=$1`, instance.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='starting' WHERE id=?1`, instance.ID); err != nil {
 		t.Fatal(err)
 	}
-	queueTx, err := store.pool.Begin(ctx)
+	queueTx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer queueTx.Rollback(context.Background())
-	var lockedInstanceID string
-	var queueBackendPID int
-	if err := queueTx.QueryRow(ctx, `SELECT pg_backend_pid(),id::text FROM instances WHERE id=$1 FOR SHARE`, instance.ID).
-		Scan(&queueBackendPID, &lockedInstanceID); err != nil {
-		t.Fatal(err)
-	}
+	defer queueTx.Rollback()
 	raceJobID := uuid.NewString()
-	if _, err := queueTx.Exec(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,requested_by)
-		VALUES($1,$2,$3,'backup','queued','{}'::jsonb,$4)`, raceJobID, nodeID, instance.ID, ownerID); err != nil {
+	if _, err := queueTx.ExecContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,requested_by)
+		VALUES(?1,?2,?3,'backup','queued','{}',?4)`, raceJobID, nodeID, instance.ID, ownerID); err != nil {
 		t.Fatal(err)
 	}
 	heartbeatStarted := make(chan struct{})
@@ -305,33 +272,12 @@ func testHeartbeatPreservesActiveWriteProjection(t *testing.T, ctx context.Conte
 		heartbeatDone <- store.Heartbeat(ctx, nodeID, "heartbeat-race-agent", map[string]string{instance.ID: "stopped"})
 	}()
 	<-heartbeatStarted
-	// Do not release queueTx until PostgreSQL confirms that Heartbeat's
-	// SELECT ... FOR UPDATE is waiting on this transaction. Merely starting the
-	// goroutine is not enough: it could otherwise run only after the commit and
-	// leave the intended MVCC/row-lock race untested.
-	waitDeadline := time.Now().Add(5 * time.Second)
-	for {
-		var waiting bool
-		err := store.pool.QueryRow(ctx, `SELECT EXISTS (
-			SELECT 1 FROM pg_stat_activity AS activity
-			WHERE activity.pid<>pg_backend_pid()
-				AND activity.state='active'
-				AND activity.wait_event_type='Lock'
-				AND activity.query LIKE '%FOR UPDATE OF instance%'
-				AND $1=ANY(pg_blocking_pids(activity.pid))
-		)`, queueBackendPID).Scan(&waiting)
-		if err != nil {
-			t.Fatalf("inspect heartbeat lock wait: %v", err)
-		}
-		if waiting {
-			break
-		}
-		if time.Now().After(waitDeadline) {
-			t.Fatal("heartbeat did not enter the expected PostgreSQL instance-row lock wait")
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case err := <-heartbeatDone:
+		t.Fatalf("heartbeat bypassed the active SQLite write transaction: %v", err)
+	case <-time.After(50 * time.Millisecond):
 	}
-	if err := queueTx.Commit(ctx); err != nil {
+	if err := queueTx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -373,7 +319,7 @@ func testHeartbeatPreservesActiveWriteProjection(t *testing.T, ctx context.Conte
 func testResourceTelemetryProjection(t *testing.T, ctx context.Context, store *Store) {
 	t.Helper()
 	nodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'telemetry-projection','online')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'telemetry-projection','online')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveMetric(ctx, domain.MetricSample{NodeID: nodeID, CPUPercent: 12.5, MemoryUsed: 100, MemoryTotal: 200,
@@ -404,8 +350,8 @@ func testResourceTelemetryProjection(t *testing.T, ctx context.Context, store *S
 		t.Fatal(err)
 	}
 	checkedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
-	if _, err := store.pool.Exec(ctx, `INSERT INTO instance_update_state(instance_id,installed_build,available_build,available,checked_at)
-		VALUES($1,'123456','654321',true,$2)`, instance.ID, checkedAt); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO instance_update_state(instance_id,installed_build,available_build,available,checked_at)
+		VALUES(?1,'123456','654321',true,?2)`, instance.ID, checkedAt); err != nil {
 		t.Fatal(err)
 	}
 	projected, err := store.GetInstance(ctx, instance.ID)
@@ -429,7 +375,7 @@ func testResourceTelemetryProjection(t *testing.T, ctx context.Context, store *S
 		t.Fatalf("successful update did not clear availability: %#v err=%v", projected, err)
 	}
 	var installedBuild string
-	if err := store.pool.QueryRow(ctx, `SELECT installed_build FROM instance_update_state WHERE instance_id=$1`, instance.ID).Scan(&installedBuild); err != nil || installedBuild != "654321" {
+	if err := store.db.QueryRowContext(ctx, `SELECT installed_build FROM instance_update_state WHERE instance_id=?1`, instance.ID).Scan(&installedBuild); err != nil || installedBuild != "654321" {
 		t.Fatalf("successful update installed build = %q err=%v", installedBuild, err)
 	}
 }
@@ -437,7 +383,7 @@ func testResourceTelemetryProjection(t *testing.T, ctx context.Context, store *S
 func testTerminalProjectionBarrier(t *testing.T, ctx context.Context, store *Store, ownerID string) {
 	t.Helper()
 	nodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'terminal-projection','online')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'terminal-projection','online')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	instance, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: nodeID, Name: "terminal-projection", Port: 29215,
@@ -445,7 +391,7 @@ func testTerminalProjectionBarrier(t *testing.T, ctx context.Context, store *Sto
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='stopped' WHERE id=$1`, instance.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
 		t.Fatal(err)
 	}
 	job, _, err := store.QueueInstanceJob(ctx, instance.ID, "update", map[string]any{}, ownerID, "terminal-projection-success")
@@ -473,17 +419,14 @@ func testTerminalProjectionBarrier(t *testing.T, ctx context.Context, store *Sto
 
 	// Force the first projection attempt to fail after the terminal result is
 	// durable. The marker and unique write lock must survive for journal replay.
-	if _, err := store.pool.Exec(ctx, `CREATE FUNCTION fail_terminal_projection_test() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN RAISE EXCEPTION 'injected terminal projection failure'; END $$`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.pool.Exec(ctx, `CREATE TRIGGER fail_terminal_projection_test
-		BEFORE UPDATE ON instances FOR EACH ROW EXECUTE FUNCTION fail_terminal_projection_test()`); err != nil {
+	if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER fail_terminal_projection_test
+		BEFORE UPDATE ON instances BEGIN
+			SELECT RAISE(ABORT,'injected terminal projection failure');
+		END`); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		_, _ = store.pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS fail_terminal_projection_test ON instances`)
-		_, _ = store.pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS fail_terminal_projection_test()`)
+		_, _ = store.db.ExecContext(context.Background(), `DROP TRIGGER IF EXISTS fail_terminal_projection_test`)
 	}()
 	if _, _, projectionErr := store.ApplyPendingJobProjection(ctx, terminal.ID); projectionErr == nil {
 		t.Fatal("injected terminal projection failure was ignored")
@@ -492,10 +435,7 @@ func testTerminalProjectionBarrier(t *testing.T, ctx context.Context, store *Sto
 	if err != nil || !jobProjectionPending(pending) {
 		t.Fatalf("failed projection lost its durable marker: %#v err=%v", pending, err)
 	}
-	if _, err := store.pool.Exec(ctx, `DROP TRIGGER fail_terminal_projection_test ON instances`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.pool.Exec(ctx, `DROP FUNCTION fail_terminal_projection_test()`); err != nil {
+	if _, err := store.db.ExecContext(ctx, `DROP TRIGGER fail_terminal_projection_test`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -527,7 +467,7 @@ func testTerminalProjectionBarrier(t *testing.T, ctx context.Context, store *Sto
 		t.Fatalf("clean up projection replay work: %v", err)
 	}
 
-	if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='stopped' WHERE id=$1`, instance.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
 		t.Fatal(err)
 	}
 	failedJob, _, err := store.QueueInstanceJob(ctx, instance.ID, "update", map[string]any{}, ownerID, "terminal-projection-failure")
@@ -584,7 +524,7 @@ func testTerminalProjectionBarrier(t *testing.T, ctx context.Context, store *Sto
 func testBackupUploadAbortHandlerReplay(t *testing.T, ctx context.Context, store *Store, ownerID string) {
 	t.Helper()
 	nodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'upload-abort-http-node','online')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'upload-abort-http-node','online')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	instance, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: nodeID, Name: "upload-abort-http-target", Port: 29118,
@@ -619,19 +559,19 @@ func testBackupUploadAbortHandlerReplay(t *testing.T, ctx context.Context, store
 	if first.Code != http.StatusAccepted || second.Code != http.StatusAccepted {
 		t.Fatalf("abort handler responses: first=%d %s second=%d %s", first.Code, first.Body.String(), second.Code, second.Body.String())
 	}
-	job, err := scanJob(store.pool.QueryRow(ctx, `SELECT `+jobColumns+` FROM jobs WHERE requested_by=$1 AND idempotency_key=$2`, ownerID, "http-abort-key"))
+	job, err := scanJob(store.db.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs WHERE requested_by=?1 AND idempotency_key=?2`, ownerID, "http-abort-key"))
 	if err != nil || job.Type != "backup.upload.abort" || !strings.Contains(first.Body.String(), job.ID) || !strings.Contains(second.Body.String(), job.ID) {
 		t.Fatalf("abort handler did not replay original job: job=%#v first=%s second=%s err=%v", job, first.Body.String(), second.Body.String(), err)
 	}
 	var eventCount int
-	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM event_log WHERE type='job.queued' AND resource_id=$1`, job.ID).Scan(&eventCount); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM event_log WHERE type='job.queued' AND resource_id=?1`, job.ID).Scan(&eventCount); err != nil {
 		t.Fatal(err)
 	}
 	if eventCount != 1 {
 		t.Fatalf("idempotent abort published %d queued events, want 1", eventCount)
 	}
-	rows, err := store.pool.Query(ctx, `SELECT (metadata->>'idempotent_replay')::boolean FROM audit_events
-		WHERE action='instance.backup_upload.abort_requested' AND metadata->>'upload_id'=$1 ORDER BY created_at,id`, upload.ID)
+	rows, err := store.db.QueryContext(ctx, `SELECT json_extract(metadata,'$.idempotent_replay') FROM audit_events
+		WHERE action='instance.backup_upload.abort_requested' AND json_extract(metadata,'$.upload_id')=?1 ORDER BY created_at,id`, upload.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -655,7 +595,7 @@ func testBackupUploadAbortHandlerReplay(t *testing.T, ctx context.Context, store
 func testAtomicCancellationProjection(t *testing.T, ctx context.Context, store *Store, ownerID string) {
 	t.Helper()
 	nodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'atomic-cancel','online')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'atomic-cancel','online')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	instance, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: nodeID, Name: "atomic-cancel", Port: 29214,
@@ -667,7 +607,7 @@ func testAtomicCancellationProjection(t *testing.T, ctx context.Context, store *
 	actions := []string{"start", "stop", "restart", "install", "reinstall", "import", "configure", "update", "validate"}
 	var lastCanceled domain.Job
 	for index, action := range actions {
-		if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='stopped' WHERE id=$1`, instance.ID); err != nil {
+		if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
 			t.Fatal(err)
 		}
 		job, reused, err := store.QueueInstanceJob(ctx, instance.ID, action, map[string]any{}, ownerID,
@@ -724,7 +664,7 @@ func testAtomicCancellationProjection(t *testing.T, ctx context.Context, store *
 	// A retry of an old cancellation after newer work is queued is a no-op. A
 	// post-commit projection would incorrectly turn this new "starting" state
 	// back into "degraded".
-	if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='stopped' WHERE id=$1`, instance.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
 		t.Fatal(err)
 	}
 	newJob, _, err := store.QueueInstanceJob(ctx, instance.ID, "start", map[string]any{}, ownerID, "atomic-cancel-new-work")
@@ -746,7 +686,7 @@ func testAtomicCancellationProjection(t *testing.T, ctx context.Context, store *
 func testBackupUploadAbort(t *testing.T, ctx context.Context, store *Store, ownerID string) {
 	t.Helper()
 	nodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'upload-abort-node','online')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'upload-abort-node','online')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	instance, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: nodeID, Name: "upload-abort-target", Port: 29117,
@@ -754,7 +694,7 @@ func testBackupUploadAbort(t *testing.T, ctx context.Context, store *Store, owne
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='stopped' WHERE id=$1`, instance.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
 		t.Fatal(err)
 	}
 	fileSHA := strings.Repeat("a", 64)
@@ -819,7 +759,7 @@ func testCancelDispatchFairness(t *testing.T, ctx context.Context, store *Store,
 	t.Helper()
 	const dispatchLimit = 5
 	nodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'cancel-fairness','online')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'cancel-fairness','online')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	instanceIDs := make([]string, 0, dispatchLimit)
@@ -830,7 +770,7 @@ func testCancelDispatchFairness(t *testing.T, ctx context.Context, store *Store,
 			t.Fatal(err)
 		}
 		instanceIDs = append(instanceIDs, instance.ID)
-		if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='stopped' WHERE id=$1`, instance.ID); err != nil {
+		if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
 			t.Fatal(err)
 		}
 		job, _, err := store.QueueInstanceJob(ctx, instance.ID, "update", map[string]any{}, ownerID, fmt.Sprintf("fairness-cancel-%d", index))
@@ -869,7 +809,7 @@ func testCancelDispatchFairness(t *testing.T, ctx context.Context, store *Store,
 func testAutomaticMaintenanceBatch(t *testing.T, ctx context.Context, store *Store, ownerID string) {
 	t.Helper()
 	nodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'automatic-maintenance','online')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'automatic-maintenance','online')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	nextPort := 31000
@@ -881,11 +821,11 @@ func testAutomaticMaintenanceBatch(t *testing.T, ctx context.Context, store *Sto
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.pool.Exec(ctx, `UPDATE instances SET status=$2 WHERE id=$1`, instance.ID, status); err != nil {
+		if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status=?2 WHERE id=?1`, instance.ID, status); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.pool.Exec(ctx, `INSERT INTO instance_update_state(instance_id,installed_build,available_build,available,checked_at)
-			VALUES($1,'old-build','new-build',$2,now())`, instance.ID, available); err != nil {
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO instance_update_state(instance_id,installed_build,available_build,available,checked_at)
+			VALUES(?1,'old-build','new-build',?2,?3)`, instance.ID, available, time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}
 		instance, err = store.GetInstance(ctx, instance.ID)
@@ -906,7 +846,7 @@ func testAutomaticMaintenanceBatch(t *testing.T, ctx context.Context, store *Sto
 	withoutCron := create(nodeID, "maintenance-no-cron", domain.InstanceStopped, "", true)
 
 	busyNodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'maintenance-busy','online')`, busyNodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'maintenance-busy','online')`, busyNodeID); err != nil {
 		t.Fatal(err)
 	}
 	busy := create(busyNodeID, "maintenance-busy", domain.InstanceStopped, cronExpression, true)
@@ -914,7 +854,7 @@ func testAutomaticMaintenanceBatch(t *testing.T, ctx context.Context, store *Sto
 		t.Fatal(err)
 	}
 	probeNodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'maintenance-probe','online')`, probeNodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'maintenance-probe','online')`, probeNodeID); err != nil {
 		t.Fatal(err)
 	}
 	probeBusy := create(probeNodeID, "maintenance-probe", domain.InstanceStopped, cronExpression, true)
@@ -922,7 +862,7 @@ func testAutomaticMaintenanceBatch(t *testing.T, ctx context.Context, store *Sto
 		t.Fatal(err)
 	}
 	offlineNodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'maintenance-offline','offline')`, offlineNodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'maintenance-offline','offline')`, offlineNodeID); err != nil {
 		t.Fatal(err)
 	}
 	offline := create(offlineNodeID, "maintenance-offline", domain.InstanceStopped, cronExpression, true)
@@ -971,7 +911,7 @@ func testAutomaticMaintenanceBatch(t *testing.T, ctx context.Context, store *Sto
 		batchCandidates = append(batchCandidates, selected[instance.ID])
 	}
 	batchCandidates = append(batchCandidates, selected[changedAfterSelection.ID])
-	if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='starting' WHERE id=$1`, changedAfterSelection.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='starting' WHERE id=?1`, changedAfterSelection.ID); err != nil {
 		t.Fatal(err)
 	}
 	window := time.Date(2026, time.August, 1, 20, 0, 0, 0, time.UTC)
@@ -1015,15 +955,15 @@ func testAutomaticMaintenanceBatch(t *testing.T, ctx context.Context, store *Sto
 		}
 	}
 	var jobCount, auditCount, notificationCount int
-	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE node_id=$1 AND idempotency_key LIKE 'maintenance:update:%'`, nodeID).Scan(&jobCount); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE node_id=?1 AND idempotency_key LIKE 'maintenance:update:%'`, nodeID).Scan(&jobCount); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE action='maintenance.update.queued'
-		AND metadata->>'node_id'=$1`, nodeID).Scan(&auditCount); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM audit_events WHERE action='maintenance.update.queued'
+		AND json_extract(metadata,'$.node_id')=?1`, nodeID).Scan(&auditCount); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE type='maintenance.update.queued'
-		AND metadata->>'node_id'=$1`, nodeID).Scan(&notificationCount); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM notifications WHERE type='maintenance.update.queued'
+		AND json_extract(metadata,'$.node_id')=?1`, nodeID).Scan(&notificationCount); err != nil {
 		t.Fatal(err)
 	}
 	if jobCount != len(automatic) || auditCount != len(automatic) || notificationCount != len(automatic) {
@@ -1044,8 +984,8 @@ func testAutomaticMaintenanceBatch(t *testing.T, ctx context.Context, store *Sto
 		// dispatch-time defense independently of queue-time serialization.
 		check := domain.Job{ID: uuid.NewString(), NodeID: nodeID, InstanceID: instance.ID, Type: "check_update",
 			Status: domain.JobQueued, Payload: map[string]any{}, IdempotencyKey: "maintenance-legacy-check:" + instance.ID, CreatedAt: time.Now().UTC()}
-		if _, err := store.pool.Exec(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,created_at)
-			VALUES($1,$2,$3,'check_update','queued','{}'::jsonb,$4,$5)`, check.ID, check.NodeID, check.InstanceID,
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,created_at)
+			VALUES(?1,?2,?3,'check_update','queued','{}',?4,?5)`, check.ID, check.NodeID, check.InstanceID,
 			check.IdempotencyKey, check.CreatedAt); err != nil {
 			t.Fatal(err)
 		}
@@ -1216,7 +1156,7 @@ func testAutomaticMaintenanceBatch(t *testing.T, ctx context.Context, store *Sto
 		t.Fatalf("project stale check: applied=%v err=%v", applied, err)
 	}
 	var staleAvailable bool
-	if err := store.pool.QueryRow(ctx, `SELECT available FROM instance_update_state WHERE instance_id=$1`, staleProbeTarget.ID).Scan(&staleAvailable); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT available FROM instance_update_state WHERE instance_id=?1`, staleProbeTarget.ID).Scan(&staleAvailable); err != nil {
 		t.Fatal(err)
 	}
 	if staleAvailable {
@@ -1229,7 +1169,7 @@ func testMaintenanceProbeInterlock(t *testing.T, ctx context.Context, store *Sto
 	window := time.Date(2026, time.August, 2, 20, 0, 0, 0, time.UTC)
 	for index := 0; index < 6; index++ {
 		nodeID := uuid.NewString()
-		if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,$2,'online')`, nodeID,
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,?2,'online')`, nodeID,
 			fmt.Sprintf("maintenance-interlock-%d", index)); err != nil {
 			t.Fatal(err)
 		}
@@ -1239,11 +1179,11 @@ func testMaintenanceProbeInterlock(t *testing.T, ctx context.Context, store *Sto
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='stopped' WHERE id=$1`, instance.ID); err != nil {
+		if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.pool.Exec(ctx, `INSERT INTO instance_update_state(instance_id,installed_build,available_build,available)
-			VALUES($1,'old','new',true)`, instance.ID); err != nil {
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO instance_update_state(instance_id,installed_build,available_build,available)
+			VALUES(?1,'old','new',true)`, instance.ID); err != nil {
 			t.Fatal(err)
 		}
 		instance, err = store.GetInstance(ctx, instance.ID)
@@ -1285,7 +1225,7 @@ func testMaintenanceProbeInterlock(t *testing.T, ctx context.Context, store *Sto
 			t.Fatalf("unexpected interlock batch size: %#v", batch)
 		}
 		var active int
-		if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE instance_id=$1
+		if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE instance_id=?1
 			AND type IN ('update','check_update') AND status IN ('queued','dispatched','running')`, instance.ID).Scan(&active); err != nil {
 			t.Fatal(err)
 		}
@@ -1298,7 +1238,7 @@ func testMaintenanceProbeInterlock(t *testing.T, ctx context.Context, store *Sto
 func testLateCancelTerminalOutcome(t *testing.T, ctx context.Context, store *Store, ownerID string) {
 	t.Helper()
 	nodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'late-cancel','online')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'late-cancel','online')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	instance, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: nodeID, Name: "late-cancel", Port: 29212,
@@ -1306,7 +1246,7 @@ func testLateCancelTerminalOutcome(t *testing.T, ctx context.Context, store *Sto
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='stopped' WHERE id=$1`, instance.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
 		t.Fatal(err)
 	}
 	job, _, err := store.QueueInstanceJob(ctx, instance.ID, "update", map[string]any{}, ownerID, "late-cancel-running")
@@ -1371,7 +1311,7 @@ func testLateCancelTerminalOutcome(t *testing.T, ctx context.Context, store *Sto
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='stopped' WHERE id=$1`, canceledTarget.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, canceledTarget.ID); err != nil {
 		t.Fatal(err)
 	}
 	confirmedJob, _, err := store.QueueInstanceJob(ctx, canceledTarget.ID, "update", map[string]any{}, ownerID, "late-cancel-confirmed")
@@ -1423,7 +1363,7 @@ func testLateCancelTerminalOutcome(t *testing.T, ctx context.Context, store *Sto
 func testIdempotencyRequestEquivalence(t *testing.T, ctx context.Context, store *Store, ownerID string) {
 	t.Helper()
 	nodeA, nodeB := uuid.NewString(), uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'fingerprint-a','online'),($2,'fingerprint-b','online')`, nodeA, nodeB); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'fingerprint-a','online'),(?2,'fingerprint-b','online')`, nodeA, nodeB); err != nil {
 		t.Fatal(err)
 	}
 	instanceA, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: nodeA, Name: "fingerprint-a", Port: 29210,
@@ -1436,7 +1376,7 @@ func testIdempotencyRequestEquivalence(t *testing.T, ctx context.Context, store 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='stopped' WHERE id IN ($1,$2)`, instanceA.ID, instanceB.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id IN (?1,?2)`, instanceA.ID, instanceB.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1527,8 +1467,8 @@ func testIdempotencyRequestEquivalence(t *testing.T, ctx context.Context, store 
 
 	legacyKey := "legacy-without-fingerprint"
 	legacyID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by)
-		VALUES($1,$2,$3,'a2s.info','succeeded','{}',$4,$5)`, legacyID, nodeA, instanceA.ID, legacyKey, ownerID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by)
+		VALUES(?1,?2,?3,'a2s.info','succeeded','{}',?4,?5)`, legacyID, nodeA, instanceA.ID, legacyKey, ownerID); err != nil {
 		t.Fatal(err)
 	}
 	legacyFingerprint, err := instanceJobRequestFingerprint(instanceA.ID, "a2s.info", map[string]any{})
@@ -1539,7 +1479,7 @@ func testIdempotencyRequestEquivalence(t *testing.T, ctx context.Context, store 
 		t.Fatalf("legacy job without fingerprint was replayed: %v", err)
 	}
 	var persistedFingerprint string
-	if err := store.pool.QueryRow(ctx, `SELECT request_fingerprint FROM jobs WHERE id=$1`, secretJob.ID).Scan(&persistedFingerprint); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT request_fingerprint FROM jobs WHERE id=?1`, secretJob.ID).Scan(&persistedFingerprint); err != nil {
 		t.Fatal(err)
 	}
 	if persistedFingerprint != secretFingerprint || strings.Contains(persistedFingerprint, "status") {
@@ -1550,7 +1490,7 @@ func testIdempotencyRequestEquivalence(t *testing.T, ctx context.Context, store 
 func testBackupUploadLifecycle(t *testing.T, ctx context.Context, store *Store, ownerID string) {
 	t.Helper()
 	nodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'upload-node','online')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'upload-node','online')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	instance, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: nodeID, Name: "upload-target", Port: 29116,
@@ -1559,7 +1499,7 @@ func testBackupUploadLifecycle(t *testing.T, ctx context.Context, store *Store, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='stopped' WHERE id=$1`, instance.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
 		t.Fatal(err)
 	}
 	raw := []byte("portable backup archive")
@@ -1603,7 +1543,7 @@ func testBackupUploadLifecycle(t *testing.T, ctx context.Context, store *Store, 
 	}
 	// A terminal Agent update and its projection are deliberately separate so
 	// failures can be replayed. Expiry must not win in that small window.
-	if _, err := store.pool.Exec(ctx, `UPDATE backup_uploads SET expires_at=now()-interval '1 second' WHERE id=$1`, upload.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE backup_uploads SET expires_at=?2 WHERE id=?1`, upload.ID, time.Now().UTC().Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if pending, err := store.GetBackupUpload(ctx, instance.ID, upload.ID); err != nil || pending.Status != "uploading" {
@@ -1736,7 +1676,7 @@ func testBackupUploadLifecycle(t *testing.T, ctx context.Context, store *Store, 
 func testConfirmedQuarantinePurge(t *testing.T, ctx context.Context, store *Store, ownerID string) {
 	t.Helper()
 	nodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'quarantine-node','online')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'quarantine-node','online')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	instance, err := store.CreateInstance(ctx, CreateInstanceInput{
@@ -1757,13 +1697,13 @@ func testConfirmedQuarantinePurge(t *testing.T, ctx context.Context, store *Stor
 		t.Fatalf("project quarantine result: %v", err)
 	}
 	var projectedEntryID string
-	if err := store.pool.QueryRow(ctx, `SELECT id FROM quarantine_entries WHERE source_job_id=$1`, deleteJob.ID).Scan(&projectedEntryID); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT id FROM quarantine_entries WHERE source_job_id=?1`, deleteJob.ID).Scan(&projectedEntryID); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := store.CreateQuarantinePurgeConfirmation(ctx, nodeID, projectedEntryID, ownerID); !errors.Is(err, ErrConflict) {
 		t.Fatalf("fresh quarantine entry accepted for permanent purge: %v", err)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE quarantine_entries SET quarantined_at=$2,retention_expires_at=$3 WHERE source_job_id=$1`,
+	if _, err := store.db.ExecContext(ctx, `UPDATE quarantine_entries SET quarantined_at=?2,retention_expires_at=?3 WHERE source_job_id=?1`,
 		deleteJob.ID, quarantinedAt, quarantinedAt.Add(7*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -1777,7 +1717,11 @@ func testConfirmedQuarantinePurge(t *testing.T, ctx context.Context, store *Stor
 		t.Fatalf("unexpected quarantine projection: %#v", entry)
 	}
 	var persistedResult map[string]any
-	if err := store.pool.QueryRow(ctx, `SELECT result FROM jobs WHERE id=$1`, deleteJob.ID).Scan(&persistedResult); err != nil {
+	var persistedResultRaw []byte
+	if err := store.db.QueryRowContext(ctx, `SELECT result FROM jobs WHERE id=?1`, deleteJob.ID).Scan(&persistedResultRaw); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(persistedResultRaw, &persistedResult); err != nil {
 		t.Fatal(err)
 	}
 	if _, leaked := persistedResult["quarantine_path"]; leaked || stringFromAny(persistedResult["quarantine_id"]) != entry.ID {
@@ -1810,7 +1754,7 @@ func testConfirmedQuarantinePurge(t *testing.T, ctx context.Context, store *Stor
 		t.Fatalf("cancel queued quarantine purge: %#v previous=%s err=%v", canceledPurge, previous, err)
 	}
 	var purgePointer string
-	if err := store.pool.QueryRow(ctx, `SELECT COALESCE(purge_job_id::text,'') FROM quarantine_entries WHERE id=$1`, entry.ID).Scan(&purgePointer); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT COALESCE(purge_job_id,'') FROM quarantine_entries WHERE id=?1`, entry.ID).Scan(&purgePointer); err != nil {
 		t.Fatal(err)
 	}
 	if purgePointer != "" {
@@ -1829,7 +1773,7 @@ func testConfirmedQuarantinePurge(t *testing.T, ctx context.Context, store *Stor
 		replayPrevious != domain.JobCanceled || replayedCancel.ID != canceledPurge.ID {
 		t.Fatalf("replay old purge cancellation: %#v previous=%s err=%v", replayedCancel, replayPrevious, replayErr)
 	}
-	if err := store.pool.QueryRow(ctx, `SELECT COALESCE(purge_job_id::text,'') FROM quarantine_entries WHERE id=$1`, entry.ID).Scan(&purgePointer); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT COALESCE(purge_job_id,'') FROM quarantine_entries WHERE id=?1`, entry.ID).Scan(&purgePointer); err != nil {
 		t.Fatal(err)
 	}
 	if purgePointer != purgeJob.ID {
@@ -1848,8 +1792,8 @@ func testConfirmedQuarantinePurge(t *testing.T, ctx context.Context, store *Stor
 func testPublicInstanceProjection(t *testing.T, ctx context.Context, store *Store) {
 	t.Helper()
 	nodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status,public_address)
-		VALUES($1,'public-node','online','game.example.com')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status,public_address)
+		VALUES(?1,'public-node','online','game.example.com')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	instance, err := store.CreateInstance(ctx, CreateInstanceInput{
@@ -1866,7 +1810,7 @@ func testPublicInstanceProjection(t *testing.T, ctx context.Context, store *Stor
 	if projected.NodePublicAddress != "game.example.com" {
 		t.Fatalf("instance node_public_address = %q, want game.example.com", projected.NodePublicAddress)
 	}
-	if _, err := store.pool.Exec(ctx, `UPDATE instances SET status='running',mode='' WHERE id=$1`, instance.ID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='running',mode='' WHERE id=?1`, instance.ID); err != nil {
 		t.Fatal(err)
 	}
 	items, err := store.PublicServers(ctx)
@@ -1891,11 +1835,11 @@ func testPublicInstanceProjection(t *testing.T, ctx context.Context, store *Stor
 func testReadAndWriteJobLocks(t *testing.T, ctx context.Context, store *Store, ownerID string) {
 	t.Helper()
 	nodeID, instanceID := uuid.NewString(), uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'integration-node','online')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'integration-node','online')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.pool.Exec(ctx, `INSERT INTO instances(id,node_id,name,status,port,max_players,config)
-		VALUES($1,$2,'integration-instance','stopped',27015,8,'{}'::jsonb)`, instanceID, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO instances(id,node_id,name,status,port,max_players,config)
+		VALUES(?1,?2,'integration-instance','stopped',27015,8,'{}')`, instanceID, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	target := monitoringTarget{NodeID: nodeID, InstanceID: instanceID}
@@ -1913,7 +1857,7 @@ func testReadAndWriteJobLocks(t *testing.T, ctx context.Context, store *Store, o
 	}
 
 	var active int
-	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE instance_id=$1 AND status='queued'`, instanceID).Scan(&active); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE instance_id=?1 AND status='queued'`, instanceID).Scan(&active); err != nil {
 		t.Fatal(err)
 	}
 	if active != 3 {
@@ -1924,7 +1868,7 @@ func testReadAndWriteJobLocks(t *testing.T, ctx context.Context, store *Store, o
 func testInstancePortReservations(t *testing.T, ctx context.Context, store *Store) {
 	t.Helper()
 	nodeID := uuid.NewString()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO nodes(id,name,status) VALUES($1,'port-node','online')`, nodeID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'port-node','online')`, nodeID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1990,7 +1934,7 @@ func testInstancePortReservations(t *testing.T, ctx context.Context, store *Stor
 		t.Fatalf("delete automatic instance: %v", err)
 	}
 	var reservations int
-	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM instance_port_reservations WHERE instance_id=$1`, automatic.ID).Scan(&reservations); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM instance_port_reservations WHERE instance_id=?1`, automatic.ID).Scan(&reservations); err != nil {
 		t.Fatal(err)
 	}
 	if reservations != 0 {

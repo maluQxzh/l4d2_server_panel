@@ -2,20 +2,12 @@
 #Requires -RunAsAdministrator
 [CmdletBinding()]
 param(
-    [ValidateSet('Install', 'RemoveServices')]
-    [string]$Action = 'Install',
-    [ValidateSet('managed', 'external')]
-    [string]$DatabaseMode = 'managed',
-    [ValidateSet('caddy', 'external')]
-    [string]$ProxyMode = 'caddy',
+    [ValidateSet('Install', 'RemoveServices')][string]$Action = 'Install',
+    [ValidateSet('caddy', 'external')][string]$ProxyMode = 'caddy',
     [string]$PanelDomain = 'localhost',
-    [ValidateRange(1, 65535)]
-    [int]$ControlPort = 18080,
-    [ValidateRange(1, 65535)]
-    [int]$HttpPort = 8088,
-    [ValidateRange(1, 65535)]
-    [int]$HttpsPort = 8443,
-    [string]$ResponseFile = '',
+    [ValidateRange(1, 65535)][int]$ControlPort = 18080,
+    [ValidateRange(1, 65535)][int]$HttpPort = 8088,
+    [ValidateRange(1, 65535)][int]$HttpsPort = 8443,
     [string]$InstallRoot = "$env:ProgramFiles\L4D2Panel\Control",
     [string]$DataRoot = "$env:ProgramData\L4D2Panel",
     [switch]$SkipStart,
@@ -27,24 +19,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-
-$script:PostgresService = 'l4d2panel-postgres'
 $script:ControlService = 'l4d2panel-control'
 $script:CaddyService = 'l4d2panel-caddy'
 
-function Get-InstallerOption {
-    param(
-        [Parameter(Mandatory)]$Options,
-        [Parameter(Mandatory)][string]$Name,
-        $Default = $null
-    )
-    $property = $Options.PSObject.Properties[$Name]
-    if ($null -eq $property) { return $Default }
-    return $property.Value
+function Invoke-CheckedProcess {
+    param([Parameter(Mandatory)][string]$FilePath, [Parameter(Mandatory)][string[]]$ArgumentList)
+    & $FilePath @ArgumentList
+    if ($LASTEXITCODE -ne 0) { throw "Process failed with exit code $LASTEXITCODE`: $FilePath" }
 }
 
 function ConvertFrom-InstallerBoolean {
-    param([Parameter(Mandatory)]$Value, [Parameter(Mandatory)][string]$Name)
+    param($Value, [string]$Name)
     switch (([string]$Value).Trim().ToLowerInvariant()) {
         { $_ -in @('true', '1', '$true') } { return $true }
         { $_ -in @('false', '0', '$false', '') } { return $false }
@@ -52,37 +37,22 @@ function ConvertFrom-InstallerBoolean {
     }
 }
 
-if ($FromMsi) {
-    $msiOptions = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\L4D2Panel\Installer'
-    $DatabaseMode = [string](Get-InstallerOption -Options $msiOptions -Name 'DatabaseMode' -Default 'managed')
-    $ProxyMode = [string](Get-InstallerOption -Options $msiOptions -Name 'ProxyMode' -Default 'caddy')
-    $PanelDomain = [string](Get-InstallerOption -Options $msiOptions -Name 'PanelDomain' -Default 'localhost')
-    $ControlPort = [int](Get-InstallerOption -Options $msiOptions -Name 'ControlPort' -Default 18080)
-    $HttpPort = [int](Get-InstallerOption -Options $msiOptions -Name 'HttpPort' -Default 8088)
-    $HttpsPort = [int](Get-InstallerOption -Options $msiOptions -Name 'HttpsPort' -Default 8443)
-    $ResponseFile = [string](Get-InstallerOption -Options $msiOptions -Name 'ResponseFile' -Default '')
-    $SkipStart = ConvertFrom-InstallerBoolean -Value (Get-InstallerOption -Options $msiOptions -Name 'SkipStart' -Default 'false') -Name 'SKIP_START'
-    $SkipMigrate = ConvertFrom-InstallerBoolean -Value (Get-InstallerOption -Options $msiOptions -Name 'SkipMigrate' -Default 'false') -Name 'SKIP_MIGRATE'
-    $InstallRoot = $PSScriptRoot
-}
-
-function Invoke-CheckedProcess {
-    param([Parameter(Mandatory)][string]$FilePath, [Parameter(Mandatory)][string[]]$ArgumentList)
-    & $FilePath @ArgumentList
-    if ($LASTEXITCODE -ne 0) {
-        throw "Process failed with exit code $LASTEXITCODE`: $FilePath"
-    }
+function Get-InstallerOption {
+    param($Options, [string]$Name, $Default)
+    $property = $Options.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $Default }
+    return $property.Value
 }
 
 function Remove-ServiceIfPresent {
-    param([Parameter(Mandatory)][string]$Name)
+    param([string]$Name)
     $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
     if ($null -eq $service) { return }
     if ($service.Status -ne 'Stopped') {
         Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue
         $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
     }
-    Invoke-CheckedProcess -FilePath "$env:SystemRoot\System32\sc.exe" -ArgumentList @('delete', $Name)
+    Invoke-CheckedProcess "$env:SystemRoot\System32\sc.exe" @('delete', $Name)
     for ($attempt = 0; $attempt -lt 50; $attempt++) {
         if (-not (Get-Service -Name $Name -ErrorAction SilentlyContinue)) { return }
         Start-Sleep -Milliseconds 200
@@ -91,309 +61,129 @@ function Remove-ServiceIfPresent {
 }
 
 function Remove-CenterServices {
-    foreach ($name in @($script:CaddyService, $script:ControlService, $script:PostgresService)) {
-        Remove-ServiceIfPresent -Name $name
-    }
+    foreach ($name in @($script:CaddyService, $script:ControlService)) { Remove-ServiceIfPresent $name }
     Get-NetFirewallRule -Group 'L4D2 Panel Center' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     Write-Output 'L4D2 Panel services were removed. ProgramData was preserved.'
 }
 
-if ($Action -eq 'RemoveServices') {
-    Remove-CenterServices
-    exit 0
+function Set-RestrictedDirectoryAcl {
+    param([string]$Path, [string[]]$ServiceNames, [switch]$ReadOnlyService)
+    New-Item -ItemType Directory -Force -Path $Path | Out-Null
+    $arguments = @($Path, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
+    foreach ($serviceName in $ServiceNames) {
+        $rights = if ($ReadOnlyService) { '(OI)(CI)RX' } else { '(OI)(CI)M' }
+        $arguments += @('/grant', "NT SERVICE\$serviceName`:$rights")
+    }
+    Invoke-CheckedProcess "$env:SystemRoot\System32\icacls.exe" $arguments
 }
 
+function Set-RestrictedFileAcl {
+    param([string]$Path, [string]$ServiceName)
+    Invoke-CheckedProcess "$env:SystemRoot\System32\icacls.exe" @(
+        $Path, '/inheritance:r', '/grant:r', '*S-1-5-18:F', '*S-1-5-32-544:F', '/grant', "NT SERVICE\$ServiceName`:R")
+}
+
+function Wait-ControlReady {
+    param([int]$Port)
+    $deadline = [DateTime]::UtcNow.AddSeconds(90)
+    do {
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:$Port/readyz"
+            if ($response.StatusCode -eq 200) { return }
+        } catch { Start-Sleep -Milliseconds 500 }
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'Control readiness check timed out.'
+}
+
+if ($FromMsi) {
+    $options = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\L4D2Panel\Installer'
+    $ProxyMode = [string](Get-InstallerOption $options 'ProxyMode' 'caddy')
+    $PanelDomain = [string](Get-InstallerOption $options 'PanelDomain' 'localhost')
+    $ControlPort = [int](Get-InstallerOption $options 'ControlPort' 18080)
+    $HttpPort = [int](Get-InstallerOption $options 'HttpPort' 8088)
+    $HttpsPort = [int](Get-InstallerOption $options 'HttpsPort' 8443)
+    $SkipStart = ConvertFrom-InstallerBoolean (Get-InstallerOption $options 'SkipStart' 'false') 'SKIP_START'
+    $SkipMigrate = ConvertFrom-InstallerBoolean (Get-InstallerOption $options 'SkipMigrate' 'false') 'SKIP_MIGRATE'
+    $InstallRoot = $PSScriptRoot
+}
+
+if ($Action -eq 'RemoveServices') { Remove-CenterServices; exit 0 }
 if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
     throw 'The native Control installer supports Windows x64 only.'
 }
-if ([Environment]::OSVersion.Version.Major -lt 10 -or [Environment]::OSVersion.Version.Build -lt 17763) {
+if ([Environment]::OSVersion.Version.Build -lt 17763) {
     throw 'Windows 10 build 17763 or Windows Server 2019 and later are required.'
 }
 if ($PanelDomain -notmatch '^(localhost|(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)$') {
     throw 'PANEL_DOMAIN must be localhost or a valid DNS host name.'
 }
 
-function Assert-PortAvailable {
-    param([int]$Port)
-    $listeners = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
-    if ($listeners) { throw "TCP port $Port is already in use." }
-}
-
-$controlConfigPath = "$DataRoot\config\control.json"
-$installStatePath = "$DataRoot\config\install.json"
+$controlExe = Join-Path $InstallRoot 'l4d2panel-control.exe'
+$controlConfigPath = Join-Path $DataRoot 'config\control.json'
+$databasePath = Join-Path $DataRoot 'data\l4d2panel.sqlite3'
 $firstInstall = -not (Test-Path -LiteralPath $controlConfigPath)
-if (-not $firstInstall -and (Test-Path -LiteralPath $installStatePath)) {
-    $installState = Get-Content -LiteralPath $installStatePath -Raw | ConvertFrom-Json
-    if ($installState.schema_version -notin @(1, 2)) { throw 'Unsupported Windows install-state schema.' }
-    $DatabaseMode, $ProxyMode, $PanelDomain = [string]$installState.database_mode, [string]$installState.proxy_mode, [string]$installState.panel_domain
-    $HttpPort, $HttpsPort = [int]$installState.http_port, [int]$installState.https_port
-    if ($installState.schema_version -eq 2) {
-        $ControlPort = [int]$installState.control_port
-    } else {
-        $existingPortConfig = Get-Content -LiteralPath $controlConfigPath -Raw | ConvertFrom-Json
-        if ([string]$existingPortConfig.listen_address -notmatch '^127\.0\.0\.1:([0-9]{1,5})$') {
-            throw 'Existing Control listen_address must use an IPv4 loopback port.'
-        }
-        $ControlPort = [int]$Matches[1]
-    }
-} elseif (-not $firstInstall) {
-    $legacyConfig = Get-Content -LiteralPath $controlConfigPath -Raw | ConvertFrom-Json
-    if ([string]$legacyConfig.listen_address -notmatch '^127\.0\.0\.1:([0-9]{1,5})$') {
-        throw 'Existing Control listen_address must use an IPv4 loopback port.'
-    }
-    $ControlPort = [int]$Matches[1]
-    $legacyPublicUri = [Uri][string]$legacyConfig.public_url
-    $PanelDomain = $legacyPublicUri.Host
-    $HttpsPort = if ($legacyPublicUri.IsDefaultPort) { 443 } else { $legacyPublicUri.Port }
-    $ProxyMode = if (Test-Path -LiteralPath "$DataRoot\caddy\Caddyfile") { 'caddy' } else { 'external' }
+foreach ($directory in @('config', 'data', 'logs', 'backups', 'caddy')) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $DataRoot $directory) | Out-Null
 }
-if ($DatabaseMode -notin @('managed', 'external') -or $ProxyMode -notin @('caddy', 'external')) {
-    throw 'Windows install state contains an invalid database or proxy mode.'
-}
-if ($ControlPort -lt 1 -or $ControlPort -gt 65535 -or $HttpPort -lt 1 -or $HttpPort -gt 65535 -or $HttpsPort -lt 1 -or $HttpsPort -gt 65535) {
-    throw 'Windows install state contains invalid or conflicting ports.'
-}
-$assignedPorts = [ordered]@{
-    CONTROL_PORT = $ControlPort
-    HTTP_PORT = $HttpPort
-    HTTPS_PORT = $HttpsPort
-}
-if ($DatabaseMode -eq 'managed') { $assignedPorts['POSTGRESQL_PORT'] = 55432 }
-if ($ProxyMode -eq 'caddy') { $assignedPorts['CADDY_ADMIN_PORT'] = 2019 }
-$conflictingPorts = $assignedPorts.GetEnumerator() | Group-Object Value | Where-Object Count -gt 1
-if ($conflictingPorts) {
-    $details = $conflictingPorts | ForEach-Object { "port $($_.Name): $(($_.Group.Name) -join ', ')" }
-    throw "Windows install state contains conflicting ports: $($details -join '; ')."
-}
-if ($PanelDomain -notmatch '^(localhost|(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)$') {
-    throw 'Windows install state contains an invalid panel domain.'
-}
-$dataDrive = Get-PSDrive -Name ([IO.Path]::GetPathRoot($DataRoot).Substring(0, 1))
-if ($dataDrive.Free -lt 2GB) { throw 'At least 2 GiB free disk space is required.' }
-if ($firstInstall) {
-    Assert-PortAvailable -Port $ControlPort
-    if ($DatabaseMode -eq 'managed') { Assert-PortAvailable -Port 55432 }
-    if ($ProxyMode -eq 'caddy') {
-        Assert-PortAvailable -Port 2019
-        Assert-PortAvailable -Port $HttpPort
-        Assert-PortAvailable -Port $HttpsPort
+
+foreach ($name in @($script:CaddyService, $script:ControlService)) {
+    $service = Get-Service -Name $name -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -ne 'Stopped') {
+        Stop-Service -Name $name -Force
+        $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
     }
 }
 
-function Get-SecretHex {
-    param([ValidateRange(16, 128)][int]$Bytes)
-    $buffer = New-Object byte[] $Bytes
-    $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
-    try { $generator.GetBytes($buffer) } finally { $generator.Dispose() }
-    return ([BitConverter]::ToString($buffer) -replace '-', '').ToLowerInvariant()
+if (-not $firstInstall -and (Test-Path -LiteralPath $databasePath)) {
+    $checkpoint = Join-Path $DataRoot ("backups\upgrade-{0}.sqlite3" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    Invoke-CheckedProcess $controlExe @('backup-database', '--config', $controlConfigPath, '--output', $checkpoint)
 }
 
-function Assert-ProtectedResponseFile {
-    param([Parameter(Mandatory)][string]$Path)
-    $item = Get-Item -LiteralPath $Path
-    if ($item.PSIsContainer) { throw 'The response file path must refer to a regular file.' }
-    $acl = Get-Acl -LiteralPath $item.FullName
-    if (-not $acl.AreAccessRulesProtected) {
-        throw 'The external database response file must have ACL inheritance disabled.'
-    }
-    $allowed = @('S-1-5-32-544', 'S-1-5-18', [Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
-    foreach ($entry in $acl.Access) {
-        $identitySid = $entry.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-        if ($entry.AccessControlType -eq 'Allow' -and $allowed -notcontains $identitySid) {
-            throw "Response file grants access to an unapproved identity: $($entry.IdentityReference.Value)"
-        }
-    }
+$masterKey = ''
+if (Test-Path -LiteralPath $controlConfigPath) {
+    $existing = Get-Content -LiteralPath $controlConfigPath -Raw | ConvertFrom-Json
+    if ($existing.PSObject.Properties['master_key']) { $masterKey = [string]$existing.master_key }
 }
-
-function Set-DirectoryAcl {
-    param([string]$Path, [string[]]$ServiceNames, [switch]$ReadOnlyService)
-    New-Item -ItemType Directory -Force -Path $Path | Out-Null
-    $aclArguments = @($Path, '/inheritance:r', '/grant:r', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-18:(OI)(CI)F')
-    foreach ($serviceName in $ServiceNames) {
-        $rights = if ($ReadOnlyService) { '(OI)(CI)RX' } else { '(OI)(CI)M' }
-        $aclArguments += "NT SERVICE\$serviceName`:$rights"
-    }
-    $aclArguments += '/Q'
-    & "$env:SystemRoot\System32\icacls.exe" @aclArguments | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to secure directory tree $Path" }
-    if (Get-ChildItem -LiteralPath $Path -Force | Select-Object -First 1) {
-        & "$env:SystemRoot\System32\icacls.exe" "$Path\*" '/reset' '/T' '/C' '/Q' | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Failed to propagate the secured ACL beneath $Path" }
-    }
-    foreach ($serviceName in $ServiceNames) {
-        & "$env:SystemRoot\System32\icacls.exe" $DataRoot '/grant:r' "NT SERVICE\$serviceName`:RX" '/Q' | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Failed to grant $serviceName traverse access to $DataRoot" }
-    }
+if ([string]::IsNullOrWhiteSpace($masterKey)) {
+    $bytes = New-Object byte[] 32
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $masterKey = [Convert]::ToBase64String($bytes)
 }
-
-function Grant-ServiceInstallRootAccess {
-    param([Parameter(Mandatory)][string]$ServiceName)
-    & "$env:SystemRoot\System32\icacls.exe" $InstallRoot '/grant:r' "NT SERVICE\$ServiceName`:(OI)(CI)RX" '/Q' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to grant $ServiceName read/execute access to $InstallRoot" }
-}
-
-function Wait-ControlReady {
-    param([Parameter(Mandatory)][int]$Port, [ValidateRange(1, 300)][int]$TimeoutSeconds = 45)
-    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    $lastError = $null
-    do {
-        try {
-            $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/readyz" -TimeoutSec 5
-            if ($response.StatusCode -eq 200) { return }
-            $lastError = "HTTP $($response.StatusCode)"
-        } catch {
-            $lastError = $_.Exception.Message
-        }
-        Start-Sleep -Milliseconds 500
-    } while ([DateTime]::UtcNow -lt $deadline)
-    throw "Control readiness check timed out on 127.0.0.1:$Port. Last error: $lastError"
-}
-
-foreach ($path in @($DataRoot, "$DataRoot\config", "$DataRoot\logs", "$DataRoot\backups", "$DataRoot\postgres", "$DataRoot\caddy")) {
-    New-Item -ItemType Directory -Force -Path $path | Out-Null
-}
-& "$env:SystemRoot\System32\icacls.exe" $DataRoot '/inheritance:r' '/grant:r' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' '/T' '/C' '/Q' | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Failed to establish the private ProgramData root: $DataRoot" }
-
-$existingConfig = if ($firstInstall) { $null } else { Get-Content -LiteralPath $controlConfigPath -Raw | ConvertFrom-Json }
-$databaseUrl = if ($firstInstall) { '' } else { [string]$existingConfig.database_url }
-$databasePassword = ''
-if (-not $firstInstall) {
-    if ([string]::IsNullOrWhiteSpace($databaseUrl)) { throw 'Existing Control configuration has no database_url.' }
-    $existingDatabaseUri = [Uri]$databaseUrl
-    $DatabaseMode = if ($existingDatabaseUri.Port -eq 55432 -and (Test-Path -LiteralPath "$DataRoot\postgres\data\PG_VERSION")) { 'managed' } else { 'external' }
-    if ($DatabaseMode -eq 'managed') {
-        $databasePassword = [Uri]::UnescapeDataString($existingDatabaseUri.UserInfo.Split(':', 2)[1])
-    }
-} elseif ($DatabaseMode -eq 'external') {
-    if ([string]::IsNullOrWhiteSpace($ResponseFile)) {
-        throw 'External database mode requires RESPONSE_FILE. Database passwords are not accepted as MSI properties.'
-    }
-    Assert-ProtectedResponseFile -Path $ResponseFile
-    $response = Get-Content -LiteralPath $ResponseFile -Raw | ConvertFrom-Json
-    $allowedProperties = @('schema_version', 'database_url')
-    foreach ($property in $response.PSObject.Properties.Name) {
-        if ($allowedProperties -notcontains $property) { throw "Unknown response-file property: $property" }
-    }
-    if ($response.schema_version -ne 1 -or [string]::IsNullOrWhiteSpace($response.database_url)) {
-        throw 'Response file requires schema_version 1 and database_url.'
-    }
-    $databaseUrl = [string]$response.database_url
-    $uri = [Uri]$databaseUrl
-    if ($uri.Scheme -notin @('postgres', 'postgresql')) { throw 'External database URL must use postgres or postgresql.' }
-    if ($uri.Host -notin @('127.0.0.1', 'localhost', '::1') -and $uri.Query.TrimStart('?') -notmatch '(^|&)sslmode=(verify-full|verify-ca|require)(&|$)') {
-        throw 'Remote external PostgreSQL requires TLS (sslmode=require, verify-ca, or verify-full).'
-    }
-} else {
-    $databasePassword = Get-SecretHex -Bytes 32
-    $encodedPassword = [Uri]::EscapeDataString($databasePassword)
-    $databaseUrl = "postgres://l4d2panel:$encodedPassword@127.0.0.1:55432/l4d2panel?sslmode=disable"
-}
-
-$publicUrl = if ($HttpsPort -eq 443) {
-    "https://$PanelDomain"
-} else {
-    "https://$PanelDomain`:$HttpsPort"
-}
-
-if ($firstInstall) {
-    $controlConfig = [ordered]@{
-        schema_version = 1
-        listen_address = "127.0.0.1:$ControlPort"
-        database_url = $databaseUrl
-        migrations_dir = "$InstallRoot\migrations"
-        master_key = Get-SecretHex -Bytes 32
-        cookie_secure = $true
-        session_ttl = '12h'
-        public_url = $publicUrl
-        trusted_proxies = @('127.0.0.1/32', '::1/128')
-        timezone = 'Asia/Hong_Kong'
-        log_file = "$DataRoot\logs\control.jsonl"
-    }
-    [IO.File]::WriteAllText($controlConfigPath, ($controlConfig | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
-    & "$env:SystemRoot\System32\icacls.exe" $controlConfigPath '/inheritance:r' '/grant:r' '*S-1-5-32-544:F' '*S-1-5-18:F' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Failed to secure the generated Control configuration.' }
-} else {
-    $publicUrl = [string]$existingConfig.public_url
-}
-$installState = [ordered]@{
+$publicUrl = if ($HttpsPort -eq 443) { "https://$PanelDomain" } else { "https://$PanelDomain`:$HttpsPort" }
+$controlConfig = [ordered]@{
     schema_version = 2
-    database_mode = $DatabaseMode
-    proxy_mode = $ProxyMode
-    panel_domain = $PanelDomain
-    control_port = $ControlPort
-    http_port = $HttpPort
-    https_port = $HttpsPort
+    listen_address = "127.0.0.1:$ControlPort"
+    database_path = $databasePath
+    migrations_dir = (Join-Path $InstallRoot 'migrations\sqlite')
+    master_key = $masterKey
+    cookie_secure = $true
+    session_ttl = '12h'
+    public_url = $publicUrl
+    trusted_proxies = @('127.0.0.1/32', '::1/128')
+    timezone = 'Asia/Hong_Kong'
+    log_file = (Join-Path $DataRoot 'logs\control.jsonl')
 }
-[IO.File]::WriteAllText($installStatePath, ($installState | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
-& "$env:SystemRoot\System32\icacls.exe" $installStatePath '/inheritance:r' '/grant:r' '*S-1-5-32-544:F' '*S-1-5-18:F' | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Failed to secure Windows install state.' }
+[IO.File]::WriteAllText($controlConfigPath, ($controlConfig | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
 
-$controlExe = "$InstallRoot\l4d2panel-control.exe"
-if (-not (Test-Path -LiteralPath $controlExe)) { throw "Control executable not found: $controlExe" }
+Invoke-CheckedProcess $controlExe @('doctor', '--config', $controlConfigPath)
+if (-not $SkipMigrate) { Invoke-CheckedProcess $controlExe @('migrate', '--config', $controlConfigPath) }
 
-if ($DatabaseMode -eq 'managed') {
-    $pgBin = "$InstallRoot\postgresql\bin"
-    $pgData = "$DataRoot\postgres\data"
-    $passwordFile = "$DataRoot\config\.pg-init-password"
-    [IO.File]::WriteAllText($passwordFile, $databasePassword, (New-Object Text.UTF8Encoding($false)))
-    & "$env:SystemRoot\System32\icacls.exe" $passwordFile '/inheritance:r' '/grant:r' '*S-1-5-32-544:F' '*S-1-5-18:F' | Out-Null
-    try {
-        if (-not (Test-Path -LiteralPath "$pgData\PG_VERSION")) {
-            Invoke-CheckedProcess -FilePath "$pgBin\initdb.exe" -ArgumentList @('-D', $pgData, '-U', 'l4d2panel', '--pwfile', $passwordFile, '--encoding=UTF8', '--locale=C', '--auth-host=scram-sha-256', '--auth-local=scram-sha-256')
-            Add-Content -LiteralPath "$pgData\postgresql.conf" -Encoding ascii -Value @"
-listen_addresses = '127.0.0.1'
-port = 55432
-password_encryption = 'scram-sha-256'
-"@
-            Set-Content -LiteralPath "$pgData\pg_hba.conf" -Encoding ascii -Value @"
-local all all scram-sha-256
-host all all 127.0.0.1/32 scram-sha-256
-host all all ::1/128 reject
-"@
-        }
-    } finally {
-        Remove-Item -LiteralPath $passwordFile -Force -ErrorAction SilentlyContinue
-    }
-    Remove-ServiceIfPresent -Name $script:PostgresService
-    $pgServiceCommand = '"{0}\pg_ctl.exe" runservice -N "{1}" -D "{2}"' -f $pgBin, $script:PostgresService, $pgData
-    Invoke-CheckedProcess -FilePath "$env:SystemRoot\System32\sc.exe" -ArgumentList @('create', $script:PostgresService, 'binPath=', $pgServiceCommand, 'start=', 'delayed-auto', 'obj=', "NT SERVICE\$($script:PostgresService)")
-    Invoke-CheckedProcess -FilePath "$env:SystemRoot\System32\sc.exe" -ArgumentList @('failure', $script:PostgresService, 'reset=', '86400', 'actions=', 'restart/10000/restart/30000/none/0')
-    Grant-ServiceInstallRootAccess -ServiceName $script:PostgresService
-    Set-DirectoryAcl -Path "$DataRoot\postgres" -ServiceNames @($script:PostgresService)
-    Start-Service -Name $script:PostgresService
-    (Get-Service -Name $script:PostgresService).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-    $env:PGPASSWORD = $databasePassword
-    try {
-        $databaseExists = & "$pgBin\psql.exe" -h 127.0.0.1 -p 55432 -U l4d2panel -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='l4d2panel'"
-        if ($LASTEXITCODE -ne 0) { throw 'Failed to inspect the managed PostgreSQL cluster.' }
-        if (($databaseExists | Out-String).Trim() -ne '1') {
-            Invoke-CheckedProcess -FilePath "$pgBin\createdb.exe" -ArgumentList @('-h', '127.0.0.1', '-p', '55432', '-U', 'l4d2panel', 'l4d2panel')
-        }
-    } finally {
-        Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
-    }
-}
-
-Invoke-CheckedProcess -FilePath $controlExe -ArgumentList @('doctor', '--config', $controlConfigPath)
-if (-not $SkipMigrate) {
-    Invoke-CheckedProcess -FilePath $controlExe -ArgumentList @('migrate', '--config', $controlConfigPath)
-}
 if (Get-Service -Name $script:ControlService -ErrorAction SilentlyContinue) {
-    Invoke-CheckedProcess -FilePath $controlExe -ArgumentList @('service', 'uninstall', '--config', $controlConfigPath)
+    Invoke-CheckedProcess $controlExe @('service', 'uninstall', '--config', $controlConfigPath)
 }
-Invoke-CheckedProcess -FilePath $controlExe -ArgumentList @('service', 'install', '--config', $controlConfigPath)
-Grant-ServiceInstallRootAccess -ServiceName $script:ControlService
-if ($DatabaseMode -eq 'managed') {
-    Invoke-CheckedProcess -FilePath "$env:SystemRoot\System32\sc.exe" -ArgumentList @('config', $script:ControlService, 'depend=', $script:PostgresService)
-}
+Invoke-CheckedProcess $controlExe @('service', 'install', '--config', $controlConfigPath)
+Set-RestrictedDirectoryAcl $InstallRoot @($script:ControlService) -ReadOnlyService
+Set-RestrictedDirectoryAcl (Join-Path $DataRoot 'config') @($script:ControlService) -ReadOnlyService
+Set-RestrictedDirectoryAcl (Join-Path $DataRoot 'data') @($script:ControlService)
+Set-RestrictedDirectoryAcl (Join-Path $DataRoot 'logs') @($script:ControlService)
+Set-RestrictedDirectoryAcl (Join-Path $DataRoot 'backups') @($script:ControlService)
+Set-RestrictedFileAcl $controlConfigPath $script:ControlService
 
 Get-NetFirewallRule -Group 'L4D2 Panel Center' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 if ($ProxyMode -eq 'caddy') {
-    $caddyExe = "$InstallRoot\caddy\caddy.exe"
-    $caddyConfig = "$DataRoot\caddy\Caddyfile"
+    $caddyExe = Join-Path $InstallRoot 'caddy\caddy.exe'
+    $caddyConfig = Join-Path $DataRoot 'caddy\Caddyfile'
     $siteAddress = if ($HttpsPort -eq 443) { "https://$PanelDomain" } else { "https://$PanelDomain`:$HttpsPort" }
-    $httpRedirect = ":$HttpPort"
     [IO.File]::WriteAllText($caddyConfig, @"
 {
     admin 127.0.0.1:2019
@@ -403,7 +193,7 @@ if ($ProxyMode -eq 'caddy') {
     }
 }
 
-$httpRedirect {
+:$HttpPort {
     redir $publicUrl{uri} permanent
 }
 
@@ -411,39 +201,29 @@ $siteAddress {
     encode zstd gzip
     reverse_proxy 127.0.0.1:$ControlPort
 }
-"@, (New-Object Text.UTF8Encoding($false)))
-    Invoke-CheckedProcess -FilePath $caddyExe -ArgumentList @('validate', '--config', $caddyConfig)
-    Remove-ServiceIfPresent -Name $script:CaddyService
-    $caddyServiceCommand = '"{0}" run --environ --config "{1}"' -f $caddyExe, $caddyConfig
-    Invoke-CheckedProcess -FilePath "$env:SystemRoot\System32\sc.exe" -ArgumentList @('create', $script:CaddyService, 'binPath=', $caddyServiceCommand, 'start=', 'delayed-auto', 'obj=', "NT SERVICE\$($script:CaddyService)", 'depend=', $script:ControlService)
-    Invoke-CheckedProcess -FilePath "$env:SystemRoot\System32\sc.exe" -ArgumentList @('failure', $script:CaddyService, 'reset=', '86400', 'actions=', 'restart/10000/restart/30000/none/0')
-    Grant-ServiceInstallRootAccess -ServiceName $script:CaddyService
-    Set-DirectoryAcl -Path "$DataRoot\caddy" -ServiceNames @($script:CaddyService)
+"@, [Text.UTF8Encoding]::new($false))
+    Invoke-CheckedProcess $caddyExe @('validate', '--config', $caddyConfig)
+    Remove-ServiceIfPresent $script:CaddyService
+    $command = '"{0}" run --environ --config "{1}"' -f $caddyExe, $caddyConfig
+    Invoke-CheckedProcess "$env:SystemRoot\System32\sc.exe" @('create', $script:CaddyService, 'binPath=', $command, 'start=', 'delayed-auto', 'obj=', "NT SERVICE\$($script:CaddyService)", 'depend=', $script:ControlService)
+    Invoke-CheckedProcess "$env:SystemRoot\System32\sc.exe" @('failure', $script:CaddyService, 'reset=', '86400', 'actions=', 'restart/10000/restart/30000/none/0')
+    Set-RestrictedDirectoryAcl $InstallRoot @($script:ControlService, $script:CaddyService) -ReadOnlyService
+    Set-RestrictedDirectoryAcl (Join-Path $DataRoot 'caddy') @($script:CaddyService)
     foreach ($port in @($HttpPort, $HttpsPort)) {
         New-NetFirewallRule -DisplayName "L4D2 Panel Center TCP $port" -Group 'L4D2 Panel Center' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port | Out-Null
     }
+} else {
+    Remove-ServiceIfPresent $script:CaddyService
 }
-
-# Create service SIDs first, then lock secret configuration to the Control SID.
-Set-DirectoryAcl -Path "$DataRoot\config" -ServiceNames @($script:ControlService) -ReadOnlyService
-Set-DirectoryAcl -Path "$DataRoot\logs" -ServiceNames @($script:ControlService)
-Set-DirectoryAcl -Path "$DataRoot\backups" -ServiceNames @($script:ControlService)
 
 if (-not $SkipStart) {
-    Start-Service -Name $script:ControlService
-    (Get-Service -Name $script:ControlService).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-    Wait-ControlReady -Port $ControlPort
+    Start-Service $script:ControlService
+    (Get-Service $script:ControlService).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+    Wait-ControlReady $ControlPort
     if ($ProxyMode -eq 'caddy') {
-        try {
-            Start-Service -Name $script:CaddyService
-            (Get-Service -Name $script:CaddyService).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-        } catch {
-            Write-Warning "Caddy could not become ready. Control and PostgreSQL remain installed. Diagnose with: '$InstallRoot\caddy\caddy.exe' validate --config '$DataRoot\caddy\Caddyfile'"
-        }
+        Start-Service $script:CaddyService
+        (Get-Service $script:CaddyService).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
     }
 }
-
-if ($OpenSetup) {
-    Start-Process "$publicUrl/setup"
-}
+if ($OpenSetup) { Start-Process "$publicUrl/setup" }
 Write-Output "L4D2 Panel Control installed. Complete setup at $publicUrl/setup"

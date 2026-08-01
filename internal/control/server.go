@@ -472,6 +472,10 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "database_unavailable", "database is unavailable")
 		return
 	}
+	if status, err := s.store.SchemaStatusForMigrations(ctx, s.config.MigrationsDir); err != nil || status != "current" {
+		writeError(w, http.StatusServiceUnavailable, "schema_unavailable", "database schema is not ready")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
 }
 

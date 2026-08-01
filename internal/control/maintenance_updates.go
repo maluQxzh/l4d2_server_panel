@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 	"github.com/robfig/cron/v3"
 )
@@ -29,14 +29,14 @@ var (
 // selection, monitoring, and dispatch must agree that cancellation and
 // terminal projection outboxes still own the instance.
 const activeJobSQLPredicate = `(job.status IN ('queued','dispatched','running')
-	OR (job.status='canceled' AND job.result @> '{"cancel_pending":true}'::jsonb)
-	OR (job.status IN ('succeeded','failed') AND job.result @> '{"_projection_pending":true}'::jsonb))`
+	OR (job.status='canceled' AND json_extract(job.result,'$.cancel_pending')=1)
+	OR (job.status IN ('succeeded','failed') AND json_extract(job.result,'$._projection_pending')=1))`
 
 const instanceWriteJobSQLPredicate = `(job.type NOT IN (
 	'a2s.info','a2s.players','rcon.players','list','check_update',
 	'logs.search','logs.chunk','backup.chunk','backup.upload.abort'
 )
-	AND NOT (job.type='file' AND job.payload->>'operation'='read'))`
+	AND NOT (job.type='file' AND json_extract(job.payload,'$.operation')='read'))`
 
 type maintenanceUpdateCandidate struct {
 	Instance domain.Instance
@@ -141,11 +141,11 @@ func maintenanceBatchBlocked(activeKeys []string, windowStart time.Time) bool {
 // AutomaticMaintenanceCandidates returns update-available instances on online
 // nodes which are not already owned by an active write operation.
 func (s *Store) AutomaticMaintenanceCandidates(ctx context.Context) ([]maintenanceUpdateCandidate, error) {
-	rows, err := s.pool.Query(ctx, `SELECT instance.id::text FROM instances instance
+	rows, err := s.db.QueryContext(ctx, `SELECT instance.id FROM instances instance
 		JOIN nodes node ON node.id=instance.node_id
 		JOIN instance_update_state update_state ON update_state.instance_id=instance.id
 		WHERE node.status='online' AND instance.status IN ('stopped','running','degraded')
-		AND update_state.available=true AND COALESCE(instance.config->>'maintenance_cron','')<>''
+		AND update_state.available=true AND COALESCE(json_extract(instance.config,'$.maintenance_cron'),'')<>''
 		AND NOT EXISTS (
 			SELECT 1 FROM jobs job WHERE job.instance_id=instance.id
 			AND `+activeJobSQLPredicate+` AND `+instanceWriteJobSQLPredicate+`
@@ -208,16 +208,13 @@ func (s *Store) QueueAutomaticMaintenanceBatch(ctx context.Context, nodeID strin
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Instance.ID < filtered[j].Instance.ID })
 
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return maintenanceBatchResult{}, err
 	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "automatic-maintenance:"+nodeID); err != nil {
-		return maintenanceBatchResult{}, err
-	}
+	defer tx.Rollback()
 	var nodeStatus domain.NodeStatus
-	if err := tx.QueryRow(ctx, `SELECT status FROM nodes WHERE id=$1 FOR SHARE`, nodeID).Scan(&nodeStatus); errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM nodes WHERE id=?1`, nodeID).Scan(&nodeStatus); errors.Is(err, sql.ErrNoRows) {
 		return maintenanceBatchResult{}, ErrNotFound
 	} else if err != nil {
 		return maintenanceBatchResult{}, err
@@ -225,9 +222,9 @@ func (s *Store) QueueAutomaticMaintenanceBatch(ctx context.Context, nodeID strin
 		return maintenanceBatchResult{}, nil
 	}
 
-	activeRows, err := tx.Query(ctx, `SELECT job.idempotency_key FROM jobs job
-		WHERE job.node_id=$1 AND job.type='update' AND job.requested_by IS NULL
-		AND job.payload @> '{"maintenance":true}'::jsonb
+	activeRows, err := tx.QueryContext(ctx, `SELECT job.idempotency_key FROM jobs job
+		WHERE job.node_id=?1 AND job.type='update' AND job.requested_by IS NULL
+		AND json_extract(job.payload,'$.maintenance')=1
 		AND job.idempotency_key LIKE 'maintenance:update:%'
 		AND `+activeJobSQLPredicate+` ORDER BY job.created_at,job.id`, nodeID)
 	if err != nil {
@@ -258,8 +255,8 @@ func (s *Store) QueueAutomaticMaintenanceBatch(ctx context.Context, nodeID strin
 		if err != nil {
 			return maintenanceBatchResult{}, err
 		}
-		existing, storedFingerprint, lookupErr := scanJobWithFingerprint(tx.QueryRow(ctx, `SELECT `+jobColumnsWithFingerprint+`
-			FROM jobs WHERE requested_by IS NULL AND idempotency_key=$1`, key))
+		existing, storedFingerprint, lookupErr := scanJobWithFingerprint(tx.QueryRowContext(ctx, `SELECT `+jobColumnsWithFingerprint+`
+			FROM jobs WHERE requested_by IS NULL AND idempotency_key=?1`, key))
 		if lookupErr == nil {
 			existingWindow, _, validKey := parseMaintenanceUpdateKey(existing.IdempotencyKey)
 			if existing.NodeID != nodeID || existing.InstanceID != candidate.Instance.ID || !existingWindow.Equal(windowStart) ||
@@ -272,12 +269,12 @@ func (s *Store) QueueAutomaticMaintenanceBatch(ctx context.Context, nodeID strin
 			result.Jobs = append(result.Jobs, queuedMaintenanceUpdate{Job: existing, Reused: true})
 			continue
 		}
-		if !errors.Is(lookupErr, pgx.ErrNoRows) {
+		if !errors.Is(lookupErr, sql.ErrNoRows) {
 			return maintenanceBatchResult{}, lookupErr
 		}
 
-		instance, err := scanInstance(tx.QueryRow(ctx, `SELECT `+instanceColumns+` FROM instances WHERE id=$1 FOR UPDATE`, candidate.Instance.ID))
-		if errors.Is(err, pgx.ErrNoRows) {
+		instance, err := scanInstance(tx.QueryRowContext(ctx, `SELECT `+instanceColumns+` FROM instances WHERE id=?1`, candidate.Instance.ID))
+		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
@@ -288,14 +285,14 @@ func (s *Store) QueueAutomaticMaintenanceBatch(ctx context.Context, nodeID strin
 		}
 		var available bool
 		var availableBuild string
-		if err := tx.QueryRow(ctx, `SELECT available,available_build FROM instance_update_state
-			WHERE instance_id=$1 FOR SHARE`, instance.ID).Scan(&available, &availableBuild); errors.Is(err, pgx.ErrNoRows) || !available {
+		if err := tx.QueryRowContext(ctx, `SELECT available,available_build FROM instance_update_state
+			WHERE instance_id=?1`, instance.ID).Scan(&available, &availableBuild); errors.Is(err, sql.ErrNoRows) || !available {
 			continue
 		} else if err != nil {
 			return maintenanceBatchResult{}, err
 		}
 		var hasActiveWriteOrUpdateCheck bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM jobs job WHERE job.instance_id=$1
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jobs job WHERE job.instance_id=?1
 			AND `+activeJobSQLPredicate+` AND (`+instanceWriteJobSQLPredicate+` OR job.type='check_update'))`, instance.ID).Scan(&hasActiveWriteOrUpdateCheck); err != nil {
 			return maintenanceBatchResult{}, err
 		}
@@ -311,10 +308,10 @@ func (s *Store) QueueAutomaticMaintenanceBatch(ctx context.Context, nodeID strin
 		}
 		job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, InstanceID: instance.ID, Type: "update", Status: domain.JobQueued,
 			Payload: payload, IdempotencyKey: key, CreatedAt: time.Now().UTC()}
-		insertErr := tx.QueryRow(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
-			VALUES($1,$2,$3,'update','queued',$4,$5,NULL,$6,$7) ON CONFLICT DO NOTHING RETURNING created_at`,
-			job.ID, job.NodeID, job.InstanceID, payloadRaw, job.IdempotencyKey, job.CreatedAt, fingerprint).Scan(&job.CreatedAt)
-		if errors.Is(insertErr, pgx.ErrNoRows) {
+		insertErr := tx.QueryRowContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
+			VALUES(?1,?2,?3,'update','queued',?4,?5,NULL,?6,?7) ON CONFLICT DO NOTHING RETURNING created_at`,
+			job.ID, job.NodeID, job.InstanceID, string(payloadRaw), job.IdempotencyKey, job.CreatedAt, fingerprint).Scan(&job.CreatedAt)
+		if errors.Is(insertErr, sql.ErrNoRows) {
 			// A manual writer won the per-instance unique index. It affects only
 			// this candidate; all other intents remain in the batch transaction.
 			continue
@@ -327,7 +324,7 @@ func (s *Store) QueueAutomaticMaintenanceBatch(ctx context.Context, nodeID strin
 		}
 		result.Jobs = append(result.Jobs, queuedMaintenanceUpdate{Job: job})
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return maintenanceBatchResult{}, err
 	}
 	return result, nil
@@ -342,7 +339,7 @@ func automaticMaintenanceStatusEligible(status domain.InstanceStatus) bool {
 	return status == domain.InstanceStopped || status == domain.InstanceRunning || status == domain.InstanceDegraded
 }
 
-func writeAutomaticMaintenanceRecords(ctx context.Context, tx pgx.Tx, job domain.Job, windowStart time.Time, availableBuild string) error {
+func writeAutomaticMaintenanceRecords(ctx context.Context, tx *sql.Tx, job domain.Job, windowStart time.Time, availableBuild string) error {
 	metadata := map[string]any{"job_id": job.ID, "node_id": job.NodeID, "instance_id": job.InstanceID,
 		"window_start": windowStart.UTC().Format(time.RFC3339), "available_build": availableBuild}
 	metadataRaw, err := json.Marshal(metadata)
@@ -350,17 +347,20 @@ func writeAutomaticMaintenanceRecords(ctx context.Context, tx pgx.Tx, job domain
 		return err
 	}
 	auditID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("l4d2panel:maintenance:audit:"+job.ID))
-	if _, err := tx.Exec(ctx, `INSERT INTO audit_events(id,actor_name,action,resource_type,resource_id,metadata,created_at)
-		VALUES($1,'maintenance-scheduler','maintenance.update.queued','instance',$2,$3,$4)
-		ON CONFLICT(id) DO NOTHING`, auditID, job.InstanceID, metadataRaw, job.CreatedAt); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(id,actor_name,action,resource_type,resource_id,metadata,created_at)
+		VALUES(?1,'maintenance-scheduler','maintenance.update.queued','instance',?2,?3,?4)
+		ON CONFLICT(id) DO NOTHING`, auditID, job.InstanceID, string(metadataRaw), job.CreatedAt); err != nil {
 		return err
 	}
 	notificationID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("l4d2panel:maintenance:notification:"+job.ID))
-	_, err = tx.Exec(ctx, `INSERT INTO notifications(id,severity,type,title,message,resource,metadata,created_at)
-		VALUES($1,'info','maintenance.update.queued','Maintenance update queued',
-		'A scheduled L4D2 server update was queued for its maintenance window',$2,$3,$4)
-		ON CONFLICT(id) DO NOTHING`, notificationID, job.InstanceID, metadataRaw, job.CreatedAt)
-	return err
+	result, err := tx.ExecContext(ctx, `INSERT INTO notifications(id,severity,type,title,message,resource,metadata,created_at)
+		VALUES(?1,'info','maintenance.update.queued','Maintenance update queued',
+		'A scheduled L4D2 server update was queued for its maintenance window',?2,?3,?4)
+		ON CONFLICT(id) DO NOTHING`, notificationID, job.InstanceID, string(metadataRaw), job.CreatedAt)
+	if err != nil || resultRowsAffected(result) == 0 {
+		return err
+	}
+	return insertNotificationDeliveriesTx(ctx, tx, notificationID.String(), job.CreatedAt)
 }
 
 func (s *Server) runAutomaticMaintenanceUpdates(ctx context.Context, now time.Time) {

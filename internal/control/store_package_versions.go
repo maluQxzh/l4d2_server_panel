@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
@@ -24,8 +24,8 @@ type packageVersionMetadata struct {
 }
 
 func (s *Store) ListPackageVersions(ctx context.Context, instanceID, packageID string) ([]domain.AddonPackageVersion, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,package_id,instance_id,version,sha256,size,target_path,storage_path,created_at
-		FROM addon_package_versions WHERE instance_id=$1 AND package_id=$2 ORDER BY created_at DESC,id DESC`, instanceID, packageID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,package_id,instance_id,version,sha256,size,target_path,storage_path,created_at
+		FROM addon_package_versions WHERE instance_id=?1 AND package_id=?2 ORDER BY created_at DESC,id DESC`, instanceID, packageID)
 	if err != nil {
 		return nil, err
 	}
@@ -47,12 +47,12 @@ func (s *Store) ListPackageVersions(ctx context.Context, instanceID, packageID s
 func (s *Store) PackageVersionForRollback(ctx context.Context, instanceID, packageID, versionID string) (domain.AddonPackage, domain.AddonPackageVersion, error) {
 	var item domain.AddonPackage
 	var lastJobID string
-	err := s.pool.QueryRow(ctx, `SELECT id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,
-		COALESCE(installed_by::text,''),installed_at,COALESCE(last_job_id::text,'')
-		FROM addon_packages WHERE id=$1 AND instance_id=$2`, packageID, instanceID).Scan(
+	err := s.db.QueryRowContext(ctx, `SELECT id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,
+		COALESCE(installed_by,''),installed_at,COALESCE(last_job_id,'')
+		FROM addon_packages WHERE id=?1 AND instance_id=?2`, packageID, instanceID).Scan(
 		&item.ID, &item.InstanceID, &item.Name, &item.Kind, &item.Version, &item.Source, &item.SourceID, &item.SHA256,
 		&item.Path, &item.Enabled, &item.Risk, &item.InstalledBy, &item.InstalledAt, &lastJobID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return domain.AddonPackage{}, domain.AddonPackageVersion{}, ErrNotFound
 	}
 	if err != nil {
@@ -60,11 +60,11 @@ func (s *Store) PackageVersionForRollback(ctx context.Context, instanceID, packa
 	}
 	var version domain.AddonPackageVersion
 	var size int64
-	err = s.pool.QueryRow(ctx, `SELECT id,package_id,instance_id,version,sha256,size,target_path,storage_path,created_at
-		FROM addon_package_versions WHERE id=$1 AND package_id=$2 AND instance_id=$3`, versionID, packageID, instanceID).Scan(
+	err = s.db.QueryRowContext(ctx, `SELECT id,package_id,instance_id,version,sha256,size,target_path,storage_path,created_at
+		FROM addon_package_versions WHERE id=?1 AND package_id=?2 AND instance_id=?3`, versionID, packageID, instanceID).Scan(
 		&version.ID, &version.PackageID, &version.InstanceID, &version.Version, &version.SHA256, &size,
 		&version.TargetPath, &version.StoragePath, &version.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return domain.AddonPackage{}, domain.AddonPackageVersion{}, ErrNotFound
 	}
 	version.Size = uint64(size)
@@ -80,8 +80,8 @@ func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error
 				continue
 			}
 			packageID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(job.ID+":"+path)).String()
-			_, err := s.pool.Exec(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,installed_by,last_job_id)
-				VALUES($1,$2,$3,'workshop',$4,$5,$6,$7,$8,true,$9,$10,$11) ON CONFLICT(id) DO NOTHING`, packageID,
+			_, err := s.db.ExecContext(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,installed_by,last_job_id)
+				VALUES(?1,?2,?3,'workshop',?4,?5,?6,?7,?8,true,?9,?10,?11) ON CONFLICT(id) DO NOTHING`, packageID,
 				job.InstanceID, filepath.Base(path), fmt.Sprintf("v%d", intFromAny(file["vpk_version"])), stringFromAny(job.Payload["source"]),
 				stringFromAny(file["source_id"]), stringFromAny(file["sha256"]), path, riskFromPayload(job.Payload), nullableUUID(job.RequestedBy), job.ID)
 			if err != nil {
@@ -110,8 +110,8 @@ func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error
 	}
 	path := filepath.ToSlash(stringFromAny(job.Result["path"]))
 	if path == "" {
-		_, err := s.pool.Exec(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,installed_by,last_job_id)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,'',true,$9,$10,$1) ON CONFLICT(id) DO NOTHING`, job.ID, job.InstanceID, name,
+		_, err := s.db.ExecContext(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,installed_by,last_job_id)
+			VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'',true,?9,?10,?1) ON CONFLICT(id) DO NOTHING`, job.ID, job.InstanceID, name,
 			kind, version, source, stringFromAny(job.Result["source_id"]), sha, riskFromPayload(job.Payload), nullableUUID(job.RequestedBy))
 		return err
 	}
@@ -123,23 +123,23 @@ func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error
 		}
 	}
 
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 	var existing domain.AddonPackage
 	var existingLastJob string
-	lookupErr := tx.QueryRow(ctx, `SELECT id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,
-		COALESCE(installed_by::text,''),installed_at,COALESCE(last_job_id::text,'')
-		FROM addon_packages WHERE instance_id=$1 AND path=$2 ORDER BY installed_at DESC,id LIMIT 1 FOR UPDATE`, job.InstanceID, path).Scan(
+	lookupErr := tx.QueryRowContext(ctx, `SELECT id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,
+		COALESCE(installed_by,''),installed_at,COALESCE(last_job_id,'')
+		FROM addon_packages WHERE instance_id=?1 AND path=?2 ORDER BY installed_at DESC,id LIMIT 1`, job.InstanceID, path).Scan(
 		&existing.ID, &existing.InstanceID, &existing.Name, &existing.Kind, &existing.Version, &existing.Source, &existing.SourceID,
 		&existing.SHA256, &existing.Path, &existing.Enabled, &existing.Risk, &existing.InstalledBy, &existing.InstalledAt, &existingLastJob)
-	if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+	if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
 		return lookupErr
 	}
 	if existingLastJob == job.ID {
-		return tx.Commit(ctx)
+		return tx.Commit()
 	}
 	packageID := existing.ID
 	if packageID == "" {
@@ -162,13 +162,13 @@ func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error
 		}
 	}
 	if existing.ID == "" {
-		_, err = tx.Exec(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,installed_by,last_job_id)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11,$12)`, packageID, job.InstanceID, name, kind, version, source,
+		_, err = tx.ExecContext(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,installed_by,last_job_id)
+			VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,true,?10,?11,?12)`, packageID, job.InstanceID, name, kind, version, source,
 			stringFromAny(job.Result["source_id"]), sha, path, riskFromPayload(job.Payload), nullableUUID(job.RequestedBy), job.ID)
 	} else {
-		_, err = tx.Exec(ctx, `UPDATE addon_packages SET name=$3,kind=$4,version=$5,source=$6,
-			source_id=COALESCE(NULLIF($7,''),source_id),sha256=$8,path=$9,enabled=true,risk=$10,
-			installed_by=$11,installed_at=now(),last_job_id=$12 WHERE id=$1 AND instance_id=$2`, packageID, job.InstanceID,
+		_, err = tx.ExecContext(ctx, `UPDATE addon_packages SET name=?3,kind=?4,version=?5,source=?6,
+			source_id=COALESCE(NULLIF(?7,''),source_id),sha256=?8,path=?9,enabled=true,risk=?10,
+			installed_by=?11,installed_at=unixepoch('subsec')*1000000,last_job_id=?12 WHERE id=?1 AND instance_id=?2`, packageID, job.InstanceID,
 			name, kind, version, source, stringFromAny(job.Result["source_id"]), sha, path, riskFromPayload(job.Payload), nullableUUID(job.RequestedBy), job.ID)
 	}
 	if err != nil {
@@ -186,7 +186,7 @@ func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error
 	if err := pruneStoredPackageVersions(ctx, tx, packageID); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return tx.Commit()
 }
 
 func (s *Store) applyPackageRollbackResult(ctx context.Context, job domain.Job) error {
@@ -195,26 +195,26 @@ func (s *Store) applyPackageRollbackResult(ctx context.Context, job domain.Job) 
 	if packageID == "" || versionID == "" {
 		return errors.New("package rollback result is missing version identity")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 	var current domain.AddonPackage
 	var lastJob string
-	err = tx.QueryRow(ctx, `SELECT id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,
-		COALESCE(installed_by::text,''),installed_at,COALESCE(last_job_id::text,'')
-		FROM addon_packages WHERE id=$1 AND instance_id=$2 FOR UPDATE`, packageID, job.InstanceID).Scan(
+	err = tx.QueryRowContext(ctx, `SELECT id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,
+		COALESCE(installed_by,''),installed_at,COALESCE(last_job_id,'')
+		FROM addon_packages WHERE id=?1 AND instance_id=?2`, packageID, job.InstanceID).Scan(
 		&current.ID, &current.InstanceID, &current.Name, &current.Kind, &current.Version, &current.Source, &current.SourceID,
 		&current.SHA256, &current.Path, &current.Enabled, &current.Risk, &current.InstalledBy, &current.InstalledAt, &lastJob)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
 	}
 	if lastJob == job.ID {
-		return tx.Commit(ctx)
+		return tx.Commit()
 	}
 	path := filepath.ToSlash(stringFromAny(job.Result["path"]))
 	sha := strings.ToLower(stringFromAny(job.Result["sha256"]))
@@ -233,12 +233,12 @@ func (s *Store) applyPackageRollbackResult(ctx context.Context, job domain.Job) 
 		return err
 	}
 	version := firstNonEmptyString(stringFromAny(job.Result["version"]), stringFromAny(job.Payload["restore_version"]), shortPackageSHA(sha))
-	if _, err := tx.Exec(ctx, `UPDATE addon_packages SET version=$3,sha256=$4,path=$5,enabled=true,
-		installed_by=$6,installed_at=now(),last_job_id=$7 WHERE id=$1 AND instance_id=$2`, packageID, job.InstanceID,
+	if _, err := tx.ExecContext(ctx, `UPDATE addon_packages SET version=?3,sha256=?4,path=?5,enabled=true,
+		installed_by=?6,installed_at=unixepoch('subsec')*1000000,last_job_id=?7 WHERE id=?1 AND instance_id=?2`, packageID, job.InstanceID,
 		version, sha, path, nullableUUID(job.RequestedBy), job.ID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM addon_package_versions WHERE id=$1 AND package_id=$2 AND instance_id=$3`, versionID, packageID, job.InstanceID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM addon_package_versions WHERE id=?1 AND package_id=?2 AND instance_id=?3`, versionID, packageID, job.InstanceID); err != nil {
 		return err
 	}
 	if err := deletePrunedPackageVersions(ctx, tx, packageID, job.Result["pruned_snapshots"]); err != nil {
@@ -247,16 +247,16 @@ func (s *Store) applyPackageRollbackResult(ctx context.Context, job domain.Job) 
 	if err := pruneStoredPackageVersions(ctx, tx, packageID); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return tx.Commit()
 }
 
-func insertPackageVersion(ctx context.Context, tx pgx.Tx, packageID, instanceID, sourceJobID, version string, metadata packageVersionMetadata) error {
+func insertPackageVersion(ctx context.Context, tx *sql.Tx, packageID, instanceID, sourceJobID, version string, metadata packageVersionMetadata) error {
 	manifest, _ := json.Marshal(map[string]any{"files": []any{map[string]any{
 		"path": metadata.TargetPath, "sha256": metadata.SHA256, "size": metadata.Size,
 	}}})
-	_, err := tx.Exec(ctx, `INSERT INTO addon_package_versions(id,package_id,instance_id,source_job_id,version,sha256,size,storage_path,target_path,manifest,created_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(source_job_id,storage_path) DO NOTHING`, uuid.NewString(), packageID,
-		instanceID, sourceJobID, version, metadata.SHA256, metadata.Size, metadata.StoragePath, metadata.TargetPath, manifest, metadata.CreatedAt)
+	_, err := tx.ExecContext(ctx, `INSERT INTO addon_package_versions(id,package_id,instance_id,source_job_id,version,sha256,size,storage_path,target_path,manifest,created_at)
+		VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(source_job_id,storage_path) DO NOTHING`, uuid.NewString(), packageID,
+		instanceID, sourceJobID, version, metadata.SHA256, metadata.Size, metadata.StoragePath, metadata.TargetPath, string(manifest), metadata.CreatedAt)
 	return err
 }
 
@@ -314,7 +314,7 @@ func validateVersionedPackageResultPath(kind, path string) error {
 	return nil
 }
 
-func deletePrunedPackageVersions(ctx context.Context, tx pgx.Tx, packageID string, raw any) error {
+func deletePrunedPackageVersions(ctx context.Context, tx *sql.Tx, packageID string, raw any) error {
 	values, ok := raw.([]any)
 	if !ok || len(values) == 0 {
 		return nil
@@ -330,13 +330,18 @@ func deletePrunedPackageVersions(ctx context.Context, tx pgx.Tx, packageID strin
 	if len(paths) == 0 {
 		return nil
 	}
-	_, err := tx.Exec(ctx, `DELETE FROM addon_package_versions WHERE package_id=$1 AND storage_path=ANY($2)`, packageID, paths)
+	rawPaths, err := json.Marshal(paths)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM addon_package_versions WHERE package_id=?1
+		AND storage_path IN (SELECT value FROM json_each(?2))`, packageID, string(rawPaths))
 	return err
 }
 
-func pruneStoredPackageVersions(ctx context.Context, tx pgx.Tx, packageID string) error {
-	_, err := tx.Exec(ctx, `DELETE FROM addon_package_versions WHERE id IN (
-		SELECT id FROM addon_package_versions WHERE package_id=$1 ORDER BY created_at DESC,id DESC OFFSET 3
+func pruneStoredPackageVersions(ctx context.Context, tx *sql.Tx, packageID string) error {
+	_, err := tx.ExecContext(ctx, `DELETE FROM addon_package_versions WHERE id IN (
+		SELECT id FROM addon_package_versions WHERE package_id=?1 ORDER BY created_at DESC,id DESC OFFSET 3
 	)`, packageID)
 	return err
 }

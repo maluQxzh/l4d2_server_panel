@@ -63,3 +63,33 @@ func TestReleasedMigrationChecksums(t *testing.T) {
 		t.Errorf("migration count=%d, checksum count=%d", actualCount, len(expected))
 	}
 }
+
+func TestSQLiteMigrationChecksums(t *testing.T) {
+	t.Parallel()
+	expected := map[string]string{
+		"001_control_plane.sql": "5a95514ce69e52e64613fbd1313eeed81eae422dc917c3e6f7acaae53e2f508f",
+	}
+	root := filepath.Join("..", "..", "migrations", "sqlite")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := 0
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".sql" {
+			continue
+		}
+		actual++
+		body, err := os.ReadFile(filepath.Join(root, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(body)
+		if got, want := hex.EncodeToString(sum[:]), expected[entry.Name()]; want == "" || got != want {
+			t.Errorf("SQLite migration %s checksum=%s want=%s", entry.Name(), got, want)
+		}
+	}
+	if actual != len(expected) {
+		t.Fatalf("SQLite migration count=%d checksum count=%d", actual, len(expected))
+	}
+}

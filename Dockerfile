@@ -37,10 +37,10 @@ RUN apk add --no-cache ca-certificates tzdata wget \
     && adduser -S -D -H -G panel panel
 WORKDIR /app
 COPY --from=go-build /out/l4d2panel /usr/local/bin/l4d2panel
-COPY migrations ./migrations
+COPY migrations/sqlite ./migrations/sqlite
 COPY docs ./docs
 RUN mkdir -p /app/data /app/spool && chown -R panel:panel /app
 USER panel:panel
 EXPOSE 8080
-ENV LISTEN_ADDR=:8080 MIGRATIONS_DIR=/app/migrations DATA_DIR=/app/data SPOOL_DIR=/app/spool
+ENV LISTEN_ADDR=:8080 DATABASE_PATH=/app/data/l4d2panel.sqlite3 MIGRATIONS_DIR=/app/migrations/sqlite DATA_DIR=/app/data SPOOL_DIR=/app/spool
 ENTRYPOINT ["/usr/local/bin/l4d2panel"]

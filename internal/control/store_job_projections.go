@@ -2,10 +2,9 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
@@ -19,7 +18,7 @@ func (s *Store) ApplyPendingJobProjection(ctx context.Context, id string) (domai
 	defer release()
 
 	current, err := s.GetJob(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Job{}, false, ErrNotFound
 	}
 	if err != nil {
@@ -44,10 +43,10 @@ func (s *Store) ApplyPendingJobProjection(ctx context.Context, id string) (domai
 		}
 	}
 
-	projected, err := scanJob(s.pool.QueryRow(ctx, `UPDATE jobs SET result=result-$2::text
-		WHERE id=$1 AND result @> jsonb_build_object($2::text,true)
+	projected, err := scanJob(s.db.QueryRowContext(ctx, `UPDATE jobs SET result=json_remove(result,'$.' || ?2)
+		WHERE id=?1 AND json_extract(result,'$.' || ?2)=1
 		RETURNING `+jobColumns, id, jobProjectionPendingField))
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Job{}, false, errors.New("terminal projection marker changed unexpectedly")
 	}
 	if err != nil {
