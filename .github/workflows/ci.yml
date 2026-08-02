@@ -81,35 +81,23 @@ jobs:
           go build -trimpath -o l4d2panel-control-${{ matrix.suffix }} ./cmd/control
           go build -trimpath -o l4d2panel-agent-${{ matrix.suffix }} ./cmd/agent
 
-  installers:
-    strategy:
-      matrix:
-        os: [ubuntu-22.04, ubuntu-24.04, windows-2022]
-    runs-on: ${{ matrix.os }}
+  windows-packaging:
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        if: runner.os == 'Windows'
         with:
           go-version: '1.25.12'
           cache: true
       - uses: actions/setup-node@v4
-        if: runner.os == 'Windows'
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Validate Linux installer
-        if: runner.os == 'Linux'
-        run: |
-          sh -n scripts/install-agent.sh
-          shellcheck scripts/install-agent.sh
-      - name: Validate Windows installer
-        if: runner.os == 'Windows'
+      - name: Validate Windows packaging scripts
         shell: pwsh
         run: |
-          $files = @('scripts/install-agent.ps1') +
-            (Get-ChildItem packaging/windows -Filter *.ps1 | ForEach-Object FullName)
+          $files = Get-ChildItem packaging/windows -Filter *.ps1 | ForEach-Object FullName
           foreach ($file in $files) {
             $tokens = $null
             $errors = $null
@@ -118,7 +106,6 @@ jobs:
             if ($errors.Count) { $errors | Format-List | Out-String | Write-Error }
           }
       - name: Cross-build native Windows Control
-        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $env:GOOS = 'windows'
@@ -126,7 +113,6 @@ jobs:
           $env:CGO_ENABLED = '0'
           go build -trimpath -o "$env:RUNNER_TEMP\l4d2panel-control.exe" ./cmd/control
       - name: Build and validate Windows portable package
-        if: runner.os == 'Windows'
         shell: pwsh
         run: ./packaging/windows/Build-WindowsPortable.ps1 -Version 0.1.0
 

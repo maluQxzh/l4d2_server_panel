@@ -11,14 +11,13 @@ Read `README.md` before substantial work. For protocol, persistence, authorizati
 ## Repository map
 
 - `cmd/control`: Control service and owner-bootstrap entry point.
-- `cmd/agent`: foreground and Windows Service/systemd Agent entry point.
+- `cmd/agent`: portable foreground Agent entry point and optional process-manager integration commands.
 - `internal/control`: HTTP/WebSocket APIs, RBAC, persistence, scheduling, notifications, and embedded web assets.
 - `internal/agent`: lifecycle, SteamCMD, A2S/RCON, packages, backups, files, and platform process management.
 - `internal/domain` and `internal/protocol`: shared domain and wire types.
 - `migrations/sqlite`: active ordered SQLite migrations. SQLite is the only supported database; add a new numbered migration and never rewrite an applied migration.
 - `web`: React 19, TypeScript, Vite, Vitest, and Playwright application.
 - `docs/openapi.yaml`: public API contract. `docs/architecture.md` and `docs/security.md` describe invariants and threat boundaries.
-- `scripts`: Windows and Linux Agent installers.
 - `packaging/windows`: Windows x64 portable Control ZIP build, structure validation, elevated lifecycle/upgrade smoke, and portable deployment documentation.
 
 ## Required toolchain
@@ -60,10 +59,12 @@ Do not weaken or remove pinned security versions merely to make an older local t
 
 ## Portable Agent builds
 
+- Portable beside-binary deployment is the only supported installation and upgrade flow for new Windows and Linux Agents. Do not reintroduce installer scripts as a required deployment layer.
 - Use `make build-agent-portable VERSION=<version> COMMIT=<commit>` as the canonical local portable Agent build. Keep this target aligned with `.github/workflows/release.yml`.
 - Every portable build produces both `linux/amd64` and `windows/amd64` with `CGO_ENABLED=0`, `-trimpath`, and explicit version, commit, and UTC build-date metadata.
 - Write the fixed flat artifact set beneath `dist/agents`: `l4d2panel-agent-linux-amd64`, `l4d2panel-agent-linux-amd64.sha256`, `l4d2panel-agent-windows-amd64.exe`, `l4d2panel-agent-windows-amd64.exe.sha256`, and `agent.yaml.example` copied from `configs/agent.portable.example.yaml`.
 - Generate checksum files in `sha256sum` format with LF line endings. Validate both checksums, run the Windows binary's `--version`, and run the Linux binary's `--version` on native Linux or WSL before handoff.
+- Portable upgrades must preserve beside-binary `agent.yaml` and `data`, validate the staged binary and checksum before stopping the old process, keep one previous binary for rollback, and replace only the platform binary. Never require a new enrollment token for an already enrolled node.
 - `dist` remains ignored build output. Do not add portable Agent binaries or generated checksums to source commits.
 
 ## Current project status (2026-08-01)
@@ -102,7 +103,7 @@ go test ./internal/control -run TestSQLiteMigrationsAndCredentialLifecycle -coun
 RUN_FLEET_ACCEPTANCE=1 go test ./internal/control -run TestFleetScaleAcceptance -count=1 -timeout=2m
 ```
 
-For Agent or platform changes, test on Windows and Linux and cross-build both amd64 targets with `CGO_ENABLED=0`. Installer changes require PowerShell parser validation and `sh -n`; CI additionally runs ShellCheck. Native Windows Center packaging changes require an x64 Control cross-build, portable ZIP structure/hash validation, and elevated install/upgrade/rollback VM smoke tests when release payloads are available. Container changes require `docker compose config --quiet` and production image builds for both `linux/amd64` and `linux/arm64`.
+For Agent or platform changes, test on Windows and Linux and cross-build both amd64 targets with `CGO_ENABLED=0`. Native Windows Center packaging changes require an x64 Control cross-build, portable ZIP structure/hash validation, and elevated install/upgrade/rollback VM smoke tests when release payloads are available. Container changes require `docker compose config --quiet` and production image builds for both `linux/amd64` and `linux/arm64`.
 
 If the local environment lacks Docker, PowerShell 7.4, SteamCMD, or a supported game host, report the skipped gate explicitly. Never describe mocked Playwright flows or cross-compilation as a real App 222860 end-to-end validation.
 

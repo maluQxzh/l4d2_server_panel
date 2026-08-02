@@ -24,7 +24,7 @@
 ```
 
 - 中心端：Go、React、本机 SQLite；硬性限定单控制平面实例，TLS 由部署者管理。
-- 节点端：单个 Go Agent，以 Windows Service 或 systemd service 运行。
+- 节点端：单个便携 Go Agent，使用二进制同目录的配置和数据直接运行；可由部署者选择自己的进程管理器托管，但不依赖 Windows Service 或 systemd。
 - 游戏实例：每个实例使用独立目录；Agent API 仅允许访问配置的实例根目录和自己的数据目录。当前同一节点的 Agent 与所有游戏进程共用一个低权限服务账号，目录分离不是每实例 OS 沙箱；在部署相互不信任的原生插件或租户前必须另做主机/账号隔离。
 - 本地数据：实例备份和完整进程日志保存在节点。中心只保存备份元数据、任务/审计、通知和聚合指标；网页下载使用一次性、最大 1 MiB 的校验分块。
 
@@ -123,23 +123,14 @@ Control 固定监听 `0.0.0.0:19090`，SQLite 不监听网络端口。管理员�
 
 ## 注册节点
 
-先在“节点”页面创建短期一次性注册令牌。Linux 节点：
-
-```bash
-sudo CENTRAL_URL=https://panel.example.com \
-  ENROLLMENT_TOKEN=一次性令牌 \
-  NODE_NAME=game-linux-01 \
-  ./scripts/install-agent.sh
-```
-
-安装器是正式常驻部署的推荐方式：它创建低权限账号、受限目录和 systemd 服务。WSL2、本地测试或不需要注册系统服务时，也可以使用便携前台模式。把 [`configs/agent.portable.example.yaml`](configs/agent.portable.example.yaml) 复制到 Agent 二进制同目录并命名为 `agent.yaml`，首次启动前只需修改：
+便携 Agent 是 Windows 和 Linux 节点的正式默认部署方式，不需要安装脚本、Windows Service 或 systemd。先从发布页下载对应平台二进制、`.sha256` 和 `agent.yaml.example`，验证 SHA-256，再把示例复制到二进制同目录并命名为 `agent.yaml`。在中心端“节点”页面创建短期一次性注册令牌，首次启动前只需修改：
 
 ```yaml
 central_url: "http://localhost:19090"
 enrollment_token: "一次性令牌"
 ```
 
-限制配置权限后直接启动；首次启动会自动注册，把一次性令牌从 `agent.yaml` 中移除并原子写入节点 ID 和长期凭据。未显式配置的数据及实例目录默认为二进制同目录的 `data` 和 `data/instances`：
+Linux 限制配置权限后直接启动：
 
 ```bash
 chmod 600 agent.yaml
@@ -147,7 +138,14 @@ chmod +x l4d2panel-agent-linux-amd64
 ./l4d2panel-agent-linux-amd64
 ```
 
-以后仍然只需运行最后一条命令。首次启动也可以不预建文件，使用参数创建同目录的 `agent.yaml`：
+Windows 在仅受节点管理员控制的永久目录中直接运行：
+
+```powershell
+Copy-Item .\agent.yaml.example .\agent.yaml
+.\l4d2panel-agent-windows-amd64.exe
+```
+
+首次启动会自动注册，把一次性令牌从 `agent.yaml` 中移除并原子写入节点 ID 和长期凭据。未显式配置的数据及实例目录默认为同目录的 `data` 和 `data/instances`；以后仍然只需运行对应二进制。首次启动也可以不预建文件，使用参数创建同目录的 `agent.yaml`：
 
 ```bash
 ./l4d2panel-agent-linux-amd64 \
@@ -155,24 +153,14 @@ chmod +x l4d2panel-agent-linux-amd64
   --enrollment-token 一次性令牌
 ```
 
-也兼容 `CENTRAL_URL`、`ENROLLMENT_TOKEN` 和 `NODE_NAME` 环境变量。令牌属于秘密；共享主机上优先使用权限为 `0600` 的配置文件，避免把令牌写入 shell 历史或暴露在进程参数中。便携模式以前台当前用户身份运行，关闭终端即停止，也不会获得安装器提供的低权限服务账号和 systemd 沙箱。
+也兼容 `CENTRAL_URL`、`ENROLLMENT_TOKEN` 和 `NODE_NAME` 环境变量。令牌属于秘密；共享主机上优先使用受限配置文件，避免把令牌写入 shell 历史或暴露在进程参数中。Agent 以前台当前用户身份运行，关闭终端即停止；需要开机自启时可由部署者选择进程管理器，并应使用专用低权限账号和仅允许该账号访问的永久目录。
 
-Windows 节点以管理员 PowerShell 运行：
+默认应使用受信任证书的 HTTPS 中心地址。确实位于同一主机或可信隔离局域网时，也可以把 `central_url`/`--central-url` 设置为 `http://localhost:19090`、回环 IP 或明确的私网/链路本地 IP；Agent 会相应使用普通 WebSocket。为避免 DNS 重绑定后把凭据发送到公网，明文模式不解析或接受 `panel.lan` 一类主机名，必须填写 IP（`localhost` 除外），且公网 HTTP 仍会被拒绝。HTTP 不加密一次性注册令牌、长期节点凭据、任务和结果，能够监听或篡改局域网流量的设备可以接管节点；只应在受控网络中使用。
 
-```powershell
-.\scripts\install-agent.ps1 `
-  -CentralUrl https://panel.example.com `
-  -EnrollmentToken 一次性令牌 `
-  -NodeName game-windows-01
-```
-
-默认应使用受信任证书的 HTTPS 中心地址。确实位于同一主机或可信隔离局域网时，也可以把 `CENTRAL_URL`/`-CentralUrl` 设置为 `http://localhost:19090`、回环 IP 或明确的私网/链路本地 IP；Agent 会相应使用普通 WebSocket。为避免 DNS 重绑定后把凭据发送到公网，明文模式不解析或接受 `panel.lan` 一类主机名，必须填写 IP（`localhost` 除外），且公网 HTTP 仍会被拒绝。HTTP 不加密一次性注册令牌、长期节点凭据、任务和结果，能够监听或篡改局域网流量的设备可以接管节点；只应在受控网络中使用。
-
-正式发布包附带 Agent 与 SHA-256 文件。从源码测试时通过 `AGENT_BINARY` 或 `-AgentBinary` 指向本地二进制。重复运行安装器会保留现有节点凭据并升级二进制，因此升级时可省略注册令牌。
+升级不需要新的注册令牌：先等待节点任务结束并从中心端正常停止运行中的实例，再停止 Agent；验证新二进制的 SHA-256 和版本，保留 `agent.yaml` 与 `data/`，原子替换二进制后重新启动即可。失败时用保留的前一版本二进制回滚。完整的 Windows/Linux 首次部署、升级和回滚命令见 [便携 Agent 部署说明](docs/agent-portable.md)。
 
 - 正式支持 amd64 Windows 10/11、Windows Server 2019+、Ubuntu 22.04/24.04、Debian 12。
-- Windows 使用 `NT SERVICE\l4d2panel-agent` 虚拟服务账号和受限 ACL；Linux 使用无登录的 `l4d2panel` 账号和 systemd 沙箱。
-- 安装器检查系统/架构、磁盘和 32 位运行库，并提示主机防火墙状态；它不扫描或安装 SteamCMD，也不下载游戏本体。节点上线后在中心端“运行环境”中登记现有路径或安装托管 SteamCMD。其他 systemd 发行版为尽力兼容。
+- Agent 不扫描或安装 SteamCMD，也不下载游戏本体。节点上线后在中心端“运行环境”中登记现有路径或安装托管 SteamCMD；运行 L4D2 仍需节点具备对应的 32 位运行库。
 
 ## 数据保留与恢复
 
@@ -238,7 +226,7 @@ RUN_FLEET_ACCEPTANCE=1 \
 go test ./internal/control -run TestFleetScaleAcceptance -count=1 -timeout=2m
 ```
 
-CI 还执行上述 20/100 模拟验收、Go race 测试、Windows/Linux Control 与 Agent 无 CGO 交叉构建、安装脚本静态检查、Playwright、`docker compose config`，并同时构建 `linux/amd64` 与 `linux/arm64` 中心镜像；Compose 作业会实际启动、停止并重启 Control，确认 SQLite 卷可独立通过 `doctor`。Windows 发布作业生成便携 ZIP、未签名文件清单、SHA-256、CycloneDX SBOM 和第三方许可证，并验证包中没有安装器或运行期脚本载荷。正式发布仍需在 Windows 10/11 与 Server 2019/2022/2025 VM 上验证提升权限安装、初始化、一键升级、故障回滚、注销与清理。上述自动化不等同于真实游戏验证：发布前仍需分别在受支持的 Windows、Ubuntu 和 Debian 主机上用真实 SteamCMD 安装/启动 App 222860，验证 A2S、RCON、更新、备份恢复和重启。
+CI 还执行上述 20/100 模拟验收、Go race 测试、Windows/Linux Control 与 Agent 无 CGO 交叉构建、Playwright、`docker compose config`，并同时构建 `linux/amd64` 与 `linux/arm64` 中心镜像；Compose 作业会实际启动、停止并重启 Control，确认 SQLite 卷可独立通过 `doctor`。Windows 发布作业生成便携 ZIP、未签名文件清单、SHA-256、CycloneDX SBOM 和第三方许可证，并验证包中没有安装器或运行期脚本载荷。正式发布仍需在 Windows 10/11 与 Server 2019/2022/2025 VM 上验证提升权限安装、初始化、一键升级、故障回滚、注销与清理。上述自动化不等同于真实游戏验证：发布前仍需分别在受支持的 Windows、Ubuntu 和 Debian 主机上用真实 SteamCMD 安装/启动 App 222860，验证 A2S、RCON、更新、备份恢复和重启。
 
 ## API 与参考资料
 
