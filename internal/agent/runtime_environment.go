@@ -27,8 +27,7 @@ type runtimeEnvironmentState struct {
 }
 
 type runtimeGameRecord struct {
-	RootIndex    int    `json:"root_index"`
-	RelativePath string `json:"path"`
+	Path string `json:"path"`
 }
 
 type runtimeEnvironmentStore struct {
@@ -57,6 +56,18 @@ func newRuntimeEnvironmentStore(config *Config) (*runtimeEnvironmentStore, error
 	}
 	if store.state.Installations == nil {
 		store.state.Installations = make(map[string]runtimeGameRecord)
+	}
+	prunedLegacyPaths := false
+	for id, record := range store.state.Installations {
+		if !filepath.IsAbs(record.Path) {
+			delete(store.state.Installations, id)
+			prunedLegacyPaths = true
+		}
+	}
+	if prunedLegacyPaths {
+		if err := store.update(func(*runtimeEnvironmentState) {}); err != nil {
+			return nil, fmt.Errorf("remove legacy relative game installation paths: %w", err)
+		}
 	}
 	return store, nil
 }

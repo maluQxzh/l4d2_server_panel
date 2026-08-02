@@ -110,7 +110,7 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 		return e.clearSteamCMD(progress)
 	case "steamcmd.install", "steamcmd.repair":
 		return e.installManagedSteamCMD(ctx, progress)
-	case "game.install", "game.import", "game.validate", "game.update", "game.reinstall", "game.quarantine":
+	case "game.install", "game.import", "game.validate", "game.update", "game.reinstall":
 		if action == "game.import" && job.InstanceID != "" {
 			return e.importInstance(ctx, job, progress)
 		}
@@ -455,11 +455,8 @@ func (e *Executor) createRecord(job domain.Job, payload operationPayload) (Insta
 		relative = job.InstanceID
 	}
 	if filepath.IsAbs(relative) {
-		instancePath, rootIndex, err = e.paths.ResolveAbsolute(relative)
-		if err == nil {
-			root := e.paths.Roots()[rootIndex]
-			relative, err = filepath.Rel(root, instancePath)
-		}
+		instancePath, err = e.paths.ResolveInstallation(rootIndex, relative)
+		relative = instancePath
 	} else {
 		instancePath, err = e.paths.Resolve(rootIndex, relative)
 	}
@@ -949,16 +946,19 @@ func (e *Executor) importInstance(ctx context.Context, job domain.Job, progress 
 	rootIndex := payload.RootIndex
 	var path string
 	if filepath.IsAbs(requestedPath) {
-		path, rootIndex, err = e.paths.ResolveAbsolute(requestedPath)
+		path, err = e.paths.ResolveInstallation(rootIndex, requestedPath)
 	} else {
 		path, err = e.paths.Resolve(rootIndex, requestedPath)
 	}
 	if err != nil {
 		return nil, err
 	}
-	relative, err := filepath.Rel(e.paths.Roots()[rootIndex], path)
-	if err != nil {
-		return nil, err
+	relative := filepath.Clean(requestedPath)
+	if !filepath.IsAbs(requestedPath) {
+		relative, err = filepath.Rel(e.paths.Roots()[rootIndex], path)
+		if err != nil {
+			return nil, err
+		}
 	}
 	for _, existing := range e.registry.List() {
 		if existing.ID == job.InstanceID {
@@ -1036,7 +1036,7 @@ func (e *Executor) importInstance(ctx context.Context, job domain.Job, progress 
 	}
 	if job.InstallationID != "" && e.runtimeEnvironment != nil {
 		if err := e.runtimeEnvironment.update(func(state *runtimeEnvironmentState) {
-			state.Installations[job.InstallationID] = runtimeGameRecord{RootIndex: rootIndex, RelativePath: relative}
+			state.Installations[job.InstallationID] = runtimeGameRecord{Path: relative}
 		}); err != nil {
 			_ = e.registry.Delete(job.InstanceID)
 			return nil, err
@@ -1998,7 +1998,7 @@ func hashFile(path string) (string, int64, error) {
 }
 
 func (e *Executor) instancePath(record InstanceRecord) (string, error) {
-	return e.paths.Resolve(record.RootIndex, record.RelativePath)
+	return resolveInstanceRecordPath(e.paths, record)
 }
 
 func defaultServerExecutable() string {
@@ -2122,6 +2122,13 @@ func localGameEndpointHost(candidates ...string) string {
 func payloadString(values map[string]any, key string) string {
 	if value, ok := values[key].(string); ok {
 		return strings.ToLower(value)
+	}
+	return ""
+}
+
+func exactPayloadString(values map[string]any, key string) string {
+	if value, ok := values[key].(string); ok {
+		return value
 	}
 	return ""
 }

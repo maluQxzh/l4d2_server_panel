@@ -614,7 +614,7 @@ paths:
     post:
       tags: [Environments]
       summary: 安装 App 222860 或登记现有游戏目录
-      description: 路径由根目录索引和相对路径组成，不接受根外路径，也不触发目录扫描。
+      description: 提交节点主机上的绝对目录路径，不触发目录扫描；需要 Agent 声明 `absolute_game_paths` 能力。
       parameters:
         - { $ref: "#/components/parameters/CSRF" }
         - { $ref: "#/components/parameters/IdempotencyKey" }
@@ -624,10 +624,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [root_index, path, operation]
+              required: [path, operation]
               properties:
-                root_index: { type: integer, minimum: 0 }
-                path: { type: string, minLength: 1, maxLength: 1024 }
+                path: { type: string, minLength: 1, maxLength: 1024, description: 节点 Windows 盘符绝对路径或 Linux 绝对路径 }
                 operation: { type: string, enum: [install, import] }
       responses:
         "202": { description: 游戏安装记录和任务已创建 }
@@ -651,23 +650,9 @@ paths:
               required: [action]
               properties:
                 action: { type: string, enum: [install, import, validate, update, reinstall] }
-                root_index: { type: integer, minimum: 0, description: 仅 import 可用；与 path 同时提交以修改登记路径 }
-                path: { type: string, minLength: 1, maxLength: 1024, description: 仅 import 可用；游戏根内相对路径 }
+                path: { type: string, minLength: 1, maxLength: 1024, description: 仅 import 可用；节点主机绝对路径 }
       responses:
         "202": { description: 维护任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
-        "409": { $ref: "#/components/responses/Conflict" }
-
-  /environments/{environmentId}/game-installations/{installationId}:
-    delete:
-      tags: [Environments]
-      summary: 将未绑定的游戏安装移入七天隔离区
-      parameters:
-        - { name: environmentId, in: path, required: true, schema: { type: string } }
-        - { name: installationId, in: path, required: true, schema: { type: string, format: uuid } }
-        - { $ref: "#/components/parameters/CSRF" }
-        - { $ref: "#/components/parameters/IdempotencyKey" }
-      responses:
-        "202": { description: 隔离任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
         "409": { $ref: "#/components/responses/Conflict" }
 
   /instances:
@@ -693,7 +678,7 @@ paths:
     post:
       tags: [Instances]
       summary: 将已验证游戏安装绑定为实例
-      description: "推荐提交 `game_installation_id`；也可提交相对 path 和 root_index，由 Control 登记、校验并建立独占绑定。不会自动安装游戏或启动服务器。"
+      description: "推荐提交 `game_installation_id`；也可提交节点绝对 `path`，由 Control 登记、校验并建立独占绑定。不会自动安装游戏或启动服务器。"
       parameters:
         - { $ref: "#/components/parameters/CSRF" }
         - { $ref: "#/components/parameters/IdempotencyKey" }
@@ -765,7 +750,7 @@ paths:
     delete:
       tags: [Instances]
       summary: 删除实例并解除游戏安装绑定
-      description: 默认 `detach`，保留游戏文件。旧版显式 `quarantine` 仍受节点在线及隔离清理能力门控；新界面只在运行环境中隔离未绑定游戏安装。
+      description: 默认 `detach`，保留游戏文件。旧版显式 `quarantine` 仍受节点在线及隔离清理能力门控；新界面只执行解除绑定。
       parameters:
         - { $ref: "#/components/parameters/CSRF" }
         - { $ref: "#/components/parameters/IdempotencyKey" }
@@ -2358,15 +2343,14 @@ components:
 
     GameInstallation:
       type: object
-      required: [id, environment_id, node_id, root_index, path, app_id, status, created_at, updated_at]
+      required: [id, environment_id, node_id, path, app_id, status, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         environment_id: { type: string }
         node_id: { type: string, format: uuid }
-        root_index: { type: integer, minimum: 0 }
-        path: { type: string, description: 对所选游戏根目录的相对路径 }
+        path: { type: string, description: 节点主机绝对路径 }
         app_id: { type: integer, const: 222860 }
-        status: { type: string, enum: [pending, installing, validating, updating, ready, degraded, quarantined] }
+        status: { type: string, enum: [pending, installing, validating, updating, ready, degraded] }
         build_id: { type: string }
         last_error: { type: string }
         bound_instance_id: { type: string, format: uuid }
@@ -2642,8 +2626,7 @@ components:
         game_installation_id: { type: string, format: uuid, description: 推荐：已验证且未绑定的游戏安装 }
         operation: { type: string, enum: [import], default: import }
         path:
-          { type: string, description: 导入时为所选根内相对路径；安装时可省略 }
-        root_index: { type: integer, minimum: 0, description: 导入时必需 }
+          { type: string, description: 不使用 game_installation_id 时必需，为节点主机绝对路径 }
         executable:
           {
             type: string,

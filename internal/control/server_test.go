@@ -262,21 +262,20 @@ func TestJobRedactionUsesTargetResourcePermission(t *testing.T) {
 	}
 }
 
-func TestValidateImportLocationRequiresRootRelativePath(t *testing.T) {
-	root := 0
-	valid := []string{"server-one", "existing/l4d2"}
+func TestValidateImportLocationRequiresAbsolutePath(t *testing.T) {
+	valid := []string{"/srv/l4d2/server-one", `C:\servers\existing\l4d2`}
 	for _, path := range valid {
-		if err := validateImportLocation(path, &root); err != nil {
+		if err := validateImportLocation(path); err != nil {
 			t.Errorf("valid import path %q was rejected: %v", path, err)
 		}
 	}
-	invalid := []string{"", "../outside", "nested/../../outside", "/etc", `C:\\server`, `\\server\\share`}
+	invalid := []string{"", "server-one", "../outside", "/srv/../outside", `C:\servers\..\outside`, `\\server\share`}
 	for _, path := range invalid {
-		if err := validateImportLocation(path, &root); err == nil {
+		if err := validateImportLocation(path); err == nil {
 			t.Errorf("unsafe import path %q was accepted", path)
 		}
 	}
-	if err := validateImportLocation("server", nil); err == nil {
-		t.Fatal("import without explicit root_index was accepted")
+	if err := validateImportLocation("/srv/l4d2/server"); err != nil {
+		t.Fatalf("absolute import path was rejected: %v", err)
 	}
 }

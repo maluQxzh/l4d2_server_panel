@@ -59,14 +59,14 @@ func (s *Store) GetEnvironment(ctx context.Context, id string) (domain.RuntimeEn
 	return item, err
 }
 
-const installationColumns = `installation.id,installation.environment_id,installation.node_id,installation.root_index,
-	installation.relative_path,installation.app_id,installation.status,installation.build_id,installation.last_error,
+const installationColumns = `installation.id,installation.environment_id,installation.node_id,installation.path,
+	installation.app_id,installation.status,installation.build_id,installation.last_error,
 	COALESCE((SELECT instance.id FROM instances instance WHERE instance.installation_id=installation.id),''),
 	installation.last_checked_at,installation.created_at,installation.updated_at`
 
 func scanGameInstallation(row scanner) (domain.GameInstallation, error) {
 	var item domain.GameInstallation
-	err := row.Scan(&item.ID, &item.EnvironmentID, &item.NodeID, &item.RootIndex, &item.RelativePath, &item.AppID,
+	err := row.Scan(&item.ID, &item.EnvironmentID, &item.NodeID, &item.Path, &item.AppID,
 		&item.Status, &item.BuildID, &item.LastError, &item.BoundInstanceID, &item.LastCheckedAt, &item.CreatedAt, &item.UpdatedAt)
 	return item, err
 }
@@ -98,12 +98,7 @@ func (s *Store) GetGameInstallation(ctx context.Context, id string) (domain.Game
 	return item, err
 }
 
-func (s *Store) CreateGameInstallation(ctx context.Context, environmentID string, rootIndex int, relativePath string) (domain.GameInstallation, error) {
-	var err error
-	relativePath, err = normalizeGameInstallationPath(rootIndex, relativePath)
-	if err != nil {
-		return domain.GameInstallation{}, err
-	}
+func (s *Store) CreateGameInstallation(ctx context.Context, environmentID, installationPath string) (domain.GameInstallation, error) {
 	var nodeID, nodeOS string
 	if err := s.db.QueryRowContext(ctx, `SELECT environment.node_id,node.os FROM environments environment
 		JOIN nodes node ON node.id=environment.node_id WHERE environment.id=?1`, environmentID).Scan(&nodeID, &nodeOS); err != nil {
@@ -112,12 +107,17 @@ func (s *Store) CreateGameInstallation(ctx context.Context, environmentID string
 		}
 		return domain.GameInstallation{}, err
 	}
+	var err error
+	installationPath, err = normalizeGameInstallationPath(nodeOS, installationPath)
+	if err != nil {
+		return domain.GameInstallation{}, err
+	}
 	now := time.Now().UTC()
-	pathKey := gameInstallationPathKey(nodeOS, relativePath)
-	item := domain.GameInstallation{ID: uuid.NewString(), EnvironmentID: environmentID, NodeID: nodeID, RootIndex: rootIndex,
-		RelativePath: relativePath, AppID: 222860, Status: "pending", CreatedAt: now, UpdatedAt: now}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO game_installations(id,environment_id,node_id,root_index,relative_path,path_key,app_id,status,created_at,updated_at)
-		VALUES(?1,?2,?3,?4,?5,?6,222860,'pending',?7,?7)`, item.ID, item.EnvironmentID, item.NodeID, item.RootIndex, item.RelativePath, pathKey, now)
+	pathKey := gameInstallationPathKey(nodeOS, installationPath)
+	item := domain.GameInstallation{ID: uuid.NewString(), EnvironmentID: environmentID, NodeID: nodeID,
+		Path: installationPath, AppID: 222860, Status: "pending", CreatedAt: now, UpdatedAt: now}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO game_installations(id,environment_id,node_id,path,path_key,app_id,status,created_at,updated_at)
+		VALUES(?1,?2,?3,?4,?5,222860,'pending',?6,?6)`, item.ID, item.EnvironmentID, item.NodeID, item.Path, pathKey, now)
 	if err != nil {
 		if isSQLiteConstraint(err) {
 			return domain.GameInstallation{}, ErrConflict
@@ -127,36 +127,49 @@ func (s *Store) CreateGameInstallation(ctx context.Context, environmentID string
 	return item, nil
 }
 
-func normalizeGameInstallationPath(rootIndex int, relativePath string) (string, error) {
-	relativePath = strings.TrimSpace(strings.ReplaceAll(relativePath, "\\", "/"))
-	if rootIndex < 0 || len(relativePath) < 1 || len(relativePath) > 1024 || strings.HasPrefix(relativePath, "/") ||
-		strings.Contains(relativePath, "\x00") || strings.Contains(relativePath, ":") {
+func normalizeGameInstallationPath(nodeOS, installationPath string) (string, error) {
+	installationPath = strings.TrimSpace(strings.ReplaceAll(installationPath, "\\", "/"))
+	if len(installationPath) < 1 || len(installationPath) > 1024 || strings.Contains(installationPath, "\x00") {
 		return "", errors.New("invalid game installation path")
 	}
-	for _, component := range strings.Split(relativePath, "/") {
+	windows := strings.Contains(strings.ToLower(nodeOS), "windows")
+	absolute := strings.HasPrefix(installationPath, "/")
+	start := 0
+	if windows {
+		absolute = len(installationPath) >= 3 && installationPath[1] == ':' && installationPath[2] == '/' &&
+			((installationPath[0] >= 'A' && installationPath[0] <= 'Z') || (installationPath[0] >= 'a' && installationPath[0] <= 'z'))
+		if absolute {
+			installationPath = strings.ToUpper(installationPath[:1]) + installationPath[1:]
+			start = 1
+		}
+	} else if strings.Contains(installationPath, ":") {
+		// Colons are valid on Linux, but rejecting them keeps the stored path
+		// portable and avoids accidentally accepting a Windows path for a Linux node.
+		return "", errors.New("invalid Linux game installation path")
+	}
+	if !absolute || strings.HasPrefix(installationPath, "//") {
+		return "", errors.New("game installation path must be absolute")
+	}
+	components := strings.Split(installationPath, "/")
+	for index, component := range components {
+		if index < start || (absolute && index == start && component == "") {
+			continue
+		}
 		if component == "" || component == "." || component == ".." {
 			return "", errors.New("invalid game installation path")
 		}
 	}
-	if strings.EqualFold(strings.Split(relativePath, "/")[0], ".quarantine") {
-		return "", errors.New("game installation path uses a reserved directory")
-	}
-	return relativePath, nil
+	return installationPath, nil
 }
 
-func gameInstallationPathKey(nodeOS, relativePath string) string {
+func gameInstallationPathKey(nodeOS, installationPath string) string {
 	if strings.Contains(strings.ToLower(nodeOS), "windows") {
-		return strings.ToLower(relativePath)
+		return strings.ToLower(installationPath)
 	}
-	return relativePath
+	return installationPath
 }
 
-func (s *Store) UpdateGameInstallationLocation(ctx context.Context, id string, rootIndex int, relativePath string) (domain.GameInstallation, error) {
-	var err error
-	relativePath, err = normalizeGameInstallationPath(rootIndex, relativePath)
-	if err != nil {
-		return domain.GameInstallation{}, err
-	}
+func (s *Store) UpdateGameInstallationLocation(ctx context.Context, id, installationPath string) (domain.GameInstallation, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.GameInstallation{}, err
@@ -175,6 +188,10 @@ func (s *Store) UpdateGameInstallationLocation(ctx context.Context, id string, r
 	if err != nil {
 		return domain.GameInstallation{}, err
 	}
+	installationPath, err = normalizeGameInstallationPath(nodeOS, installationPath)
+	if err != nil {
+		return domain.GameInstallation{}, err
+	}
 	if boundID != "" && (boundPID != 0 || (boundStatus != string(domain.InstanceStopped) && boundStatus != string(domain.InstanceDegraded))) {
 		return domain.GameInstallation{}, fmt.Errorf("bound instance is not safely stopped: %w", ErrConflict)
 	}
@@ -188,9 +205,9 @@ func (s *Store) UpdateGameInstallationLocation(ctx context.Context, id string, r
 		}
 	}
 	now := time.Now().UTC()
-	_, err = tx.ExecContext(ctx, `UPDATE game_installations SET root_index=?2,relative_path=?3,path_key=?4,
-		status='pending',build_id='',last_error='',last_checked_at=NULL,updated_at=?5 WHERE id=?1`,
-		id, rootIndex, relativePath, gameInstallationPathKey(nodeOS, relativePath), now)
+	_, err = tx.ExecContext(ctx, `UPDATE game_installations SET path=?2,path_key=?3,
+		status='pending',build_id='',last_error='',last_checked_at=NULL,updated_at=?4 WHERE id=?1`,
+		id, installationPath, gameInstallationPathKey(nodeOS, installationPath), now)
 	if err != nil {
 		if isSQLiteConstraint(err) {
 			return domain.GameInstallation{}, fmt.Errorf("game installation path conflicts with an existing record: %w", ErrConflict)
@@ -198,7 +215,7 @@ func (s *Store) UpdateGameInstallationLocation(ctx context.Context, id string, r
 		return domain.GameInstallation{}, err
 	}
 	if boundID != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE instances SET path=?2,status='degraded',updated_at=?3 WHERE id=?1`, boundID, relativePath, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE instances SET path=?2,status='degraded',updated_at=?3 WHERE id=?1`, boundID, installationPath, now); err != nil {
 			return domain.GameInstallation{}, err
 		}
 	}
@@ -232,7 +249,7 @@ func (s *Store) RemovePendingGameInstallation(ctx context.Context, id string) er
 var environmentJobTypes = map[string]bool{
 	"environment.inspect": true, "steamcmd.configure": true, "steamcmd.clear": true, "steamcmd.install": true,
 	"steamcmd.repair": true, "game.install": true, "game.import": true, "game.validate": true,
-	"game.update": true, "game.reinstall": true, "game.quarantine": true,
+	"game.update": true, "game.reinstall": true,
 }
 
 func (s *Store) QueueEnvironmentJob(ctx context.Context, environmentID, installationID, action string, payload map[string]any,
@@ -299,8 +316,8 @@ func (s *Store) QueueEnvironmentJob(ctx context.Context, environmentID, installa
 		if installationNodeID != nodeID {
 			return domain.Job{}, false, ErrConflict
 		}
-		if boundInstanceID != "" && (action == "game.install" || action == "game.quarantine") {
-			return domain.Job{}, false, fmt.Errorf("bound game installation cannot be installed or quarantined: %w", ErrConflict)
+		if boundInstanceID != "" && action == "game.install" {
+			return domain.Job{}, false, fmt.Errorf("bound game installation cannot be installed again: %w", ErrConflict)
 		}
 		if boundInstanceID != "" && (boundPID != 0 || (boundStatus != string(domain.InstanceStopped) && boundStatus != string(domain.InstanceDegraded))) {
 			return domain.Job{}, false, fmt.Errorf("bound instance must be stopped before game maintenance: %w", ErrConflict)

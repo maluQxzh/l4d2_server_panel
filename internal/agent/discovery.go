@@ -78,7 +78,7 @@ func DiscoverInstallations(ctx context.Context, guard *PathGuard, registry *Regi
 	managed := make(map[string]struct{})
 	if registry != nil {
 		for _, record := range registry.List() {
-			path, err := guard.Resolve(record.RootIndex, record.RelativePath)
+			path, err := resolveInstanceRecordPath(guard, record)
 			if err == nil {
 				managed[canonicalProcessPath(path)] = struct{}{}
 			}

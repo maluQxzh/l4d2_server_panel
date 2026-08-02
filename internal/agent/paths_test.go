@@ -54,6 +54,32 @@ func TestPathGuardRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestPathGuardAcceptsExplicitAbsoluteInstallationOutsideConfiguredRoots(t *testing.T) {
+	configuredRoot := filepath.Join(t.TempDir(), "configured")
+	external := filepath.Join(t.TempDir(), "external-game")
+	if err := os.MkdirAll(external, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := NewPathGuard([]string{configuredRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := guard.ResolveInstallation(0, external)
+	if err != nil {
+		t.Fatalf("absolute installation outside configured roots was rejected: %v", err)
+	}
+	if !samePath(resolved, external) {
+		t.Fatalf("resolved path = %q, want %q", resolved, external)
+	}
+	child, err := ResolveWithin(resolved, "left4dead2/cfg/server.cfg")
+	if err != nil || !isWithin(external, child) {
+		t.Fatalf("absolute installation child escaped its registered boundary: path=%q err=%v", child, err)
+	}
+	if _, err := ResolveWithin(resolved, "../outside"); !errors.Is(err, ErrPathEscape) {
+		t.Fatalf("absolute installation traversal error = %v, want ErrPathEscape", err)
+	}
+}
+
 func TestManagedFileBoundary(t *testing.T) {
 	if _, err := cleanManagedRelative("left4dead2/cfg/server.cfg"); err != nil {
 		t.Fatal(err)

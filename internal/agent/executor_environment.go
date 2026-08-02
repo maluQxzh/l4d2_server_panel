@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
@@ -26,9 +25,9 @@ func (e *Executor) inspectRuntimeEnvironment(ctx context.Context, job domain.Job
 				if !ok {
 					continue
 				}
-				id, relative := payloadString(item, "id"), payloadString(item, "path")
-				if id != "" && relative != "" {
-					state.Installations[id] = runtimeGameRecord{RootIndex: intFromPayload(item, "root_index"), RelativePath: relative}
+				id, path := payloadString(item, "id"), exactPayloadString(item, "path")
+				if id != "" && path != "" {
+					state.Installations[id] = runtimeGameRecord{Path: path}
 				}
 			}
 		}); err != nil {
@@ -49,7 +48,7 @@ func (e *Executor) inspectRuntimeEnvironment(ctx context.Context, job domain.Job
 	}
 	installations := make([]map[string]any, 0, len(state.Installations))
 	for id, record := range state.Installations {
-		status, buildID, message := e.inspectGamePath(record.RootIndex, record.RelativePath)
+		status, buildID, message := e.inspectGamePath(record.Path)
 		installations = append(installations, map[string]any{"id": id, "status": status, "build_id": buildID, "error": message})
 	}
 	result["installations"] = installations
@@ -61,7 +60,7 @@ func (e *Executor) configureSteamCMD(ctx context.Context, job domain.Job, source
 	if e.runtimeEnvironment == nil {
 		return nil, errors.New("runtime environment state is unavailable")
 	}
-	path := strings.TrimSpace(payloadString(job.Payload, "path"))
+	path := strings.TrimSpace(exactPayloadString(job.Payload, "path"))
 	progress(20, "validating SteamCMD path")
 	version, err := validateSteamCMDPath(ctx, path, e.paths.Roots())
 	if err != nil {
@@ -114,12 +113,11 @@ func (e *Executor) gameInstallationAction(ctx context.Context, job domain.Job, a
 	if job.InstallationID == "" {
 		return nil, errors.New("game installation id is required")
 	}
-	rootIndex := intFromPayload(job.Payload, "root_index")
-	relative := strings.TrimSpace(payloadString(job.Payload, "path"))
-	if relative == "" {
+	installationPath := strings.TrimSpace(exactPayloadString(job.Payload, "path"))
+	if installationPath == "" {
 		return nil, errors.New("game installation path is required")
 	}
-	path, err := e.paths.Resolve(rootIndex, relative)
+	path, err := e.paths.ResolveInstallation(0, installationPath)
 	if err != nil {
 		return nil, err
 	}
@@ -128,35 +126,10 @@ func (e *Executor) gameInstallationAction(ctx context.Context, job domain.Job, a
 	}
 	if action != "game.install" && action != "game.import" && e.runtimeEnvironment != nil {
 		registered, ok := e.runtimeEnvironment.snapshot().Installations[job.InstallationID]
-		if !ok || registered.RootIndex != rootIndex || registered.RelativePath != relative {
+		if !ok || registered.Path != installationPath {
 			return nil, errors.New("game installation is not registered on this Agent")
 		}
 	}
-	if action == "game.quarantine" {
-		if e.runtimeEnvironment == nil {
-			return nil, errors.New("runtime environment state is unavailable")
-		}
-		if err := rejectLinkedTree(path); err != nil {
-			return nil, err
-		}
-		entry := job.InstallationID + "-" + time.Now().UTC().Format("20060102T150405Z")
-		target, err := PrepareQuarantineTarget(e.paths, rootIndex, entry)
-		if err != nil {
-			return nil, err
-		}
-		if err := os.Rename(path, target); err != nil {
-			return nil, err
-		}
-		if err := e.runtimeEnvironment.update(func(state *runtimeEnvironmentState) { delete(state.Installations, job.InstallationID) }); err != nil {
-			if rollbackErr := os.Rename(target, path); rollbackErr != nil {
-				return nil, fmt.Errorf("persist quarantine state: %w; rollback move: %v", err, rollbackErr)
-			}
-			return nil, err
-		}
-		progress(100, "game installation moved to quarantine")
-		return map[string]any{"quarantine_entry": entry, "root_index": rootIndex}, nil
-	}
-
 	steam := e.steamClient()
 	if action != "game.import" {
 		if e.runtimeEnvironment == nil {
@@ -184,56 +157,63 @@ func (e *Executor) gameInstallationAction(ctx context.Context, job domain.Job, a
 		progress(5, "updating L4D2 dedicated server")
 		err = steam.Install(ctx, path, L4D2DedicatedAppID, false, progress)
 	case "game.import":
-		progress(40, "validating existing L4D2 installation")
+		progress(40, "checking existing srcds executable")
 	default:
 		return nil, fmt.Errorf("unsupported game installation action %q", action)
 	}
 	if err != nil {
 		return nil, err
 	}
-	status, buildID, message := e.inspectGamePath(rootIndex, relative)
+	status, buildID, message := "", "", ""
+	if action == "game.import" {
+		status, message = e.inspectSrcdsPath(installationPath)
+	} else {
+		status, buildID, message = e.inspectGamePath(installationPath)
+	}
 	if status != "ready" {
 		return nil, errors.New(message)
 	}
 	if e.runtimeEnvironment != nil {
 		if err := e.runtimeEnvironment.update(func(state *runtimeEnvironmentState) {
-			state.Installations[job.InstallationID] = runtimeGameRecord{RootIndex: rootIndex, RelativePath: relative}
+			state.Installations[job.InstallationID] = runtimeGameRecord{Path: installationPath}
 		}); err != nil {
 			return nil, err
 		}
 	}
 	progress(100, "game installation is ready")
-	return map[string]any{"path": path, "root_index": rootIndex, "build_id": buildID, "app_id": L4D2DedicatedAppID}, nil
+	return map[string]any{"path": path, "build_id": buildID, "app_id": L4D2DedicatedAppID}, nil
 }
 
-func (e *Executor) inspectGamePath(rootIndex int, relative string) (status, buildID, message string) {
-	path, err := e.paths.Resolve(rootIndex, relative)
-	if err != nil {
-		return "degraded", "", err.Error()
+func (e *Executor) inspectGamePath(installationPath string) (status, buildID, message string) {
+	status, message = e.inspectSrcdsPath(installationPath)
+	if status != "ready" {
+		return status, "", message
 	}
-	if err := rejectLinkedPath(path); err != nil {
-		return "degraded", "", err.Error()
-	}
-	executable, err := ResolveWithin(path, defaultServerExecutable())
-	if err != nil {
-		return "degraded", "", err.Error()
-	}
-	if info, err := os.Lstat(executable); err != nil || !info.Mode().IsRegular() || isReparseOrSymlink(info) {
-		return "degraded", "", "path does not contain a safe L4D2 dedicated server executable"
-	}
-	gameInfo, err := ResolveWithin(path, "left4dead2/gameinfo.txt")
-	if err != nil {
-		return "degraded", "", err.Error()
-	}
-	if info, err := os.Lstat(gameInfo); err != nil || !info.Mode().IsRegular() || isReparseOrSymlink(info) {
-		return "degraded", "", "path does not contain left4dead2/gameinfo.txt"
-	}
+	path, _ := e.paths.ResolveInstallation(0, installationPath)
 	if steam := e.steamClient(); steam != nil {
 		if value, _, err := steam.InstalledBuildID(path, L4D2DedicatedAppID); err == nil {
 			buildID = value
 		}
 	}
 	return "ready", buildID, ""
+}
+
+func (e *Executor) inspectSrcdsPath(installationPath string) (status, message string) {
+	path, err := e.paths.ResolveInstallation(0, installationPath)
+	if err != nil {
+		return "degraded", err.Error()
+	}
+	if err := rejectLinkedPath(path); err != nil {
+		return "degraded", err.Error()
+	}
+	executable, err := ResolveWithin(path, defaultServerExecutable())
+	if err != nil {
+		return "degraded", err.Error()
+	}
+	if info, err := os.Lstat(executable); err != nil || !info.Mode().IsRegular() || isReparseOrSymlink(info) {
+		return "degraded", "path does not contain a safe srcds executable"
+	}
+	return "ready", ""
 }
 
 func defaultRuntimeSource(value string) string {

@@ -152,7 +152,7 @@ func (a *Agent) recoverInstances() {
 		if !record.DesiredRunning || !record.AutoRestart || record.ExternalPID > 0 {
 			continue
 		}
-		instancePath, err := a.paths.Resolve(record.RootIndex, record.RelativePath)
+		instancePath, err := resolveInstanceRecordPath(a.paths, record)
 		if err == nil {
 			err = ValidateStartArgs(record.Args)
 		}
@@ -196,7 +196,7 @@ func (a *Agent) runSession(ctx context.Context) error {
 	}
 	defer conn.Close()
 	conn.SetReadLimit(16 << 20)
-	hello, err := protocol.NewEnvelope(protocol.TypeHello, a.config.NodeID, "", protocol.Hello{Name: a.config.NodeName, OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.Version, InstanceRoot: a.config.InstanceRoots[0], Capabilities: []string{"backup_upload", "check_update", "discover_instances", "purge_quarantine", "runtime_environment_v1"}})
+	hello, err := protocol.NewEnvelope(protocol.TypeHello, a.config.NodeID, "", protocol.Hello{Name: a.config.NodeName, OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.Version, InstanceRoot: a.config.InstanceRoots[0], Capabilities: []string{"absolute_game_paths", "backup_upload", "check_update", "discover_instances", "purge_quarantine", "runtime_environment_v1"}})
 	if err != nil {
 		return err
 	}

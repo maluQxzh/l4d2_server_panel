@@ -54,7 +54,6 @@ function CreateInstanceModal({ open, onClose }: { open: boolean; onClose: () => 
   const [environmentId, setEnvironmentId] = useState("");
   const [installationId, setInstallationId] = useState("");
   const [sourceMode, setSourceMode] = useState<"ready" | "manual">("ready");
-  const [rootIndex, setRootIndex] = useState(0);
   const [path, setPath] = useState("");
   const [hostname, setHostname] = useState("");
   const [mode, setMode] = useState("coop");
@@ -73,7 +72,6 @@ function CreateInstanceModal({ open, onClose }: { open: boolean; onClose: () => 
           node_id: environment.node_id,
           name: name.trim(),
           path: path.trim(),
-          root_index: rootIndex,
           port: port || undefined,
           operation: "import",
           config: { hostname: hostname.trim() || name.trim(), mode, difficulty: "normal", max_players: maxPlayers, start_map: startMap, region: "255", public_status: false, auto_restart: true },
@@ -103,7 +101,7 @@ function CreateInstanceModal({ open, onClose }: { open: boolean; onClose: () => 
     <form id="create-instance" onSubmit={submit} className="form-stack">
       <div className="form-grid"><Field label="实例名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：专家战役 #1" required /></Field><Field label="运行环境"><select value={environmentId} onChange={(event) => { setEnvironmentId(event.target.value); setInstallationId(""); }} required><option value="">选择在线运行环境</option>{onlineEnvironments.map((item) => <option value={item.id} key={item.id}>{item.node_name || item.node_id}</option>)}</select></Field></div>
       <div className="segmented"><button type="button" className={sourceMode === "ready" ? "active" : ""} onClick={() => setSourceMode("ready")}>选择已验证安装</button><button type="button" className={sourceMode === "manual" ? "active" : ""} onClick={() => setSourceMode("manual")}>手动填写游戏路径</button></div>
-      {sourceMode === "ready" ? <Field label="游戏安装"><select value={installationId} onChange={(event) => setInstallationId(event.target.value)} required><option value="">选择未绑定的游戏安装</option>{readyInstallations.map((item) => <option value={item.id} key={item.id}>{item.path} · 构建 {item.build_id || "未知"}</option>)}</select></Field> : <div className="form-grid"><Field label="根目录索引"><input type="number" min={0} value={rootIndex} onChange={(event) => setRootIndex(Number(event.target.value))} required /></Field><Field label="游戏安装相对路径" hint="只允许位于 Agent 配置的游戏根目录内。"><input value={path} onChange={(event) => setPath(event.target.value)} placeholder="servers/existing-server" required /></Field></div>}
+      {sourceMode === "ready" ? <Field label="游戏安装"><select value={installationId} onChange={(event) => setInstallationId(event.target.value)} required><option value="">选择未绑定的游戏安装</option>{readyInstallations.map((item) => <option value={item.id} key={item.id}>{item.path} · 构建 {item.build_id || "未知"}</option>)}</select></Field> : <Field label="游戏安装绝对路径" hint="填写节点主机上的 Windows 盘符路径或 Linux 绝对路径。"><input className="code-input" value={path} onChange={(event) => setPath(event.target.value)} placeholder="D:\\GameServers\\existing-server 或 /srv/l4d2/existing-server" required /></Field>}
       <Field label="服务器显示名称"><input value={hostname} onChange={(event) => setHostname(event.target.value)} placeholder={name || "显示在服务器浏览器中的名称"} /></Field>
       <div className="form-grid form-grid--three"><Field label="游戏模式"><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="coop">战役</option><option value="versus">对抗</option><option value="survival">生还者</option><option value="scavenge">清道夫</option><option value="realism">写实</option></select></Field><Field label="最大玩家"><input type="number" min={1} max={32} value={maxPlayers} onChange={(event) => setMaxPlayers(Number(event.target.value))} /></Field><Field label="游戏端口" hint="0 表示自动"><input type="number" min={0} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} /></Field></div>
       <Field label="初始地图"><input value={startMap} onChange={(event) => setStartMap(event.target.value)} placeholder="c1m1_hotel" required /></Field>
