@@ -15,6 +15,29 @@ describe("API 客户端", () => {
     expect(init?.credentials).toBe("include");
   });
 
+  it("运行环境操作使用资源路径和固定结构化参数", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ job_id: "steam-job" }), { status: 202, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ game_installation: { id: "game-1" }, job_id: "game-job" }), { status: 202, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ job_id: "validate-job" }), { status: 202, headers: { "Content-Type": "application/json" } }));
+
+    await api.steamCMDAction("environment/one", "configure", "/opt/steamcmd/steamcmd.sh");
+    await api.createGameInstallation("environment/one", { root_index: 2, path: "servers/one", operation: "import" });
+    await api.gameInstallationAction("environment/one", "game/one", "import", { root_index: 3, path: "servers/moved" });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/environments/environment%2Fone/steamcmd/actions",
+      "/api/v1/environments/environment%2Fone/game-installations",
+      "/api/v1/environments/environment%2Fone/game-installations/game%2Fone/actions",
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ action: "configure", path: "/opt/steamcmd/steamcmd.sh" });
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({ root_index: 2, path: "servers/one", operation: "import" });
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toEqual({ action: "import", root_index: 3, path: "servers/moved" });
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
+    }
+  });
+
   it("首启所有者使用独立的初始化 CSRF 令牌", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ required: true, key_configured: true, csrf_token: "bootstrap-csrf" }), { status: 200, headers: { "Content-Type": "application/json" } }))

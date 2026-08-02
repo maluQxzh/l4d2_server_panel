@@ -91,24 +91,6 @@ function Install-X86RuntimeIfMissing {
     }
 }
 
-function Expand-TrustedZip {
-    param([string]$Archive, [string]$Destination)
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $destinationFull = [IO.Path]::GetFullPath($Destination).TrimEnd('\') + '\'
-    $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
-    try {
-        foreach ($entry in $zip.Entries) {
-            $entryPath = [IO.Path]::GetFullPath((Join-Path $Destination $entry.FullName))
-            if (-not $entryPath.StartsWith($destinationFull, [StringComparison]::OrdinalIgnoreCase)) {
-                throw "SteamCMD 压缩包包含越界路径：$($entry.FullName)"
-            }
-        }
-    } finally {
-        $zip.Dispose()
-    }
-    Expand-Archive -LiteralPath $Archive -DestinationPath $Destination -Force
-}
-
 Assert-Administrator
 if (-not [Environment]::Is64BitOperatingSystem) { throw '首版仅支持 amd64 Windows。' }
 $os = Get-CimInstance Win32_OperatingSystem
@@ -120,7 +102,6 @@ if ($CentralUrl.StartsWith('http://', [StringComparison]::OrdinalIgnoreCase)) {
 $programRoot = Join-Path $env:ProgramFiles 'L4D2Panel'
 $dataRoot = Join-Path $env:ProgramData 'L4D2Panel'
 $instanceRoot = Join-Path $dataRoot 'instances'
-$steamRoot = Join-Path $dataRoot 'steamcmd'
 $targetBinary = Join-Path $programRoot 'l4d2panel-agent.exe'
 $configPath = Join-Path $dataRoot 'agent.json'
 $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
@@ -129,24 +110,7 @@ if (-not (Test-Path -LiteralPath $configPath) -and [string]::IsNullOrWhiteSpace(
 }
 Assert-FreeSpace -Path $dataRoot -MinimumGB $MinimumFreeSpaceGB
 Install-X86RuntimeIfMissing
-New-Item -ItemType Directory -Force -Path $programRoot, $dataRoot, $instanceRoot, $steamRoot | Out-Null
-
-$steamBinary = Join-Path $steamRoot 'steamcmd.exe'
-if (-not (Test-Path -LiteralPath $steamBinary)) {
-    $steamArchive = Join-Path ([IO.Path]::GetTempPath()) ("steamcmd-{0}.zip" -f [Guid]::NewGuid())
-    $steamStaging = Join-Path ([IO.Path]::GetTempPath()) ("steamcmd-{0}" -f [Guid]::NewGuid())
-    try {
-        New-Item -ItemType Directory -Path $steamStaging | Out-Null
-        Invoke-WebRequest -Uri 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip' -OutFile $steamArchive -UseBasicParsing
-        Expand-TrustedZip -Archive $steamArchive -Destination $steamStaging
-        Copy-Item -Path (Join-Path $steamStaging '*') -Destination $steamRoot -Recurse -Force
-        & $steamBinary +quit
-        if ($LASTEXITCODE -ne 0) { throw "SteamCMD 初始化失败，退出码 $LASTEXITCODE。" }
-    } finally {
-        Remove-Item -LiteralPath $steamArchive -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $steamStaging -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
+New-Item -ItemType Directory -Force -Path $programRoot, $dataRoot, $instanceRoot | Out-Null
 
 $downloadedBinary = Join-Path ([IO.Path]::GetTempPath()) ("l4d2panel-agent-{0}.exe" -f [Guid]::NewGuid())
 try {
@@ -197,7 +161,7 @@ if (-not $keepExistingEnrollment) {
         enrollment_token = $EnrollmentToken
         node_name = $NodeName
         instance_roots = @($instanceRoot)
-        steamcmd_path = $steamBinary
+        steamcmd_path = ''
         data_dir = $dataRoot
         heartbeat_interval = '10s'
         metrics_interval = '15s'

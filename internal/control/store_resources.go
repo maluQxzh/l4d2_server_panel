@@ -353,7 +353,7 @@ func nullableUUID(value string) any {
 	return value
 }
 
-const instanceColumns = `id,node_id,name,status,path,host,port,tv_port,pid,map,mode,players,max_players,build_id,
+const instanceColumns = `id,node_id,COALESCE(installation_id,''),name,status,path,host,port,tv_port,pid,map,mode,players,max_players,build_id,
 		version,config,started_at,created_at,updated_at,
 		COALESCE((SELECT public_address FROM nodes WHERE nodes.id=instances.node_id),''),
 		COALESCE((SELECT state.available FROM instance_update_state state WHERE state.instance_id=instances.id),false),
@@ -363,7 +363,7 @@ const instanceColumns = `id,node_id,name,status,path,host,port,tv_port,pid,map,m
 func scanInstance(row scanner) (domain.Instance, error) {
 	var inst domain.Instance
 	var raw []byte
-	err := row.Scan(&inst.ID, &inst.NodeID, &inst.Name, &inst.Status, &inst.Path, &inst.Host, &inst.Port, &inst.TVPort,
+	err := row.Scan(&inst.ID, &inst.NodeID, &inst.InstallationID, &inst.Name, &inst.Status, &inst.Path, &inst.Host, &inst.Port, &inst.TVPort,
 		&inst.PID, &inst.Map, &inst.Mode, &inst.Players, &inst.MaxPlayers, &inst.BuildID, &inst.Version, &raw,
 		&inst.StartedAt, &inst.CreatedAt, &inst.UpdatedAt, &inst.NodePublicAddress, &inst.UpdateAvailable,
 		&inst.AvailableBuild, &inst.UpdateCheckedAt)
@@ -406,13 +406,14 @@ func (s *Store) GetInstance(ctx context.Context, id string) (domain.Instance, er
 }
 
 type CreateInstanceInput struct {
-	NodeID string
-	Name   string
-	Path   string
-	Host   string
-	Port   int
-	TVPort int
-	Config domain.InstanceConfig
+	NodeID         string
+	InstallationID string
+	Name           string
+	Path           string
+	Host           string
+	Port           int
+	TVPort         int
+	Config         domain.InstanceConfig
 }
 
 func (s *Store) CreateInstance(ctx context.Context, input CreateInstanceInput) (domain.Instance, error) {
@@ -434,6 +435,21 @@ func (s *Store) CreateInstance(ctx context.Context, input CreateInstanceInput) (
 		return domain.Instance{}, err
 	}
 	defer tx.Rollback()
+	if input.InstallationID != "" {
+		var installationNodeID, installationStatus string
+		var bound bool
+		if err := tx.QueryRowContext(ctx, `SELECT installation.node_id,installation.status,
+			EXISTS(SELECT 1 FROM instances WHERE installation_id=installation.id)
+			FROM game_installations installation WHERE installation.id=?1`, input.InstallationID).Scan(&installationNodeID, &installationStatus, &bound); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return domain.Instance{}, ErrNotFound
+			}
+			return domain.Instance{}, err
+		}
+		if installationNodeID != input.NodeID || bound || installationStatus == "quarantined" {
+			return domain.Instance{}, ErrConflict
+		}
+	}
 	reserved := make(map[int]struct{})
 	rows, err := tx.QueryContext(ctx, `SELECT port FROM instance_port_reservations WHERE node_id=?1 ORDER BY port`, input.NodeID)
 	if err != nil {
@@ -469,11 +485,11 @@ func (s *Store) CreateInstance(ctx context.Context, input CreateInstanceInput) (
 	} else if _, occupied := reserved[input.Port]; occupied {
 		return domain.Instance{}, ErrConflict
 	}
-	inst := domain.Instance{ID: uuid.NewString(), NodeID: input.NodeID, Name: strings.TrimSpace(input.Name), Status: domain.InstanceInstalling,
+	inst := domain.Instance{ID: uuid.NewString(), NodeID: input.NodeID, InstallationID: input.InstallationID, Name: strings.TrimSpace(input.Name), Status: domain.InstanceInstalling,
 		Path: input.Path, Host: input.Host, Port: input.Port, TVPort: input.TVPort, MaxPlayers: input.Config.MaxPlayers,
 		Version: 1, Config: input.Config, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
-	_, err = tx.ExecContext(ctx, `INSERT INTO instances(id,node_id,name,status,path,host,port,tv_port,max_players,version,config,created_at,updated_at)
-		VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)`, inst.ID, inst.NodeID, inst.Name, inst.Status, inst.Path,
+	_, err = tx.ExecContext(ctx, `INSERT INTO instances(id,node_id,installation_id,name,status,path,host,port,tv_port,max_players,version,config,created_at,updated_at)
+		VALUES(?1,?2,NULLIF(?3,''),?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)`, inst.ID, inst.NodeID, inst.InstallationID, inst.Name, inst.Status, inst.Path,
 		inst.Host, inst.Port, inst.TVPort, inst.MaxPlayers, inst.Version, string(config), inst.CreatedAt, inst.UpdatedAt)
 	if err != nil {
 		if isSQLiteConstraint(err) {

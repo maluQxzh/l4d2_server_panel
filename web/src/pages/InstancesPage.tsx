@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Box, Filter, Gamepad2, Map, MoreHorizontal, Play, Plus, RefreshCw, Search, Server, Square, Users } from "lucide-react";
+import { Box, Filter, Gamepad2, Map, MoreHorizontal, Play, Plus, RefreshCw, Search, Square, Users } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, StatusBadge } from "../components/ui";
@@ -23,7 +23,7 @@ export function InstancesPage() {
   return <div>
     <PageHeader eyebrow="GAME SERVERS" title="游戏实例" description="部署、运行和维护彼此隔离的 L4D2 专用服务器。" actions={<><Button variant="secondary" onClick={() => void instances.refetch()}><RefreshCw size={16} />刷新</Button><Button onClick={() => setCreateOpen(true)}><Plus size={17} />创建实例</Button></>} />
     <Card className="toolbar-card"><div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索实例、地址或地图" aria-label="搜索实例" /></div><div className="filter-select"><Filter size={16} /><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="按状态筛选"><option value="all">全部状态</option><option value="running">运行中</option><option value="stopped">已停止</option><option value="degraded">异常</option><option value="installing">安装中</option><option value="updating">更新中</option></select></div><span className="toolbar-count">{filtered.length} 个实例</span></Card>
-    {instances.isPending ? <LoadingBlock label="正在获取实例清单…" /> : instances.error ? <ErrorState error={instances.error} retry={() => void instances.refetch()} /> : filtered.length === 0 ? <Card><EmptyState title={instances.data.items.length ? "没有匹配的实例" : "还没有游戏实例"} description={instances.data.items.length ? "尝试调整搜索关键词或状态筛选。" : "选择一个在线节点，面板会自动分配端口并安装 L4D2。"} action={!instances.data.items.length && <Button onClick={() => setCreateOpen(true)}><Plus size={16} />创建第一个实例</Button>} /></Card> : <div className="instance-grid">{filtered.map((instance) => <InstanceCard key={instance.id} instance={instance} />)}</div>}
+    {instances.isPending ? <LoadingBlock label="正在获取实例清单…" /> : instances.error ? <ErrorState error={instances.error} retry={() => void instances.refetch()} /> : filtered.length === 0 ? <Card><EmptyState title={instances.data.items.length ? "没有匹配的实例" : "还没有游戏实例"} description={instances.data.items.length ? "尝试调整搜索关键词或状态筛选。" : "先在运行环境中准备或登记游戏目录，再创建实例并手动开服。"} action={!instances.data.items.length && <Button onClick={() => setCreateOpen(true)}><Plus size={16} />创建第一个实例</Button>} /></Card> : <div className="instance-grid">{filtered.map((instance) => <InstanceCard key={instance.id} instance={instance} />)}</div>}
     <CreateInstanceModal open={createOpen} onClose={() => setCreateOpen(false)} />
   </div>;
 }
@@ -49,28 +49,46 @@ function InstanceCard({ instance }: { instance: InstanceRecord }) {
 }
 
 function CreateInstanceModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.nodes, enabled: open });
+  const environments = useQuery({ queryKey: ["environments"], queryFn: api.environments, enabled: open });
   const [name, setName] = useState("");
-  const [nodeId, setNodeId] = useState("");
+  const [environmentId, setEnvironmentId] = useState("");
+  const [installationId, setInstallationId] = useState("");
+  const [sourceMode, setSourceMode] = useState<"ready" | "manual">("ready");
+  const [rootIndex, setRootIndex] = useState(0);
+  const [path, setPath] = useState("");
   const [hostname, setHostname] = useState("");
   const [mode, setMode] = useState("coop");
   const [maxPlayers, setMaxPlayers] = useState(4);
   const [startMap, setStartMap] = useState("c1m1_hotel");
   const [port, setPort] = useState(0);
-  const [installMode, setInstallMode] = useState<"install" | "import">("install");
-  const [path, setPath] = useState("");
+  const installations = useQuery({ queryKey: ["environments", environmentId, "game-installations"], queryFn: () => api.gameInstallations(environmentId), enabled: open && Boolean(environmentId) });
   const navigate = useNavigate();
   const toast = useToast();
   const create = useMutation({
-    mutationFn: () => api.createInstance({
-      node_id: nodeId,
-      name: name.trim(),
-      port: port || undefined,
-      operation: installMode,
-      path: installMode === "import" ? path : undefined,
-      root_index: installMode === "import" ? 0 : undefined,
-      config: { hostname: hostname.trim() || name.trim(), mode, difficulty: "normal", max_players: maxPlayers, start_map: startMap, region: "255", public_status: false, auto_restart: true },
-    }),
+    mutationFn: () => {
+      const environment = environments.data?.items.find((item) => item.id === environmentId);
+      if (!environment) throw new Error("请选择运行环境");
+      if (sourceMode === "manual") {
+        return api.createInstance({
+          node_id: environment.node_id,
+          name: name.trim(),
+          path: path.trim(),
+          root_index: rootIndex,
+          port: port || undefined,
+          operation: "import",
+          config: { hostname: hostname.trim() || name.trim(), mode, difficulty: "normal", max_players: maxPlayers, start_map: startMap, region: "255", public_status: false, auto_restart: true },
+        });
+      }
+      if (!installationId) throw new Error("请选择可用的游戏安装");
+      return api.createInstance({
+        node_id: environment.node_id,
+        game_installation_id: installationId,
+        name: name.trim(),
+        port: port || undefined,
+        operation: "import",
+        config: { hostname: hostname.trim() || name.trim(), mode, difficulty: "normal", max_players: maxPlayers, start_map: startMap, region: "255", public_status: false, auto_restart: true },
+      });
+    },
     onSuccess: (result) => {
       toast.push("实例创建任务已提交");
       onClose();
@@ -79,17 +97,17 @@ function CreateInstanceModal({ open, onClose }: { open: boolean; onClose: () => 
     },
   });
   const submit = (event: FormEvent) => { event.preventDefault(); create.mutate(); };
-  const onlineNodes = nodes.data?.items.filter((node) => node.status === "online") || [];
-  return <Modal open={open} onClose={onClose} title="创建游戏实例" description="每个实例使用独立目录，端口留空时由节点自动分配。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button type="submit" form="create-instance" loading={create.isPending}>提交部署任务</Button></>}>
+  const onlineEnvironments = environments.data?.items.filter((item) => item.node_status === "online" && item.agent_supported) || [];
+  const readyInstallations = installations.data?.items.filter((item) => item.status === "ready" && !item.bound_instance_id) || [];
+  return <Modal open={open} onClose={onClose} title="创建游戏实例" description="绑定一套已准备好的独占游戏安装；实例创建后保持停止，由你手动开服。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button type="submit" form="create-instance" loading={create.isPending}>校验并创建实例</Button></>}>
     <form id="create-instance" onSubmit={submit} className="form-stack">
-      <div className="segmented"><button type="button" className={installMode === "install" ? "active" : ""} onClick={() => setInstallMode("install")}>全新安装</button><button type="button" className={installMode === "import" ? "active" : ""} onClick={() => setInstallMode("import")}>导入现有实例</button></div>
-      <div className="form-grid"><Field label="实例名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：专家战役 #1" required /></Field><Field label="运行节点"><select value={nodeId} onChange={(event) => setNodeId(event.target.value)} required><option value="">选择在线节点</option>{onlineNodes.map((node) => <option value={node.id} key={node.id}>{node.name} · {node.os}</option>)}</select></Field></div>
-      {nodes.isSuccess && !onlineNodes.length && <div className="form-warning"><Server size={17} />当前没有在线节点，请先接入或恢复一个节点。</div>}
-      {installMode === "import" && <Field label="现有安装目录" hint="路径必须位于该 Agent 配置的实例根目录内。"><input value={path} onChange={(event) => setPath(event.target.value)} placeholder="instances/existing-server" required /></Field>}
+      <div className="form-grid"><Field label="实例名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：专家战役 #1" required /></Field><Field label="运行环境"><select value={environmentId} onChange={(event) => { setEnvironmentId(event.target.value); setInstallationId(""); }} required><option value="">选择在线运行环境</option>{onlineEnvironments.map((item) => <option value={item.id} key={item.id}>{item.node_name || item.node_id}</option>)}</select></Field></div>
+      <div className="segmented"><button type="button" className={sourceMode === "ready" ? "active" : ""} onClick={() => setSourceMode("ready")}>选择已验证安装</button><button type="button" className={sourceMode === "manual" ? "active" : ""} onClick={() => setSourceMode("manual")}>手动填写游戏路径</button></div>
+      {sourceMode === "ready" ? <Field label="游戏安装"><select value={installationId} onChange={(event) => setInstallationId(event.target.value)} required><option value="">选择未绑定的游戏安装</option>{readyInstallations.map((item) => <option value={item.id} key={item.id}>{item.path} · 构建 {item.build_id || "未知"}</option>)}</select></Field> : <div className="form-grid"><Field label="根目录索引"><input type="number" min={0} value={rootIndex} onChange={(event) => setRootIndex(Number(event.target.value))} required /></Field><Field label="游戏安装相对路径" hint="只允许位于 Agent 配置的游戏根目录内。"><input value={path} onChange={(event) => setPath(event.target.value)} placeholder="servers/existing-server" required /></Field></div>}
       <Field label="服务器显示名称"><input value={hostname} onChange={(event) => setHostname(event.target.value)} placeholder={name || "显示在服务器浏览器中的名称"} /></Field>
       <div className="form-grid form-grid--three"><Field label="游戏模式"><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="coop">战役</option><option value="versus">对抗</option><option value="survival">生还者</option><option value="scavenge">清道夫</option><option value="realism">写实</option></select></Field><Field label="最大玩家"><input type="number" min={1} max={32} value={maxPlayers} onChange={(event) => setMaxPlayers(Number(event.target.value))} /></Field><Field label="游戏端口" hint="0 表示自动"><input type="number" min={0} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} /></Field></div>
       <Field label="初始地图"><input value={startMap} onChange={(event) => setStartMap(event.target.value)} placeholder="c1m1_hotel" required /></Field>
-      <div className="form-note"><strong>部署流程</strong><span>检查端口与磁盘 → 安装 App 222860 → 生成 RCON 密钥 → 启动并完成 A2S/RCON 健康检查。</span></div>
+      <div className="form-note"><strong>创建流程</strong><span>校验现有游戏目录 → 建立独占绑定 → 生成受控配置。不会安装游戏，也不会自动启动服务器。</span></div>
       {create.error && <div className="form-error" role="alert">{create.error.message}</div>}
     </form>
   </Modal>;

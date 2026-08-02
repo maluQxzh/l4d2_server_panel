@@ -13,6 +13,7 @@ tags:
   - { name: Auth, description: 浏览器会话、TOTP 和 API Token }
   - { name: Events, description: 带游标重放的浏览器 WebSocket }
   - { name: Nodes, description: 节点注册、凭据和状态 }
+  - { name: Environments, description: 节点依赖、SteamCMD 与独占游戏安装 }
   - { name: Instances, description: 实例生命周期和游戏操作 }
   - { name: Files, description: 实例内白名单文件 }
   - { name: Transfers, description: 节点本地日志和备份的消费式分块传输 }
@@ -541,6 +542,134 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /environments:
+    get:
+      tags: [Environments]
+      summary: 列出有权读取的节点运行环境
+      responses:
+        "200":
+          description: 运行环境列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/RuntimeEnvironment" } }
+
+  /environments/{environmentId}:
+    parameters:
+      - { name: environmentId, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [Environments]
+      summary: 获取运行环境及已登记游戏安装
+      responses:
+        "200": { description: 运行环境详情 }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /environments/{environmentId}/inspect:
+    post:
+      tags: [Environments]
+      summary: 手动检测系统依赖、活动 SteamCMD 和已登记游戏目录
+      description: 不扫描磁盘；节点必须在线并声明 `runtime_environment_v1`。
+      parameters:
+        - { name: environmentId, in: path, required: true, schema: { type: string } }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "202": { description: 检测任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /environments/{environmentId}/steamcmd/actions:
+    post:
+      tags: [Environments]
+      summary: 配置、清除、安装或修复节点默认 SteamCMD
+      description: 自定义路径只在线校验后生效；固定文件名、普通文件、非链接且不得处于游戏根目录内。调用方不能提供可执行参数或环境变量。
+      parameters:
+        - { name: environmentId, in: path, required: true, schema: { type: string } }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [configure, clear, install, repair] }
+                path: { type: string, maxLength: 4096 }
+      responses:
+        "202": { description: SteamCMD 操作已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /environments/{environmentId}/game-installations:
+    parameters:
+      - { name: environmentId, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [Environments]
+      summary: 列出运行环境中的游戏安装
+      responses:
+        "200": { description: 游戏安装列表 }
+    post:
+      tags: [Environments]
+      summary: 安装 App 222860 或登记现有游戏目录
+      description: 路径由根目录索引和相对路径组成，不接受根外路径，也不触发目录扫描。
+      parameters:
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [root_index, path, operation]
+              properties:
+                root_index: { type: integer, minimum: 0 }
+                path: { type: string, minLength: 1, maxLength: 1024 }
+                operation: { type: string, enum: [install, import] }
+      responses:
+        "202": { description: 游戏安装记录和任务已创建 }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /environments/{environmentId}/game-installations/{installationId}/actions:
+    post:
+      tags: [Environments]
+      summary: 手动维护游戏安装
+      parameters:
+        - { name: environmentId, in: path, required: true, schema: { type: string } }
+        - { name: installationId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [install, import, validate, update, reinstall] }
+                root_index: { type: integer, minimum: 0, description: 仅 import 可用；与 path 同时提交以修改登记路径 }
+                path: { type: string, minLength: 1, maxLength: 1024, description: 仅 import 可用；游戏根内相对路径 }
+      responses:
+        "202": { description: 维护任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /environments/{environmentId}/game-installations/{installationId}:
+    delete:
+      tags: [Environments]
+      summary: 将未绑定的游戏安装移入七天隔离区
+      parameters:
+        - { name: environmentId, in: path, required: true, schema: { type: string } }
+        - { name: installationId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "202": { description: 隔离任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /instances:
     get:
       tags: [Instances]
@@ -563,8 +692,8 @@ paths:
                     }
     post:
       tags: [Instances]
-      summary: 创建安装任务或导入已有实例
-      description: "`port=0` 时由 Control 在 27015–27999 事务分配。游戏端口与非零 tv_port 在同一节点互斥；显式冲突或池耗尽返回 409。导入需要相对 path 和 root_index。结构化配置不满足 InstanceConfig 的边界、安全 CVar 或启动参数规则时返回 `400 invalid_config`。"
+      summary: 将已验证游戏安装绑定为实例
+      description: "推荐提交 `game_installation_id`；也可提交相对 path 和 root_index，由 Control 登记、校验并建立独占绑定。不会自动安装游戏或启动服务器。"
       parameters:
         - { $ref: "#/components/parameters/CSRF" }
         - { $ref: "#/components/parameters/IdempotencyKey" }
@@ -635,15 +764,15 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
     delete:
       tags: [Instances]
-      summary: 解除管理或隔离实例目录
-      description: 实例必须先停止。`quarantine` 是默认模式；节点必须在线且 Agent 声明 `purge_quarantine` 能力。目录至少保留 7 天，到期后也不会自动删除，必须通过节点隔离 API 再次确认永久清理。`detach` 不受该能力门控。
+      summary: 删除实例并解除游戏安装绑定
+      description: 默认 `detach`，保留游戏文件。旧版显式 `quarantine` 仍受节点在线及隔离清理能力门控；新界面只在运行环境中隔离未绑定游戏安装。
       parameters:
         - { $ref: "#/components/parameters/CSRF" }
         - { $ref: "#/components/parameters/IdempotencyKey" }
         - name: mode
           in: query
           schema:
-            { type: string, enum: [detach, quarantine], default: quarantine }
+            { type: string, enum: [detach, quarantine], default: detach }
       responses:
         "202":
           description: 删除/解除任务已排队
@@ -657,7 +786,8 @@ paths:
       tags: [Instances]
       summary: 提交实例动作
       description: |
-        权限按动作检查。`install_package/reinstall/toggle_package` 需要 manage；其余公开动作需要 operate。
+        权限按动作检查。`install_package/toggle_package` 需要 manage；其余公开动作需要 operate。
+        游戏文件的 update、validate、reinstall 已移至运行环境专用端点，不再属于实例通用动作。
         创建、导入、配置、文件、日志传输、备份下载和状态探测使用各自的专用端点，不能把对应内部任务类型提交到此通用端点。
         `delete` 与 `detach` 不属于通用动作，必须调用 `DELETE /instances/{instanceId}?mode=quarantine|detach`，
         以执行节点在线和隔离清理能力门控。
@@ -2207,6 +2337,43 @@ components:
         last_seen_at: { type: [string, "null"], format: date-time }
         created_at: { type: string, format: date-time }
 
+    RuntimeEnvironment:
+      type: object
+      required: [id, node_id, node_status, agent_supported, system_dependencies, steamcmd_source, steamcmd_status, created_at, updated_at]
+      properties:
+        id: { type: string }
+        node_id: { type: string, format: uuid }
+        node_name: { type: string }
+        node_status: { type: string, enum: [pending, online, offline, revoked] }
+        agent_supported: { type: boolean }
+        system_dependencies: { type: object, additionalProperties: true }
+        steamcmd_source: { type: string, enum: [unconfigured, managed, custom] }
+        steamcmd_path: { type: string }
+        steamcmd_status: { type: string, enum: [unconfigured, checking, ready, error] }
+        steamcmd_version: { type: string }
+        last_error: { type: string }
+        last_inspected_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    GameInstallation:
+      type: object
+      required: [id, environment_id, node_id, root_index, path, app_id, status, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        environment_id: { type: string }
+        node_id: { type: string, format: uuid }
+        root_index: { type: integer, minimum: 0 }
+        path: { type: string, description: 对所选游戏根目录的相对路径 }
+        app_id: { type: integer, const: 222860 }
+        status: { type: string, enum: [pending, installing, validating, updating, ready, degraded, quarantined] }
+        build_id: { type: string }
+        last_error: { type: string }
+        bound_instance_id: { type: string, format: uuid }
+        last_checked_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
     QuarantineEntry:
       type: object
       description: 隔离条目的安全 Control 元数据；不包含节点绝对路径。
@@ -2403,11 +2570,6 @@ components:
             { type: string, maxLength: 4096, pattern: '^[^\u0000\r\n]*$' }
           description: CVar 名不得带首尾空白；`rcon_password` 与 `sv_password`（不区分大小写）被拒绝，必须使用加密秘密字段。值由 Control 另按 UTF-8 字节限制为 4096。
         auto_restart: { type: boolean }
-        maintenance_cron:
-          type: string
-          maxLength: 100
-          pattern: '^[^\u0000\r\n]*$'
-          description: 空字符串表示未设置；否则必须是标准五段 cron（分、时、月日、月、周日），例如 `0 4 * * *`，不接受秒、`@every` 或 `CRON_TZ`。Control 按全局 TZ 解释；仅当更新探测为 available、节点在线且 Agent 已连接时在发生点后 5 分钟内幂等创建自动 update 批次，固定 maintenance=true 与 warning_seconds=[600,300,60]，同节点逐实例派发并生成审计和通知。
       description: Control 在持久化前执行这些约束；原版 L4D2 不支持可调 tickrate，危险或与面板托管值冲突的高级参数直接返回 400 invalid_config，Agent 派发后仍会再次校验。
 
     Instance:
@@ -2431,6 +2593,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         node_id: { type: string, format: uuid }
+        game_installation_id: { type: string, format: uuid, description: 独占绑定的游戏安装 }
         node_public_address:
           type: string
           readOnly: true
@@ -2461,9 +2624,9 @@ components:
         players: { type: integer }
         max_players: { type: integer }
         build_id: { type: string }
-        update_available: { type: boolean, readOnly: true, description: 最近一次 30 分钟更新探测是否发现较新的公开构建。 }
-        available_build: { type: string, readOnly: true, description: 最近一次更新探测返回的公开构建 ID。 }
-        last_update_checked_at: { type: [string, "null"], format: date-time, readOnly: true }
+        update_available: { type: boolean, readOnly: true, deprecated: true, description: 兼容字段；系统不再后台探测，维护结果请查看运行环境。 }
+        available_build: { type: string, readOnly: true, deprecated: true }
+        last_update_checked_at: { type: [string, "null"], format: date-time, readOnly: true, deprecated: true }
         version: { type: integer, minimum: 1 }
         config: { $ref: "#/components/schemas/InstanceConfig" }
         started_at: { type: [string, "null"], format: date-time }
@@ -2476,7 +2639,8 @@ components:
       properties:
         node_id: { type: string, format: uuid }
         name: { type: string, minLength: 1, maxLength: 128 }
-        operation: { type: string, enum: [install, import], default: install }
+        game_installation_id: { type: string, format: uuid, description: 推荐：已验证且未绑定的游戏安装 }
+        operation: { type: string, enum: [import], default: import }
         path:
           { type: string, description: 导入时为所选根内相对路径；安装时可省略 }
         root_index: { type: integer, minimum: 0, description: 导入时必需 }
@@ -2935,6 +3099,7 @@ components:
         id: { type: string, format: uuid }
         node_id: { type: string, format: uuid }
         instance_id: { type: string, format: uuid }
+        game_installation_id: { type: string, format: uuid }
         type: { type: string }
         status: { $ref: "#/components/schemas/JobStatus" }
         progress: { type: integer, minimum: 0, maximum: 100 }

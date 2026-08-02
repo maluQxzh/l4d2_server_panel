@@ -177,32 +177,33 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		NodeID     string                `json:"node_id"`
-		Name       string                `json:"name"`
-		Path       string                `json:"path,omitempty"`
-		RootIndex  *int                  `json:"root_index,omitempty"`
-		Executable string                `json:"executable,omitempty"`
-		Host       string                `json:"host"`
-		Port       int                   `json:"port"`
-		TVPort     int                   `json:"tv_port"`
-		Operation  string                `json:"operation,omitempty"`
-		Config     domain.InstanceConfig `json:"config"`
+		NodeID         string                `json:"node_id"`
+		InstallationID string                `json:"game_installation_id,omitempty"`
+		Name           string                `json:"name"`
+		Path           string                `json:"path,omitempty"`
+		RootIndex      *int                  `json:"root_index,omitempty"`
+		Executable     string                `json:"executable,omitempty"`
+		Host           string                `json:"host"`
+		Port           int                   `json:"port"`
+		TVPort         int                   `json:"tv_port"`
+		Operation      string                `json:"operation,omitempty"`
+		Config         domain.InstanceConfig `json:"config"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	if request.Operation != "" && request.Operation != "install" && request.Operation != "import" {
-		writeError(w, http.StatusBadRequest, "invalid_operation", "operation must be install or import")
+	if request.Operation != "" && request.Operation != "import" {
+		writeError(w, http.StatusBadRequest, "invalid_operation", "instances only bind or import an existing game installation")
 		return
 	}
 	if request.Operation == "" {
-		request.Operation = "install"
+		request.Operation = "import"
 	}
 	if err := validateStructuredConfig(request.Config); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_config", err.Error())
 		return
 	}
-	if request.Operation == "import" {
+	if request.Operation == "import" && request.InstallationID == "" {
 		if err := validateImportLocation(request.Path, request.RootIndex); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_import_path", err.Error())
 			return
@@ -239,15 +240,44 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serverPassword := request.Config.ServerPassword
+	provisionalInstallationID := ""
+	removeProvisionalInstallation := func() { _ = s.store.RemovePendingGameInstallation(r.Context(), provisionalInstallationID) }
 	rconPassword, err := randomToken(24)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 	request.Config.ServerPassword = ""
+	if request.InstallationID != "" {
+		installation, lookupErr := s.store.GetGameInstallation(r.Context(), request.InstallationID)
+		if lookupErr != nil {
+			s.fail(w, lookupErr)
+			return
+		}
+		if installation.NodeID != request.NodeID || installation.Status != "ready" || installation.BoundInstanceID != "" {
+			s.fail(w, ErrConflict)
+			return
+		}
+		request.Operation, request.Path = "import", installation.RelativePath
+		rootIndex := installation.RootIndex
+		request.RootIndex = &rootIndex
+	} else if request.Operation == "import" {
+		rootIndex := 0
+		if request.RootIndex != nil {
+			rootIndex = *request.RootIndex
+		}
+		installation, createErr := s.store.CreateGameInstallation(r.Context(), "environment-"+request.NodeID, rootIndex, request.Path)
+		if createErr != nil {
+			s.fail(w, createErr)
+			return
+		}
+		request.InstallationID = installation.ID
+		provisionalInstallationID = installation.ID
+	}
 	instance, err := s.store.CreateInstance(r.Context(), CreateInstanceInput{NodeID: request.NodeID, Name: request.Name,
-		Path: request.Path, Host: request.Host, Port: request.Port, TVPort: request.TVPort, Config: request.Config})
+		InstallationID: request.InstallationID, Path: request.Path, Host: request.Host, Port: request.Port, TVPort: request.TVPort, Config: request.Config})
 	if err != nil {
+		removeProvisionalInstallation()
 		if errors.Is(err, ErrConflict) {
 			s.fail(w, err)
 		} else {
@@ -258,6 +288,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	encryptedRCON, err := encryptSecret(s.config.MasterKey, rconPassword)
 	if err != nil {
 		_ = s.store.RemoveInstanceRecord(r.Context(), instance.ID)
+		removeProvisionalInstallation()
 		s.fail(w, err)
 		return
 	}
@@ -266,34 +297,28 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		encryptedServerPassword, err = encryptSecret(s.config.MasterKey, serverPassword)
 		if err != nil {
 			_ = s.store.RemoveInstanceRecord(r.Context(), instance.ID)
+			removeProvisionalInstallation()
 			s.fail(w, err)
 			return
 		}
 	}
 	if err := s.store.SaveInstanceSecrets(r.Context(), instance.ID, encryptedRCON, encryptedServerPassword); err != nil {
 		_ = s.store.RemoveInstanceRecord(r.Context(), instance.ID)
+		removeProvisionalInstallation()
 		s.fail(w, err)
 		return
 	}
 	if _, err := s.store.CreateSchedule(r.Context(), instance.ID, "Daily automatic backup", "0 4 * * *", s.config.Timezone,
 		"backup", map[string]any{"kind": "daily", "retention_daily": 7, "retention_weekly": 4}, true); err != nil {
 		_ = s.store.RemoveInstanceRecord(r.Context(), instance.ID)
+		removeProvisionalInstallation()
 		s.fail(w, err)
 		return
 	}
-	jobType := "reinstall"
-	operation := "install"
-	if request.Operation == "import" {
-		jobType, operation = "import", "import"
-	}
+	jobType, operation := "game.import", "import"
 	jobPayload := map[string]any{"operation": operation, "instance": instance, "path": request.Path, "name": instance.Name, "port": instance.Port}
 	if request.Executable != "" {
 		jobPayload["executable"] = request.Executable
-	}
-	if operation == "install" {
-		// A new deployment is not considered healthy until srcds has answered
-		// both A2S and RCON once; the Agent stops it again after verification.
-		jobPayload["verify_start"] = true
 	}
 	if request.RootIndex != nil {
 		jobPayload["root_index"] = *request.RootIndex
@@ -302,6 +327,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		idempotencyKey, requestFingerprint)
 	if err != nil {
 		_ = s.store.RemoveInstanceRecord(r.Context(), instance.ID)
+		removeProvisionalInstallation()
 		s.fail(w, err)
 		return
 	}
@@ -310,6 +336,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		// preflight lookups miss. The unique key selects the first job; remove
 		// this request's unused record and return the selected instance.
 		_ = s.store.RemoveInstanceRecord(r.Context(), instance.ID)
+		removeProvisionalInstallation()
 		original, lookupErr := s.store.GetInstance(r.Context(), job.InstanceID)
 		if lookupErr != nil {
 			s.fail(w, lookupErr)
@@ -393,7 +420,7 @@ func (s *Server) handlePatchInstance(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 	mode := r.URL.Query().Get("mode")
 	if mode == "" {
-		mode = "quarantine"
+		mode = "detach"
 	}
 	if mode != "detach" && mode != "quarantine" {
 		writeError(w, http.StatusBadRequest, "invalid_delete_mode", "mode must be detach or quarantine")

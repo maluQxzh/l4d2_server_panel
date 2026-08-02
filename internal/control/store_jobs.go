@@ -13,7 +13,7 @@ import (
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
-const jobColumns = `id,node_id,COALESCE(instance_id,''),type,status,progress,message,payload,result,
+const jobColumns = `id,node_id,COALESCE(instance_id,''),COALESCE(game_installation_id,''),type,status,progress,message,payload,result,
 	idempotency_key,COALESCE(requested_by,''),created_at,started_at,finished_at`
 
 const jobColumnsWithFingerprint = jobColumns + `,request_fingerprint`
@@ -34,7 +34,7 @@ func scanJobWithOptionalFingerprint(row scanner, withFingerprint bool) (domain.J
 	var payload, result []byte
 	var idempotency *string
 	var fingerprint *string
-	destinations := []any{&job.ID, &job.NodeID, &job.InstanceID, &job.Type, &job.Status, &job.Progress, &job.Message,
+	destinations := []any{&job.ID, &job.NodeID, &job.InstanceID, &job.InstallationID, &job.Type, &job.Status, &job.Progress, &job.Message,
 		&payload, &result, &idempotency, &job.RequestedBy, &job.CreatedAt, &job.StartedAt, &job.FinishedAt}
 	if withFingerprint {
 		destinations = append(destinations, &fingerprint)
@@ -98,7 +98,8 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 	}
 	var nodeID string
 	var instanceStatus domain.InstanceStatus
-	if err := tx.QueryRowContext(ctx, `SELECT node_id,status FROM instances WHERE id=?1`, instanceID).Scan(&nodeID, &instanceStatus); err != nil {
+	var installationID string
+	if err := tx.QueryRowContext(ctx, `SELECT node_id,status,COALESCE(installation_id,'') FROM instances WHERE id=?1`, instanceID).Scan(&nodeID, &instanceStatus, &installationID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.Job{}, false, ErrNotFound
 		}
@@ -107,15 +108,24 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 	if instanceStatus == domain.InstanceExternal && !externalInstanceJobAllowed(action, payload) {
 		return domain.Job{}, false, fmt.Errorf("external instance is read-only until a controlled restart: %w", ErrConflict)
 	}
+	if installationID != "" && (action == "start" || action == "restart") {
+		var installationStatus string
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM game_installations WHERE id=?1`, installationID).Scan(&installationStatus); err != nil {
+			return domain.Job{}, false, err
+		}
+		if installationStatus != "ready" {
+			return domain.Job{}, false, fmt.Errorf("game installation is not ready: %w", ErrConflict)
+		}
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return domain.Job{}, false, err
 	}
-	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, InstanceID: instanceID, Type: action, Status: domain.JobQueued,
+	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, InstanceID: instanceID, InstallationID: installationID, Type: action, Status: domain.JobQueued,
 		Payload: payload, IdempotencyKey: idempotencyKey, RequestedBy: requestedBy, CreatedAt: time.Now().UTC()}
-	_, err = tx.ExecContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
-		VALUES(?1,?2,?3,?4,?5,?6,NULLIF(?7,''),?8,?9,NULLIF(?10,''))`, job.ID, job.NodeID, job.InstanceID, job.Type, job.Status,
-		string(raw), job.IdempotencyKey, nullableUUID(job.RequestedBy), job.CreatedAt, requestFingerprint)
+	_, err = tx.ExecContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,game_installation_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
+		VALUES(?1,?2,?3,NULLIF(?4,''),?5,?6,?7,NULLIF(?8,''),?9,?10,NULLIF(?11,''))`, job.ID, job.NodeID, job.InstanceID,
+		job.InstallationID, job.Type, job.Status, string(raw), job.IdempotencyKey, nullableUUID(job.RequestedBy), job.CreatedAt, requestFingerprint)
 	if err != nil {
 		if isSQLiteConstraint(err) {
 			return domain.Job{}, false, ErrConflict
@@ -126,6 +136,11 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 		"validate": "updating", "install": "installing", "reinstall": "installing"}
 	if status := transient[action]; status != "" {
 		if _, err := tx.ExecContext(ctx, `UPDATE instances SET status=?2,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, instanceID, status); err != nil {
+			return domain.Job{}, false, err
+		}
+	}
+	if action == "game.import" && installationID != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE game_installations SET status='validating',last_error='',updated_at=?2 WHERE id=?1`, installationID, job.CreatedAt); err != nil {
 			return domain.Job{}, false, err
 		}
 	}

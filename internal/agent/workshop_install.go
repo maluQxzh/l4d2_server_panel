@@ -42,7 +42,7 @@ func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source s
 	for index, itemID := range itemIDs {
 		baseProgress := 5 + index*55/len(itemIDs)
 		progress(baseProgress, fmt.Sprintf("downloading Workshop item %s (%d/%d)", itemID, index+1, len(itemIDs)))
-		files, err := e.steam.WorkshopItem(ctx, itemID, func(p int, message string) {
+		files, err := e.steamClient().WorkshopItem(ctx, itemID, func(p int, message string) {
 			if p > 0 {
 				progress(baseProgress+p*55/(100*len(itemIDs)), message)
 			}

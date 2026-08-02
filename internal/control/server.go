@@ -71,10 +71,6 @@ func (s *Server) Close() { s.agents.Close() }
 
 func (s *Server) RunHousekeeping(ctx context.Context) {
 	s.reconcilePortableUpdates(ctx)
-	// Maintenance windows have a deliberately small catch-up interval. Run the
-	// scheduler once at startup so a short Control restart does not add another
-	// full housekeeping tick before durable update intents are recovered.
-	s.runAutomaticMaintenanceUpdates(ctx, time.Now().UTC())
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -98,10 +94,6 @@ func (s *Server) RunHousekeeping(ctx context.Context) {
 						Data: map[string]any{"node_id": node.ID}}, true)
 				}
 			}
-			// Use the last completed update probe before starting another read
-			// probe. Once an automatic write is queued, the per-instance job index
-			// prevents another write from entering the same maintenance window.
-			s.runAutomaticMaintenanceUpdates(ctx, time.Now().UTC())
 			s.runMonitoringProbes(ctx)
 			s.runDueSchedules(ctx)
 			s.processNotificationDeliveries(ctx)
@@ -210,6 +202,15 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requireInteractiveSession, s.requireNodePermission(PermissionManage)).Post("/nodes/{nodeID}/quarantine/{entryID}/purge-confirmations", s.handleCreateQuarantinePurgeConfirmation)
 			r.With(s.requireInteractiveSession, s.requireNodePermission(PermissionManage)).Post("/nodes/{nodeID}/quarantine/{entryID}/purge", s.handlePurgeQuarantineEntry)
 			r.With(s.requireNodePermission(PermissionManage)).Delete("/nodes/{nodeID}", s.handleDeleteNode)
+
+			r.With(s.requirePermission(PermissionRead)).Get("/environments", s.handleListEnvironments)
+			r.Get("/environments/{environmentID}", s.handleGetEnvironment)
+			r.Post("/environments/{environmentID}/inspect", s.handleInspectEnvironment)
+			r.Post("/environments/{environmentID}/steamcmd/actions", s.handleSteamCMDAction)
+			r.Get("/environments/{environmentID}/game-installations", s.handleListGameInstallations)
+			r.Post("/environments/{environmentID}/game-installations", s.handleCreateGameInstallation)
+			r.Post("/environments/{environmentID}/game-installations/{installationID}/actions", s.handleGameInstallationAction)
+			r.Delete("/environments/{environmentID}/game-installations/{installationID}", s.handleQuarantineGameInstallation)
 
 			r.With(s.requirePermission(PermissionRead)).Get("/instances", s.handleListInstances)
 			r.With(s.requireInstancePermission(PermissionRead)).Get("/instances/{instanceID}", s.handleGetInstance)

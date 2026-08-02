@@ -32,6 +32,8 @@ type Executor struct {
 	registry                   *Registry
 	processes                  *ProcessManager
 	steam                      steamOperations
+	steamMu                    sync.RWMutex
+	runtimeEnvironment         *runtimeEnvironmentStore
 	logger                     *log.Logger
 	locks                      *keyedLocker
 	officialPackageResolver    func(context.Context, string) (OfficialPackage, error)
@@ -57,9 +59,17 @@ type steamOperations interface {
 }
 
 func NewExecutor(config *Config, paths *PathGuard, registry *Registry, processes *ProcessManager, logger *log.Logger) *Executor {
+	runtimeStore, err := newRuntimeEnvironmentStore(config)
+	if err != nil && logger != nil {
+		logger.Printf("load runtime environment state: %v", err)
+	}
+	steamPath := config.SteamCMDPath
+	if runtimeStore != nil && runtimeStore.snapshot().SteamCMDPath != "" {
+		steamPath = runtimeStore.snapshot().SteamCMDPath
+	}
 	return &Executor{
 		config: config, paths: paths, registry: registry, processes: processes,
-		steam: NewSteamCMD(config.SteamCMDPath, config.SteamCMDConcurrency), logger: logger, locks: newKeyedLocker(),
+		steam: NewSteamCMD(steamPath, config.SteamCMDConcurrency), runtimeEnvironment: runtimeStore, logger: logger, locks: newKeyedLocker(),
 		officialPackageResolver: ResolveOfficialPackage, workshopCollectionResolver: ResolveWorkshopCollection,
 		packageDownloader: func(ctx context.Context, source, destination string, official bool) (string, int64, error) {
 			if official {
@@ -92,6 +102,19 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 	}
 	progress(1, "preparing operation")
 	switch action {
+	case "environment.inspect":
+		return e.inspectRuntimeEnvironment(ctx, job, progress)
+	case "steamcmd.configure":
+		return e.configureSteamCMD(ctx, job, "custom", progress)
+	case "steamcmd.clear":
+		return e.clearSteamCMD(progress)
+	case "steamcmd.install", "steamcmd.repair":
+		return e.installManagedSteamCMD(ctx, progress)
+	case "game.install", "game.import", "game.validate", "game.update", "game.reinstall", "game.quarantine":
+		if action == "game.import" && job.InstanceID != "" {
+			return e.importInstance(ctx, job, progress)
+		}
+		return e.gameInstallationAction(ctx, job, action, progress)
 	case "create":
 		return e.create(ctx, job, progress)
 	case "configure":
@@ -171,6 +194,18 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 	default:
 		return nil, fmt.Errorf("unsupported job type %q", job.Type)
 	}
+}
+
+func (e *Executor) steamClient() steamOperations {
+	e.steamMu.RLock()
+	defer e.steamMu.RUnlock()
+	return e.steam
+}
+
+func (e *Executor) replaceSteamClient(path string) {
+	e.steamMu.Lock()
+	e.steam = NewSteamCMD(path, e.config.SteamCMDConcurrency)
+	e.steamMu.Unlock()
 }
 
 func agentJobRequiresInstanceLock(action string, payload map[string]any) bool {
@@ -545,7 +580,8 @@ func (e *Executor) install(ctx context.Context, job domain.Job, reinstall bool, 
 	}
 	validate := reinstall || payload.Validate
 	progress(5, "starting SteamCMD")
-	err = e.steam.Install(ctx, path, appID, validate, func(p int, message string) {
+	steam := e.steamClient()
+	err = steam.Install(ctx, path, appID, validate, func(p int, message string) {
 		if p > 0 {
 			progress(5+p*9/10, message)
 		}
@@ -559,7 +595,7 @@ func (e *Executor) install(ctx context.Context, job domain.Job, reinstall bool, 
 		progress(100, "L4D2 dedicated server installed")
 	}
 	result := map[string]any{"instance_id": record.ID, "path": path, "app_id": appID, "validated": validate}
-	if buildID, source, buildErr := e.steam.InstalledBuildID(path, appID); buildErr == nil {
+	if buildID, source, buildErr := steam.InstalledBuildID(path, appID); buildErr == nil {
 		result["build_id"] = buildID
 		result["build_source"] = source
 	}
@@ -821,7 +857,8 @@ func (e *Executor) update(ctx context.Context, job domain.Job, validate bool, pr
 		return nil, err
 	}
 	progress(40, "updating with SteamCMD")
-	if err := e.steam.Install(ctx, path, L4D2DedicatedAppID, validate, func(p int, m string) {
+	steam := e.steamClient()
+	if err := steam.Install(ctx, path, L4D2DedicatedAppID, validate, func(p int, m string) {
 		if p > 0 {
 			progress(40+p/2, m)
 		}
@@ -829,7 +866,7 @@ func (e *Executor) update(ctx context.Context, job domain.Job, validate bool, pr
 		return nil, err
 	}
 	result = map[string]any{"updated": true, "validated": validate, "was_running": wasRunning}
-	if buildID, source, buildErr := e.steam.InstalledBuildID(path, L4D2DedicatedAppID); buildErr == nil {
+	if buildID, source, buildErr := steam.InstalledBuildID(path, L4D2DedicatedAppID); buildErr == nil {
 		result["build_id"] = buildID
 		result["build_source"] = source
 	}
@@ -854,12 +891,13 @@ func (e *Executor) checkUpdate(ctx context.Context, job domain.Job, progress Pro
 		return nil, err
 	}
 	progress(20, "querying Steam public branch metadata")
-	availableBuild, err := e.steam.PublicBuildID(ctx, L4D2DedicatedAppID)
+	steam := e.steamClient()
+	availableBuild, err := steam.PublicBuildID(ctx, L4D2DedicatedAppID)
 	if err != nil {
 		return nil, err
 	}
 	progress(75, "reading installed app manifest")
-	installedBuild, source, installedErr := e.steam.InstalledBuildID(path, L4D2DedicatedAppID)
+	installedBuild, source, installedErr := steam.InstalledBuildID(path, L4D2DedicatedAppID)
 	result := map[string]any{
 		"app_id":          L4D2DedicatedAppID,
 		"available":       false,
@@ -996,6 +1034,14 @@ func (e *Executor) importInstance(ctx context.Context, job domain.Job, progress 
 	if err := e.registry.Put(record); err != nil {
 		return nil, err
 	}
+	if job.InstallationID != "" && e.runtimeEnvironment != nil {
+		if err := e.runtimeEnvironment.update(func(state *runtimeEnvironmentState) {
+			state.Installations[job.InstallationID] = runtimeGameRecord{RootIndex: rootIndex, RelativePath: relative}
+		}); err != nil {
+			_ = e.registry.Delete(job.InstanceID)
+			return nil, err
+		}
+	}
 	// Do not alter files underneath an already-running, externally-owned
 	// server. The generated configuration is installed by restartExternal
 	// immediately before the Agent takes process ownership.
@@ -1015,8 +1061,8 @@ func (e *Executor) importInstance(ctx context.Context, job domain.Job, progress 
 	} else {
 		result["status"] = "stopped"
 	}
-	if e.steam != nil {
-		if buildID, source, buildErr := e.steam.InstalledBuildID(path, L4D2DedicatedAppID); buildErr == nil {
+	if steam := e.steamClient(); steam != nil {
+		if buildID, source, buildErr := steam.InstalledBuildID(path, L4D2DedicatedAppID); buildErr == nil {
 			result["build_id"], result["build_source"] = buildID, source
 		}
 	}

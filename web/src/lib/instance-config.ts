@@ -24,15 +24,7 @@ export function buildInstanceConfigUpdate(
   // Defensively discard values from older clients/state that used to put the
   // password in config. InstanceConfig intentionally no longer declares it.
   const { server_password: _legacyPassword, ...safeConfig } = config as InstanceConfig & { server_password?: string };
-  const update: InstanceConfigUpdate = {
-    version,
-    config: {
-      ...safeConfig,
-      // Keep the field explicit so an empty input reliably disables an
-      // existing automatic-update window instead of being treated as absent.
-      maintenance_cron: safeConfig.maintenance_cron?.trim() || "",
-    } as InstanceConfig,
-  };
+  const update: InstanceConfigUpdate = { version, config: safeConfig };
   if (password.kind === "set") update.server_password = password.value;
   if (password.kind === "clear") update.server_password = "";
   return update;

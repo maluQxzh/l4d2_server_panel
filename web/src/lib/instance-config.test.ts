@@ -37,21 +37,3 @@ describe("实例配置密码三态", () => {
     expect(payload.config).not.toHaveProperty("server_password");
   });
 });
-
-describe("自动更新维护窗口", () => {
-  it("保留并发送标准五段 cron", () => {
-    const payload = buildInstanceConfigUpdate(
-      3,
-      { ...config, maintenance_cron: "0 4 * * *" },
-      { kind: "unchanged" },
-    );
-
-    expect(payload.config.maintenance_cron).toBe("0 4 * * *");
-  });
-
-  it("未设置时显式发送空值以关闭维护窗口", () => {
-    const payload = buildInstanceConfigUpdate(3, config, { kind: "unchanged" });
-
-    expect(payload.config).toHaveProperty("maintenance_cron", "");
-  });
-});

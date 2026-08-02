@@ -8,7 +8,6 @@ import {
   ChevronRight,
   CircleDot,
   ClipboardList,
-  CloudDownload,
   Code2,
   Download,
   File,
@@ -16,6 +15,7 @@ import {
   Folder,
   Gamepad2,
   History,
+  HardDrive,
   Map,
   PackageOpen,
   Play,
@@ -60,7 +60,7 @@ import {
 } from "../lib/backup-download";
 import { bytes, dateTime, duration, jobLabels } from "../lib/format";
 import { buildInstanceConfigUpdate, type ServerPasswordChange } from "../lib/instance-config";
-import { buildStartupArgumentPreview, canAccessInstance, lifecycleActionAllowed, maintenancePayload, type LifecycleAction } from "../lib/instance-lifecycle";
+import { buildStartupArgumentPreview, canAccessInstance, lifecycleActionAllowed, maintenancePayload } from "../lib/instance-lifecycle";
 import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, PackageRecord, Player, PlayerBan, ScheduleRecord } from "../lib/types";
 
 const tabs = [
@@ -170,84 +170,29 @@ function OverviewTab({ instance }: { instance: InstanceRecord }) {
   return <div className="overview-layout">
     <div className="overview-main">
       <section className="detail-stat-grid"><Card><span>在线玩家</span><strong>{instance.players}<small> / {instance.max_players}</small></strong><div className="mini-progress"><ProgressBar value={(instance.players / Math.max(instance.max_players, 1)) * 100} /></div></Card><Card><span>当前地图</span><strong className="text-value">{instance.map || "未载入"}</strong><small><Map size={14} />{instance.mode || instance.config.mode}</small></Card><Card><span>连续运行</span><strong className="text-value">{duration(instance.started_at)}</strong><small><Power size={14} />PID {instance.pid || "—"}</small></Card><Card><span>游戏构建</span><strong className="text-value">{instance.build_id || "待检测"}</strong><small><Box size={14} />配置版本 v{instance.version}</small></Card></section>
-      <LifecycleMaintenanceCard instance={instance} />
+      <InstanceBindingCard instance={instance} />
       <Card><div className="card-heading"><div><span className="eyebrow">RECENT OPERATIONS</span><h2>最近操作</h2></div><Link to="/jobs">全部任务 <ChevronRight size={15} /></Link></div>{jobs.isPending ? <LoadingBlock /> : instanceJobs.length ? <div className="detail-job-list">{instanceJobs.map((job) => <div key={job.id}><div className={`job-icon job-icon--${job.status}`}><Code2 size={15} /></div><div><strong>{jobLabels[job.type] || job.type}</strong><small>{job.message || dateTime(job.created_at)}</small></div><StatusBadge status={job.status} />{["queued", "dispatched", "running"].includes(job.status) && <div className="job-inline-progress"><ProgressBar value={job.progress} /><span>{job.progress}%</span></div>}</div>)}</div> : <EmptyState title="还没有操作记录" description="启动、更新或备份实例后，任务进度会显示在这里。" />}</Card>
     </div>
-    <aside className="overview-side"><Card><div className="card-heading"><div><span className="eyebrow">SERVER PROFILE</span><h2>实例资料</h2></div></div><div className="detail-pairs detail-pairs--stack"><div><span>所属节点</span><strong>{instance.node_id}</strong></div><div><span>安装路径</span><code>{instance.path || "由 Agent 管理"}</code></div><div><span>游戏端口</span><strong>{instance.port}</strong></div><div><span>SourceTV 端口</span><strong>{instance.tv_port || "未启用"}</strong></div><div><span>自动重启</span><strong>{instance.config.auto_restart ? "已启用" : "已关闭"}</strong></div><div><span>公开状态</span><strong>{instance.config.public_status ? "可见" : "隐藏"}</strong></div></div></Card><StartupArgumentsCard instance={instance} /><Card className="maintenance-card"><CloudDownload size={22} /><div><strong>更新与维护</strong><span>{instance.config.maintenance_cron ? `维护计划：${instance.config.maintenance_cron}` : "尚未设置维护窗口"}</span></div><Link to={`?tab=config`}>配置窗口 <ChevronRight size={14} /></Link></Card></aside>
+    <aside className="overview-side"><Card><div className="card-heading"><div><span className="eyebrow">SERVER PROFILE</span><h2>实例资料</h2></div></div><div className="detail-pairs detail-pairs--stack"><div><span>所属节点</span><strong>{instance.node_id}</strong></div><div><span>游戏安装</span><code>{instance.game_installation_id || "尚未绑定"}</code></div><div><span>安装路径</span><code>{instance.path || "等待 Agent 校验"}</code></div><div><span>游戏端口</span><strong>{instance.port}</strong></div><div><span>SourceTV 端口</span><strong>{instance.tv_port || "未启用"}</strong></div><div><span>自动重启</span><strong>{instance.config.auto_restart ? "已启用" : "已关闭"}</strong></div><div><span>公开状态</span><strong>{instance.config.public_status ? "可见" : "隐藏"}</strong></div></div></Card><StartupArgumentsCard instance={instance} /><Card className="maintenance-card"><Wrench size={22} /><div><strong>游戏文件维护</strong><span>SteamCMD、更新、校验和重装统一在运行环境中执行</span></div><Link to="/environments">打开运行环境 <ChevronRight size={14} /></Link></Card></aside>
   </div>;
 }
 
-type MaintenanceAction = Extract<LifecycleAction, "validate" | "update" | "reinstall">;
-
-const maintenanceCopy: Record<MaintenanceAction, { title: string; description: string; confirm: string }> = {
-  validate: { title: "校验游戏文件", description: "先创建检查点，再由 SteamCMD 校验 App 222860。运行中的实例会广播倒计时、停服并在完成后恢复运行。", confirm: "确认校验" },
-  update: { title: "更新游戏服务器", description: "先创建检查点，再下载当前公开分支。运行中的实例会广播 10/5/1 分钟倒计时并自动重启。", confirm: "确认更新" },
-  reinstall: { title: "重新安装游戏文件", description: "执行完整文件校验与重新下载。配置、插件和备份不会作为游戏本体删除，但操作耗时可能较长。", confirm: "确认重新安装" },
-};
-
-function LifecycleMaintenanceCard({ instance }: { instance: InstanceRecord }) {
+function InstanceBindingCard({ instance }: { instance: InstanceRecord }) {
   const { user } = useAuth();
   const toast = useToast();
-  const client = useQueryClient();
   const navigate = useNavigate();
-  const [selected, setSelected] = useState<MaintenanceAction | null>(null);
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deleteMode, setDeleteMode] = useState<"detach" | "quarantine">("detach");
-  const [confirmation, setConfirmation] = useState("");
-  const permissions = {
-    operate: canAccessInstance(user, instance, "operate"),
-    manage: canAccessInstance(user, instance, "manage"),
-  };
-  const allowed = (action: LifecycleAction) => lifecycleActionAllowed(action, instance.status, permissions);
-  const disabledReason = (action: LifecycleAction) => {
-    const required = action === "reinstall" || action === "detach" || action === "quarantine" ? permissions.manage : permissions.operate;
-    return !required ? "当前角色没有执行此操作的权限" : instance.status === "external" ? "外部实例受控接管前不允许修改文件" : "当前实例正处于过渡状态，请等待任务完成";
-  };
-  const maintenance = useMutation({
-    mutationFn: (action: MaintenanceAction) => api.instanceAction(instance.id, action, maintenancePayload(instance.status)),
-    onSuccess: (_result, action) => {
-      setSelected(null);
-      toast.push(`${actionLabel(action)}任务已提交，可在下方或任务中心查看进度`);
-      void client.invalidateQueries({ queryKey: ["jobs"] });
-      void client.invalidateQueries({ queryKey: ["instances", instance.id] });
-    },
-    onError: (error) => toast.push(error.message, "error"),
-  });
+  const canManage = canAccessInstance(user, instance, "manage");
   const remove = useMutation({
-    mutationFn: () => api.deleteInstance(instance.id, deleteMode),
-    onSuccess: () => {
-      toast.push(deleteMode === "detach" ? "解除管理任务已提交" : "隔离实例文件任务已提交");
-      void client.invalidateQueries({ queryKey: ["jobs"] });
-      void client.invalidateQueries({ queryKey: ["instances"] });
-      navigate("/jobs");
-    },
+    mutationFn: () => api.deleteInstance(instance.id, "detach"),
+    onSuccess: () => { toast.push("实例已提交解除绑定，游戏文件将保留"); navigate("/jobs"); },
     onError: (error) => toast.push(error.message, "error"),
   });
-  const openDelete = () => {
-    setDeleteMode("detach");
-    setConfirmation("");
-    setDeleteOpen(true);
-  };
-  const closeDelete = () => {
-    setConfirmation("");
-    setDeleteOpen(false);
-  };
-  const canDelete = allowed("detach") || allowed("quarantine");
-  const selectedCopy = selected ? maintenanceCopy[selected] : null;
   return <Card className="lifecycle-card">
-    <div className="card-heading"><div><span className="eyebrow">LIFECYCLE</span><h2>维护与生命周期</h2></div><Link to="/jobs">查看任务进度 <ChevronRight size={15} /></Link></div>
+    <div className="card-heading"><div><span className="eyebrow">GAME INSTALLATION</span><h2>游戏安装绑定</h2></div><Link to="/environments">运行环境 <ChevronRight size={15} /></Link></div>
     <div className="lifecycle-actions">
-      <div><Wrench size={19} /><span><strong>校验文件</strong><small>检查并修复损坏的游戏文件</small></span><Button variant="secondary" disabled={!allowed("validate")} title={!allowed("validate") ? disabledReason("validate") : undefined} onClick={() => setSelected("validate")}>校验</Button></div>
-      <div><CloudDownload size={19} /><span><strong>更新游戏</strong><small>更新到 Steam 当前公开构建</small></span><Button variant="secondary" disabled={!allowed("update")} title={!allowed("update") ? disabledReason("update") : undefined} onClick={() => setSelected("update")}>更新</Button></div>
-      <div><RefreshCw size={19} /><span><strong>重新安装</strong><small>完整校验并重新下载缺失文件</small></span><Button variant="secondary" disabled={!allowed("reinstall")} title={!allowed("reinstall") ? disabledReason("reinstall") : undefined} onClick={() => setSelected("reinstall")}>重新安装</Button></div>
-      <div className="lifecycle-danger"><Trash2 size={19} /><span><strong>删除或解除管理</strong><small>仅解除记录，或将实例目录隔离 7 天</small></span><Button variant="danger" disabled={!canDelete} title={!canDelete ? disabledReason("detach") : undefined} onClick={openDelete}>删除 / 解除</Button></div>
+      <div><HardDrive size={19} /><span><strong>{instance.game_installation_id ? "已绑定独占游戏安装" : "游戏安装未就绪"}</strong><small>{instance.path || "请到运行环境检查目录状态"}</small></span><Button variant="secondary" onClick={() => navigate("/environments")}>查看环境</Button></div>
+      <div className="lifecycle-danger"><Trash2 size={19} /><span><strong>删除实例并解除绑定</strong><small>保留全部游戏文件；之后可再次绑定或在运行环境中隔离删除</small></span><Button variant="danger" loading={remove.isPending} disabled={!canManage} title={!canManage ? "当前角色没有实例管理权限" : undefined} onClick={() => { if (window.confirm(`删除实例“${instance.name}”并保留游戏文件？`)) remove.mutate(); }}>删除实例</Button></div>
     </div>
-    <Modal open={Boolean(selected)} onClose={() => setSelected(null)} title={selectedCopy?.title || "维护操作"} description={selectedCopy?.description} footer={<><Button variant="secondary" onClick={() => setSelected(null)}>取消</Button><Button onClick={() => selected && maintenance.mutate(selected)} loading={maintenance.isPending} disabled={!selected || !allowed(selected)}>{selectedCopy?.confirm || "确认"}</Button></>}>
-      <div className="form-stack"><div className="form-note"><strong>持久化任务</strong><span>提交后会获得任务 ID；断线或刷新页面不会重复执行，可在任务中心继续查看进度。</span></div>{(instance.status === "running" || instance.status === "degraded") && <div className="form-warning"><ShieldAlert size={17} />服务器会依次广播 10、5、1 分钟倒计时，然后备份、停服、维护并恢复运行。</div>}{selected === "reinstall" && <div className="danger-note"><ShieldAlert size={20} /><div><strong>高影响操作</strong><span>Steam 不可用或磁盘空间不足会导致任务失败；Agent 会尽力恢复维护前仍可启动的文件。</span></div></div>}</div>
-    </Modal>
-    <Modal open={deleteOpen} onClose={closeDelete} title="删除或解除实例管理" description="隔离文件必须先停止实例；外部实例仅支持解除管理。操作完成后会移除面板记录。" footer={<><Button variant="secondary" onClick={closeDelete}>取消</Button><Button variant="danger" onClick={() => remove.mutate()} loading={remove.isPending} disabled={confirmation !== instance.name || !allowed(deleteMode)}>确认执行</Button></>}>
-      <div className="form-stack"><div className="delete-mode-grid"><label className={deleteMode === "detach" ? "active" : ""}><input type="radio" name="delete-mode" value="detach" checked={deleteMode === "detach"} onChange={() => setDeleteMode("detach")} /><span><strong>仅解除管理</strong><small>保留所有实例文件与外部进程，只移除 Agent 和面板记录。</small></span></label><label className={`${deleteMode === "quarantine" ? "active" : ""} ${!allowed("quarantine") ? "disabled" : ""}`}><input type="radio" name="delete-mode" value="quarantine" checked={deleteMode === "quarantine"} disabled={!allowed("quarantine")} onChange={() => setDeleteMode("quarantine")} /><span><strong>隔离实例文件</strong><small>将目录移入节点隔离区至少保留 7 天；外部实例不可使用。</small></span></label></div><div className="danger-note"><ShieldAlert size={20} /><div><strong>需要实例名称确认</strong><span>请输入“{instance.name}”确认移除。保留期到期后文件仍不会自动清理，管理员必须在节点隔离区再次确认才能彻底删除。</span></div></div><Field label="实例名称确认"><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" /></Field></div>
-    </Modal>
   </Card>;
 }
 
@@ -545,28 +490,6 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
               }
             />
           </Field>
-          <Field
-            label="自动更新维护窗口"
-            hint="标准五段 Cron：分 时 日 月 周；留空即关闭。"
-          >
-            <input
-              value={config.maintenance_cron || ""}
-              onChange={(event) =>
-                setConfig({ ...config, maintenance_cron: event.target.value })
-              }
-              maxLength={100}
-              placeholder="0 4 * * *"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </Field>
-          <div className="form-note">
-            <strong>自动更新策略</strong>
-            <span>
-              按 Control 全局时区执行；仅检测到 update_available
-              时触发，依次广播 10、5、1 分钟，并在同一节点上串行维护实例。
-            </span>
-          </div>
           <div className="toggle-grid">
             <Toggle
               checked={config.auto_restart}
@@ -1348,7 +1271,7 @@ function ScheduleModal({ open, instance, onClose }: { open: boolean; instance: I
   const [name, setName] = useState(""); const [cron, setCron] = useState("0 4 * * *"); const [action, setAction] = useState("backup"); const toast = useToast();
   const client = useQueryClient();
   const create = useMutation({ mutationFn: () => api.instanceAction(instance.id, "create_schedule", { name, cron, action, enabled: true }), onSuccess: () => { toast.push("计划任务已提交"); void client.invalidateQueries({ queryKey: ["instances", instance.id, "schedules"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
-  return <Modal open={open} onClose={onClose} title="新增计划任务" description="计划按中心端时区执行，长操作仍遵循实例写锁。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={() => create.mutate()} loading={create.isPending} disabled={!name || !cron}>创建计划</Button></>}><div className="form-stack"><Field label="计划名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="每日备份" /></Field><div className="form-grid"><Field label="执行动作"><select value={action} onChange={(event) => setAction(event.target.value)}><option value="backup">创建备份</option><option value="restart">重启实例</option><option value="update">检查并更新</option><option value="validate">校验文件</option><option value="broadcast">聊天广播</option></select></Field><Field label="Cron 表达式" hint="分 时 日 月 周"><input value={cron} onChange={(event) => setCron(event.target.value)} /></Field></div><div className="form-note"><strong>维护广播</strong><span>更新与计划重启会在执行前依次广播 10、5、1 分钟倒计时。</span></div></div></Modal>;
+  return <Modal open={open} onClose={onClose} title="新增计划任务" description="计划按中心端时区执行，长操作仍遵循实例写锁。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={() => create.mutate()} loading={create.isPending} disabled={!name || !cron}>创建计划</Button></>}><div className="form-stack"><Field label="计划名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="每日备份" /></Field><div className="form-grid"><Field label="执行动作"><select value={action} onChange={(event) => setAction(event.target.value)}><option value="backup">创建备份</option><option value="restart">重启实例</option><option value="broadcast">聊天广播</option></select></Field><Field label="Cron 表达式" hint="分 时 日 月 周"><input value={cron} onChange={(event) => setCron(event.target.value)} /></Field></div><div className="form-note"><strong>维护广播</strong><span>计划重启会在执行前依次广播 10、5、1 分钟；游戏文件维护只在运行环境中手动触发。</span></div></div></Modal>;
 }
 
 function AuditTab({ instance }: { instance: InstanceRecord }) {

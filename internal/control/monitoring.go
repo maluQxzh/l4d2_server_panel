@@ -384,26 +384,6 @@ func (s *Server) runMonitoringProbes(ctx context.Context) {
 			s.dispatchSoon(job.NodeID)
 		}
 	}
-	updateTargets, err := s.store.UpdateMonitoringTargets(ctx)
-	if err != nil {
-		s.logger.Error("load update monitoring targets", "error", err)
-		return
-	}
-	for _, target := range updateTargets {
-		// Previous compatible Agents did not implement this command. Capability
-		// gating prevents the control plane from knowingly dispatching a probe
-		// that the connected Agent would reject as unsupported.
-		if !s.agents.Supports(target.NodeID, "check_update") {
-			continue
-		}
-		key := updateProbeKey(target.InstanceID, now)
-		job, reused, queueErr := s.store.QueueSystemProbe(ctx, target, "check_update", key)
-		if queueErr != nil && !errors.Is(queueErr, ErrConflict) {
-			s.logger.Error("queue game update probe", "instance_id", target.InstanceID, "error", queueErr)
-		} else if !reused {
-			s.dispatchSoon(job.NodeID)
-		}
-	}
 }
 
 func updateProbeKey(instanceID string, at time.Time) string {

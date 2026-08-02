@@ -85,7 +85,7 @@ func TestAbortBackupUploadValidatesKeyAndEmptyBodyBeforeStore(t *testing.T) {
 func TestOperatorCannotSubmitManageInstanceActions(t *testing.T) {
 	server := &Server{}
 	actions := []string{
-		"reinstall", "install_package", "toggle_package",
+		"install_package", "toggle_package",
 	}
 	for _, action := range actions {
 		t.Run(action, func(t *testing.T) {
@@ -115,15 +115,12 @@ func TestGenericInstanceActionContractIsSeparateFromInternalJobs(t *testing.T) {
 		"install_package": PermissionManage,
 		"kick_player":     PermissionOperate,
 		"rcon":            PermissionOperate,
-		"reinstall":       PermissionManage,
 		"restart":         PermissionOperate,
 		"restore":         PermissionOperate,
 		"start":           PermissionOperate,
 		"stop":            PermissionOperate,
 		"toggle_package":  PermissionManage,
 		"unban_player":    PermissionOperate,
-		"update":          PermissionOperate,
-		"validate":        PermissionOperate,
 	}
 	if len(genericInstanceActionPermissions) != len(publicActions) {
 		t.Fatalf("generic action allowlist has %d entries, want %d", len(genericInstanceActionPermissions), len(publicActions))
@@ -139,8 +136,8 @@ func TestGenericInstanceActionContractIsSeparateFromInternalJobs(t *testing.T) {
 	}
 
 	internalOnly := []string{
-		"a2s.info", "a2s.players", "backup.chunk", "backup.upload.abort", "configure", "create", "delete", "detach", "file",
-		"import", "install", "install_mod", "list", "logs.chunk", "logs.search", "rcon.players", "rollback_package",
+		"a2s.info", "a2s.players", "backup.chunk", "backup.upload.abort", "configure", "create", "delete", "detach", "file", "game.import",
+		"import", "install", "install_mod", "list", "logs.chunk", "logs.search", "rcon.players", "reinstall", "rollback_package", "update", "validate",
 	}
 	for _, action := range internalOnly {
 		if genericInstanceActionAllowed(action) {
@@ -159,7 +156,7 @@ func TestGenericInstanceActionContractIsSeparateFromInternalJobs(t *testing.T) {
 
 func TestInternalJobsCannotBeSubmittedThroughGenericActions(t *testing.T) {
 	for _, action := range []string{
-		"a2s.info", "a2s.players", "backup.chunk", "backup.upload.abort", "configure", "create", "file", "import", "install",
+		"a2s.info", "a2s.players", "backup.chunk", "backup.upload.abort", "configure", "create", "file", "game.import", "import", "install",
 		"install_mod", "list", "logs.chunk", "logs.search", "rcon.players",
 	} {
 		t.Run(action, func(t *testing.T) {

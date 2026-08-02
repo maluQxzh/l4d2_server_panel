@@ -18,7 +18,6 @@ config_dir=/etc/l4d2panel
 config_path=$config_dir/agent.json
 data_root=/var/lib/l4d2panel
 instance_root=/srv/l4d2panel/instances
-steam_root=$data_root/steamcmd
 install_root=/opt/l4d2panel/bin
 target_binary=$install_root/l4d2panel-agent
 
@@ -92,29 +91,7 @@ if ! id "$service_user" >/dev/null 2>&1; then
 fi
 install -d -o root -g root -m 0755 "$install_root"
 install -d -o root -g "$service_user" -m 0770 "$config_dir"
-install -d -o "$service_user" -g "$service_user" -m 0750 "$data_root" "$steam_root" "$instance_root"
-
-steam_binary=$steam_root/steamcmd.sh
-if [ ! -x "$steam_binary" ]; then
-  steam_archive=$(mktemp /tmp/l4d2panel-steamcmd.XXXXXX.tar.gz)
-  steam_staging=$(mktemp -d /tmp/l4d2panel-steamcmd.XXXXXX)
-  cleanup_steam() {
-    case "$steam_staging" in /tmp/l4d2panel-steamcmd.*) rm -rf -- "$steam_staging" ;; esac
-    rm -f -- "$steam_archive"
-  }
-  trap cleanup_steam EXIT INT TERM
-  curl --fail --location --proto '=https' --tlsv1.2 \
-    https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz -o "$steam_archive"
-  tar -tzf "$steam_archive" | awk '/^\// || (^|\/)\.\.($|\/)/ { bad=1 } END { exit bad }' || die 'SteamCMD 压缩包包含越界路径。'
-  tar -tvzf "$steam_archive" | awk 'substr($1,1,1) !~ /^[-d]$/ { bad=1 } END { exit bad }' || die 'SteamCMD 压缩包包含链接或特殊文件。'
-  chown "$service_user:$service_user" "$steam_archive" "$steam_staging"
-  run_as_agent tar -xzf "$steam_archive" --no-same-owner --no-same-permissions -C "$steam_staging"
-  cp -R "$steam_staging"/. "$steam_root"/
-  chown -R "$service_user:$service_user" "$steam_root"
-  cleanup_steam
-  trap - EXIT INT TERM
-  run_as_agent "$steam_binary" +quit
-fi
+install -d -o "$service_user" -g "$service_user" -m 0750 "$data_root" "$instance_root"
 
 downloaded_binary=$(mktemp /tmp/l4d2panel-agent.XXXXXX)
 checksum_file=
@@ -183,7 +160,7 @@ if [ "$keep_existing_enrollment" = false ]; then
   "enrollment_token": "$ENROLLMENT_TOKEN",
   "node_name": "$NODE_NAME",
   "instance_roots": ["$instance_root"],
-  "steamcmd_path": "$steam_binary",
+  "steamcmd_path": "",
   "data_dir": "$data_root",
   "heartbeat_interval": "10s",
   "metrics_interval": "15s",

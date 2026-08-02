@@ -354,6 +354,88 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		return nil
 	}
 	switch job.Type {
+	case "environment.inspect":
+		dependencies, err := json.Marshal(job.Result["system_dependencies"])
+		if err != nil {
+			return err
+		}
+		if string(dependencies) == "null" {
+			dependencies = []byte("{}")
+		}
+		steamError := stringFromAny(job.Result["steamcmd_error"])
+		_, err = s.db.ExecContext(ctx, `UPDATE environments SET system_dependencies=?2,
+			steamcmd_path=?3,steamcmd_source=?4,steamcmd_status=?5,steamcmd_version=?6,last_error=?7,
+			last_inspected_at=?8,updated_at=?8 WHERE node_id=?1`, job.NodeID, string(dependencies),
+			stringFromAny(job.Result["steamcmd_path"]), defaultString(stringFromAny(job.Result["steamcmd_source"]), "unconfigured"),
+			defaultString(stringFromAny(job.Result["steamcmd_status"]), "unconfigured"), stringFromAny(job.Result["steamcmd_version"]),
+			steamError, jobProjectionTimestamp(job))
+		if err != nil {
+			return err
+		}
+		if values, ok := job.Result["installations"].([]any); ok {
+			for _, value := range values {
+				item, ok := value.(map[string]any)
+				if !ok || stringFromAny(item["id"]) == "" {
+					continue
+				}
+				status := stringFromAny(item["status"])
+				if status != "ready" && status != "degraded" {
+					continue
+				}
+				if _, err := s.db.ExecContext(ctx, `UPDATE game_installations SET status=?3,build_id=COALESCE(NULLIF(?4,''),build_id),
+					last_error=?5,last_checked_at=?6,updated_at=?6 WHERE id=?1 AND node_id=?2`, stringFromAny(item["id"]), job.NodeID,
+					status, stringFromAny(item["build_id"]), stringFromAny(item["error"]), jobProjectionTimestamp(job)); err != nil {
+					return err
+				}
+				if status == "degraded" {
+					if _, err := s.db.ExecContext(ctx, `UPDATE instances SET status='degraded',updated_at=?2 WHERE installation_id=?1
+						AND status NOT IN ('starting','running','stopping')`, stringFromAny(item["id"]), jobProjectionTimestamp(job)); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return nil
+	case "steamcmd.configure", "steamcmd.install", "steamcmd.repair":
+		_, err := s.db.ExecContext(ctx, `UPDATE environments SET steamcmd_path=?2,steamcmd_source=?3,
+			steamcmd_status='ready',steamcmd_version=?4,last_error='',last_inspected_at=?5,updated_at=?5 WHERE node_id=?1`,
+			job.NodeID, stringFromAny(job.Result["steamcmd_path"]), stringFromAny(job.Result["steamcmd_source"]),
+			stringFromAny(job.Result["steamcmd_version"]), jobProjectionTimestamp(job))
+		return err
+	case "steamcmd.clear":
+		_, err := s.db.ExecContext(ctx, `UPDATE environments SET steamcmd_path='',steamcmd_source='unconfigured',
+			steamcmd_status='unconfigured',steamcmd_version='',last_error='',last_inspected_at=?2,updated_at=?2 WHERE node_id=?1`,
+			job.NodeID, jobProjectionTimestamp(job))
+		return err
+	case "game.install", "game.import", "game.validate", "game.update", "game.reinstall":
+		_, err := s.db.ExecContext(ctx, `UPDATE game_installations SET status='ready',build_id=COALESCE(NULLIF(?2,''),build_id),
+			last_error='',last_checked_at=?3,updated_at=?3 WHERE id=?1`, job.InstallationID,
+			stringFromAny(job.Result["build_id"]), jobProjectionTimestamp(job))
+		if err != nil {
+			return err
+		}
+		_, err = s.db.ExecContext(ctx, `UPDATE instances SET build_id=COALESCE(NULLIF(?2,''),build_id),
+			status=CASE WHEN status IN ('installing','updating','degraded') THEN 'stopped' ELSE status END,
+			updated_at=?3 WHERE installation_id=?1`, job.InstallationID, stringFromAny(job.Result["build_id"]), jobProjectionTimestamp(job))
+		return err
+	case "game.quarantine":
+		entryName := stringFromAny(job.Result["quarantine_entry"])
+		rootIndex := intFromAny(job.Result["root_index"])
+		if entryName == "" {
+			return errors.New("Agent returned invalid game quarantine metadata")
+		}
+		now := jobProjectionTimestamp(job)
+		_, err := s.db.ExecContext(ctx, `INSERT INTO quarantine_entries(id,node_id,source_job_id,original_instance_id,instance_name,
+			root_index,entry_name,quarantined_at,retention_expires_at)
+			SELECT ?1,installation.node_id,?2,installation.id,installation.relative_path,?3,?4,?5,?6
+			FROM game_installations installation WHERE installation.id=?7
+			ON CONFLICT(source_job_id) DO NOTHING`, uuid.NewString(), job.ID, rootIndex, entryName, now, now.Add(7*24*time.Hour), job.InstallationID)
+		if err != nil {
+			return err
+		}
+		_, err = s.db.ExecContext(ctx, `UPDATE game_installations SET status='quarantined',last_error='',last_checked_at=?2,updated_at=?2 WHERE id=?1`,
+			job.InstallationID, now)
+		return err
 	case "start", "restart":
 		if stringFromAny(job.Result["status"]) == "stopped" {
 			_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,started_at=NULL,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID)
@@ -400,6 +482,10 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		}
 		_, err := s.db.ExecContext(ctx, `UPDATE instances SET status=?2,pid=?3,path=COALESCE(NULLIF(?4,''),path),
 			build_id=COALESCE(NULLIF(?5,''),build_id),updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID, status, pid, path, buildID)
+		if err == nil && job.InstallationID != "" {
+			_, err = s.db.ExecContext(ctx, `UPDATE game_installations SET status='ready',build_id=COALESCE(NULLIF(?2,''),build_id),
+				last_error='',last_checked_at=?3,updated_at=?3 WHERE id=?1`, job.InstallationID, buildID, jobProjectionTimestamp(job))
+		}
 		return err
 	case "update", "validate":
 		buildID := stringFromAny(job.Result["build_id"])
@@ -555,6 +641,28 @@ func (s *Store) ApplyJobFailure(ctx context.Context, job domain.Job) error {
 	if job.Type == "start" || job.Type == "stop" || job.Type == "restart" || job.Type == "install" ||
 		job.Type == "reinstall" || job.Type == "import" || job.Type == "configure" || job.Type == "update" || job.Type == "validate" {
 		_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='degraded',updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID)
+		if err == nil && job.InstallationID != "" && (job.Type == "import" || job.Type == "install" || job.Type == "reinstall" || job.Type == "update" || job.Type == "validate") {
+			_, err = s.db.ExecContext(ctx, `UPDATE game_installations SET status='degraded',last_error=?2,last_checked_at=?3,updated_at=?3 WHERE id=?1`,
+				job.InstallationID, job.Message, jobProjectionTimestamp(job))
+		}
+		return err
+	}
+	if strings.HasPrefix(job.Type, "game.") && job.InstallationID != "" {
+		_, err := s.db.ExecContext(ctx, `UPDATE game_installations SET status='degraded',last_error=?2,
+			last_checked_at=?3,updated_at=?3 WHERE id=?1`, job.InstallationID, job.Message, jobProjectionTimestamp(job))
+		if err != nil {
+			return err
+		}
+		_, err = s.db.ExecContext(ctx, `UPDATE instances SET status='degraded',updated_at=?2 WHERE installation_id=?1`,
+			job.InstallationID, jobProjectionTimestamp(job))
+		return err
+	}
+	if strings.HasPrefix(job.Type, "steamcmd.") || job.Type == "environment.inspect" {
+		// SteamCMD changes are transactional on the Agent: a failed configure,
+		// install, repair, or clear leaves the previously active launcher intact.
+		// Preserve Control's last known-good source/path/status as well.
+		_, err := s.db.ExecContext(ctx, `UPDATE environments SET last_error=?2,updated_at=?3 WHERE node_id=?1`,
+			job.NodeID, job.Message, jobProjectionTimestamp(job))
 		return err
 	}
 	if job.Type == "purge_quarantine" {
@@ -568,6 +676,13 @@ func (s *Store) ApplyJobFailure(ctx context.Context, job domain.Job) error {
 		return nil
 	}
 	return nil
+}
+
+func defaultString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func jobProjectionTimestamp(job domain.Job) time.Time {
@@ -615,6 +730,13 @@ func applyJobCancellationTx(ctx context.Context, tx *sql.Tx, job domain.Job) err
 		return err
 	}
 	switch job.Type {
+	case "game.install", "game.import", "game.validate", "game.update", "game.reinstall", "game.quarantine":
+		if job.InstallationID == "" {
+			return nil
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE game_installations SET status='degraded',last_error='operation canceled',updated_at=?2 WHERE id=?1`,
+			job.InstallationID, jobProjectionTimestamp(job))
+		return err
 	case "start", "stop", "restart", "install", "reinstall", "import", "configure", "update", "validate":
 		if job.InstanceID == "" {
 			return nil

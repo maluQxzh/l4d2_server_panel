@@ -20,6 +20,18 @@ const node = {
   disk_used: 10_000_000, disk_total: 100_000_000, network_rx: 5_000_000, network_tx: 2_000_000, created_at: "2026-07-30T00:00:00Z",
 };
 
+const environment = {
+  id: "environment-1", node_id: node.id, node_name: node.name, node_status: "online", agent_supported: true,
+  system_dependencies: { status: "ready" }, steamcmd_source: "unconfigured", steamcmd_status: "unconfigured",
+  created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z",
+};
+
+const gameInstallation = {
+  id: "installation-1", environment_id: environment.id, node_id: node.id, root_index: 0,
+  path: "existing/server-a", app_id: 222860, status: "ready", build_id: "123456",
+  created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z",
+};
+
 const instance = {
   id: "instance-1", node_id: node.id, node_public_address: node.public_address, name: "专家战役 #1", status: "running",
   path: "/srv/l4d2panel/instances/expert", host: "game.example.com", port: 27015,
@@ -62,37 +74,34 @@ test("创建一次性节点注册令牌", async ({ page }) => {
   expect(enrollmentBody).toMatchObject({ label: "香港-02", expires_in_minutes: 30 });
 });
 
-test("从节点安全扫描并选择导入现有安装", async ({ page }) => {
+test("运行环境可配置自定义 SteamCMD 并手动登记游戏目录", async ({ page }) => {
   await authenticated(page);
-  await page.route("**/api/v1/nodes", (route) => json(route, { items: [node] }));
-  await page.route("**/api/v1/nodes/node-1/discoveries**", (route) => {
-    if (route.request().method() === "POST") return json(route, { job_id: "job-discovery" }, 202);
-    return json(route, { job: {
-      id: "job-discovery", node_id: node.id, type: "discover_instances", status: "succeeded", progress: 100,
-      result: { candidates: [{ root_index: 0, path: "existing/server-b", name: "现有服务器 B", executable: "srcds_run", has_gameinfo: true, has_appmanifest: true, managed: false, likely_running: true, pid: 4321, evidence: ["srcds_run", "left4dead2/"] }], scanned_directories: 42, skipped_links: 2, truncated: false },
-      created_at: "2026-08-01T00:00:00Z",
-    } });
-  });
-  let imported: Record<string, unknown> | undefined;
-  await page.route("**/api/v1/instances", async (route) => {
+  await page.route("**/api/v1/environments", (route) => json(route, { items: [environment] }));
+  await page.route("**/api/v1/environments/environment-1/game-installations", async (route) => {
     if (route.request().method() === "GET") return json(route, { items: [] });
-    imported = route.request().postDataJSON() as Record<string, unknown>;
-    return json(route, { instance, job_id: "job-import-discovered" }, 202);
+    gameBody = route.request().postDataJSON() as Record<string, unknown>;
+    return json(route, { game_installation: gameInstallation, job_id: "job-import" }, 202);
   });
-  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance }));
-  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  let steamBody: Record<string, unknown> | undefined;
+  let gameBody: Record<string, unknown> | undefined;
+  await page.route("**/api/v1/environments/environment-1/steamcmd/actions", async (route) => {
+    steamBody = route.request().postDataJSON() as Record<string, unknown>;
+    return json(route, { job_id: "job-steamcmd" }, 202);
+  });
 
-  await page.goto("/nodes");
-  await page.getByRole("button", { name: "管理 香港-01" }).click();
-  await page.getByRole("button", { name: "扫描安装" }).click();
-  await expect(page.getByText("现有服务器 B")).toBeVisible();
-  await expect(page.getByText(/可能运行中 · PID 4321/)).toBeVisible();
-  await page.getByRole("button", { name: /现有服务器 B/ }).click();
-  await page.getByLabel("游戏端口").fill("27016");
-  await page.getByRole("button", { name: "导入所选安装" }).click();
+  await page.goto("/environments");
+  await expect(page.getByRole("link", { name: "运行环境" })).toBeVisible();
+  await expect(page.getByText(/不会扫描磁盘/)).toBeVisible();
+  await page.getByRole("button", { name: "配置 SteamCMD" }).click();
+  await page.getByLabel("自定义绝对路径").fill("/opt/steamcmd/steamcmd.sh");
+  await page.getByRole("button", { name: "校验并启用" }).click();
+  await expect.poll(() => steamBody).toEqual({ action: "configure", path: "/opt/steamcmd/steamcmd.sh" });
 
-  expect(imported).toMatchObject({ node_id: node.id, operation: "import", path: "existing/server-b", root_index: 0, port: 27016 });
-  await expect(page).toHaveURL(/\/instances\/instance-1/);
+  await page.getByRole("button", { name: "添加游戏安装" }).click();
+  await page.getByLabel("根目录索引").fill("1");
+  await page.getByLabel("相对路径").fill("existing/server-b");
+  await page.getByRole("button", { name: "提交任务" }).click();
+  await expect.poll(() => gameBody).toEqual({ root_index: 1, path: "existing/server-b", operation: "import" });
 });
 
 test("轮换节点凭据后一次性显示明文和重启提示", async ({ page }) => {
@@ -215,7 +224,8 @@ test("运行中实例重启必须确认并提交固定维护倒计时", async ({
 
 test("创建与导入实例会提交白名单相对路径", async ({ page }) => {
   await authenticated(page);
-  await page.route("**/api/v1/nodes", (route) => json(route, { items: [node] }));
+  await page.route("**/api/v1/environments", (route) => json(route, { items: [environment] }));
+  await page.route("**/api/v1/environments/environment-1/game-installations", (route) => json(route, { items: [] }));
   await page.route("**/api/v1/instances", async (route) => {
     if (route.request().method() === "GET") return json(route, { items: [] });
     const body = route.request().postDataJSON() as Record<string, unknown>;
@@ -227,11 +237,11 @@ test("创建与导入实例会提交白名单相对路径", async ({ page }) => 
 
   await page.goto("/instances");
   await page.getByRole("button", { name: "创建第一个实例" }).click();
-  await page.getByRole("button", { name: "导入现有实例" }).click();
   await page.getByLabel("实例名称").fill("专家战役 #1");
-  await page.getByLabel("运行节点").selectOption(node.id);
-  await page.getByLabel("现有安装目录").fill("existing/server-a");
-  await page.getByRole("button", { name: "提交部署任务" }).click();
+  await page.getByLabel("运行环境").selectOption(environment.id);
+  await page.getByRole("button", { name: "手动填写游戏路径" }).click();
+  await page.getByLabel("游戏安装相对路径").fill("existing/server-a");
+  await page.getByRole("button", { name: "校验并创建实例" }).click();
   await expect(page).toHaveURL(/\/instances\/instance-1/);
 });
 
@@ -502,13 +512,11 @@ test("实例控制台、玩家、配置、模组、备份与计划任务", async
 
   await page.getByRole("button", { name: "配置" }).click();
   await page.getByLabel("服务器名称").fill("专家战役 · 已更新");
-  await page.getByLabel("自动更新维护窗口").fill("30 5 * * 1-5");
-  await expect(page.getByText(/按 Control 全局时区执行/)).toBeVisible();
   await page.getByRole("button", { name: "保存新版本" }).click();
   await expect.poll(() => configWrites.length).toBe(1);
   expect(configWrites[0]).not.toHaveProperty("server_password");
   expect(configWrites[0].config).not.toHaveProperty("server_password");
-  expect(configWrites[0].config).toMatchObject({ maintenance_cron: "30 5 * * 1-5" });
+  expect(configWrites[0].config).not.toHaveProperty("maintenance_cron");
   await expect(page.getByText("配置已保存，新版本可随时回滚")).toBeVisible();
   await page.getByLabel("连接密码").fill("new-server-secret");
   await page.getByRole("button", { name: "保存新版本" }).click();
@@ -944,16 +952,11 @@ test("恢复响应丢失后先重放原键确认终态再用新键重试", async
   expect(completeKeys[1]).not.toBe(oldCompleteKey);
 });
 
-test("实例详情提供参数预览和完整维护删除流程", async ({ page }) => {
+test("实例详情展示安装绑定并仅解除实例绑定", async ({ page }) => {
   await authenticated(page);
-  const stopped = { ...instance, status: "stopped", pid: undefined, started_at: undefined };
+  const stopped = { ...instance, game_installation_id: gameInstallation.id, status: "stopped", pid: undefined, started_at: undefined };
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: stopped }));
   await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
-  const actions: Array<Record<string, unknown>> = [];
-  await page.route("**/api/v1/instances/instance-1/actions", async (route) => {
-    actions.push(route.request().postDataJSON() as Record<string, unknown>);
-    return json(route, { job_id: `job-maintenance-${actions.length}` }, 202);
-  });
   let deleteMode = "";
   await page.route("**/api/v1/instances/instance-1?mode=*", async (route) => {
     deleteMode = new URL(route.request().url()).searchParams.get("mode") || "";
@@ -966,32 +969,18 @@ test("实例详情提供参数预览和完整维护删除流程", async ({ page 
   await expect(argv).toContainText('"27015"');
   await expect(argv).toContainText('"l4d2panel.cfg"');
   await expect(page.getByText(/不经过 Shell/)).toBeVisible();
-
-  await page.getByRole("button", { name: "校验", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "校验游戏文件" })).toBeVisible();
-  await page.getByRole("button", { name: "确认校验" }).click();
-  await expect.poll(() => actions.some((item) => item.type === "validate")).toBeTruthy();
-
-  await page.getByRole("button", { name: "更新", exact: true }).click();
-  await page.getByRole("button", { name: "确认更新" }).click();
-  await expect.poll(() => actions.some((item) => item.type === "update")).toBeTruthy();
-
-  await page.getByRole("button", { name: "重新安装", exact: true }).click();
-  await expect(page.getByText("高影响操作")).toBeVisible();
-  await page.getByRole("button", { name: "确认重新安装" }).click();
-  await expect.poll(() => actions.some((item) => item.type === "reinstall")).toBeTruthy();
-
-  await page.getByRole("button", { name: "删除 / 解除" }).click();
-  await expect(page.getByRole("radio", { name: /仅解除管理/ })).toBeVisible();
-  await expect(page.getByRole("radio", { name: /隔离实例文件/ })).toBeVisible();
-  await page.getByRole("radio", { name: /隔离实例文件/ }).check();
-  await page.getByLabel("实例名称确认").fill(instance.name);
-  await page.getByRole("button", { name: "确认执行" }).click();
-  await expect.poll(() => deleteMode).toBe("quarantine");
+  await expect(page.getByText("已绑定独占游戏安装")).toBeVisible();
+  await expect(page.getByText(/SteamCMD、更新、校验和重装统一在运行环境中执行/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "校验", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "更新", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "重新安装", exact: true })).toHaveCount(0);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "删除实例" }).click();
+  await expect.poll(() => deleteMode).toBe("detach");
   await expect(page).toHaveURL(/\/jobs$/);
 });
 
-test("操作员可维护实例但不能重新安装或删除", async ({ page }) => {
+test("操作员可启停实例但不能删除实例", async ({ page }) => {
   const operator = {
     ...owner, role: "operator", display_name: "值班操作员",
     role_bindings: [{ role: "operator", scope_type: "instance", instance_id: instance.id }],
@@ -1003,8 +992,5 @@ test("操作员可维护实例但不能重新安装或删除", async ({ page }) 
 
   await page.goto("/instances/instance-1");
   await expect(page.getByRole("button", { name: "启动", exact: true })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "校验", exact: true })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "更新", exact: true })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "重新安装", exact: true })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "删除 / 解除" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "删除实例" })).toBeDisabled();
 });

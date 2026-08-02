@@ -155,6 +155,7 @@ func officialAssetHosts() map[string]bool {
 		"github.com":                           true,
 		"release-assets.githubusercontent.com": true,
 		"objects.githubusercontent.com":        true,
+		"steamcdn-a.akamaihd.net":              true,
 		"sm.alliedmods.net":                    true,
 		"mms.alliedmods.net":                   true,
 	}

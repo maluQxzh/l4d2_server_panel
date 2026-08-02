@@ -15,6 +15,7 @@ const InstancesPage = lazyNamed(() => import("./pages/InstancesPage"), "Instance
 const JobsPage = lazyNamed(() => import("./pages/JobsPage"), "JobsPage");
 const LoginPage = lazyNamed(() => import("./pages/LoginPage"), "LoginPage");
 const NodesPage = lazyNamed(() => import("./pages/NodesPage"), "NodesPage");
+const RuntimeEnvironmentsPage = lazyNamed(() => import("./pages/RuntimeEnvironmentsPage"), "RuntimeEnvironmentsPage");
 const NotificationsPage = lazyNamed(() => import("./pages/NotificationsPage"), "NotificationsPage");
 const PublicStatusPage = lazyNamed(() => import("./pages/PublicStatusPage"), "PublicStatusPage");
 const SettingsPage = lazyNamed(() => import("./pages/SettingsPage"), "SettingsPage");
@@ -43,6 +44,7 @@ export function App() {
         <Route element={<ProtectedLayout />}>
           <Route index element={<DashboardPage />} />
           <Route path="nodes" element={<NodesPage />} />
+          <Route path="environments" element={<RuntimeEnvironmentsPage />} />
           <Route path="instances" element={<InstancesPage />} />
           <Route path="instances/:instanceId" element={<InstanceDetailPage />} />
           <Route path="jobs" element={<JobsPage />} />

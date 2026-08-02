@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, Copy, FolderSearch, Import, KeyRound, Laptop, MoreHorizontal, Plus, RefreshCw, RotateCw, Server, ShieldAlert, Trash2 } from "lucide-react";
+import { Archive, Copy, KeyRound, Laptop, MoreHorizontal, Plus, RefreshCw, RotateCw, Server, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, MetricBar, Modal, PageHeader, StatusBadge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
@@ -9,7 +8,7 @@ import { useToast } from "../context/ToastContext";
 import { api } from "../lib/api";
 import { bytes, dateTime, percent, relativeTime } from "../lib/format";
 import { canAccessNode } from "../lib/instance-lifecycle";
-import type { InstallationCandidate, NodeDiscoveryResult, NodeRecord, QuarantineEntry } from "../lib/types";
+import type { NodeRecord, QuarantineEntry } from "../lib/types";
 
 export function NodesPage() {
   const [enrollOpen, setEnrollOpen] = useState(false);
@@ -64,58 +63,14 @@ function NodeManageModal({ node, onClose }: { node: NodeRecord | null; onClose: 
   const { user } = useAuth();
   const toast = useToast();
   const client = useQueryClient();
-  const navigate = useNavigate();
-  const [discovery, setDiscovery] = useState<NodeDiscoveryResult | null>(null);
-  const [selectedKey, setSelectedKey] = useState("");
-  const [importName, setImportName] = useState("");
-  const [importPort, setImportPort] = useState(0);
   const [newCredential, setNewCredential] = useState("");
   const [publicAddress, setPublicAddress] = useState("");
   const canManage = Boolean(node && canAccessNode(user, node.id, "manage"));
   useEffect(() => { setPublicAddress(node?.public_address || ""); }, [node?.id, node?.public_address]);
-  const candidateKey = (candidate: InstallationCandidate) => `${candidate.root_index}:${candidate.path}`;
-  const selectedCandidate = discovery?.candidates.find((candidate) => candidateKey(candidate) === selectedKey);
   const close = () => {
-    setDiscovery(null);
-    setSelectedKey("");
-    setImportName("");
-    setImportPort(0);
     setNewCredential("");
     onClose();
   };
-  const scan = useMutation({
-    mutationFn: () => api.discoverNodeInstances(node!.id),
-    onSuccess: (result) => {
-      setDiscovery(result);
-      const candidate = result.candidates.find((item) => !item.managed);
-      setSelectedKey(candidate ? candidateKey(candidate) : "");
-      setImportName(candidate?.name || "");
-      toast.push(result.candidates.length ? `发现 ${result.candidates.length} 个 L4D2 安装` : "扫描完成，未发现可导入安装");
-    },
-    onError: (error) => toast.push(error.message, "error"),
-  });
-  const importExisting = useMutation({
-    mutationFn: () => api.createInstance({
-      node_id: node!.id,
-      name: importName.trim(),
-      port: importPort || undefined,
-      operation: "import",
-      path: selectedCandidate!.path,
-      root_index: selectedCandidate!.root_index,
-      executable: selectedCandidate!.executable,
-      config: {
-        hostname: importName.trim(), mode: "coop", difficulty: "normal", max_players: 8,
-        start_map: "c1m1_hotel", region: "255", public_status: false, auto_restart: true,
-      },
-    }),
-    onSuccess: (result) => {
-      toast.push(selectedCandidate?.likely_running ? "已按外部运行实例接入，受控重启前保持只读" : "导入任务已提交");
-      void client.invalidateQueries({ queryKey: ["instances"] });
-      close();
-      navigate(result.instance?.id ? `/instances/${result.instance.id}` : "/jobs");
-    },
-    onError: (error) => toast.push(error.message, "error"),
-  });
   const rotate = useMutation({
     mutationFn: () => api.rotateNodeCredential(node!.id),
     onSuccess: (result) => {
@@ -140,15 +95,10 @@ function NodeManageModal({ node, onClose }: { node: NodeRecord | null; onClose: 
     onSuccess: () => { toast.push("节点凭据已吊销"); void client.invalidateQueries({ queryKey: ["nodes"] }); close(); },
     onError: (error) => toast.push(error.message, "error"),
   });
-  const chooseCandidate = (candidate: InstallationCandidate) => {
-    if (candidate.managed) return;
-    setSelectedKey(candidateKey(candidate));
-    setImportName(candidate.name);
-  };
   const rotateCredential = () => {
     if (window.confirm("轮换会立即断开 Agent。确认已准备好更新 agent.json 并重启 Agent 吗？")) rotate.mutate();
   };
-  return <Modal open={Boolean(node)} onClose={close} title={node?.name || "节点管理"} description="扫描白名单实例根目录、导入已有安装或管理节点凭据。" footer={<><Button variant="secondary" onClick={close}>关闭</Button><Button variant="danger" loading={revoke.isPending} disabled={!canManage} title={!canManage ? "当前角色没有节点管理权限" : undefined} onClick={() => revoke.mutate()}><ShieldAlert size={16} />吊销节点凭据</Button></>}>
+  return <Modal open={Boolean(node)} onClose={close} title={node?.name || "节点管理"} description="管理节点地址和凭据；SteamCMD 与游戏路径请在运行环境中手动登记。" footer={<><Button variant="secondary" onClick={close}>关闭</Button><Button variant="danger" loading={revoke.isPending} disabled={!canManage} title={!canManage ? "当前角色没有节点管理权限" : undefined} onClick={() => revoke.mutate()}><ShieldAlert size={16} />吊销节点凭据</Button></>}>
     {node && <div className="manage-node form-stack">
       <div className="detail-pairs"><div><span>实例根目录</span><code>{node.instance_root || "未上报"}</code></div><div><span>Agent 版本</span><strong>{node.agent_version || "未知"}</strong></div><div><span>主机地址</span><strong>{node.address || "未上报"}</strong></div><div><span>公开连接地址</span><strong>{publicAddress || "未设置"}</strong></div><div><span>运行架构</span><strong>{node.os} / {node.arch}</strong></div></div>
       <section className="node-public-address">
@@ -157,26 +107,6 @@ function NodeManageModal({ node, onClose }: { node: NodeRecord | null; onClose: 
           <Field label="公开连接地址" hint="例如 game.example.com、203.0.113.10 或 [2001:db8::10]；留空可清除。"><input value={publicAddress} onChange={(event) => setPublicAddress(event.target.value)} placeholder="game.example.com" /></Field>
           <Button type="submit" variant="secondary" loading={saveNode.isPending} disabled={!canManage}>保存公开地址</Button>
         </form>
-      </section>
-      <section className="node-discovery">
-        <div className="node-section-heading"><div><strong>导入现有 L4D2 安装</strong><span>只扫描 Agent 配置的实例根目录；符号链接和重解析点不会被跟随。</span></div><Button variant="secondary" loading={scan.isPending} disabled={!canManage || node.status !== "online" || rotate.isSuccess} onClick={() => scan.mutate()}><FolderSearch size={15} />扫描安装</Button></div>
-        {scan.isPending && <LoadingBlock label="正在安全扫描实例根目录…" />}
-        {discovery && !scan.isPending && <>
-          <div className="discovery-summary"><span>检查 {discovery.scanned_directories} 个目录</span><span>跳过 {discovery.skipped_links} 个链接</span>{discovery.truncated && <strong>已达到扫描上限</strong>}</div>
-          {discovery.candidates.length ? <div className="discovery-list">{discovery.candidates.map((candidate) => {
-            const key = candidateKey(candidate);
-            return <button type="button" key={key} disabled={candidate.managed} className={`discovery-candidate ${selectedKey === key ? "active" : ""}`} onClick={() => chooseCandidate(candidate)}>
-              <span className="discovery-radio" />
-              <span><strong>{candidate.name}</strong><code>根目录 {candidate.root_index} · {candidate.path}</code><small>{candidate.evidence.join(" · ")}</small></span>
-              <span>{candidate.managed ? "已管理" : candidate.likely_running ? `可能运行中${candidate.pid ? ` · PID ${candidate.pid}` : ""}` : "已停止"}</span>
-            </button>;
-          })}</div> : <EmptyState title="未发现可识别的安装" description="候选目录需要包含 srcds 可执行文件和 left4dead2 目录。" />}
-          {selectedCandidate && <div className="discovery-import form-stack">
-            {selectedCandidate.likely_running && <div className="form-warning"><ShieldAlert size={17} />检测到匹配的外部 srcds 进程。导入后实例保持只读；执行“受控重启”后才由 Agent 完整管理。</div>}
-            <div className="form-grid"><Field label="实例名称"><input value={importName} onChange={(event) => setImportName(event.target.value)} required /></Field><Field label="游戏端口" hint="不确定时留 0 自动分配；运行中实例建议填写现用端口。"><input type="number" min={0} max={65535} value={importPort} onChange={(event) => setImportPort(Number(event.target.value))} /></Field></div>
-            <div className="form-actions"><Button loading={importExisting.isPending} disabled={!canManage || !importName.trim()} onClick={() => importExisting.mutate()}><Import size={15} />导入所选安装</Button></div>
-          </div>}
-        </>}
       </section>
       <NodeQuarantineSection node={node} canManage={canManage} />
       <section className="node-credential-risk">

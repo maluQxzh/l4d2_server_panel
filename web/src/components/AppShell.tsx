@@ -7,6 +7,7 @@ import {
   LogOut,
   Menu,
   Server,
+  Wrench,
   Settings,
   ShieldCheck,
   X,
@@ -19,6 +20,7 @@ import { useRealtime } from "../context/RealtimeContext";
 const navigation = [
   { to: "/", label: "作战总览", icon: CircleGauge, end: true },
   { to: "/nodes", label: "节点", icon: Server },
+  { to: "/environments", label: "运行环境", icon: Wrench },
   { to: "/instances", label: "游戏实例", icon: Boxes },
   { to: "/jobs", label: "任务中心", icon: ClipboardList },
   { to: "/notifications", label: "通知", icon: Bell },

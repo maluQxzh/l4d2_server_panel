@@ -20,16 +20,17 @@ Windows 10/11 x64 与 Windows Server 2019+ 使用便携 ZIP，不依赖 Docker/W
 6. Agent 上报进度和最终结果；Control 持久化结果、成功应用资源/失败/取消投影并发布事件后发送 `job_ack`。任一步失败都会中止确认并关闭会话，以便重连重放；Agent 只在收到确认后删除终态日志，确认丢失时同样重放到中心成功确认。
 7. Control 发布过滤并脱敏的浏览器事件；浏览器以每页 500 条、单连接最多 5000 条按事件游标补齐遗漏。单 Control 进程把持久事件的提交与进程内广播串行化；`event_log.id` 使用不会因清理复用的 `AUTOINCREMENT` 游标。持久事件 ID 出现缺口时立即从 SQLite 补齐，另每 2 秒检查丢失尾部；瞬时日志和指标允许对慢客户端丢弃。
 
-任务状态固定为 `queued → dispatched → running → succeeded|failed|canceled`。Control 数据库和 Agent 都限制每个实例同时只有一个写操作；A2S/玩家/更新探测、目录列表、文件读取以及日志/备份分块不占实例写锁。SteamCMD 并发由每个 Agent 的 `steamcmd_concurrency`（1–4，默认 1）控制。
+任务状态固定为 `queued → dispatched → running → succeeded|failed|canceled`。Control 数据库和 Agent 都限制每个实例同时只有一个写操作，并为每个物理游戏安装增加独立写锁；A2S/玩家、目录列表、文件读取以及日志/备份分块不占实例写锁。SteamCMD 并发由每个 Agent 的 `steamcmd_concurrency`（1–4，默认 1）控制，切换活动 SteamCMD 时还会拒绝与安装维护任务并发。
 
-协议按主次版本兼容：主版本必须一致，Control 接受当前次版本和前一个次版本。能力协商用于 `check_update`、`discover_instances`、`purge_quarantine` 等增量命令，避免把新任务派给旧 Agent。`job_ack` 是可忽略的增量消息；不认识它的前一版本 Agent 会保持既有行为而不会断开连接。
+协议按主次版本兼容：主版本必须一致，Control 接受当前次版本和前一个次版本。能力协商用于 `runtime_environment_v1`、`discover_instances`、`purge_quarantine` 等增量命令，避免把新任务派给旧 Agent；即使节点在任务排队后降级重连，运行环境任务也会留在队列等待兼容 Agent。`job_ack` 是可忽略的增量消息；不认识它的前一版本 Agent 会保持既有行为而不会断开连接。
 
 Control 在持久化或发布前校验所有 Agent 入站消息。心跳最多 256 KiB/512 个实例；指标最多 512 KiB/512 个样本，同一批不得重复实例，数值范围与“已用不超过总量”关系必须成立；日志只接受 `stdout/stderr`，单行 1–16 KiB、消息最多 128 KiB。指标和日志时间戳只接受过去 15 分钟到未来 2 分钟。所有消息中的实例 ID 必须属于当前 WSS 节点；`job_update` 还必须匹配任务节点/实例，结果中任意嵌套 `instance_id` 都不能跨实例。归属校验按 Agent 连接缓存 2 秒且最多 1024 项；同一实例的并发 miss 合并为一次 SQLite 查询，未知/跨节点 ID 不做负缓存，正常实例删除会立即逐连接清除。运行进度消息最多 32 KiB、终态最多 12 MiB，重复进度丢弃、变化进度按每任务最快 250 ms 合并，终态不节流。
 
 ## 实例生命周期
 
 - 新建实例时 Control 在 SQLite 立即事务中读取节点全部预留端口，由 Go 从 27015–27999 选择候选并写入预留。`instance_port_reservations` 以 `(node_id, port)` 为唯一键，把游戏端口与非零 SourceTV 端口放进同一互斥空间，实例删除时级联释放。并发创建、显式跨列冲突和池耗尽不会静默改号，而是返回 `409 conflict`。Agent 随后仍检查节点上的实际端口占用。
-- 安装通过 SteamCMD App 222860 写入独立实例目录；`verify_start` 会实际启动并完成进程、A2S、RCON 检查后再恢复停止状态。
+- 节点、运行环境、游戏安装和实例形成 `node → environment → game_installation → instance` 关系。每个节点只有一套活动 SteamCMD；每个游戏安装是配置根目录内的相对路径，并最多绑定一个实例。游戏安装由运行环境任务写入 App 222860；实例只登记受控配置和进程状态，创建后保持停止。
+- Agent 安装和启动不扫描 SteamCMD 或游戏目录。只有进入运行环境或点击刷新才排队 `environment.inspect`，检查已知系统依赖、活动 SteamCMD 和 Agent 本地登记的游戏路径。
 - 节点发现 API 将 `discover_instances` 作为节点级持久任务排队，只对配置的实例根做有界广度优先只读扫描：深度 1–8（默认 6）、最多读取 1–20000 个目录条目（默认 5000）、最多返回 200 个候选；`.quarantine`、`.staging`、回收站和系统卷目录被排除，符号链接/重解析点不会跟随。结果只包含根索引和相对路径，不暴露任意主机路径。
 - 导入路径由 `root_index + path` 表示，必须位于 Agent 白名单实例根。导入会再次验证安装结构和活动进程的可执行路径。发现为外部运行中的实例以 `external` 状态只读接入；该状态代表所有权边界，即使外部进程随后退出也保持到显式受控重启。受控重启可提交一次性的 `existing_rcon_password`：中心加密持久化且只在派发时解封，Agent 用它向旧进程发送 `quit` 并短暂等待；未提供或优雅退出失败时，Agent 只有在重新匹配 PID 与实例内可执行路径后才强制结束进程树。随后 Agent 写入面板当前配置和新 RCON 密钥并启动受管进程，旧密码不会成为实例秘密。
 - Windows 以 `CREATE_SUSPENDED` 创建游戏进程，成功配置并加入带 `KILL_ON_JOB_CLOSE` 的 Job Object 后才恢复执行；任一步失败都会终止挂起进程并关闭句柄，因此子进程没有加入 Job 前的逃逸窗口。Linux 使用进程组。启动/重启任务不能覆盖实例登记的可执行文件、参数或环境；Agent 只接受实例根中的平台固定 `srcds` 文件名，重新校验启动参数，并以受限环境变量启动进程，将 `HOME`/`USERPROFILE` 指向实例目录。停服先向本机 RCON 发送 `quit`，超时后只终止 Agent 追踪且身份匹配的进程树。
@@ -86,10 +87,9 @@ Agent 永久清理时只接收 Control 墓碑中的 `root_index + entry_name`，
 
 - Agent 默认每 10 秒心跳、每 15 秒发送节点/实例指标。节点 35 秒无心跳会被标记离线。心跳按 UUID 顺序批量锁定实例，并在活跃、取消待确认或终态待投影的写任务期间保留 Control 生命周期状态；屏障清除后的下一次心跳才恢复 Agent 的稳定状态。浏览器事件日志保留 30 天；WebSocket 每页重放 500 条、单连接最多补齐 5000 条，审计事件不使用这项实时事件保留策略。
 - 原始指标保留 24 小时；1 分钟聚合保留 30 天；1 小时聚合保留 1 年。指标端点每次最多返回 10000 点。
-- Control 每 30 秒对在线运行实例安排 A2S 探测；每 30 分钟对支持 `check_update` 能力的在线节点查询 App 222860 最新 build ID。更新可用时保存状态并生成去重站内通知；当前没有单独的 update-state REST 端点，状态通过实例投影、系统任务和通知体现。实际安装由显式 `update`、普通计划任务或下述 `maintenance_cron` 自动批次触发。
-- 实例配置中的 `maintenance_cron` 是按 Control 全局 `TZ` 解释的严格标准五段 cron。只有最近一次探测仍为 `update_available=true`、节点在线且 Agent 当前连接时才会在发生点后的 5 分钟补偿窗口内创建自动批次；发生点与实例共同组成系统幂等键。一个批次先持久化同节点所有合格实例，但派发器同一时刻只放行一个自动维护更新，并为普通任务、一个自动任务和取消 outbox 保留互不挤占的额度。前一发生点仍有 queued/dispatched/running、`cancel_pending` 或 `_projection_pending` 时拒绝新批次；Control 重启会复用当前发生点任务并重新触发派发。实例在排队时保持真实状态，只有任务被原子认领为 dispatched 时才切到 updating；取消恢复排队快照，失败投影为 degraded。每个新任务同时写确定性审计和通知记录。
-- 自动维护候选与事务提交前复查都会排除活动写任务和活动 `check_update`；写任务存在时，更新探针不会新建或派发。若旧探针结果仍晚于一个更新返回，其创建时间早于新安装任务时不会覆盖安装后已清除的 update 状态。A2S 探测继续并发，不影响实时可观测性。
-- 计划任务只允许 `start/stop/restart/update/validate/backup/broadcast`，并按动作白名单规范化参数；不能持久化任意 RCON、URL、文件或包安装正文。计划调度的 `update`/`restart` 会自动带 `maintenance=true`。运行中的实例默认按 10/5/1 分钟通过 RCON 广播固定安全文案，然后停服；更新任务创建本地检查点、运行 SteamCMD 并在原先运行时重新启动。游戏更新失败不会承诺回滚到 Valve 已撤下的旧 Depot。
+- Control 每 30 秒只对在线运行实例安排 A2S 探测，用于状态、地图和人数投影；该读探测不占实例写锁。
+- Control 不运行周期性 Steam 构建探测，也不解释实例自动维护窗口。游戏安装的检测、校验、更新和重装只能通过运行环境 API 手动创建持久化任务。
+- 计划任务只允许 `start/stop/restart/backup/broadcast`，并按动作白名单规范化参数；不能持久化游戏安装维护、任意 RCON、URL、文件或包安装正文。计划重启仍可使用固定 10/5/1 分钟 RCON 广播。
 - 告警覆盖节点离线、崩溃循环、任务/探测失败、更新可用和磁盘 85%/95%。通知可投递到站内、强制 STARTTLS 的 SMTP，或带 `X-L4D2Panel-Timestamp` 与 `X-L4D2Panel-Signature` 的 HTTPS Webhook；Webhook 禁止代理和重定向，拨号前解析 DNS 且只连接公网地址。外部投递最多 6 次并保留每次结果。
 - 公开状态页只查询显式 `public_status=true` 的实例，并只返回名称、状态、地图、模式、人数、运行时间和管理员配置的连接地址。
 

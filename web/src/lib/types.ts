@@ -80,6 +80,39 @@ export interface NodeRecord {
   created_at: string;
 }
 
+export interface RuntimeEnvironmentRecord {
+  id: string;
+  node_id: string;
+  node_name?: string;
+  node_status: NodeStatus;
+  agent_supported: boolean;
+  system_dependencies: Record<string, unknown>;
+  steamcmd_source: "unconfigured" | "managed" | "custom";
+  steamcmd_path?: string;
+  steamcmd_status: "unconfigured" | "checking" | "ready" | "error";
+  steamcmd_version?: string;
+  last_error?: string;
+  last_inspected_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GameInstallationRecord {
+  id: string;
+  environment_id: string;
+  node_id: string;
+  root_index: number;
+  path: string;
+  app_id: 222860;
+  status: "pending" | "installing" | "validating" | "updating" | "ready" | "degraded" | "quarantined";
+  build_id?: string;
+  last_error?: string;
+  bound_instance_id?: string;
+  last_checked_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface InstallationCandidate {
   root_index: number;
   path: string;
@@ -143,12 +176,12 @@ export interface InstanceConfig {
   extra_args?: string[];
   cvars?: Record<string, string>;
   auto_restart: boolean;
-  maintenance_cron?: string;
 }
 
 export interface InstanceRecord {
-  id: string;
-  node_id: string;
+	id: string;
+	node_id: string;
+	game_installation_id?: string;
   node_public_address?: string;
   name: string;
   status: InstanceStatus;
@@ -175,7 +208,8 @@ export interface InstanceRecord {
 export interface Job {
   id: string;
   node_id: string;
-  instance_id?: string;
+	instance_id?: string;
+	game_installation_id?: string;
   type: string;
   status: JobStatus;
   progress: number;

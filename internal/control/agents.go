@@ -521,8 +521,14 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		client.mu.Lock()
 		_, sent := client.sent[job.ID]
 		_, canceled := client.canceled[job.ID]
+		_, runtimeEnvironmentSupported := client.capabilities["runtime_environment_v1"]
 		client.mu.Unlock()
 		if job.Status != domain.JobCanceled && (sent || canceled) {
+			continue
+		}
+		if environmentJobTypes[job.Type] && !runtimeEnvironmentSupported {
+			// A node may reconnect with an older Agent after a job was queued.
+			// Leave the durable intent queued until a compatible Agent returns.
 			continue
 		}
 		if job.Status == domain.JobCanceled {
@@ -559,7 +565,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 			h.log.Error("decrypt queued job payload", "job_id", job.ID, "error", err)
 			continue
 		}
-		secretActions := map[string]bool{"create": true, "import": true, "install": true, "reinstall": true, "configure": true, "start": true, "stop": true, "restart": true, "restore": true,
+		secretActions := map[string]bool{"create": true, "import": true, "game.import": true, "install": true, "reinstall": true, "configure": true, "start": true, "stop": true, "restart": true, "restore": true,
 			"update": true, "validate": true, "delete": true, "rcon": true, "kick_player": true, "ban_player": true,
 			"unban_player": true, "change_map": true, "rcon.players": true, "install_mod": true, "install_package": true, "rollback_package": true}
 		if job.InstanceID != "" && secretActions[job.Type] {
@@ -567,7 +573,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 				if secret, decryptErr := decryptSecret(h.masterKey, rconCiphertext); decryptErr == nil {
 					outbound.Payload["rcon_password"] = secret
 				}
-				serverActions := map[string]bool{"create": true, "install": true, "reinstall": true, "configure": true, "start": true, "restart": true, "restore": true, "update": true, "validate": true}
+				serverActions := map[string]bool{"create": true, "import": true, "game.import": true, "install": true, "reinstall": true, "configure": true, "start": true, "restart": true, "restore": true, "update": true, "validate": true}
 				if serverActions[job.Type] {
 					serverPassword := ""
 					if serverCiphertext != "" {

@@ -33,6 +33,7 @@ var instanceJobPermissions = map[string]Permission{
 	"delete":              PermissionManage,
 	"detach":              PermissionManage,
 	"file":                PermissionOperate,
+	"game.import":         PermissionManage,
 	"import":              PermissionManage,
 	"install":             PermissionManage,
 	"install_mod":         PermissionManage,
@@ -66,15 +67,12 @@ var genericInstanceActionPermissions = map[string]Permission{
 	"install_package": PermissionManage,
 	"kick_player":     PermissionOperate,
 	"rcon":            PermissionOperate,
-	"reinstall":       PermissionManage,
 	"restart":         PermissionOperate,
 	"restore":         PermissionOperate,
 	"start":           PermissionOperate,
 	"stop":            PermissionOperate,
 	"toggle_package":  PermissionManage,
 	"unban_player":    PermissionOperate,
-	"update":          PermissionOperate,
-	"validate":        PermissionOperate,
 }
 
 func genericInstanceActionAllowed(action string) bool {
@@ -89,7 +87,7 @@ func genericInstanceActionPermission(action string) (Permission, bool) {
 
 func scheduledActionAllowed(action string) bool {
 	switch action {
-	case "backup", "broadcast", "restart", "start", "stop", "update", "validate":
+	case "backup", "broadcast", "restart", "start", "stop":
 		return true
 	default:
 		return false

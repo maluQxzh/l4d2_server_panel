@@ -30,6 +30,8 @@ import type {
   BackupUploadRecord,
   SystemUpdateOverview,
   SystemUpdateRecord,
+  RuntimeEnvironmentRecord,
+  GameInstallationRecord,
 } from "./types";
 
 const baseURL = (import.meta.env.VITE_API_BASE || "/api/v1").replace(/\/$/, "");
@@ -238,6 +240,23 @@ export const api = {
   purgeQuarantineEntry: (nodeId: string, entryId: string, confirmationToken: string, idempotencyKey: string) => request<{ job_id: string; idempotent_replay?: boolean }>(
     `/nodes/${encodeURIComponent(nodeId)}/quarantine/${encodeURIComponent(entryId)}/purge`,
     { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify({ confirmation_token: confirmationToken }) },
+  ),
+
+  environments: () => list<RuntimeEnvironmentRecord>("/environments"),
+  environment: (id: string) => request<{ environment: RuntimeEnvironmentRecord; game_installations: GameInstallationRecord[] }>(`/environments/${encodeURIComponent(id)}`),
+  inspectEnvironment: (id: string) => request<{ job_id: string }>(`/environments/${encodeURIComponent(id)}/inspect`, { method: "POST" }),
+  steamCMDAction: (id: string, action: "configure" | "clear" | "install" | "repair", path?: string) => request<{ job_id: string }>(
+    `/environments/${encodeURIComponent(id)}/steamcmd/actions`, { method: "POST", body: JSON.stringify({ action, path }) },
+  ),
+  gameInstallations: (id: string) => list<GameInstallationRecord>(`/environments/${encodeURIComponent(id)}/game-installations`),
+  createGameInstallation: (id: string, payload: { root_index: number; path: string; operation: "install" | "import" }) => request<{ game_installation: GameInstallationRecord; job_id: string }>(
+    `/environments/${encodeURIComponent(id)}/game-installations`, { method: "POST", body: JSON.stringify(payload) },
+  ),
+  gameInstallationAction: (environmentId: string, installationId: string, action: "install" | "import" | "validate" | "update" | "reinstall", location?: { root_index: number; path: string }) => request<{ job_id: string }>(
+    `/environments/${encodeURIComponent(environmentId)}/game-installations/${encodeURIComponent(installationId)}/actions`, { method: "POST", body: JSON.stringify({ action, ...location }) },
+  ),
+  quarantineGameInstallation: (environmentId: string, installationId: string) => request<{ job_id: string }>(
+    `/environments/${encodeURIComponent(environmentId)}/game-installations/${encodeURIComponent(installationId)}`, { method: "DELETE" },
   ),
 
   instances: () => list<InstanceRecord>("/instances"),

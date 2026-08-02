@@ -108,6 +108,7 @@ type InstanceConfig struct {
 type Instance struct {
 	ID                string         `json:"id"`
 	NodeID            string         `json:"node_id"`
+	InstallationID    string         `json:"game_installation_id,omitempty"`
 	NodePublicAddress string         `json:"node_public_address,omitempty"`
 	Name              string         `json:"name"`
 	Status            InstanceStatus `json:"status"`
@@ -135,6 +136,7 @@ type Job struct {
 	ID             string         `json:"id"`
 	NodeID         string         `json:"node_id"`
 	InstanceID     string         `json:"instance_id,omitempty"`
+	InstallationID string         `json:"game_installation_id,omitempty"`
 	Type           string         `json:"type"`
 	Status         JobStatus      `json:"status"`
 	Progress       int            `json:"progress"`
@@ -146,6 +148,39 @@ type Job struct {
 	CreatedAt      time.Time      `json:"created_at"`
 	StartedAt      *time.Time     `json:"started_at,omitempty"`
 	FinishedAt     *time.Time     `json:"finished_at,omitempty"`
+}
+
+type RuntimeEnvironment struct {
+	ID                 string         `json:"id"`
+	NodeID             string         `json:"node_id"`
+	NodeName           string         `json:"node_name,omitempty"`
+	NodeStatus         NodeStatus     `json:"node_status"`
+	AgentSupported     bool           `json:"agent_supported"`
+	SystemDependencies map[string]any `json:"system_dependencies"`
+	SteamCMDSource     string         `json:"steamcmd_source"`
+	SteamCMDPath       string         `json:"steamcmd_path,omitempty"`
+	SteamCMDStatus     string         `json:"steamcmd_status"`
+	SteamCMDVersion    string         `json:"steamcmd_version,omitempty"`
+	LastError          string         `json:"last_error,omitempty"`
+	LastInspectedAt    *time.Time     `json:"last_inspected_at,omitempty"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+}
+
+type GameInstallation struct {
+	ID              string     `json:"id"`
+	EnvironmentID   string     `json:"environment_id"`
+	NodeID          string     `json:"node_id"`
+	RootIndex       int        `json:"root_index"`
+	RelativePath    string     `json:"path"`
+	AppID           int        `json:"app_id"`
+	Status          string     `json:"status"`
+	BuildID         string     `json:"build_id,omitempty"`
+	LastError       string     `json:"last_error,omitempty"`
+	BoundInstanceID string     `json:"bound_instance_id,omitempty"`
+	LastCheckedAt   *time.Time `json:"last_checked_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // QuarantineEntry is the control-plane tombstone for an instance directory

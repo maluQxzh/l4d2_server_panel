@@ -221,7 +221,7 @@ func (c *fleetAPIClient) request(method, path string, body any, idempotencyKey s
 func fleetInstanceRequest(nodeID string, index int) map[string]any {
 	name := fmt.Sprintf("fleet-instance-%03d", index)
 	return map[string]any{
-		"node_id": nodeID, "name": name, "operation": "install", "host": "0.0.0.0", "port": 0,
+		"node_id": nodeID, "name": name, "operation": "import", "path": fmt.Sprintf("servers/%03d", index), "root_index": 0, "host": "0.0.0.0", "port": 0,
 		"config": map[string]any{"hostname": name, "mode": "coop", "difficulty": "normal", "max_players": 8,
 			"start_map": "c1m1_hotel", "region": "255", "public_status": false, "auto_restart": true},
 	}

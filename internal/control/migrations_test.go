@@ -13,9 +13,10 @@ import (
 func TestSQLiteMigrationChecksums(t *testing.T) {
 	t.Parallel()
 	expected := map[string]string{
-		"001_control_plane.sql":       "5a95514ce69e52e64613fbd1313eeed81eae422dc917c3e6f7acaae53e2f508f",
-		"002_bootstrap_setup_key.sql": "403054323dc5d62600b26aebdcdcadbabea46cbde0f6b83f136c37c2e4ff3fa1",
-		"003_system_update_jobs.sql":  "508c18088158cc8f1be897e30f510e207d8e2999c1762569216a9bf2d36ddea3",
+		"001_control_plane.sql":        "5a95514ce69e52e64613fbd1313eeed81eae422dc917c3e6f7acaae53e2f508f",
+		"002_bootstrap_setup_key.sql":  "403054323dc5d62600b26aebdcdcadbabea46cbde0f6b83f136c37c2e4ff3fa1",
+		"003_system_update_jobs.sql":   "508c18088158cc8f1be897e30f510e207d8e2999c1762569216a9bf2d36ddea3",
+		"004_runtime_environments.sql": "6f8ff59e71d5d8cabeaf5e1dae1016fcea287c3e99dbcc8e63d2c4fcfa0c1a61",
 	}
 	root := filepath.Join("..", "..", "migrations", "sqlite")
 	entries, err := os.ReadDir(root)

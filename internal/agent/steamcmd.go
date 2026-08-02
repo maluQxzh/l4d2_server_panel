@@ -62,6 +62,7 @@ func (s *SteamCMD) Install(ctx context.Context, installDir string, appID int, va
 	cmd := exec.CommandContext(ctx, s.path, args...)
 	cmd.Dir = filepathDir(s.path)
 	cmd.Stdin = nil
+	cmd.Env = restrictedSteamEnvironment(filepathDir(s.path))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -112,6 +113,7 @@ func (s *SteamCMD) PublicBuildID(ctx context.Context, appID int) (string, error)
 	cmd := exec.CommandContext(ctx, s.path, args...)
 	cmd.Dir = filepath.Dir(s.path)
 	cmd.Stdin = nil
+	cmd.Env = restrictedSteamEnvironment(filepath.Dir(s.path))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err
@@ -417,6 +419,7 @@ func (s *SteamCMD) WorkshopItem(ctx context.Context, itemID string, emit func(in
 	cmd := exec.CommandContext(ctx, s.path, args...)
 	cmd.Dir = filepath.Dir(s.path)
 	cmd.Stdin = nil
+	cmd.Env = restrictedSteamEnvironment(filepath.Dir(s.path))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
