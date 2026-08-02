@@ -36,12 +36,14 @@ jobs:
             -ldflags="-s -w -X github.com/l4d2-panel/l4d2panel/internal/version.Version=${GITHUB_REF_NAME} -X github.com/l4d2-panel/l4d2panel/internal/version.Commit=${GITHUB_SHA} -X github.com/l4d2-panel/l4d2panel/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o "$artifact" ./cmd/agent
           sha256sum "$artifact" >"$artifact.sha256"
+          cp configs/agent.portable.example.yaml agent.yaml.example
       - uses: actions/upload-artifact@v4
         with:
           name: l4d2panel-agent-${{ matrix.suffix }}
           path: |
             l4d2panel-agent-${{ matrix.suffix }}
             l4d2panel-agent-${{ matrix.suffix }}.sha256
+            agent.yaml.example
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -49,6 +51,11 @@ jobs:
           files: |
             l4d2panel-agent-${{ matrix.suffix }}
             l4d2panel-agent-${{ matrix.suffix }}.sha256
+      - name: Attach portable Agent config example
+        if: startsWith(github.ref, 'refs/tags/') && matrix.goos == 'linux'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: agent.yaml.example
 
   windows-center:
     runs-on: windows-2025

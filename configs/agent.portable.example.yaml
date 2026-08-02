@@ -1,0 +1,5 @@
+# Copy this file beside the Agent binary as agent.yaml. These are the only
+# values that must be edited before first start. The Agent removes the one-time
+# token and atomically stores its node ID and credential after enrollment.
+central_url: "https://panel.example.com"
+enrollment_token: "paste-one-time-token-here"

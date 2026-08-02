@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,14 +28,14 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) == 0 {
-		return usageError()
-	}
-	command := args[0]
-	if command == "version" || command == "--version" || command == "-version" {
+	if len(args) > 0 && (args[0] == "version" || args[0] == "--version" || args[0] == "-version") {
 		fmt.Printf("%s (%s, %s)\n", version.Version, version.Commit, version.Date)
 		return nil
 	}
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return runDirect(args)
+	}
+	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	configPath := flags.String("config", defaultConfigPath(), "path to agent YAML or JSON configuration")
@@ -80,7 +81,96 @@ func run(args []string) error {
 }
 
 func usageError() error {
-	return errors.New("usage: l4d2panel-agent <run|enroll|validate|install|uninstall|start|stop|restart|status|version> [--config PATH]")
+	return errors.New("usage: l4d2panel-agent [--config PATH] [--central-url URL] [--enrollment-token TOKEN] [--node-name NAME]\n       l4d2panel-agent <run|enroll|validate|install|uninstall|start|stop|restart|status|version> [--config PATH]")
+}
+
+// runDirect is the portable foreground entry point. It deliberately remains
+// separate from install: production services still use the platform installers
+// to create a low-privilege account and restricted filesystem permissions.
+func runDirect(args []string) error {
+	flags := flag.NewFlagSet("direct", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	configPath := flags.String("config", defaultDirectConfigPath(), "path to agent YAML or JSON configuration")
+	centralURL := flags.String("central-url", os.Getenv("CENTRAL_URL"), "control-plane URL used for first enrollment")
+	enrollmentToken := flags.String("enrollment-token", os.Getenv("ENROLLMENT_TOKEN"), "one-time token used for first enrollment")
+	nodeName := flags.String("node-name", os.Getenv("NODE_NAME"), "node name used for first enrollment")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return usageError()
+	}
+	absConfig, err := filepath.Abs(*configPath)
+	if err != nil {
+		return err
+	}
+	cfg, err := prepareDirectConfig(absConfig, *centralURL, *enrollmentToken, *nodeName)
+	if err != nil {
+		return err
+	}
+	if cfg.Credential == "" || cfg.NodeID == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err = agent.Enroll(ctx, absConfig, cfg)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("first enrollment: %w", err)
+		}
+		fmt.Printf("node enrolled: %s\n", cfg.NodeID)
+	}
+	return runService(absConfig)
+}
+
+func prepareDirectConfig(path, centralURL, enrollmentToken, nodeName string) (*agent.Config, error) {
+	cfg, err := agent.LoadConfig(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		cfg = &agent.Config{}
+	}
+
+	enrolled := cfg.Credential != "" && cfg.NodeID != ""
+	if enrolled {
+		if centralURL != "" && strings.TrimRight(centralURL, "/") != strings.TrimRight(cfg.CentralURL, "/") {
+			return nil, errors.New("--central-url does not match the control plane bound to this node")
+		}
+		if enrollmentToken != "" {
+			return nil, errors.New("--enrollment-token is only valid before the node is enrolled")
+		}
+		return cfg, nil
+	}
+
+	if centralURL != "" {
+		cfg.CentralURL = centralURL
+	}
+	if enrollmentToken != "" {
+		cfg.EnrollmentToken = enrollmentToken
+	}
+	if nodeName != "" {
+		cfg.NodeName = nodeName
+	}
+	if cfg.CentralURL == "" || cfg.EnrollmentToken == "" {
+		return nil, fmt.Errorf("first start requires central_url and enrollment_token in %s, or --central-url and --enrollment-token", path)
+	}
+	// Rewriting the bootstrap input before the network request makes a manually
+	// created Unix config 0600. Successful enrollment atomically replaces the
+	// one-time token with the long-lived node credential in this same file.
+	if err := agent.SaveConfig(path, cfg); err != nil {
+		return nil, fmt.Errorf("save first-start config: %w", err)
+	}
+	return agent.LoadConfig(path)
+}
+
+func defaultDirectConfigPath() string {
+	executable, err := os.Executable()
+	if err != nil {
+		return "agent.yaml"
+	}
+	return directConfigPath(executable)
+}
+
+func directConfigPath(executable string) string {
+	return filepath.Join(filepath.Dir(executable), "agent.yaml")
 }
 
 type serviceProgram struct {

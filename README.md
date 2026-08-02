@@ -132,6 +132,31 @@ sudo CENTRAL_URL=https://panel.example.com \
   ./scripts/install-agent.sh
 ```
 
+安装器是正式常驻部署的推荐方式：它创建低权限账号、受限目录和 systemd 服务。WSL2、本地测试或不需要注册系统服务时，也可以使用便携前台模式。把 [`configs/agent.portable.example.yaml`](configs/agent.portable.example.yaml) 复制到 Agent 二进制同目录并命名为 `agent.yaml`，首次启动前只需修改：
+
+```yaml
+central_url: "http://localhost:19090"
+enrollment_token: "一次性令牌"
+```
+
+限制配置权限后直接启动；首次启动会自动注册，把一次性令牌从 `agent.yaml` 中移除并原子写入节点 ID 和长期凭据。未显式配置的数据及实例目录默认为二进制同目录的 `data` 和 `data/instances`：
+
+```bash
+chmod 600 agent.yaml
+chmod +x l4d2panel-agent-linux-amd64
+./l4d2panel-agent-linux-amd64
+```
+
+以后仍然只需运行最后一条命令。首次启动也可以不预建文件，使用参数创建同目录的 `agent.yaml`：
+
+```bash
+./l4d2panel-agent-linux-amd64 \
+  --central-url http://localhost:19090 \
+  --enrollment-token 一次性令牌
+```
+
+也兼容 `CENTRAL_URL`、`ENROLLMENT_TOKEN` 和 `NODE_NAME` 环境变量。令牌属于秘密；共享主机上优先使用权限为 `0600` 的配置文件，避免把令牌写入 shell 历史或暴露在进程参数中。便携模式以前台当前用户身份运行，关闭终端即停止，也不会获得安装器提供的低权限服务账号和 systemd 沙箱。
+
 Windows 节点以管理员 PowerShell 运行：
 
 ```powershell
@@ -184,6 +209,16 @@ go run ./cmd/agent run --config ./agent.dev.json
 配置格式参考 [`configs/agent.example.json`](configs/agent.example.json)。
 
 ## 测试与发布验证
+
+便携节点端以后统一使用下面的构建目标。一次同时构建无 CGO 的 `linux/amd64` 和 `windows/amd64`，产物目录固定包含两个 Agent 二进制、各自的 SHA-256 校验文件，以及需要复制为 `agent.yaml` 的首次绑定示例：
+
+```bash
+make build-agent-portable \
+  VERSION=v0.1.0 \
+  COMMIT=$(git rev-parse --short HEAD)
+```
+
+输出目录固定为 `dist/agents/`。正式 GitHub Release 使用相同的无 CGO 构建参数、文件名和配置示例；`dist` 是本地构建输出，不进入源码提交。
 
 ```bash
 go test ./...

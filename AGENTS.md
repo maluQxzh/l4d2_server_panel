@@ -58,6 +58,14 @@ Do not weaken or remove pinned security versions merely to make an older local t
 - Do not commit `.env`, credentials, runtime data, `tmp`, `bin`, `web/node_modules`, `web/dist`, Playwright output, or local logs.
 - Preserve unrelated work already present in the workspace; do not use reset/checkout to erase it.
 
+## Portable Agent builds
+
+- Use `make build-agent-portable VERSION=<version> COMMIT=<commit>` as the canonical local portable Agent build. Keep this target aligned with `.github/workflows/release.yml`.
+- Every portable build produces both `linux/amd64` and `windows/amd64` with `CGO_ENABLED=0`, `-trimpath`, and explicit version, commit, and UTC build-date metadata.
+- Write the fixed flat artifact set beneath `dist/agents`: `l4d2panel-agent-linux-amd64`, `l4d2panel-agent-linux-amd64.sha256`, `l4d2panel-agent-windows-amd64.exe`, `l4d2panel-agent-windows-amd64.exe.sha256`, and `agent.yaml.example` copied from `configs/agent.portable.example.yaml`.
+- Generate checksum files in `sha256sum` format with LF line endings. Validate both checksums, run the Windows binary's `--version`, and run the Linux binary's `--version` on native Linux or WSL before handoff.
+- `dist` remains ignored build output. Do not add portable Agent binaries or generated checksums to source commits.
+
 ## Current project status (2026-08-01)
 
 - The main Go Control/Agent, React web application, SQLite persistence, Docker deployment, and Windows/Linux Agent packaging are present. Treat the project as under active development rather than production-complete.

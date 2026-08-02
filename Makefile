@@ -1,9 +1,12 @@
-.PHONY: all build build-control build-agent build-web test test-go test-web lint clean
+.PHONY: all build build-control build-agent build-agent-portable build-web test test-go test-web lint clean
 
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
 LDFLAGS = -s -w -X github.com/l4d2-panel/l4d2panel/internal/version.Version=$(VERSION) -X github.com/l4d2-panel/l4d2panel/internal/version.Commit=$(COMMIT) -X github.com/l4d2-panel/l4d2panel/internal/version.Date=$(BUILD_DATE)
+AGENT_DIST_DIR ?= dist/agents
+AGENT_LINUX_BINARY = l4d2panel-agent-linux-amd64
+AGENT_WINDOWS_BINARY = l4d2panel-agent-windows-amd64.exe
 
 all: test build
 
@@ -14,6 +17,16 @@ build-control: build-web
 
 build-agent:
 	go build -trimpath -ldflags="$(LDFLAGS)" -o bin/l4d2panel-agent ./cmd/agent
+
+# Canonical portable Agent artifacts. Keep this layout aligned with the release
+# workflow: both binaries, checksums, and a first-enrollment config example.
+build-agent-portable:
+	mkdir -p "$(AGENT_DIST_DIR)"
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o "$(AGENT_DIST_DIR)/$(AGENT_LINUX_BINARY)" ./cmd/agent
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o "$(AGENT_DIST_DIR)/$(AGENT_WINDOWS_BINARY)" ./cmd/agent
+	cp configs/agent.portable.example.yaml "$(AGENT_DIST_DIR)/agent.yaml.example"
+	cd "$(AGENT_DIST_DIR)" && sha256sum "$(AGENT_LINUX_BINARY)" >"$(AGENT_LINUX_BINARY).sha256"
+	cd "$(AGENT_DIST_DIR)" && sha256sum "$(AGENT_WINDOWS_BINARY)" >"$(AGENT_WINDOWS_BINARY).sha256"
 
 build-web:
 	cd web && npm ci && npm run build
