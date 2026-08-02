@@ -1,6 +1,6 @@
 # L4D2 Panel
 
-面向《求生之路 2》专用服务器的自托管多节点管理面板。中心控制台可通过 Linux/macOS Docker 或 Windows x64 原生 MSI 部署，并通过节点主动建立的 WSS 连接管理 Windows 与 Linux Agent；节点不需要开放面板管理端口，游戏端口仍由管理员按实例开放。
+面向《求生之路 2》专用服务器的自托管多节点管理面板。中心控制台可通过 Linux/macOS Docker 或 Windows x64 便携 ZIP 部署，并通过节点主动建立的 WSS 连接管理 Windows 与 Linux Agent；节点不需要开放面板管理端口，游戏端口仍由管理员按实例开放。
 
 ## 当前实现
 
@@ -114,11 +114,11 @@ SQLite 数据库位于 `app_data` 卷的 `/app/data/l4d2panel.sqlite3`。迁移�
 
 ## Windows 原生部署中心端
 
-Windows 10/11 x64 和 Windows Server 2019+ 可以直接安装发布页中的 `l4d2panel-center-*-windows-x64.msi`，不需要 Docker、WSL2 或 Windows 容器。向导只安装 Control；程序位于 `%ProgramFiles%\L4D2Panel\Control`，SQLite 数据库、配置、日志与升级检查点位于 `%ProgramData%\L4D2Panel`。
+Windows 10/11 x64 和 Windows Server 2019+ 使用发布页中的 `l4d2panel-center-*-windows-x64.zip`。解压到本机固定磁盘的永久目录后双击 `l4d2panel-control.exe`：程序自动请求 UAC、创建旁置 `data`、注册唯一的 Control 服务、开放 TCP 19090，并一次性显示初始化密钥。
 
-Control 固定监听 `0.0.0.0:19090`，安装器为所有网络配置文件放行该端口；SQLite 不监听网络端口。完成页可启动 `New-L4D2PanelSetupKey.ps1` 显示初始化密钥，静默安装后也可由管理员手工运行该脚本。请先收紧防火墙并配置 HTTPS，再访问 `/setup`。
+Control 固定监听 `0.0.0.0:19090`，SQLite 不监听网络端口。管理员应先收紧防火墙并配置自己管理的 HTTPS，再访问 `/setup`。全局所有者可以在设置页选择新的官方 ZIP 一键升级；程序自动创建程序、配置与 SQLite 快照，失败时完整回滚，最近保留 3 份。
 
-安装器仅授予 Control 服务 SID、Administrators 和 SYSTEM 访问 SQLite 数据目录。普通卸载保留 ProgramData；升级使用安装目录中的 `Update-L4D2PanelCenter.ps1`，它会停止 Control，并先用 SQLite Backup API 创建检查点。完整的交互安装、`/qn`、代理、升级与彻底清理说明见 [Windows 中心端安装说明](docs/windows-center-installation.md)。
+便携版不读取或迁移旧 MSI 数据；同名旧服务存在时会拒绝初始化。完整的安装、内置管理命令、Web/CLI 升级和恢复说明见 [Windows 中心端说明](docs/windows-center-installation.md)。
 
 ## 注册节点
 
@@ -200,7 +200,7 @@ RUN_FLEET_ACCEPTANCE=1 \
 go test ./internal/control -run TestFleetScaleAcceptance -count=1 -timeout=2m
 ```
 
-CI 还执行上述 20/100 模拟验收、Go race 测试、Windows/Linux Control 与 Agent 无 CGO 交叉构建、安装脚本静态检查、Playwright、`docker compose config`，并同时构建 `linux/amd64` 与 `linux/arm64` 中心镜像；Compose 作业会实际启动、停止并重启 Control，确认 SQLite 卷可独立通过 `doctor`。Windows 发布作业组装 Control，生成 MSI、SHA-256、CycloneDX SBOM 和第三方许可证清单，并执行静默安装、单服务、19090 监听与防火墙、SQLite ACL、初始化密钥、`/readyz`、`/setup`、首个所有者、repair/upgrade 与保留数据卸载冒烟测试。上述自动化不等同于真实游戏验证：发布前仍需分别在受支持的 Windows、Ubuntu 和 Debian 主机上运行安装器，并用真实 SteamCMD 安装/启动 App 222860，验证 A2S、RCON、更新、备份恢复和重启。
+CI 还执行上述 20/100 模拟验收、Go race 测试、Windows/Linux Control 与 Agent 无 CGO 交叉构建、安装脚本静态检查、Playwright、`docker compose config`，并同时构建 `linux/amd64` 与 `linux/arm64` 中心镜像；Compose 作业会实际启动、停止并重启 Control，确认 SQLite 卷可独立通过 `doctor`。Windows 发布作业生成便携 ZIP、未签名文件清单、SHA-256、CycloneDX SBOM 和第三方许可证，并验证包中没有安装器或运行期脚本载荷。正式发布仍需在 Windows 10/11 与 Server 2019/2022/2025 VM 上验证提升权限安装、初始化、一键升级、故障回滚、注销与清理。上述自动化不等同于真实游戏验证：发布前仍需分别在受支持的 Windows、Ubuntu 和 Debian 主机上用真实 SteamCMD 安装/启动 App 222860，验证 A2S、RCON、更新、备份恢复和重启。
 
 ## API 与参考资料
 

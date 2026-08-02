@@ -37,6 +37,10 @@ func (p *controlServiceProgram) Start(service.Service) error {
 	if err != nil {
 		return err
 	}
+	// This value is runtime-only and is never accepted from control.json. It
+	// prevents a foreground process pointed at a portable data directory from
+	// exposing the self-update API.
+	cfg.PortableService = true
 	logPath := cfg.LogFile
 	if logPath == "" {
 		logPath = filepath.Join(filepath.Dir(p.configPath), "logs", "control.jsonl")
@@ -186,8 +190,8 @@ func runServiceCommand(args []string) error {
 }
 
 func defaultControlConfigPath() string {
-	if root := os.Getenv("ProgramData"); root != "" {
-		return filepath.Join(root, "L4D2Panel", "config", "control.json")
+	if executable, err := os.Executable(); err == nil {
+		return filepath.Join(filepath.Dir(executable), "data", "config", "control.json")
 	}
-	return `C:\ProgramData\L4D2Panel\config\control.json`
+	return filepath.Join("data", "config", "control.json")
 }

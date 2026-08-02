@@ -96,7 +96,7 @@ export function SetupPage() {
           {!auth.bootstrapKeyConfigured ? <div className="setup-key-missing">
             <div><Terminal size={18} /><span><strong>请先在中心端主机生成密钥</strong><small>命令只会在当前终端显示一次明文密钥。</small></span></div>
             <code>docker compose exec -T app setup-key issue</code>
-            <code>&amp; "$env:ProgramFiles\L4D2Panel\Control\New-L4D2PanelSetupKey.ps1"</code>
+            <code>.\l4d2panel-control.exe setup-key issue --config .\data\config\control.json</code>
             <Button type="button" variant="secondary" onClick={() => void refresh()} loading={checking}><RefreshCw size={16} />我已生成，重新检查</Button>
           </div> : <Field label="初始化密钥" hint="格式为 l4d2p_setup_ 开头的一次性字符串">
             <div className="password-field"><input aria-label="初始化密钥" type={showKey ? "text" : "password"} autoComplete="off" maxLength={128} value={setupKey} onChange={(event) => setSetupKey(event.target.value)} required autoFocus /><button type="button" onClick={() => setShowKey((visible) => !visible)} aria-label={showKey ? "隐藏密钥" : "显示密钥"}>{showKey ? <EyeOff size={18} /> : <Eye size={18} />}</button></div>

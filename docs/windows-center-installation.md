@@ -1,72 +1,66 @@
-# Windows 中心端安装
+# Windows 便携中心端
 
-Windows 10/11 x64 与 Windows Server 2019+ 可使用 WiX 7 MSI 安装中心端，不依赖 Docker、WSL2、外部数据库或内置 HTTPS 服务。
+Windows 10/11 x64 与 Windows Server 2019+ 使用发布页中的 `l4d2panel-center-<version>-windows-x64.zip`，不依赖 Docker、WSL2、外部数据库或内置 HTTPS 服务。
 
-## 目录与服务
+## 解压、安装与初始化
 
-- 程序：`%ProgramFiles%\L4D2Panel\Control`
-- 配置：`%ProgramData%\L4D2Panel\config\control.json`
-- SQLite：`%ProgramData%\L4D2Panel\data\l4d2panel.sqlite3`
-- 日志：`%ProgramData%\L4D2Panel\logs`
-- 升级检查点：`%ProgramData%\L4D2Panel\backups`
+把整个 ZIP 解压到本机固定磁盘上的永久目录，例如 `D:\L4D2PanelCenter`。不要从网络共享、可移动磁盘或临时目录运行，也不要在注册服务后移动目录。
 
-固定服务名只有 `l4d2panel-control`，使用 `NT SERVICE\l4d2panel-control` 虚拟账号。SQLite 数据目录禁用继承，只允许 Administrators、SYSTEM 与 Control 服务 SID。
+双击 `l4d2panel-control.exe` 并允许 UAC。程序会创建旁置目录：
 
-## 安装和初始化
+- `data/config/control.json`
+- `data/database/l4d2panel.sqlite3`
+- `data/logs`
+- `data/backups/upgrades`
+- `data/update`
 
-1. 运行 MSI 并选择安装目录。
-2. 安装器写入严格的 schema v2 配置，执行 `doctor`、SQLite 迁移并启动服务。
-3. Control 固定监听 `0.0.0.0:19090`；安装器为所有网络配置文件、任意来源创建 TCP 19090 入站规则。
-4. 完成页选择“显示初始化密钥”，或以管理员身份运行：
+程序自动执行 doctor 和 SQLite 迁移，注册 `l4d2panel-control` 虚拟账号服务，为所有网络配置文件开放 TCP 19090，并显示一次初始化密钥。密钥同时是 `admin` 的初始密码，不会写入配置或日志。
 
-```powershell
-& "$env:ProgramFiles\L4D2Panel\Control\New-L4D2PanelSetupKey.ps1"
-```
+Control 只提供 HTTP。管理员必须先配置自己的 HTTPS 反向代理，再访问 `https://你的域名/setup`；代理应保留 Host、`X-Forwarded-*`、Upgrade 和 Connection，并把精确代理 IP/CIDR 写入 `trusted_proxies`。请把 Windows 防火墙规则的来源范围收紧到可信代理，不能把明文 19090 暴露到公网。
 
-脚本只在当前窗口显示一次 `l4d2p_setup_...` 密钥。初始化前再次运行会轮换密钥并立即使旧值失效；已有用户后拒绝签发。
+## 内置管理命令
 
-静默安装不显示完成页：
+在便携目录的管理员 PowerShell 中运行：
 
 ```powershell
-msiexec /i .\l4d2panel-center-0.1.0-windows-x64.msi /qn /norestart
-& "$env:ProgramFiles\L4D2Panel\Control\New-L4D2PanelSetupKey.ps1"
+.\l4d2panel-control.exe portable status
+.\l4d2panel-control.exe portable start
+.\l4d2panel-control.exe portable stop
+.\l4d2panel-control.exe portable restart
+.\l4d2panel-control.exe doctor --config .\data\config\control.json
 ```
 
-数据库路径不可通过 MSI 属性改为共享盘。原生安装固定使用 `%ProgramData%` 本机路径；不要用目录联接把数据库、WAL 或 SHM 移到 SMB/NFS。
-
-## 配置 HTTPS
-
-Control 不直接处理证书或 TLS。管理员必须在访问 `/setup` 前配置 HTTPS 反向代理，将 HTTP 和 WebSocket 转发到 `http://127.0.0.1:19090` 或中心端受保护的内网地址，并保留 `Host`、`X-Forwarded-Proto`、`X-Forwarded-For`、`Upgrade` 和 `Connection`。
-
-代理位于其他主机时，应把它的精确 IP/CIDR 写入 `control.json` 的 `trusted_proxies`，重启 Control，并把 Windows 防火墙规则的远程地址范围收紧到该代理。不要把 19090 明文管理入口直接暴露到公网。HTTPS 代理还负责受信任证书、HTTP 跳转和 HSTS。
-
-配置完成后访问 `https://你的域名/setup`，输入初始化密钥。系统会创建 `admin`／`系统管理员` 根所有者并登录；该密钥同时是初始密码，应在设置页立即修改。
-
-## 诊断和备份
+删除服务和 TCP 19090 防火墙规则但保留数据：
 
 ```powershell
-& "$env:ProgramFiles\L4D2Panel\Control\l4d2panel-control.exe" doctor `
-  --config "$env:ProgramData\L4D2Panel\config\control.json"
-
-Stop-Service l4d2panel-control
-& "$env:ProgramFiles\L4D2Panel\Control\l4d2panel-control.exe" backup-database `
-  --config "$env:ProgramData\L4D2Panel\config\control.json" `
-  --output "$env:ProgramData\L4D2Panel\backups\manual.sqlite3"
+.\l4d2panel-control.exe portable unregister
 ```
 
-`doctor` 输出数据库引擎、SQLite 版本、本地文件系统、目录可写性、`foreign_keys`、`journal_mode`、`quick_check`、schema 状态和 Control 监听地址，不输出主密钥。备份要求 Control 已停止并能取得独占锁；输出不能已存在。
-
-## 升级、卸载和恢复
-
-`Update-L4D2PanelCenter.ps1` 会停止 Control，调用 `backup-database` 创建一致性检查点，再启动 MSI。新 MSI 执行迁移和健康检查；失败时保留原数据库、检查点和 `UPGRADE-RECOVERY.txt`。恢复前必须停止 Control，并先验证检查点可独立打开和通过 `quick_check`。
-
-安装、升级和卸载脚本只管理当前 Control 服务、SQLite、ACL 与 TCP 19090 防火墙规则，不会自动迁移或清理旧版捆绑代理的服务或状态目录；确认不再使用后由管理员自行处理。
-
-普通卸载删除程序、服务和产品防火墙规则，但保留整个 `%ProgramData%\L4D2Panel`。彻底清理必须在服务已删除后显式运行：
+永久删除旁置 `data` 前必须先离线备份，并使用精确确认短语：
 
 ```powershell
-.\Remove-L4D2PanelCenterData.ps1 `
-  -Confirmation 'DELETE L4D2PANEL CENTER DATA'
+.\l4d2panel-control.exe portable purge --confirmation "DELETE L4D2PANEL PORTABLE DATA"
 ```
 
-该操作会永久删除 SQLite 数据库、WAL、SHM、备份、主密钥和日志，无法恢复。
+## 一键升级和恢复
+
+从可信发布渠道下载新版 ZIP，以全局所有者打开“设置 → 中心端升级”，选择 ZIP 并确认。浏览器会显示上传进度；中心端随后短暂离线并自动完成结构/哈希校验、停服、快照、文件替换、迁移、启动和 `/readyz` 健康检查。允许升级和同版本重装，禁止降级。
+
+升级清单不带发布者签名，只能检查包布局、大小和文件 SHA-256，不能证明发布者身份。不要上传第三方修改的包。
+
+失败时独立升级工作进程自动恢复旧程序、migrations、配置与 SQLite，并启动旧服务。`data/backups/upgrades` 保留最近 3 份完整快照；状态与脱敏错误保存在 `data/update`。若自动回滚也失败，服务保持停止，不要删除对应快照或上传包；在旁置备份恢复程序和数据库后运行：
+
+```powershell
+.\l4d2panel-control.exe doctor --config .\data\config\control.json
+.\l4d2panel-control.exe portable start
+```
+
+Web 不可用时可从旧版便携目录执行同一升级引擎：
+
+```powershell
+.\l4d2panel-control.exe portable upgrade D:\Downloads\l4d2panel-center-<version>-windows-x64.zip
+```
+
+## 旧 MSI 边界
+
+便携版是全新部署，不读取 `%ProgramData%\L4D2Panel`、不导入旧数据库，也不卸载旧产品。若检测到同名旧服务，初始化会拒绝覆盖并要求管理员先通过原 MSI 卸载。确认旧部署已备份并完全停止后再使用新的便携目录。

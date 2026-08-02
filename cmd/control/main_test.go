@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -79,9 +80,12 @@ func TestControlServiceConfigurationContainsOnlyConfigPath(t *testing.T) {
 	}
 }
 
-func TestDefaultControlConfigPathUsesProgramDataConfigDirectory(t *testing.T) {
-	t.Setenv("ProgramData", filepath.Join("C:", "ProgramData-Test"))
-	want := filepath.Join("C:", "ProgramData-Test", "L4D2Panel", "config", "control.json")
+func TestDefaultControlConfigPathUsesPortableDataDirectory(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(filepath.Dir(executable), "data", "config", "control.json")
 	if got := defaultControlConfigPath(); got != want {
 		t.Fatalf("defaultControlConfigPath() = %q; want %q", got, want)
 	}

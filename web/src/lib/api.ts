@@ -28,6 +28,8 @@ import type {
   NodeDiscoveryResult,
   QuarantineEntry,
   BackupUploadRecord,
+  SystemUpdateOverview,
+  SystemUpdateRecord,
 } from "./types";
 
 const baseURL = (import.meta.env.VITE_API_BASE || "/api/v1").replace(/\/$/, "");
@@ -360,6 +362,33 @@ export const api = {
   updateUser: (id: string, payload: { display_name?: string; password?: string; disabled?: boolean; role_bindings?: Array<{ role: Role; scope_type: "global" | "node" | "instance"; node_id?: string; instance_id?: string }> }) =>
     request<{ user: User }>(`/users/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) }),
   userRoleBindings: (id: string) => list<RoleBinding>(`/users/${encodeURIComponent(id)}/role-bindings`),
+  systemUpdates: () => request<SystemUpdateOverview>("/system/updates"),
+  systemUpdate: (id: string) => request<SystemUpdateRecord>(`/system/updates/${encodeURIComponent(id)}`),
+  uploadSystemUpdate: (file: File, onProgress?: (percent: number) => void) => new Promise<{ job_id: string; status: string; phase: string; target_version?: string }>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${baseURL}/system/updates`);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("Accept", "application/json");
+    xhr.setRequestHeader("Idempotency-Key", newIdempotencyKey());
+    if (csrfToken) xhr.setRequestHeader("X-CSRF-Token", csrfToken);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress?.(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+    };
+    xhr.onerror = () => reject(new ApiError("升级包上传中断，请确认中心端网络连接", 0, "network_error"));
+    xhr.onload = () => {
+      let body: Record<string, unknown> = {};
+      try { body = xhr.responseText ? JSON.parse(xhr.responseText) as Record<string, unknown> : {}; } catch { /* handled below */ }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const error = body.error as { message?: string; code?: string } | undefined;
+        reject(new ApiError(error?.message || `请求失败（${xhr.status}）`, xhr.status, error?.code));
+        return;
+      }
+      resolve(body as { job_id: string; status: string; phase: string; target_version?: string });
+    };
+    const form = new FormData();
+    form.append("package", file, file.name);
+    xhr.send(form);
+  }),
 };
 
 export function apiBaseURL() {

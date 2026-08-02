@@ -18,6 +18,8 @@ import (
 )
 
 type Config struct {
+	ConfigPath        string
+	PortableService   bool
 	ListenAddress     string
 	DatabasePath      string
 	MigrationsDir     string
@@ -86,7 +88,16 @@ func ConfigFromFile(path string) (Config, error) {
 	if source.SchemaVersion != 2 {
 		return Config{}, fmt.Errorf("unsupported control config schema_version %d", source.SchemaVersion)
 	}
-	return buildConfig(source, filepath.Dir(path))
+	cfg, err := buildConfig(source, filepath.Dir(path))
+	if err != nil {
+		return Config{}, err
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve control config path: %w", err)
+	}
+	cfg.ConfigPath = absPath
+	return cfg, nil
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {

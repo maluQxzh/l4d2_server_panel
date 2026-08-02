@@ -11,6 +11,31 @@ export type InstanceStatus =
   | "external";
 export type JobStatus = "queued" | "dispatched" | "running" | "succeeded" | "failed" | "canceled";
 
+export type SystemUpdatePhase = "validating" | "stopping" | "backing_up" | "installing" | "migrating" | "starting" | "health_check" | "rolling_back";
+
+export interface SystemUpdateRecord {
+  job_id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "canceled";
+  phase: SystemUpdatePhase;
+  current_version: string;
+  target_version?: string;
+  package_sha256?: string;
+  upload_bytes?: number;
+  rollback?: "not_required" | "succeeded" | "failed";
+  error?: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+}
+
+export interface SystemUpdateOverview {
+  supported: boolean;
+  current_version: string;
+  active?: SystemUpdateRecord;
+  history: SystemUpdateRecord[];
+  reason?: string;
+}
+
 export interface User {
   id: string;
   username: string;

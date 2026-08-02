@@ -3,7 +3,7 @@ import { api, ApiError, setCsrfToken } from "./api";
 
 describe("API 客户端", () => {
   beforeEach(() => setCsrfToken("csrf-test"));
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
   it("写请求携带 CSRF 和幂等键", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ job_id: "job-1" }), { status: 202, headers: { "Content-Type": "application/json" } }));
@@ -187,5 +187,36 @@ describe("API 客户端", () => {
     expect(fetchMock.mock.calls[4][1]?.body).toBeUndefined();
     expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toEqual({ offset: 0, chunk_sha256: "b".repeat(64), content_base64: "AQID" });
     expect(fetchMock.mock.calls[3][1]?.body).toBeUndefined();
+  });
+
+  it("中心端升级使用 multipart、CSRF、幂等键并报告上传进度", async () => {
+    const headers = new Map<string, string>();
+    let sentFileName = "";
+    class MockXHR {
+      upload: { onprogress: ((event: ProgressEvent) => void) | null } = { onprogress: null };
+      onerror: (() => void) | null = null;
+      onload: (() => void) | null = null;
+      status = 202;
+      responseText = JSON.stringify({ job_id: "update-1", status: "queued", phase: "validating", target_version: "1.2.0" });
+      withCredentials = false;
+      open(method: string, url: string) { expect(method).toBe("POST"); expect(url).toBe("/api/v1/system/updates"); }
+      setRequestHeader(name: string, value: string) { headers.set(name, value); }
+      send(body: FormData) {
+        const part = body.get("package");
+        sentFileName = part instanceof File ? part.name : "";
+        this.upload.onprogress?.({ lengthComputable: true, loaded: 3, total: 4 } as ProgressEvent);
+        this.onload?.();
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", MockXHR);
+    const progress = vi.fn();
+    const file = new File(["zip"], "center.zip", { type: "application/zip" });
+
+    await expect(api.uploadSystemUpdate(file, progress)).resolves.toMatchObject({ job_id: "update-1", target_version: "1.2.0" });
+
+    expect(headers.get("X-CSRF-Token")).toBe("csrf-test");
+    expect(headers.get("Idempotency-Key")).toBeTruthy();
+    expect(progress).toHaveBeenCalledWith(75);
+    expect(sentFileName).toBe("center.zip");
   });
 });

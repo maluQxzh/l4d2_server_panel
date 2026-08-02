@@ -73,65 +73,36 @@ jobs:
           [IO.File]::WriteAllBytes('signing.pfx', [Convert]::FromBase64String($env:PFX_BASE64))
           $certificate = Import-PfxCertificate -FilePath signing.pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString $env:PFX_PASSWORD -AsPlainText -Force)
           "WINDOWS_SIGNING_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-      - name: Build MSI, SBOM, notices, and hashes
+      - name: Build portable ZIP, SBOM, notices, and hashes
         shell: pwsh
         env:
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ vars.WINDOWS_SIGNING_TIMESTAMP_URL }}
         run: |
-          $version = '${{ github.ref_name }}'.TrimStart('v').Split('-', 2)[0]
-          ./packaging/windows/Build-WindowsMSI.ps1 `
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$') { $version = '0.1.0-ci.${{ github.run_number }}' }
+          ./packaging/windows/Build-WindowsPortable.ps1 `
             -Version $version
-      - name: Silent install and readiness smoke test
+      - name: Validate portable package structure
         shell: pwsh
         run: |
-          $msi = Get-ChildItem dist/windows-center -Filter *.msi | Select-Object -First 1
-          $process = Start-Process msiexec.exe -ArgumentList @('/i', $msi.FullName, '/qn', '/norestart') -Wait -PassThru
-          if ($process.ExitCode -notin @(0, 3010)) { throw "MSI install failed: $($process.ExitCode)" }
-          foreach ($name in @('l4d2panel-control')) {
-            if ((Get-Service $name).Status -ne 'Running') { throw "$name is not running" }
-          }
-          $firewall = @(Get-NetFirewallRule -Group 'L4D2 Panel Center')
-          if ($firewall.Count -ne 1 -or $firewall[0].Profile -ne 'Any' -or $firewall[0].Direction -ne 'Inbound' -or $firewall[0].Action -ne 'Allow') { throw 'Control firewall rule is invalid.' }
-          $firewallPort = @($firewall | Get-NetFirewallPortFilter)
-          if ($firewallPort.Count -ne 1 -or $firewallPort[0].Protocol -ne 'TCP' -or [int]$firewallPort[0].LocalPort -ne 19090) { throw 'Control firewall port is invalid.' }
-          if ((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:19090/readyz).StatusCode -ne 200) { throw 'Control is not ready.' }
-          if ((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:19090/setup).StatusCode -ne 200) { throw 'Setup page is unavailable.' }
-          if (Get-NetTCPConnection -State Listen -LocalPort 55432 -ErrorAction SilentlyContinue) { throw 'Legacy database port 55432 is listening.' }
-          $control = "$env:ProgramFiles\L4D2Panel\Control\l4d2panel-control.exe"
-          $config = "$env:ProgramData\L4D2Panel\config\control.json"
-          $setupKey = (& $control setup-key issue --config $config | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0 -or $setupKey -notmatch '^l4d2p_setup_[A-Za-z0-9_-]{43}$') { throw 'Setup key was not issued.' }
-          $bootstrapResponse = Invoke-WebRequest -UseBasicParsing -Uri http://127.0.0.1:19090/api/v1/auth/bootstrap
-          $bootstrap = $bootstrapResponse.Content | ConvertFrom-Json
-          if (-not $bootstrap.required -or -not $bootstrap.key_configured -or -not $bootstrap.csrf_token) { throw 'First-owner setup is not available.' }
-          $cookie = ([string]$bootstrapResponse.Headers['Set-Cookie'] -split ';')[0]
-          $ownerBody = @{setup_key=$setupKey} | ConvertTo-Json
-          $owner = Invoke-RestMethod -UseBasicParsing -Method Post -ContentType 'application/json' -Headers @{'X-Bootstrap-CSRF-Token'=$bootstrap.csrf_token; 'Idempotency-Key'=[guid]::NewGuid().ToString(); Cookie=$cookie} -Body $ownerBody -Uri http://127.0.0.1:19090/api/v1/auth/bootstrap
-          $setupKey = $null
-          if ($owner.user.role -ne 'owner') { throw 'Website first-owner creation failed.' }
-          $repair = Start-Process msiexec.exe -ArgumentList @('/i', $msi.FullName, '/qn', '/norestart', 'REINSTALL=ALL', 'REINSTALLMODE=vomus') -Wait -PassThru
-          if ($repair.ExitCode -notin @(0, 3010)) { throw "MSI repair/upgrade simulation failed: $($repair.ExitCode)" }
-          $afterRepair = Invoke-RestMethod -UseBasicParsing -Uri http://127.0.0.1:19090/api/v1/auth/bootstrap
-          if ($afterRepair.required) { throw 'Owner data was lost during MSI repair/upgrade simulation.' }
-          $product = Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object DisplayName -eq 'L4D2 Panel Center' | Select-Object -First 1
-          if (-not $product) { throw 'Installed MSI registration was not found.' }
-          $uninstall = Start-Process msiexec.exe -ArgumentList @('/x', $product.PSChildName, '/qn', '/norestart') -Wait -PassThru
-          if ($uninstall.ExitCode -notin @(0, 3010)) { throw "MSI uninstall failed: $($uninstall.ExitCode)" }
-          if (-not (Test-Path "$env:ProgramData\L4D2Panel\config\control.json")) { throw 'Ordinary uninstall removed retained data.' }
+          $package = Get-ChildItem dist/windows-center -Filter *.zip | Select-Object -First 1
+          if (-not $package) { throw 'Portable ZIP was not produced.' }
+          ./packaging/windows/Test-WindowsPortablePackage.ps1 -PackagePath $package.FullName
+      - name: Elevated portable install and upgrade smoke test
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem dist/windows-center -Filter *.zip | Select-Object -First 1
+          ./packaging/windows/Test-WindowsPortableInstall.ps1 -PackagePath $package.FullName
       - uses: actions/upload-artifact@v4
         with:
           name: l4d2panel-center-windows-x64
           path: |
-            dist/windows-center/*.msi
+            dist/windows-center/*.zip
             dist/windows-center/*.sha256
-            dist/windows-center/*.json
-            dist/windows-center/THIRD-PARTY-NOTICES.txt
-      - name: Attach center MSI to release
+      - name: Attach center portable ZIP to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/windows-center/*.msi
+            dist/windows-center/*.zip
             dist/windows-center/*.sha256
-            dist/windows-center/*.json
-            dist/windows-center/THIRD-PARTY-NOTICES.txt

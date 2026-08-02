@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -30,6 +31,9 @@ func main() {
 
 func runCLI(logger *slog.Logger, args []string, stdin io.Reader) error {
 	if len(args) == 0 {
+		if runtime.GOOS == "windows" {
+			return runPortableCommand(logger, []string{"install", "--interactive"}, stdin, os.Stdout)
+		}
 		return runConsole(logger, "")
 	}
 	switch args[0] {
@@ -62,6 +66,8 @@ func runCLI(logger *slog.Logger, args []string, stdin io.Reader) error {
 		return runSetupKey(args[1:], os.Stdout)
 	case "service":
 		return runServiceCommand(args[1:])
+	case "portable":
+		return runPortableCommand(logger, args[1:], stdin, os.Stdout)
 	case "version", "--version", "-version":
 		fmt.Printf("%s (%s, %s)\n", version.Version, version.Commit, version.Date)
 		return nil
@@ -71,7 +77,7 @@ func runCLI(logger *slog.Logger, args []string, stdin io.Reader) error {
 }
 
 func usageError() error {
-	return errors.New("usage: l4d2panel-control <serve|migrate|doctor|backup-database|bootstrap-owner|setup-key|service|version> [options]")
+	return errors.New("usage: l4d2panel-control <serve|migrate|doctor|backup-database|bootstrap-owner|setup-key|service|portable|version> [options]")
 }
 
 func parseConfigOnly(command string, args []string) (string, error) {

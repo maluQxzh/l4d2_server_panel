@@ -15,11 +15,11 @@ Read `README.md` before substantial work. For protocol, persistence, authorizati
 - `internal/control`: HTTP/WebSocket APIs, RBAC, persistence, scheduling, notifications, and embedded web assets.
 - `internal/agent`: lifecycle, SteamCMD, A2S/RCON, packages, backups, files, and platform process management.
 - `internal/domain` and `internal/protocol`: shared domain and wire types.
-- `migrations/sqlite`: active ordered SQLite migrations. Root-level PostgreSQL migrations are immutable history only and are never built or executed. Add a new numbered SQLite migration; never rewrite an applied migration.
+- `migrations/sqlite`: active ordered SQLite migrations. SQLite is the only supported database; add a new numbered migration and never rewrite an applied migration.
 - `web`: React 19, TypeScript, Vite, Vitest, and Playwright application.
 - `docs/openapi.yaml`: public API contract. `docs/architecture.md` and `docs/security.md` describe invariants and threat boundaries.
 - `scripts`: Windows and Linux Agent installers.
-- `packaging/windows`: WiX 7 native Windows Control MSI, installer, upgrade, and explicit data-purge scripts.
+- `packaging/windows`: Windows x64 portable Control ZIP build, structure validation, elevated lifecycle/upgrade smoke, and portable deployment documentation.
 
 ## Required toolchain
 
@@ -62,15 +62,13 @@ Do not weaken or remove pinned security versions merely to make an older local t
 
 - The main Go Control/Agent, React web application, SQLite persistence, Docker deployment, and Windows/Linux Agent packaging are present. Treat the project as under active development rather than production-complete.
 - Linux and macOS center deployments use Docker Compose. The first owner is created at `/setup`, and the published HTTP/HTTPS ports are configurable.
-- The native Windows center installer is implemented as a WiX 7 x64 MSI for Windows 10/11 and Windows Server 2019+. It bundles only Control, uses `%ProgramData%\L4D2Panel\data\l4d2panel.sqlite3`, and leaves HTTPS reverse-proxy configuration to the administrator.
-- The MSI fixes the Control listener at `0.0.0.0:19090`; generated configuration and readiness checks use that port.
-- Windows uses the fixed service name `l4d2panel-control` with its virtual service account. SQLite has no listener and the firewall rule covers TCP 19090.
-- Installer hardening includes native x64 detection, corrected custom-action ordering, propagated SQLite/config ACLs, service executable read permissions, rollback cleanup, bounded readiness retries, embedded Go timezone data, and pre-upgrade SQLite checkpoints.
-- `packaging/windows/Build-WindowsMSI.ps1 -Fast` supports frequent local iteration. Release builds omit `-Fast`; every build removes legacy database staging and rebuilds cabinet cache so stale payload cannot leak into the MSI.
-- `packaging/windows/Test-WindowsMSI.ps1` performs structural package validation and runs as part of the build. `packaging/windows/Test-WindowsMSIInstall.ps1` performs an elevated real install/uninstall smoke test.
-- Any prior PostgreSQL MSI artifact or smoke result is obsolete. Rebuild the SQLite package and run a fresh elevated smoke test before release; `dist/` remains ignored.
-- SQLite validation includes ordinary Go tests, isolated migration/credential integration, and the opt-in 20-node/100-instance fleet test. PowerShell parser, WiX XML/build, structural MSI, elevated install, and Docker runtime gates remain required in proportion to changed delivery code.
-- Outstanding release gates include a real SteamCMD App 222860 install/start/A2S/RCON/update/restart test, the Windows 10/11 and Server 2019/2022/2025 VM matrix, Linux/macOS runtime revalidation, Docker restart persistence, elevated SQLite MSI smoke, and signed release artifacts.
+- Windows center releases are x64 portable ZIPs for Windows 10/11 and Windows Server 2019+. The fixed beside-EXE layout contains Control, SQLite migrations, licenses, SBOM, an unsigned integrity manifest, and `data`; HTTPS remains administrator-managed.
+- No-argument launch requests UAC, registers only `l4d2panel-control`, fixes Control at `0.0.0.0:19090`, applies restricted ACLs, and creates the TCP 19090 firewall rule. SQLite has no listener.
+- Global owners can upload a trusted newer ZIP or reinstall the same version. The detached worker validates package limits and hashes, checkpoints SQLite, snapshots managed files/config/database, replaces only manifest-managed files, runs forward migrations and readiness, and fully rolls back on failure. It retains the newest three snapshots and durable sanitized state.
+- `packaging/windows/Build-WindowsPortable.ps1` creates the release ZIP. `Test-WindowsPortablePackage.ps1` validates its exact structure and hashes; `Test-WindowsPortableInstall.ps1` performs an elevated real install, first-owner, same-version upgrade, unregister, and purge smoke.
+- The portable deployment deliberately does not import, uninstall, or clean up legacy Windows center products or `%ProgramData%` data. A conflicting fixed service name is rejected and must be removed through the old deployment method first.
+- SQLite validation includes ordinary Go tests, isolated migration/credential/update integration, and the opt-in 20-node/100-instance fleet test. PowerShell parsing, portable structure, elevated lifecycle/upgrade, and Docker runtime gates remain required in proportion to changed delivery code.
+- Outstanding release gates include a real SteamCMD App 222860 install/start/A2S/RCON/update/restart test, the Windows 10/11 and Server 2019/2022/2025 VM matrix, Linux/macOS runtime revalidation, Docker restart persistence, elevated portable rollback smoke, and signed release artifacts.
 
 ## Validation
 
@@ -96,8 +94,8 @@ go test ./internal/control -run TestSQLiteMigrationsAndCredentialLifecycle -coun
 RUN_FLEET_ACCEPTANCE=1 go test ./internal/control -run TestFleetScaleAcceptance -count=1 -timeout=2m
 ```
 
-For Agent or platform changes, test on Windows and Linux and cross-build both amd64 targets with `CGO_ENABLED=0`. Installer changes require PowerShell parser validation and `sh -n`; CI additionally runs ShellCheck. Native Windows Center packaging changes require an x64 Control cross-build, WiX 7 compilation with OSMF/EULA compliance, and MSI VM smoke tests when release payloads are available. Container changes require `docker compose config --quiet` and production image builds for both `linux/amd64` and `linux/arm64`.
+For Agent or platform changes, test on Windows and Linux and cross-build both amd64 targets with `CGO_ENABLED=0`. Installer changes require PowerShell parser validation and `sh -n`; CI additionally runs ShellCheck. Native Windows Center packaging changes require an x64 Control cross-build, portable ZIP structure/hash validation, and elevated install/upgrade/rollback VM smoke tests when release payloads are available. Container changes require `docker compose config --quiet` and production image builds for both `linux/amd64` and `linux/arm64`.
 
-If the local environment lacks Docker, WiX, SteamCMD, or a supported game host, report the skipped gate explicitly. Never describe mocked Playwright flows or cross-compilation as a real App 222860 end-to-end validation.
+If the local environment lacks Docker, PowerShell 7.4, SteamCMD, or a supported game host, report the skipped gate explicitly. Never describe mocked Playwright flows or cross-compilation as a real App 222860 end-to-end validation.
 
 `Makefile` targets are Unix-oriented (`rm`, `cp`, and shell date syntax). On Windows PowerShell, run the equivalent Go and npm commands directly unless a compatible Unix shell is available.

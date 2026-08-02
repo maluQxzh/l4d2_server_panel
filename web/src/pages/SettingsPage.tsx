@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Bell, Braces, Check, CheckCircle2, Clipboard, KeyRound, LockKeyhole, Mail, Plus, ShieldCheck,
+  Bell, Braces, Check, CheckCircle2, Clipboard, DownloadCloud, KeyRound, LockKeyhole, Mail, Plus, RefreshCw, ShieldCheck,
   Smartphone, Trash2, UserCog, Webhook,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -11,7 +11,7 @@ import { useToast } from "../context/ToastContext";
 import { hasRootSecurityPermission } from "../lib/account-permissions";
 import { api, ApiError } from "../lib/api";
 import { dateTime } from "../lib/format";
-import type { Role, RoleBinding, User } from "../lib/types";
+import type { Role, RoleBinding, SystemUpdatePhase, User } from "../lib/types";
 
 export function SettingsPage() {
   const auth = useAuth();
@@ -48,11 +48,80 @@ export function SettingsPage() {
       <Card><div className="card-heading"><div><span className="eyebrow">NOTIFICATION DELIVERY</span><h2>通知渠道</h2></div><Bell size={21} /></div><div className="settings-list"><button onClick={() => setChannelKind("smtp")} disabled={!['owner', 'admin'].includes(auth.user?.role || '')}><span><Mail size={18} /><span><strong>SMTP 邮件</strong><small>强制 STARTTLS，凭据加密保存</small></span></span><em>配置</em></button><button onClick={() => setChannelKind("webhook")} disabled={!['owner', 'admin'].includes(auth.user?.role || '')}><span><Webhook size={18} /><span><strong>Webhook</strong><small>HMAC-SHA256 签名与持久化重试</small></span></span><em>配置</em></button></div></Card>
       <Card><div className="card-heading"><div><span className="eyebrow">DISPLAY</span><h2>界面偏好</h2></div><Braces size={21} /></div><label className="preference-row"><span><strong>紧凑布局</strong><small>在表格中显示更多信息</small></span><button type="button" role="switch" aria-checked={compact} className={`switch ${compact ? "switch--on" : ""}`} onClick={() => setCompact((value) => !value)}><span /></button></label><Field label="语言"><select value="zh-CN" disabled><option>简体中文</option></select></Field></Card>
     </div>
+    {canManageUsers && <CenterUpdateCard />}
     <TotpModal open={totpOpen} enabled={Boolean(auth.user?.totp_enabled)} onClose={() => setTotpOpen(false)} />
     <APITokenModal open={tokenOpen} role={auth.user?.role || "viewer"} onClose={() => setTokenOpen(false)} />
     <NotificationChannelModal kind={channelKind} onClose={() => setChannelKind(null)} />
     <UserModal target={canManageUsers ? managedUser : null} actor={auth.user || null} onClose={() => setManagedUser(null)} />
   </div>;
+}
+
+const updatePhaseLabels: Record<SystemUpdatePhase, string> = {
+  validating: "正在校验升级包",
+  stopping: "正在停止中心端服务",
+  backing_up: "正在创建完整快照",
+  installing: "正在替换程序文件",
+  migrating: "正在迁移数据库",
+  starting: "正在启动新版本",
+  health_check: "正在执行健康检查",
+  rolling_back: "升级失败，正在自动回滚",
+};
+
+function CenterUpdateCard() {
+  const toast = useToast();
+  const client = useQueryClient();
+  const overview = useQuery({ queryKey: ["system-updates"], queryFn: api.systemUpdates, retry: 1 });
+  const [file, setFile] = useState<File | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [jobID, setJobID] = useState("");
+  const activeID = jobID || overview.data?.active?.job_id || "";
+  const current = useQuery({
+    queryKey: ["system-update", activeID],
+    queryFn: () => api.systemUpdate(activeID),
+    enabled: Boolean(activeID),
+    retry: true,
+    retryDelay: 1000,
+    refetchInterval: (query) => ["succeeded", "failed", "canceled"].includes(query.state.data?.status || "") ? false : 1000,
+  });
+  const upload = useMutation({
+    mutationFn: async () => {
+      if (!file) throw new Error("请选择 ZIP 升级包");
+      return api.uploadSystemUpdate(file, setUploadProgress);
+    },
+    onSuccess: (result) => {
+      setJobID(result.job_id);
+      setUploadProgress(100);
+      toast.push("升级包已校验，中心端将短暂离线");
+    },
+    onError: (error) => toast.push(error.message, "error"),
+  });
+  const state = current.data || overview.data?.active;
+
+  useEffect(() => {
+    if (!state || !["succeeded", "failed", "canceled"].includes(state.status)) return;
+    void client.invalidateQueries({ queryKey: ["system-updates"] });
+    if (state.status === "succeeded") toast.push(`中心端已升级到 ${state.target_version || "新版本"}`);
+    else toast.push(state.rollback === "succeeded" ? "升级失败，已完整恢复旧版本" : "升级及自动回滚失败，请按恢复文档处理", "error");
+    setJobID("");
+    setFile(null);
+  }, [client, state?.job_id, state?.status]);
+
+  if (overview.isPending || overview.error || !overview.data?.supported) return null;
+  const busy = upload.isPending || Boolean(state && ["queued", "running"].includes(state.status));
+  const history = overview.data.history || [];
+  return <section className="settings-section center-update-section">
+    <div className="section-heading"><div><h2>中心端升级</h2><p>当前版本 {overview.data.current_version} · 仅接受可信来源的 Windows x64 便携 ZIP，不验证发布者签名。</p></div><DownloadCloud size={22} /></div>
+    <Card><div className="center-update-panel">
+      <div className="center-update-picker">
+        <Field label="升级包" hint="允许升级或同版本重装，禁止降级；最大 512 MiB"><input type="file" accept=".zip,application/zip" disabled={busy} onChange={(event) => { setFile(event.target.files?.[0] || null); setUploadProgress(0); }} /></Field>
+        <Button disabled={!file || busy} loading={upload.isPending} onClick={() => { if (file && window.confirm(`确认使用“${file.name}”升级中心端？服务会短暂离线，失败时将自动完整回滚。`)) upload.mutate(); }}><RefreshCw size={16} />一键升级</Button>
+      </div>
+      {upload.isPending && <div className="center-update-progress" role="progressbar" aria-valuenow={uploadProgress}><span style={{ width: `${uploadProgress}%` }} /><small>正在上传 {uploadProgress}%</small></div>}
+      {state && ["queued", "running"].includes(state.status) && <div className="center-update-running"><span className="spinner" /><div><strong>{updatePhaseLabels[state.phase] || state.phase}</strong><small>页面会等待服务恢复并自动显示结果，请勿关闭或移动便携目录。</small></div></div>}
+      {state?.status === "failed" && <div className="form-warning">{state.rollback === "succeeded" ? "升级失败，旧程序、配置和数据库已经恢复。" : "自动回滚失败，服务可能保持停止。"}{state.error ? ` ${state.error}` : ""}</div>}
+      {history.length > 0 && <div className="center-update-history"><strong>最近升级</strong>{history.slice(0, 3).map((item) => <div key={item.job_id}><StatusBadge status={item.status} /><span>{item.current_version} → {item.target_version || "未知"}</span><time>{dateTime(item.completed_at || item.updated_at)}</time><small>{item.status === "failed" ? `回滚：${item.rollback === "succeeded" ? "成功" : "失败"}` : "健康检查通过"}</small></div>)}</div>}
+    </div></Card>
+  </section>;
 }
 
 type EditableBinding = Pick<RoleBinding, "role" | "scope_type" | "node_id" | "instance_id">;
