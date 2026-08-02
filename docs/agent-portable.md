@@ -1,6 +1,6 @@
-# 便携 Agent 部署与升级
+# Agent 便携、系统服务部署与升级
 
-便携 Agent 是 Windows 和 Linux 节点唯一推荐的安装与升级方式。节点不需要安装脚本、管理员提权、Windows Service 或 systemd；Agent 使用启动它的账号运行。需要开机自启或后台守护时，可以使用部署者自己的进程管理器，但必须保持同一低权限账号和工作目录。
+Windows 和 Linux Agent 始终采用二进制、`agent.yaml` 与 `data` 旁置的便携文件布局，不需要额外安装脚本。同一二进制支持两种明确模式：无子命令启动是当前账号下的前台便携进程；`install --config` 会注册为 systemd 或 Windows Service，使用专用低权限账号在后台常驻、故障重启并开机自启。显式 `run --config` 也可交给部署者选择的其他进程管理器。
 
 ## 发布产物
 
@@ -42,7 +42,7 @@ central_url: "https://panel.example.com"
 enrollment_token: "paste-one-time-token-here"
 ```
 
-Linux 应限制配置权限：
+Linux 应先限制配置权限。便携前台启动使用：
 
 ```bash
 cp agent.yaml.example agent.yaml
@@ -50,14 +50,30 @@ chmod 600 agent.yaml
 ./l4d2panel-agent-linux-amd64
 ```
 
-Windows 应在 ACL 已限制到 Agent 运行账号、Administrators 和 SYSTEM 的目录中启动：
+systemd 常驻模式使用：
+
+```bash
+./l4d2panel-agent-linux-amd64 install --config ./agent.yaml
+```
+
+非 root 运行时程序会通过 `sudo` 重启固定的安装命令。它要求 systemd 为当前 init，创建无登录的 `l4d2panel` 系统账号，只把配置、Agent 数据和已配置实例根交给该账号，并安装、启动及启用 `l4d2panel-agent.service`。数据或实例根不得是 `/` 等宽泛目录，也不能包含 Agent 二进制。
+
+Windows 应在仅受节点管理员控制的永久目录中使用前台模式：
 
 ```powershell
 Copy-Item .\agent.yaml.example .\agent.yaml
 .\l4d2panel-agent-windows-amd64.exe
 ```
 
-首次启动会自动注册。成功后 Agent 原子地把 `node_id` 和长期节点凭据写回 `agent.yaml`，并删除一次性令牌。未显式配置时，运行数据和实例目录分别为同目录的 `data` 与 `data/instances`。后续启动不再需要令牌：
+Windows Service 常驻模式使用：
+
+```powershell
+.\l4d2panel-agent-windows-amd64.exe install --config .\agent.yaml
+```
+
+程序会自动请求 UAC，注册延迟自动启动的 `l4d2panel-agent` 服务，使用 `NT SERVICE\l4d2panel-agent` 虚拟服务账号，并把配置、数据目录、实例根和二进制 ACL 限制到服务 SID、Administrators 与 SYSTEM。
+
+前台启动和服务安装都会在需要时自动注册。成功后 Agent 原子地把 `node_id` 和长期节点凭据写回 `agent.yaml`，并删除一次性令牌。未显式配置时，运行数据和实例目录分别为同目录的 `data` 与 `data/instances`。后续启动不再需要令牌：
 
 ```text
 agent-directory/
@@ -70,7 +86,19 @@ agent-directory/
 
 ## 日常启动与停止
 
-Agent 以前台进程运行，终端关闭或收到中断信号后停止。节点上的游戏进程仍由 Agent 的平台进程管理器管理。若使用外部守护程序，应让它：
+无子命令的便携 Agent 以前台进程运行，终端关闭或收到中断信号后停止。内置服务模式使用以下同一组跨平台命令；Linux 在需要时调用 `sudo`，Windows 在需要时请求 UAC：
+
+```text
+l4d2panel-agent status  --config /absolute/path/to/agent.yaml
+l4d2panel-agent start   --config /absolute/path/to/agent.yaml
+l4d2panel-agent stop    --config /absolute/path/to/agent.yaml
+l4d2panel-agent restart --config /absolute/path/to/agent.yaml
+l4d2panel-agent uninstall --config /absolute/path/to/agent.yaml
+```
+
+`install` 可以幂等重试：属于当前旁置部署且已经运行的服务会直接返回成功；同名服务若指向其他二进制、配置或账号则拒绝接管。`uninstall` 只注销系统服务，保留二进制、`agent.yaml`、`data`、游戏目录和节点身份。
+
+节点上的游戏进程仍由 Agent 的平台进程管理器管理。若使用显式 `run --config` 交给其他守护程序，应让它：
 
 - 以专用低权限账号运行 Agent；
 - 使用 Agent 永久目录作为工作目录；
@@ -94,13 +122,20 @@ chmod 755 l4d2panel-agent-linux-amd64
 cd ..
 ```
 
-确认平台和版本正确后，停止当前 Agent，再执行只替换二进制的同文件系统升级：
+确认平台和版本正确后，停止当前 Agent。前台模式使用 `Ctrl+C`；systemd 模式使用：
+
+```bash
+./l4d2panel-agent-linux-amd64 stop --config ./agent.yaml
+```
+
+再执行只替换二进制的同文件系统升级，并按原模式重新启动：
 
 ```bash
 cp -p l4d2panel-agent-linux-amd64 l4d2panel-agent-linux-amd64.previous
 install -m 0755 upgrade/l4d2panel-agent-linux-amd64 l4d2panel-agent-linux-amd64.next
 mv -f l4d2panel-agent-linux-amd64.next l4d2panel-agent-linux-amd64
-./l4d2panel-agent-linux-amd64
+# 前台模式：./l4d2panel-agent-linux-amd64
+# systemd 模式：./l4d2panel-agent-linux-amd64 start --config ./agent.yaml
 ```
 
 确认节点重新上线后，可以在下一次升级时覆盖 `.previous`。若新版本启动失败，停止新进程并回滚：
@@ -108,7 +143,7 @@ mv -f l4d2panel-agent-linux-amd64.next l4d2panel-agent-linux-amd64
 ```bash
 mv -f l4d2panel-agent-linux-amd64 l4d2panel-agent-linux-amd64.failed
 mv -f l4d2panel-agent-linux-amd64.previous l4d2panel-agent-linux-amd64
-./l4d2panel-agent-linux-amd64
+# 按原前台或 systemd 模式重新启动
 ```
 
 ## Windows 升级与回滚
@@ -125,7 +160,13 @@ if ($actual -ne $expected) { throw 'Agent SHA-256 校验失败。' }
 & $staged --version
 ```
 
-停止当前 Agent 后，使用同卷原子替换并同时保留上一版本：
+停止当前 Agent。前台模式用 `Ctrl+C`；Windows Service 模式使用：
+
+```powershell
+.\l4d2panel-agent-windows-amd64.exe stop --config .\agent.yaml
+```
+
+然后使用同卷原子替换并同时保留上一版本，最后按原模式重新启动：
 
 ```powershell
 $current = Join-Path $PWD 'l4d2panel-agent-windows-amd64.exe'
@@ -134,7 +175,8 @@ $previous = Join-Path $PWD 'l4d2panel-agent-windows-amd64.exe.previous'
 Copy-Item $staged $next -Force
 Remove-Item $previous -Force -ErrorAction SilentlyContinue
 [IO.File]::Replace($next, $current, $previous, $true)
-& $current
+# 前台模式：& $current
+# Windows Service 模式：& $current start --config .\agent.yaml
 ```
 
 若新版本启动失败，确保新进程已经退出，再回滚：
@@ -144,13 +186,13 @@ $failed = Join-Path $PWD 'l4d2panel-agent-windows-amd64.exe.failed'
 Copy-Item $previous $next -Force
 Remove-Item $failed -Force -ErrorAction SilentlyContinue
 [IO.File]::Replace($next, $current, $failed, $true)
-& $current
+# 按原前台或 Windows Service 模式重新启动
 ```
 
 ## 升级不变量
 
 - 只替换当前平台的 Agent 二进制；绝不覆盖 `agent.yaml`、`data` 或实例目录。
-- 替换前等待节点写任务结束，并通过中心端正常停止运行实例；暂停外部守护程序的自动重启。
+- 替换前等待节点写任务结束，并通过中心端正常停止运行实例；停止内置系统服务，或暂停外部守护程序的自动重启。
 - 新二进制必须先通过发布的 SHA-256 校验并成功输出版本。
 - 已注册节点沿用现有 `node_id` 和凭据，不需要也不应申请新的注册令牌。
 - 替换前保留一份上一版本二进制；新版本未重新上线前不要删除它。

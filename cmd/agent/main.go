@@ -81,12 +81,12 @@ func run(args []string) error {
 }
 
 func usageError() error {
-	return errors.New("usage: l4d2panel-agent [--config PATH] [--central-url URL] [--enrollment-token TOKEN] [--node-name NAME]\n       l4d2panel-agent <run|enroll|validate|install|uninstall|start|stop|restart|status|version> [--config PATH]")
+	return errors.New("usage: l4d2panel-agent [--config PATH] [--central-url URL] [--enrollment-token TOKEN] [--node-name NAME]\n       l4d2panel-agent <run|enroll|validate|install|uninstall|start|stop|restart|status|version> [--config PATH]\n\nRun without a command for portable foreground mode, or use install to register an auto-starting system service.")
 }
 
 // runDirect is the portable foreground entry point. It deliberately remains
-// separate from install: production services still use the platform installers
-// to create a low-privilege account and restricted filesystem permissions.
+// separate from install so a temporary portable launch never mutates the host's
+// service manager. The explicit install command creates the service boundary.
 func runDirect(args []string) error {
 	flags := flag.NewFlagSet("direct", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
@@ -229,11 +229,16 @@ func (p *serviceProgram) Stop(service.Service) error {
 }
 
 func serviceConfiguration(configPath string) *service.Config {
+	workingDirectory := filepath.Dir(configPath)
+	if executable, err := os.Executable(); err == nil {
+		workingDirectory = filepath.Dir(executable)
+	}
 	cfg := &service.Config{
-		Name:        serviceName,
-		DisplayName: "L4D2 Panel Agent",
-		Description: "Manages local Left 4 Dead 2 dedicated server instances",
-		Arguments:   []string{"run", "--config", configPath},
+		Name:             serviceName,
+		DisplayName:      "L4D2 Panel Agent",
+		Description:      "Manages local Left 4 Dead 2 dedicated server instances",
+		Arguments:        []string{"run", "--config", configPath},
+		WorkingDirectory: workingDirectory,
 		Option: service.KeyValue{
 			"Restart":                "always",
 			"DelayedAutoStart":       true,
@@ -286,6 +291,27 @@ func installService(configPath string) error {
 	if err != nil {
 		return err
 	}
+	status, statusErr := s.Status()
+	if statusErr == nil || !errors.Is(statusErr, service.ErrNotInstalled) {
+		if err := validateExistingService(configPath); err != nil {
+			if statusErr != nil {
+				return fmt.Errorf("inspect existing Agent service: %v; validate ownership: %w", statusErr, err)
+			}
+			return err
+		}
+		if statusErr == nil && status == service.StatusRunning {
+			fmt.Println("agent service is already installed and running")
+			return nil
+		}
+		return startInstalledService(s, configPath, cfg)
+	}
+	delegated, err := ensureServicePrivileges([]string{"install", "--config", configPath})
+	if err != nil || delegated {
+		return err
+	}
+	if err := prepareServiceInstall(configPath, cfg); err != nil {
+		return err
+	}
 	if err := s.Install(); err != nil {
 		return err
 	}
@@ -303,7 +329,34 @@ func installService(configPath string) error {
 	return nil
 }
 
+func startInstalledService(s service.Service, configPath string, cfg *agent.Config) error {
+	delegated, err := ensureServicePrivileges([]string{"install", "--config", configPath})
+	if err != nil || delegated {
+		return err
+	}
+	if err := prepareServiceInstall(configPath, cfg); err != nil {
+		return err
+	}
+	if err := prepareServiceConfigOwnership(configPath); err != nil {
+		return err
+	}
+	if err := s.Start(); err != nil {
+		return err
+	}
+	fmt.Println("agent service is installed, enabled, and running")
+	return nil
+}
+
 func controlService(command, configPath string) error {
+	if err := validateExistingService(configPath); err != nil {
+		return err
+	}
+	if command != "status" {
+		delegated, err := ensureServicePrivileges([]string{command, "--config", configPath})
+		if err != nil || delegated {
+			return err
+		}
+	}
 	s, err := newService(configPath)
 	if err != nil {
 		return err
