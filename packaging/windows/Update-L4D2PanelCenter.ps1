@@ -14,7 +14,7 @@ $control = Join-Path $InstallRoot 'l4d2panel-control.exe'
 $config = Join-Path $DataRoot 'config\control.json'
 $checkpoint = Join-Path $DataRoot ("backups\upgrade-{0}.sqlite3" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
 
-foreach ($name in @('l4d2panel-caddy', 'l4d2panel-control')) {
+foreach ($name in @('l4d2panel-control')) {
     $service = Get-Service -Name $name -ErrorAction SilentlyContinue
     if ($service -and $service.Status -ne 'Stopped') {
         Stop-Service -Name $name -Force
@@ -38,7 +38,7 @@ Stop l4d2panel-control before replacing the current SQLite database with a verif
     throw "MSI upgrade failed. Recovery instructions: $instructions"
 }
 
-foreach ($name in @('l4d2panel-control', 'l4d2panel-caddy')) {
+foreach ($name in @('l4d2panel-control')) {
     $service = Get-Service -Name $name -ErrorAction SilentlyContinue
     if ($service -and $service.Status -ne 'Running') {
         Start-Service $name

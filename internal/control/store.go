@@ -64,6 +64,17 @@ func (s *Store) lockJobProjection(id string) func() {
 }
 
 func OpenStore(ctx context.Context, databasePath string) (*Store, error) {
+	return openStore(ctx, databasePath, true)
+}
+
+// openSetupKeyStore opens the database without taking the Control process
+// lock. It is intentionally limited to the local setup-key CLI, whose single
+// immediate transaction must be able to run while Control is serving.
+func openSetupKeyStore(ctx context.Context, databasePath string) (*Store, error) {
+	return openStore(ctx, databasePath, false)
+}
+
+func openStore(ctx context.Context, databasePath string, takeProcessLock bool) (*Store, error) {
 	databasePath = strings.TrimSpace(databasePath)
 	if databasePath == "" {
 		return nil, errors.New("database path is required")
@@ -82,9 +93,12 @@ func OpenStore(ctx context.Context, databasePath string) (*Store, error) {
 	if err := os.Chmod(dir, 0o700); err != nil && !errors.Is(err, os.ErrPermission) {
 		return nil, fmt.Errorf("secure database directory: %w", err)
 	}
-	lock, err := acquireStoreLock(absPath + ".lock")
-	if err != nil {
-		return nil, fmt.Errorf("acquire database lock: %w", err)
+	var lock storeLock
+	if takeProcessLock {
+		lock, err = acquireStoreLock(absPath + ".lock")
+		if err != nil {
+			return nil, fmt.Errorf("acquire database lock: %w", err)
+		}
 	}
 
 	query := url.Values{}
@@ -108,7 +122,9 @@ func OpenStore(ctx context.Context, databasePath string) (*Store, error) {
 	dsn := (&url.URL{Scheme: "file", Path: uriPath, RawQuery: query.Encode()}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		_ = lock.Close()
+		if lock != nil {
+			_ = lock.Close()
+		}
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	db.SetMaxOpenConns(8)
@@ -116,12 +132,16 @@ func OpenStore(ctx context.Context, databasePath string) (*Store, error) {
 	db.SetConnMaxLifetime(time.Hour)
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
-		_ = lock.Close()
+		if lock != nil {
+			_ = lock.Close()
+		}
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 	if err := secureSQLiteFiles(absPath); err != nil {
 		_ = db.Close()
-		_ = lock.Close()
+		if lock != nil {
+			_ = lock.Close()
+		}
 		return nil, fmt.Errorf("secure database file: %w", err)
 	}
 	return &Store{db: db, lock: lock, path: absPath}, nil
@@ -129,9 +149,11 @@ func OpenStore(ctx context.Context, databasePath string) (*Store, error) {
 
 func (s *Store) Close() {
 	if s.db != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, _ = s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
-		cancel()
+		if s.lock != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, _ = s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+			cancel()
+		}
 		_ = s.db.Close()
 	}
 	if s.lock != nil {

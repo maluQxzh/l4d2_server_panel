@@ -48,14 +48,19 @@ func TestSQLiteMigrationsAndCredentialLifecycle(t *testing.T) {
 	if err := store.Migrate(ctx, migrationsDir); err != nil {
 		t.Fatalf("migrations are not idempotent: %v", err)
 	}
+	setupKey, err := store.IssueSetupKey(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	const ownerPassword = "integration-password-123"
 	passwordHash, err := HashPassword(ownerPassword)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var bootstrapLogs strings.Builder
 	bootstrapServer := NewServer(Config{MasterKey: []byte("0123456789abcdef0123456789abcdef"), CookieSecure: false,
-		SessionTTL: time.Hour, Timezone: "UTC"}, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		SessionTTL: time.Hour, Timezone: "UTC"}, store, slog.New(slog.NewTextHandler(&bootstrapLogs, nil)))
 	defer bootstrapServer.Close()
 	httpServer := httptest.NewServer(bootstrapServer.Handler())
 	defer httpServer.Close()
@@ -64,24 +69,52 @@ func TestSQLiteMigrationsAndCredentialLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	var bootstrapStatus struct {
-		Required  bool   `json:"required"`
-		CSRFToken string `json:"csrf_token"`
+		Required      bool   `json:"required"`
+		KeyConfigured bool   `json:"key_configured"`
+		CSRFToken     string `json:"csrf_token"`
 	}
 	if err := json.NewDecoder(statusResponse.Body).Decode(&bootstrapStatus); err != nil {
 		statusResponse.Body.Close()
 		t.Fatal(err)
 	}
 	statusResponse.Body.Close()
-	if statusResponse.StatusCode != http.StatusOK || !bootstrapStatus.Required || bootstrapStatus.CSRFToken == "" || len(statusResponse.Cookies()) != 1 {
+	if statusResponse.StatusCode != http.StatusOK || !bootstrapStatus.Required || !bootstrapStatus.KeyConfigured || bootstrapStatus.CSRFToken == "" || len(statusResponse.Cookies()) != 1 {
 		t.Fatalf("unexpected bootstrap status: code=%d body=%#v cookies=%d", statusResponse.StatusCode, bootstrapStatus, len(statusResponse.Cookies()))
 	}
-	body := `{"username":"owner","display_name":"Integration Owner","password":"` + ownerPassword + `","password_confirmation":"` + ownerPassword + `"}`
+	wrongBody := `{"setup_key":"` + setupKeyPrefix + strings.Repeat("A", 43) + `"}`
+	wrongRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v1/auth/bootstrap", strings.NewReader(wrongBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongRequest.Header.Set("Content-Type", "application/json")
+	wrongRequest.Header.Set("X-Bootstrap-CSRF-Token", bootstrapStatus.CSRFToken)
+	wrongRequest.Header.Set("Idempotency-Key", "integration-bootstrap-wrong")
+	wrongRequest.AddCookie(statusResponse.Cookies()[0])
+	wrongResponse, err := http.DefaultClient.Do(wrongRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wrongResult struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(wrongResponse.Body).Decode(&wrongResult); err != nil {
+		wrongResponse.Body.Close()
+		t.Fatal(err)
+	}
+	wrongResponse.Body.Close()
+	if wrongResponse.StatusCode != http.StatusUnauthorized || wrongResult.Error.Code != "invalid_setup_key" {
+		t.Fatalf("wrong setup key returned code=%d body=%#v", wrongResponse.StatusCode, wrongResult)
+	}
+	body := `{"setup_key":"` + setupKey + `"}`
 	bootstrapRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+"/api/v1/auth/bootstrap", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	bootstrapRequest.Header.Set("Content-Type", "application/json")
 	bootstrapRequest.Header.Set("X-Bootstrap-CSRF-Token", bootstrapStatus.CSRFToken)
+	bootstrapRequest.Header.Set("Idempotency-Key", "integration-bootstrap")
 	bootstrapRequest.AddCookie(statusResponse.Cookies()[0])
 	bootstrapResponse, err := http.DefaultClient.Do(bootstrapRequest)
 	if err != nil {
@@ -96,10 +129,28 @@ func TestSQLiteMigrationsAndCredentialLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	bootstrapResponse.Body.Close()
-	if bootstrapResponse.StatusCode != http.StatusCreated || bootstrapResult.User.Role != domain.RoleOwner || bootstrapResult.CSRFToken == "" {
+	if bootstrapResponse.StatusCode != http.StatusCreated || bootstrapResult.User.Username != "admin" || bootstrapResult.User.Role != domain.RoleOwner || bootstrapResult.CSRFToken == "" {
 		t.Fatalf("web bootstrap failed: code=%d response=%#v", bootstrapResponse.StatusCode, bootstrapResult)
 	}
 	owner := bootstrapResult.User
+	loginRecord, err := store.UserForLogin(ctx, "admin")
+	if err != nil || !VerifyPassword(loginRecord.PasswordHash, setupKey) {
+		t.Fatalf("setup key was not installed as the initial owner password: %v", err)
+	}
+	if configured, err := store.SetupKeyConfigured(ctx); err != nil || configured {
+		t.Fatalf("setup key was not consumed: configured=%v err=%v", configured, err)
+	}
+	auditItems, err := store.ListAudit(ctx, owner.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditJSON, err := json.Marshal(auditItems)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(bootstrapLogs.String(), setupKey) || strings.Contains(string(auditJSON), setupKey) {
+		t.Fatal("setup key leaked into bootstrap logs or audit output")
+	}
 	var created bool
 	if _, created, err = store.BootstrapOwner(ctx, "other", "Other", passwordHash); err != nil || created {
 		t.Fatalf("second bootstrap was not rejected: created=%v err=%v", created, err)
@@ -116,7 +167,7 @@ func TestSQLiteMigrationsAndCredentialLifecycle(t *testing.T) {
 	}
 
 	adminUser, err := store.CreateTeamUser(ctx, owner.ID, CreateTeamUserInput{
-		Username: "admin", DisplayName: "Integration Admin", PasswordHash: passwordHash,
+		Username: "integration-admin", DisplayName: "Integration Admin", PasswordHash: passwordHash,
 		Bindings: []domain.RoleBinding{{Role: domain.RoleAdmin, ScopeType: "global"}},
 	})
 	if err != nil {

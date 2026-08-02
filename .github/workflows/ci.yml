@@ -173,10 +173,15 @@ jobs:
         run: |
           docker compose up -d --build app
           for attempt in $(seq 1 30); do
-            if docker compose exec -T app wget -qO- http://127.0.0.1:8080/readyz; then break; fi
+            if docker compose exec -T app wget -qO- http://127.0.0.1:19090/readyz; then break; fi
             if [ "$attempt" = 30 ]; then docker compose logs app; exit 1; fi
             sleep 2
           done
+          wget -qO- http://127.0.0.1:19090/readyz >/dev/null
+          setup_key="$(docker compose exec -T app setup-key issue)"
+          printf '%s' "$setup_key" | grep -Eq '^l4d2p_setup_[A-Za-z0-9_-]{43}$'
+          docker compose exec -T app wget -qO- http://127.0.0.1:19090/api/v1/auth/bootstrap | grep -q '"key_configured":true'
+          unset setup_key
           docker compose exec -T app test -s /app/data/l4d2panel.sqlite3
           docker compose stop app
           doctor=$(docker compose run --rm --no-deps app doctor)
@@ -184,8 +189,9 @@ jobs:
           echo "$doctor" | grep -q '"schema_status":"current"'
           docker compose up -d app
           for attempt in $(seq 1 30); do
-            if docker compose exec -T app wget -qO- http://127.0.0.1:8080/readyz; then break; fi
+            if docker compose exec -T app wget -qO- http://127.0.0.1:19090/readyz; then break; fi
             if [ "$attempt" = 30 ]; then docker compose logs app; exit 1; fi
             sleep 2
           done
+          docker compose exec -T app wget -qO- http://127.0.0.1:19090/api/v1/auth/bootstrap | grep -q '"key_configured":true'
           docker compose down

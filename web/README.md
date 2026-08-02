@@ -9,7 +9,7 @@ npm ci
 npm run dev
 ```
 
-开发服务器默认把 `/api` 与 `/agent` 代理到 `http://127.0.0.1:8080`。可复制 `.env.example` 并通过 `VITE_DEV_PROXY` 修改目标。
+开发服务器默认把 `/api` 与 `/agent` 代理到 `http://127.0.0.1:19090`。可复制 `.env.example` 并通过 `VITE_DEV_PROXY` 修改目标。
 
 ## 验证与构建
 

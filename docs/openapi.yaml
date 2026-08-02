@@ -43,8 +43,9 @@ paths:
       security: []
       summary: 查询是否需要创建首个所有者
       description: |
-        数据库没有用户时返回 `required=true`，设置 15 分钟有效的 HttpOnly/SameSite=Strict
-        引导 Cookie，并返回只用于本端点的 CSRF 令牌。已有用户时返回 `required=false`。
+        数据库没有用户时返回 `required=true` 和 `key_configured`，设置 15 分钟有效的
+        HttpOnly/SameSite=Strict 引导 Cookie，并返回只用于本端点的 CSRF 令牌。
+        已有用户时返回 `required=false`。
       responses:
         "200":
           description: 首次初始化状态
@@ -61,13 +62,17 @@ paths:
       security: []
       summary: 创建首个所有者并登录
       description: |
-        仅数据库没有用户时可用。引导 Cookie 与 `X-Bootstrap-CSRF-Token` 必须匹配；
+        仅数据库没有用户且本机已签发初始化密钥时可用。引导 Cookie 与
+        `X-Bootstrap-CSRF-Token` 必须匹配；正确密钥将成为 `admin` 的初始密码。
         并发请求由数据库锁串行化，只有第一个成功请求能创建账号。成功后设置普通会话 Cookie。
+        密钥相关稳定错误码为 `invalid_setup_key_format`、`setup_key_not_configured`、
+        `invalid_setup_key` 和 `bootstrap_complete`。
       parameters:
         - name: X-Bootstrap-CSRF-Token
           in: header
           required: true
           schema: { type: string }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
       requestBody:
         required: true
         content:
@@ -80,6 +85,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AuthResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "429": { $ref: "#/components/responses/RateLimited" }
@@ -1900,23 +1906,22 @@ components:
 
     BootstrapStatus:
       type: object
-      required: [required]
+      required: [required, key_configured]
       properties:
         required: { type: boolean }
+        key_configured:
+          type: boolean
+          description: 表示本机是否已经签发初始化密钥；初始化完成后固定为 false。
         csrf_token:
           type: string
           description: 仅在 required=true 时返回，且只能与配套引导 Cookie 一起使用。
 
     BootstrapOwnerRequest:
       type: object
-      required: [username, display_name, password, password_confirmation]
+      required: [setup_key]
       properties:
-        username: { type: string, minLength: 1, maxLength: 128 }
-        display_name: { type: string, minLength: 1, maxLength: 128 }
-        password:
-          { type: string, minLength: 12, maxLength: 1024, writeOnly: true }
-        password_confirmation:
-          { type: string, minLength: 12, maxLength: 1024, writeOnly: true }
+        setup_key:
+          { type: string, minLength: 55, maxLength: 55, writeOnly: true, pattern: "^l4d2p_setup_[A-Za-z0-9_-]{43}$" }
 
     LoginRequest:
       type: object

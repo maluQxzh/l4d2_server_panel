@@ -142,11 +142,11 @@ async function waitForTransfer(path: string): Promise<TransferChunk> {
 
 export const api = {
   bootstrapStatus: async () => {
-    const result = await request<{ required: boolean; csrf_token?: string }>("/auth/bootstrap");
+    const result = await request<{ required: boolean; key_configured: boolean; csrf_token?: string }>("/auth/bootstrap");
     bootstrapCsrfToken = result.required ? result.csrf_token || "" : "";
     return result;
   },
-  bootstrapOwner: async (payload: { username: string; display_name: string; password: string; password_confirmation: string }) => {
+  bootstrapOwner: async (payload: { setup_key: string }) => {
     const result = await request<{ user: User; csrf_token: string }>("/auth/bootstrap", {
       method: "POST",
       headers: { "X-Bootstrap-CSRF-Token": bootstrapCsrfToken },

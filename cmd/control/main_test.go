@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/base64"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/l4d2-panel/l4d2panel/internal/control"
 )
 
 func TestReadBootstrapPasswordAcceptsSingleLineFromStdin(t *testing.T) {
@@ -19,6 +24,41 @@ func TestReadBootstrapPasswordAcceptsSingleLineFromStdin(t *testing.T) {
 		if err != nil || got != test.want {
 			t.Fatalf("readBootstrapPassword(%q) = %q, %v; want %q", test.input, got, err, test.want)
 		}
+	}
+}
+
+func TestRunSetupKeyWritesOnlyRotatingKey(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "control.sqlite3")
+	t.Setenv("DATABASE_PATH", databasePath)
+	t.Setenv("MASTER_KEY", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+
+	ctx := context.Background()
+	store, err := control.OpenStore(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	store.Close()
+
+	var firstOutput bytes.Buffer
+	if err := runSetupKey([]string{"issue"}, &firstOutput); err != nil {
+		t.Fatal(err)
+	}
+	first := strings.TrimSuffix(firstOutput.String(), "\n")
+	if !control.ValidSetupKey(first) || firstOutput.String() != first+"\n" {
+		t.Fatalf("setup-key output was not exactly one valid key: %q", firstOutput.String())
+	}
+
+	var secondOutput bytes.Buffer
+	if err := runSetupKey([]string{"issue"}, &secondOutput); err != nil {
+		t.Fatal(err)
+	}
+	second := strings.TrimSuffix(secondOutput.String(), "\n")
+	if !control.ValidSetupKey(second) || second == first {
+		t.Fatalf("setup key was not rotated: first=%q second=%q", first, second)
 	}
 }
 

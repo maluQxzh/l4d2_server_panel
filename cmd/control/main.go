@@ -58,6 +58,8 @@ func runCLI(logger *slog.Logger, args []string, stdin io.Reader) error {
 		return runBackupDatabase(args[1:])
 	case "bootstrap-owner":
 		return runBootstrapOwner(logger, args[1:], stdin)
+	case "setup-key":
+		return runSetupKey(args[1:], os.Stdout)
 	case "service":
 		return runServiceCommand(args[1:])
 	case "version", "--version", "-version":
@@ -69,7 +71,7 @@ func runCLI(logger *slog.Logger, args []string, stdin io.Reader) error {
 }
 
 func usageError() error {
-	return errors.New("usage: l4d2panel-control <serve|migrate|doctor|backup-database|bootstrap-owner|service|version> [options]")
+	return errors.New("usage: l4d2panel-control <serve|migrate|doctor|backup-database|bootstrap-owner|setup-key|service|version> [options]")
 }
 
 func parseConfigOnly(command string, args []string) (string, error) {
@@ -164,6 +166,28 @@ func runBootstrapOwner(logger *slog.Logger, args []string, stdin io.Reader) erro
 	}
 	logger.Info("bootstrap owner created", "username", user.Username)
 	return nil
+}
+
+func runSetupKey(args []string, output io.Writer) error {
+	if len(args) == 0 || args[0] != "issue" {
+		return errors.New("usage: l4d2panel-control setup-key issue [--config path]")
+	}
+	configPath, err := parseConfigOnly("setup-key issue", args[1:])
+	if err != nil {
+		return err
+	}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	key, err := control.IssueSetupKeyAtPath(ctx, cfg.DatabasePath)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(output, key)
+	return err
 }
 
 func readBootstrapPassword(reader io.Reader) (string, error) {

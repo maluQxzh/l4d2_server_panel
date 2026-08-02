@@ -16,13 +16,13 @@
 ## 架构
 
 ```text
-浏览器 ──HTTPS/WSS──> Caddy ──> Control API ──> 本机 SQLite（WAL）
-                                      ▲
-                                      │ WSS（Agent 主动连接）
-                           Windows/Linux Agent ──> srcds / SteamCMD
+浏览器 ──HTTPS/WSS──> 用户管理的反向代理 ──HTTP──> Control API ──> 本机 SQLite（WAL）
+                                                    ▲
+                                                    │ WSS（Agent 主动连接）
+                                         Windows/Linux Agent ──> srcds / SteamCMD
 ```
 
-- 中心端：Go、React、本机 SQLite、Caddy；硬性限定单控制平面实例。
+- 中心端：Go、React、本机 SQLite；硬性限定单控制平面实例，TLS 由部署者管理。
 - 节点端：单个 Go Agent，以 Windows Service 或 systemd service 运行。
 - 游戏实例：每个实例使用独立目录；Agent API 仅允许访问配置的实例根目录和自己的数据目录。当前同一节点的 Agent 与所有游戏进程共用一个低权限服务账号，目录分离不是每实例 OS 沙箱；在部署相互不信任的原生插件或租户前必须另做主机/账号隔离。
 - 本地数据：实例备份和完整进程日志保存在节点。中心只保存备份元数据、任务/审计、通知和聚合指标；网页下载使用一次性、最大 1 MiB 的校验分块。
@@ -43,42 +43,70 @@ cp .env.example .env
 openssl rand -base64 32
 ```
 
-将输出写入 `MASTER_KEY`，并令 `PANEL_DOMAIN` 和 `PUBLIC_URL` 指向当前主机。Caddy 为可公开解析的域名申请并续期 HTTPS 证书；`localhost` 使用 Caddy 的本地证书行为。
-
-中心端对外端口不限定为 80/443。下面的配置把宿主机 HTTP/HTTPS 端口改为 8080/8443；使用非标准 HTTPS 端口时，`PUBLIC_URL` 必须包含端口：
+将输出写入 `MASTER_KEY`，并令 `PUBLIC_URL` 指向用户配置的 HTTPS 地址。Control 默认在容器和宿主机发布明文 TCP `19090`；该端口只应允许 HTTPS 代理访问：
 
 ```dotenv
-PANEL_DOMAIN=panel.example.com
-PUBLIC_URL=https://panel.example.com:8443
-HTTP_PORT=8080
-HTTPS_PORT=8443
+PUBLIC_URL=https://panel.example.com
+CONTROL_PORT=19090
+TRUSTED_PROXIES=127.0.0.1/32,::1/128
 ```
 
-Caddy 容器内部仍监听 80/443，并把外部 HTTP 端口跳转到配置的外部 HTTPS 端口。公开 CA 的自动证书签发通常仍要求公网 80/443 能到达 Caddy；若网络只开放自定义端口，请通过上游反向代理终止 TLS，或自行提供证书。
-
-macOS 本机试用时可使用下面的配置，避开可能已被其他应用占用的 80/443：
-
-```dotenv
-PANEL_DOMAIN=localhost
-PUBLIC_URL=https://localhost:8443
-HTTP_PORT=8080
-HTTPS_PORT=8443
-```
-
-`localhost` 使用 Caddy 容器内的本地 CA，macOS 和浏览器默认不会自动信任该 CA，首次访问可能显示证书警告。正式部署应使用可公开解析的域名和受信任证书。Docker Desktop 会按 Mac 架构自动构建 `linux/arm64` 或 `linux/amd64` 中心镜像，不需要 Rosetta。
+远程代理应把自己的精确 IP/CIDR 写入 `TRUSTED_PROXIES`；不要信任整个容器或局域网网段。同机 Nginx 经 Docker 发布端口连接时，Control 看到的来源在部分 Linux 配置中会是网桥网关，此时也应只加入实际观察到的单个 `/32` 地址，而不是整个私网。Docker Desktop 会按 Mac 架构自动构建 `linux/arm64` 或 `linux/amd64` 中心镜像，不需要 Rosetta。
 
 编辑完 `.env` 后构建并启动中心端：
 
 ```bash
 docker compose build app
 docker compose up -d
+docker compose exec -T app setup-key issue
 ```
 
-打开 `PUBLIC_URL`。数据库中没有用户时，网站会自动进入 `/setup`，在页面中设置首个所有者的用户名、显示名称和密码，成功后直接进入控制台。初始化链接不使用预置密码；应在可信网络中完成首次初始化，不要把一个尚未初始化的中心端长时间暴露到公网。初始化接口使用 15 分钟有效的 HttpOnly/SameSite 引导 Cookie 和独立 CSRF 令牌，并在数据库中串行化创建操作；仅第一个成功请求可以建立所有者。
+最后一条命令只在当前终端输出一次 `l4d2p_setup_...` 初始化密钥。配置 HTTPS 后打开 `PUBLIC_URL/setup` 并输入密钥；系统会原子创建 `admin`／`系统管理员` 根所有者并登录，密钥同时是初始密码。进入设置后应立即修改密码。初始化接口继续使用 15 分钟有效的 HttpOnly/SameSite 引导 Cookie、独立 CSRF 令牌、速率限制和数据库立即事务；丢失密钥时可在尚无用户前重新运行命令，新密钥会使旧密钥失效。
+
+下面是 [`deploy/nginx.conf.example`](deploy/nginx.conf.example) 中的同机 Nginx 最小生产示例；证书路径、域名和防火墙应按实际环境调整：
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+server {
+    listen 80;
+    server_name panel.example.com;
+    return 308 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name panel.example.com;
+    ssl_certificate /etc/letsencrypt/live/panel.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/panel.example.com/privkey.pem;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    location / {
+        proxy_pass http://127.0.0.1:19090;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+}
+```
 
 无界面的自动化部署仍可使用 `docker compose run --rm -T app bootstrap-owner ...` 命令。旧版 `BOOTSTRAP_USERNAME`、`BOOTSTRAP_PASSWORD` 和 `BOOTSTRAP_DISPLAY_NAME` 启动环境变量也继续兼容，但不再写入示例配置或作为推荐流程。数据库已有任意用户后，网页初始化和命令行引导都会拒绝再次创建，后续账号应从已认证的团队管理页面维护。
 
 SQLite 数据库位于 `app_data` 卷的 `/app/data/l4d2panel.sqlite3`。迁移在 Control 启动时按文件名顺序、以立即写事务执行；迁移失败、未知迁移或已应用迁移校验和变化都会中止启动。SQLite 文件、WAL 与 SHM 必须位于容器本机持久卷，禁止放到 NFS、CIFS 或 SMB bind mount。中心端不支持多个 Control 共享数据库。
+
+升级不会自动迁移或清理旧版捆绑代理的服务、状态目录或 Docker 孤立卷；确认不再使用后，由管理员按原部署方式自行处理。
 
 停机备份可运行 `docker compose run --rm -T app backup-database --output /app/data/control-backup.sqlite3`；输出文件必须不存在，命令会先执行 `quick_check`，再生成一致性副本。
 
@@ -86,11 +114,11 @@ SQLite 数据库位于 `app_data` 卷的 `/app/data/l4d2panel.sqlite3`。迁移�
 
 ## Windows 原生部署中心端
 
-Windows 10/11 x64 和 Windows Server 2019+ 可以直接安装发布页中的 `l4d2panel-center-*-windows-x64.msi`，不需要 Docker、WSL2 或 Windows 容器。向导安装 Control 和 Caddy；程序位于 `%ProgramFiles%\L4D2Panel\Control`，SQLite 数据库、配置、证书、日志与升级检查点位于 `%ProgramData%\L4D2Panel`。
+Windows 10/11 x64 和 Windows Server 2019+ 可以直接安装发布页中的 `l4d2panel-center-*-windows-x64.msi`，不需要 Docker、WSL2 或 Windows 容器。向导只安装 Control；程序位于 `%ProgramFiles%\L4D2Panel\Control`，SQLite 数据库、配置、日志与升级检查点位于 `%ProgramData%\L4D2Panel`。
 
-向导允许选择域名或 `localhost`、Control 回环监听端口以及任意未占用的 HTTP/HTTPS 入口端口，不限定为 80/443。Control 默认监听 `127.0.0.1:18080`；SQLite 不监听网络端口，只有内置 Caddy 选中的入口端口会加入 Windows 防火墙。安装完成后访问显示的 `/setup` 地址创建首个所有者。
+Control 固定监听 `0.0.0.0:19090`，安装器为所有网络配置文件放行该端口；SQLite 不监听网络端口。完成页可启动 `New-L4D2PanelSetupKey.ps1` 显示初始化密钥，静默安装后也可由管理员手工运行该脚本。请先收紧防火墙并配置 HTTPS，再访问 `/setup`。
 
-安装器仅授予 Control 服务 SID、Administrators 和 SYSTEM 访问 SQLite 数据目录。普通卸载保留 ProgramData；升级使用安装目录中的 `Update-L4D2PanelCenter.ps1`，它会停止 Control/Caddy，并先用 SQLite Backup API 创建检查点。完整的交互安装、`/qn`、外部代理、升级与彻底清理说明见 [Windows 中心端安装说明](docs/windows-center-installation.md)。
+安装器仅授予 Control 服务 SID、Administrators 和 SYSTEM 访问 SQLite 数据目录。普通卸载保留 ProgramData；升级使用安装目录中的 `Update-L4D2PanelCenter.ps1`，它会停止 Control，并先用 SQLite Backup API 创建检查点。完整的交互安装、`/qn`、代理、升级与彻底清理说明见 [Windows 中心端安装说明](docs/windows-center-installation.md)。
 
 ## 注册节点
 
@@ -172,7 +200,7 @@ RUN_FLEET_ACCEPTANCE=1 \
 go test ./internal/control -run TestFleetScaleAcceptance -count=1 -timeout=2m
 ```
 
-CI 还执行上述 20/100 模拟验收、Go race 测试、Windows/Linux Control 与 Agent 无 CGO 交叉构建、安装脚本静态检查、Playwright、`docker compose config`，并同时构建 `linux/amd64` 与 `linux/arm64` 中心镜像；Compose 作业会实际启动、停止并重启 Control，确认 SQLite 卷可独立通过 `doctor`。Windows 发布作业组装 Control/Caddy，生成不超过 35 MiB 的 MSI、SHA-256、CycloneDX SBOM 和第三方许可证清单，并执行静默安装、两个服务、SQLite ACL、`/readyz`、`/setup`、首个所有者、repair/upgrade 与保留数据卸载冒烟测试。上述自动化不等同于真实游戏验证：发布前仍需分别在受支持的 Windows、Ubuntu 和 Debian 主机上运行安装器，并用真实 SteamCMD 安装/启动 App 222860，验证 A2S、RCON、更新、备份恢复和重启。
+CI 还执行上述 20/100 模拟验收、Go race 测试、Windows/Linux Control 与 Agent 无 CGO 交叉构建、安装脚本静态检查、Playwright、`docker compose config`，并同时构建 `linux/amd64` 与 `linux/arm64` 中心镜像；Compose 作业会实际启动、停止并重启 Control，确认 SQLite 卷可独立通过 `doctor`。Windows 发布作业组装 Control，生成 MSI、SHA-256、CycloneDX SBOM 和第三方许可证清单，并执行静默安装、单服务、19090 监听与防火墙、SQLite ACL、初始化密钥、`/readyz`、`/setup`、首个所有者、repair/upgrade 与保留数据卸载冒烟测试。上述自动化不等同于真实游戏验证：发布前仍需分别在受支持的 Windows、Ubuntu 和 Debian 主机上运行安装器，并用真实 SteamCMD 安装/启动 App 222860，验证 A2S、RCON、更新、备份恢复和重启。
 
 ## API 与参考资料
 

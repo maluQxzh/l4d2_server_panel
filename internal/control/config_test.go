@@ -8,6 +8,20 @@ import (
 	"time"
 )
 
+func TestConfigDefaultListenerIs19090(t *testing.T) {
+	for _, name := range []string{"LISTEN_ADDR", "CONTROL_LISTEN", "MASTER_KEY", "CONTROL_MASTER_KEY"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("MASTER_KEY", strings.Repeat("01", 32))
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListenAddress != ":19090" {
+		t.Fatalf("default listen address = %q, want :19090", cfg.ListenAddress)
+	}
+}
+
 func TestConfigAcceptsDeploymentEnvironmentNames(t *testing.T) {
 	for _, name := range []string{"CONTROL_DATABASE_PATH", "CONTROL_MASTER_KEY", "CONTROL_LISTEN", "CONTROL_MIGRATIONS_DIR", "CONTROL_COOKIE_SECURE"} {
 		t.Setenv(name, "")
@@ -41,7 +55,7 @@ func TestConfigFromFileIsStrictAndEnvironmentWins(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "control.json")
 	data := `{
   "schema_version": 2,
-  "listen_address": "127.0.0.1:8080",
+  "listen_address": "127.0.0.1:19090",
   "database_path": "data\\control.sqlite3",
   "migrations_dir": "C:\\Program Files\\L4D2Panel\\Control\\migrations",
   "master_key": "` + strings.Repeat("ab", 32) + `",
@@ -81,7 +95,7 @@ func TestConfigFromFileRejectsUnknownAndTrailingData(t *testing.T) {
 	t.Setenv("DATABASE_PATH", "")
 	for name, body := range map[string]string{
 		"unknown":  `{"schema_version":2,"unknown":true}`,
-		"missing":  `{"listen_address":"127.0.0.1:8080"}`,
+		"missing":  `{"listen_address":"127.0.0.1:19090"}`,
 		"trailing": `{"schema_version":2} {"schema_version":2}`,
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -2,13 +2,13 @@
 
 ## 控制平面
 
-Control 是唯一可信协调者，负责身份、资源权限、期望状态、任务队列、审计、事件和告警。本机 SQLite（WAL）保存持久状态；Agent 保存实际进程状态、本地注册表和任务幂等日志。中心端硬性限定一个 Control 实例：数据库旁的 OS 独占锁阻止第二个 Control 或维护命令同时打开数据库，不能把多个 Control 副本放在负载均衡器后。
+Control 是唯一可信协调者，负责身份、资源权限、期望状态、任务队列、审计、事件和告警。本机 SQLite（WAL）保存持久状态；Agent 保存实际进程状态、本地注册表和任务幂等日志。中心端硬性限定一个 Control 实例：数据库旁的 OS 独占锁阻止第二个 Control 打开数据库，不能把多个 Control 副本放在负载均衡器后。唯一例外是本机 `setup-key issue` 的单个立即事务，它不返回通用 Store、不执行迁移或关闭检查点，也不能启动第二个 Control。
 
-React 前端被编译进 Control 二进制并同域提供。浏览器 REST 接口位于 `/api/v1`，实时事件位于 `/api/v1/events`，Agent 注册使用 `/api/v1/agent/enroll`，长期连接使用 `/agent/v1/connect`。Caddy 终止 TLS 并反向代理 HTTP/WebSocket。
+React 前端被编译进 Control 二进制并同域提供。浏览器 REST 接口位于 `/api/v1`，实时事件位于 `/api/v1/events`，Agent 注册使用 `/api/v1/agent/enroll`，长期连接使用 `/agent/v1/connect`。Control 提供明文 HTTP，部署者负责通过外部反向代理终止 TLS 并转发 HTTP/WebSocket。
 
 中心 Compose 栈始终运行 Linux 容器，可部署在 Linux Docker Engine 或 macOS Docker Desktop。Control 镜像提供 `linux/amd64` 与 `linux/arm64` 构建路径，Docker Desktop 在 Intel Mac 和 Apple Silicon 上自动选择对应架构；这不会把 macOS 加入 Agent 或游戏服节点的支持平台。
 
-Windows 10/11 x64 与 Windows Server 2019+ 还可使用原生 MSI，不依赖 Docker/WSL2。MSI 只注册 `l4d2panel-control` 与 `l4d2panel-caddy` 两个独立虚拟账号服务。Control 仅在可配置的 IPv4 回环端口监听（默认 `127.0.0.1:18080`），SQLite 不监听端口，外部入口只能到 Caddy 所选端口；程序与持久数据分属 ProgramFiles/ProgramData。Control 服务命令行只包含严格 JSON 配置路径，秘密和数据库位于受 ACL 限制的目录。
+Windows 10/11 x64 与 Windows Server 2019+ 还可使用原生 MSI，不依赖 Docker/WSL2。MSI 只注册 `l4d2panel-control` 虚拟账号服务。Control 固定在 `0.0.0.0:19090` 监听，SQLite 不监听端口；程序与持久数据分属 ProgramFiles/ProgramData。Control 服务命令行只包含严格 JSON 配置路径，秘密和数据库位于受 ACL 限制的目录。
 
 ## 节点协议与任务流
 
@@ -95,7 +95,7 @@ Agent 永久清理时只接收 Control 墓碑中的 `root_index + entry_name`，
 
 ## 身份、权限与 API 一致性
 
-数据库没有任何用户时，Control 仍可正常启动，并把浏览器引导到 `/setup`。公开的引导状态接口只发放一个短期、HttpOnly、SameSite=Strict 的专用 Cookie 和由该 Cookie 派生的独立 CSRF 令牌；提交首个所有者时使用 SQLite 立即事务串行化竞争请求，事务内重新检查用户数量，因此只有第一个提交能成功。成功响应同时创建普通浏览器会话并永久关闭网页引导入口。
+数据库没有任何用户时，Control 仍可正常启动，并把浏览器引导到 `/setup`。管理员先在中心主机运行 `setup-key issue`；命令生成 32 字节随机值，标准输出只写一次带固定前缀的明文，SQLite 只保存 SHA-256 摘要，初始化前再次签发会原子替换旧摘要。公开状态接口返回是否已签发密钥，并只发放短期 HttpOnly/SameSite=Strict 引导 Cookie及由其派生的独立 CSRF 令牌。提交时还必须携带 `Idempotency-Key`；立即事务内重新检查用户数、以常量时间比较摘要、创建固定 `admin`／`系统管理员` 根所有者和全局绑定并删除摘要，因此并发请求只有一个成功。密钥经 Argon2id 保存为初始密码；成功响应创建普通浏览器会话并永久关闭网页引导入口。
 
 浏览器使用 HttpOnly/Secure/SameSite=Strict Cookie；写请求另外校验 `X-CSRF-Token`。API Token 通过 Bearer 认证，不使用 CSRF，但必须有过期时间，并可限定权限、节点和实例。TOTP 和 API Token 管理只允许交互式浏览器会话；团队账号与角色绑定还要求全局所有者的 `root_security` 权限，所有者 API Token 也不能执行这些操作。
 

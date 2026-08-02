@@ -62,10 +62,10 @@ Do not weaken or remove pinned security versions merely to make an older local t
 
 - The main Go Control/Agent, React web application, SQLite persistence, Docker deployment, and Windows/Linux Agent packaging are present. Treat the project as under active development rather than production-complete.
 - Linux and macOS center deployments use Docker Compose. The first owner is created at `/setup`, and the published HTTP/HTTPS ports are configurable.
-- The native Windows center installer is implemented as a WiX 7 x64 MSI for Windows 10/11 and Windows Server 2019+. It bundles Control and Caddy 2.11.3, uses `%ProgramData%\L4D2Panel\data\l4d2panel.sqlite3`, and retains the external reverse-proxy mode.
-- The MSI supports a configurable internal `CONTROL_PORT` (default `18080`) and configurable public HTTP/HTTPS ports (defaults `8088`/`8443`). The generated Control configuration, Caddy upstream, and readiness checks use the same internal port.
-- Windows services use the fixed names `l4d2panel-control` and `l4d2panel-caddy` with their corresponding virtual service accounts. Control listens on loopback only; SQLite has no listener and firewall rules cover only the selected public ports.
-- Installer hardening includes native x64 detection, Caddy checksum validation, corrected custom-action ordering, propagated SQLite/config ACLs, service executable read permissions, rollback cleanup, bounded readiness retries, disabled unwanted Caddy redirects, embedded Go timezone data, and pre-upgrade SQLite checkpoints.
+- The native Windows center installer is implemented as a WiX 7 x64 MSI for Windows 10/11 and Windows Server 2019+. It bundles only Control, uses `%ProgramData%\L4D2Panel\data\l4d2panel.sqlite3`, and leaves HTTPS reverse-proxy configuration to the administrator.
+- The MSI fixes the Control listener at `0.0.0.0:19090`; generated configuration and readiness checks use that port.
+- Windows uses the fixed service name `l4d2panel-control` with its virtual service account. SQLite has no listener and the firewall rule covers TCP 19090.
+- Installer hardening includes native x64 detection, corrected custom-action ordering, propagated SQLite/config ACLs, service executable read permissions, rollback cleanup, bounded readiness retries, embedded Go timezone data, and pre-upgrade SQLite checkpoints.
 - `packaging/windows/Build-WindowsMSI.ps1 -Fast` supports frequent local iteration. Release builds omit `-Fast`; every build removes legacy database staging and rebuilds cabinet cache so stale payload cannot leak into the MSI.
 - `packaging/windows/Test-WindowsMSI.ps1` performs structural package validation and runs as part of the build. `packaging/windows/Test-WindowsMSIInstall.ps1` performs an elevated real install/uninstall smoke test.
 - Any prior PostgreSQL MSI artifact or smoke result is obsolete. Rebuild the SQLite package and run a fresh elevated smoke test before release; `dist/` remains ignored.

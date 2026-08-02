@@ -701,6 +701,11 @@ h1, h2, h3, p { margin-top: 0; }
 .login-page--setup { overflow: auto; }
 .setup-form { width: min(440px, 100%); }
 .setup-notice { margin: -8px 0 18px; padding: 11px 12px; color: #d9c18d; background: var(--orange-soft); border: 1px solid rgba(229,169,63,.2); border-radius: 7px; font-size: 10px; line-height: 1.65; }
+.setup-key-missing { display: grid; gap: 10px; margin-bottom: 16px; }
+.setup-key-missing > div { display: flex; gap: 10px; align-items: center; color: var(--text); }
+.setup-key-missing span { display: grid; gap: 3px; }
+.setup-key-missing small { color: var(--text-faint); font-size: 9px; }
+.setup-key-missing code { padding: 9px 10px; overflow-wrap: anywhere; color: var(--green); background: rgba(0,0,0,.28); border: 1px solid var(--border); border-radius: 6px; font-size: 9px; }
 .login-form__heading { margin-bottom: 26px; }
 .login-icon { width: 43px; height: 43px; margin-bottom: 17px; display: grid; place-items: center; color: var(--green); background: var(--green-soft); border-radius: 10px; }
 .login-form h2 { margin-bottom: 6px; font-size: 21px; }

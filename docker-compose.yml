@@ -15,8 +15,8 @@ services:
       MASTER_KEY: ${MASTER_KEY:?请在 .env 中设置 MASTER_KEY}
       PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
-      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12}
-      # 仅用于兼容旧版自动化；新部署通过网站 /setup 创建首个所有者。
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1/32,::1/128}
+      # 仅用于兼容旧版自动化；新部署先签发初始化密钥，再通过 /setup 创建首个所有者。
       BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-}
       BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-}
       BOOTSTRAP_DISPLAY_NAME: ${BOOTSTRAP_DISPLAY_NAME:-}
@@ -26,56 +26,25 @@ services:
     volumes:
       - app_data:/app/data
       - app_spool:/app/spool
+    ports:
+      - "${CONTROL_PORT:-19090}:19090"
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:19090/healthz"]
       interval: 10s
       timeout: 3s
       retries: 12
-    networks: [panel]
     stop_grace_period: 45s
-    logging: &default-logging
+    logging:
       driver: json-file
       options:
         max-size: 20m
         max-file: "5"
 
-  caddy:
-    image: caddy:2.10-alpine
-    restart: unless-stopped
-    environment:
-      PANEL_DOMAIN: ${PANEL_DOMAIN:-localhost}
-      PANEL_HTTPS_PORT: ${HTTPS_PORT:-443}
-    ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    read_only: true
-    tmpfs:
-      - /tmp:size=32m,mode=1777
-    cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
-    security_opt: [no-new-privileges:true]
-    depends_on:
-      app:
-        condition: service_healthy
-    networks: [panel]
-    stop_grace_period: 30s
-    logging: *default-logging
-
 volumes:
   app_data:
   app_spool:
-  caddy_data:
-  caddy_config:
-
-networks:
-  panel:
-    driver: bridge

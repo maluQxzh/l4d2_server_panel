@@ -8,12 +8,12 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/api": {
-        target: process.env.VITE_DEV_PROXY || "http://127.0.0.1:8080",
+        target: process.env.VITE_DEV_PROXY || "http://127.0.0.1:19090",
         changeOrigin: true,
         ws: true,
       },
       "/agent": {
-        target: process.env.VITE_DEV_PROXY || "http://127.0.0.1:8080",
+        target: process.env.VITE_DEV_PROXY || "http://127.0.0.1:19090",
         changeOrigin: true,
         ws: true,
       },

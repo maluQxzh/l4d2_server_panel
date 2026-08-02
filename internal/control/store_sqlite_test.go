@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -241,6 +242,95 @@ func TestSQLiteConcurrentBootstrapCreatesOneOwner(t *testing.T) {
 	var owners int
 	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE role='owner'`).Scan(&owners); err != nil || owners != 1 {
 		t.Fatalf("owner count=%d err=%v", owners, err)
+	}
+}
+
+func TestSetupKeyCanRotateWhileControlOwnsProcessLock(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	databasePath := filepath.Join(t.TempDir(), "setup-key.sqlite3")
+	store, err := OpenStore(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	first, err := IssueSetupKeyAtPath(ctx, databasePath)
+	if err != nil || !ValidSetupKey(first) {
+		t.Fatalf("issue first setup key: valid=%v err=%v", ValidSetupKey(first), err)
+	}
+	second, err := IssueSetupKeyAtPath(ctx, databasePath)
+	if err != nil || first == second {
+		t.Fatalf("rotate setup key: distinct=%v err=%v", first != second, err)
+	}
+	if err := store.ValidateSetupKey(ctx, first); !errors.Is(err, ErrInvalidSetupKey) {
+		t.Fatalf("old setup key remained valid: %v", err)
+	}
+	if err := store.ValidateSetupKey(ctx, second); err != nil {
+		t.Fatalf("new setup key is invalid: %v", err)
+	}
+	var stored []byte
+	if err := store.db.QueryRowContext(ctx, `SELECT key_hash FROM bootstrap_setup_key WHERE singleton=1`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 32 || bytes.Contains(stored, []byte(second)) {
+		t.Fatalf("database did not retain only the setup-key digest")
+	}
+	for _, path := range []string{databasePath, databasePath + "-wal", databasePath + "-shm"} {
+		contents, readErr := os.ReadFile(path)
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			t.Fatal(readErr)
+		}
+		if bytes.Contains(contents, []byte(first)) || bytes.Contains(contents, []byte(second)) {
+			t.Fatalf("plaintext setup key leaked into SQLite file %s", filepath.Base(path))
+		}
+	}
+}
+
+func TestSQLiteConcurrentSetupKeyBootstrapCreatesOneOwner(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "setup-key-bootstrap.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	setupKey, err := store.IssueSetupKey(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const contenders = 20
+	var wait sync.WaitGroup
+	created := make(chan string, contenders)
+	errorsSeen := make(chan error, contenders)
+	for range contenders {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			user, err := store.BootstrapOwnerWithSetupKey(ctx, setupKey, "password-hash")
+			if err == nil {
+				created <- user.ID
+			} else if !errors.Is(err, ErrBootstrapComplete) {
+				errorsSeen <- err
+			}
+		}()
+	}
+	wait.Wait()
+	close(created)
+	close(errorsSeen)
+	for err := range errorsSeen {
+		t.Fatalf("concurrent setup-key bootstrap failed: %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("concurrent setup-key bootstrap created %d owners, want 1", len(created))
+	}
+	if _, err := store.IssueSetupKey(ctx); !errors.Is(err, ErrBootstrapComplete) {
+		t.Fatalf("setup key was issued after bootstrap: %v", err)
 	}
 }
 

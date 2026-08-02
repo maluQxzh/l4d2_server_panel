@@ -103,7 +103,7 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 
 func buildConfig(source configFile, configDir string) (Config, error) {
 	cfg := Config{
-		ListenAddress:     valueDefault(source.ListenAddress, ":8080"),
+		ListenAddress:     valueDefault(source.ListenAddress, ":19090"),
 		DatabasePath:      valueDefault(source.DatabasePath, filepath.Join("data", "l4d2panel.sqlite3")),
 		MigrationsDir:     valueDefault(source.MigrationsDir, filepath.Join("migrations", "sqlite")),
 		BootstrapUsername: envAnyDefault([]string{"BOOTSTRAP_USERNAME", "CONTROL_BOOTSTRAP_USERNAME"}, "admin"),

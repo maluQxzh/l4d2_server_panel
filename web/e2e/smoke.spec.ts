@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 test.beforeEach(async ({ page }) => {
   await page.routeWebSocket("**/api/v1/events**", () => undefined);
   await page.route("**/api/v1/auth/bootstrap", (route) => route.fulfill({
-    status: 200, contentType: "application/json", body: JSON.stringify({ required: false }),
+    status: 200, contentType: "application/json", body: JSON.stringify({ required: false, key_configured: false }),
   }));
 });
 
@@ -24,21 +24,18 @@ async function json(page: Page, pattern: string, body: unknown, status = 200) {
   }));
 }
 
-test("首次启动通过网站创建首个所有者", async ({ page }) => {
+test("首次启动通过初始化密钥创建首个所有者", async ({ page }) => {
   await page.unroute("**/api/v1/auth/bootstrap");
   let authenticated = false;
   let initialized = false;
   await page.route("**/api/v1/auth/bootstrap", async (route) => {
     if (route.request().method() === "GET") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ required: !initialized, csrf_token: initialized ? undefined : "bootstrap-csrf" }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ required: !initialized, key_configured: !initialized, csrf_token: initialized ? undefined : "bootstrap-csrf" }) });
       return;
     }
     expect(route.request().headers()["x-bootstrap-csrf-token"]).toBe("bootstrap-csrf");
     expect(route.request().headers()["idempotency-key"]).toBeTruthy();
-    expect(route.request().postDataJSON()).toMatchObject({
-      username: "admin", display_name: "系统管理员",
-      password: "correct-horse-battery-staple", password_confirmation: "correct-horse-battery-staple",
-    });
+    expect(route.request().postDataJSON()).toEqual({ setup_key: "l4d2p_setup_0123456789abcdefghijklmnopqrstuvwxyzABCDEFG" });
     initialized = true;
     authenticated = true;
     await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ user: { ...owner, totp_enabled: false }, csrf_token: "session-csrf" }) });
@@ -54,15 +51,46 @@ test("首次启动通过网站创建首个所有者", async ({ page }) => {
   await json(page, "**/api/v1/jobs", { items: [] });
   await json(page, "**/api/v1/audit**", { items: [] });
   await json(page, "**/api/v1/notifications", { items: [] });
+  await json(page, "**/api/v1/users", { items: [{ ...owner, totp_enabled: false, bootstrap_owner: true, role_bindings: [{ id: "binding-owner", user_id: owner.id, role: "owner", scope_type: "global" }] }] });
 
   await page.goto("/");
   await expect(page).toHaveURL(/\/setup$/);
-  await expect(page.getByRole("heading", { name: "创建首个所有者", exact: true })).toBeVisible();
-  await page.getByLabel("密码", { exact: true }).fill("correct-horse-battery-staple");
-  await page.getByLabel("确认密码", { exact: true }).fill("correct-horse-battery-staple");
-  await page.getByRole("button", { name: /创建并进入面板/ }).click();
-  await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByRole("heading", { name: /作战总览/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "输入初始化密钥", exact: true })).toBeVisible();
+  await page.getByLabel("初始化密钥", { exact: true }).fill("l4d2p_setup_0123456789abcdefghijklmnopqrstuvwxyzABCDEFG");
+  await page.getByRole("button", { name: /验证并进入设置/ }).click();
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole("heading", { name: /用户与设置/ })).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("初始化密钥也是 admin 的当前密码");
+});
+
+test("尚未签发初始化密钥时显示本机命令并禁用提交", async ({ page }) => {
+  await page.unroute("**/api/v1/auth/bootstrap");
+  await json(page, "**/api/v1/auth/bootstrap", { required: true, key_configured: false, csrf_token: "bootstrap-csrf" });
+  await json(page, "**/api/v1/auth/me", { error: { code: "unauthorized", message: "authentication required" } }, 401);
+
+  await page.goto("/setup");
+  await expect(page.getByText("docker compose exec -T app setup-key issue")).toBeVisible();
+  await expect(page.getByRole("button", { name: /验证并进入设置/ })).toBeDisabled();
+});
+
+test("错误初始化密钥保持在首启页并显示稳定错误", async ({ page }) => {
+  await page.unroute("**/api/v1/auth/bootstrap");
+  await page.route("**/api/v1/auth/bootstrap", (route) => route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ required: true, key_configured: true, csrf_token: "bootstrap-csrf" }) })
+    : route.fulfill({ status: 401, contentType: "application/json", body: JSON.stringify({ error: { code: "invalid_setup_key", message: "setup key is invalid" } }) }));
+  await json(page, "**/api/v1/auth/me", { error: { code: "unauthorized", message: "authentication required" } }, 401);
+
+  await page.goto("/setup");
+  await page.getByLabel("初始化密钥", { exact: true }).fill("l4d2p_setup_0123456789abcdefghijklmnopqrstuvwxyzABCDEFG");
+  await page.getByRole("button", { name: /验证并进入设置/ }).click();
+  await expect(page).toHaveURL(/\/setup$/);
+  await expect(page.getByRole("alert")).toContainText("初始化密钥无效");
+});
+
+test("初始化完成后 setup 自动跳转登录页", async ({ page }) => {
+  await json(page, "**/api/v1/auth/me", { error: { code: "unauthorized", message: "authentication required" } }, 401);
+  await page.goto("/setup");
+  await expect(page).toHaveURL(/\/login$/);
 });
 
 test("公开状态页只展示脱敏服务器信息", async ({ page }) => {

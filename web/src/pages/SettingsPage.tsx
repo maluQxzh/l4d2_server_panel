@@ -4,6 +4,7 @@ import {
   Smartphone, Trash2, UserCog, Webhook,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, StatusBadge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
@@ -14,6 +15,8 @@ import type { Role, RoleBinding, User } from "../lib/types";
 
 export function SettingsPage() {
   const auth = useAuth();
+  const location = useLocation();
+  const setupKeyIsInitialPassword = Boolean((location.state as { setupKeyIsInitialPassword?: boolean } | null)?.setupKeyIsInitialPassword);
   const canManageUsers = hasRootSecurityPermission(auth.user);
   const users = useQuery({ queryKey: ["users"], queryFn: api.users, enabled: canManageUsers });
   const [compact, setCompact] = useState(() => localStorage.getItem("l4d2-density") === "compact");
@@ -29,6 +32,7 @@ export function SettingsPage() {
 
   return <div>
     <PageHeader eyebrow="CONTROL SETTINGS" title="用户与设置" description="管理账号安全、访问权限、通知渠道和本机显示偏好。" />
+    {setupKeyIsInitialPassword && <div className="alert-banner" role="alert"><KeyRound size={20} /><div><strong>初始化密钥也是 admin 的当前密码</strong><span>请立即使用下方“更改密码”设置新密码，并妥善删除此前保存的初始化密钥。</span></div></div>}
     <div className="settings-grid settings-grid--profile">
       <Card><div className="profile-card"><div className="avatar avatar--large">{(auth.user?.display_name || auth.user?.username || "管").slice(0, 1)}</div><div><span className="eyebrow">CURRENT ACCOUNT</span><h2>{auth.user?.display_name || auth.user?.username}</h2><p>@{auth.user?.username} · 上次登录 {dateTime(auth.user?.last_login_at)}</p></div><StatusBadge status={auth.user?.role || "viewer"} /></div></Card>
       <Card className="security-summary"><div><ShieldCheck size={22} /><span><strong>账号安全</strong><small>密码使用 Argon2id 哈希存储</small></span></div><div className={auth.user?.totp_enabled ? "good" : "warning"}><Smartphone size={20} /><span><strong>双重验证</strong><small>{auth.user?.totp_enabled ? "已启用 TOTP" : "建议尽快启用"}</small></span></div><Button variant="secondary" onClick={() => auth.user && setManagedUser(auth.user)} disabled={!canManageUsers} title={!canManageUsers ? "请联系所有者重置密码" : undefined}><LockKeyhole size={16} />更改密码</Button></Card>

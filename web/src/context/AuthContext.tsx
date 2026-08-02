@@ -8,6 +8,7 @@ interface AuthValue {
   loading: boolean;
   authenticated: boolean;
   bootstrapRequired: boolean;
+  bootstrapKeyConfigured: boolean;
   bootstrapOwner: typeof api.bootstrapOwner;
   refreshBootstrap: () => Promise<boolean>;
   login: typeof api.login;
@@ -36,10 +37,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loading: session.isPending || bootstrapStatus.isPending,
     authenticated: Boolean(session.data?.user),
     bootstrapRequired: Boolean(bootstrapStatus.data?.required),
+    bootstrapKeyConfigured: Boolean(bootstrapStatus.data?.key_configured),
     bootstrapOwner: async (payload) => {
       const result = await api.bootstrapOwner(payload);
       queryClient.setQueryData(["session"], result);
-      queryClient.setQueryData(["bootstrap-status"], { required: false });
+      queryClient.setQueryData(["bootstrap-status"], { required: false, key_configured: false });
       return result;
     },
     refreshBootstrap: async () => Boolean((await bootstrapStatus.refetch()).data?.required),

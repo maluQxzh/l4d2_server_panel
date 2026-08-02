@@ -44,11 +44,6 @@ try {
         $properties[$row.Fields[0]] = $row.Fields[1]
     }
     $expectedProperties = [ordered]@{
-        PROXY_MODE = 'caddy'
-        PANEL_DOMAIN = 'localhost'
-        CONTROL_PORT = '18080'
-        HTTP_PORT = '8088'
-        HTTPS_PORT = '8443'
         SKIP_START = 'false'
         SKIP_MIGRATE = 'false'
     }
@@ -56,7 +51,7 @@ try {
         Assert-True ($properties.ContainsKey($entry.Key)) "MSI property $($entry.Key) is missing."
         Assert-True ($properties[$entry.Key] -ceq $entry.Value) "MSI property $($entry.Key) must be '$($entry.Value)', got '$($properties[$entry.Key])'."
     }
-    foreach ($forbidden in @('DATABASE_URL', 'DATABASE_MODE', 'RESPONSE_FILE', 'MASTER_KEY', 'RCON_PASSWORD', 'SMTP_PASSWORD')) {
+    foreach ($forbidden in @('PROXY_MODE', 'PANEL_DOMAIN', 'CONTROL_PORT', 'HTTP_PORT', 'HTTPS_PORT', 'DATABASE_URL', 'DATABASE_MODE', 'RESPONSE_FILE', 'MASTER_KEY', 'RCON_PASSWORD', 'SMTP_PASSWORD')) {
         Assert-True (-not $properties.ContainsKey($forbidden)) "Sensitive property $forbidden must not be stored in the MSI."
     }
     $secure = @([string]$properties.SecureCustomProperties -split ';')
@@ -69,11 +64,6 @@ try {
         $registry[$row.Fields[2]] = $row.Fields
     }
     $expectedRegistry = [ordered]@{
-        ProxyMode = '[PROXY_MODE]'
-        PanelDomain = '[PANEL_DOMAIN]'
-        ControlPort = '#[CONTROL_PORT]'
-        HttpPort = '#[HTTP_PORT]'
-        HttpsPort = '#[HTTPS_PORT]'
         SkipStart = '[SKIP_START]'
         SkipMigrate = '[SKIP_MIGRATE]'
     }
@@ -82,6 +72,9 @@ try {
         $fields = $registry[$entry.Key]
         Assert-True ($fields[0] -eq '2' -and $fields[1] -eq 'SOFTWARE\L4D2Panel\Installer') "Installer registry value $($entry.Key) must be under 64-bit HKLM."
         Assert-True ($fields[3] -ceq $entry.Value) "Installer registry value $($entry.Key) has unexpected data '$($fields[3])'."
+    }
+    foreach ($forbiddenName in @('ProxyMode', 'PanelDomain', 'ControlPort', 'HttpPort', 'HttpsPort')) {
+        Assert-True (-not $registry.ContainsKey($forbiddenName)) "Obsolete installer registry value $forbiddenName is still present."
     }
 
     $sequence = @{}
@@ -102,17 +95,18 @@ try {
     Assert-True ($launchConditions -contains 'VersionNT64 >= v10.0') 'The supported Windows version launch condition is missing.'
 
     $controlProperties = @(Invoke-MsiQuery -Database $database -Sql 'SELECT `Property` FROM `Control` WHERE `Dialog_` = ''CenterOptionsDlg''' -FieldCount 1 | ForEach-Object { $_.Fields[0] })
-    Assert-True ($controlProperties -contains 'CONTROL_PORT') 'The MSI UI does not expose CONTROL_PORT.'
-    Assert-True ($controlProperties -notcontains 'DATABASE_MODE' -and $controlProperties -notcontains 'RESPONSE_FILE') 'Legacy database-mode UI is still present.'
+    Assert-True ($controlProperties.Count -eq 0) 'The obsolete center connection dialog is still present.'
 
     $fileNames = @(Invoke-MsiQuery -Database $database -Sql 'SELECT `FileName` FROM `File`' -FieldCount 1 | ForEach-Object { ($_.Fields[0] -split '\|')[-1] })
     Assert-True ($fileNames.Count -ge 8) "MSI payload is unexpectedly small ($($fileNames.Count) files)."
-    foreach ($requiredFile in @('Install-L4D2PanelCenter.ps1', 'Update-L4D2PanelCenter.ps1', 'Remove-L4D2PanelCenterData.ps1', 'l4d2panel-control.exe', 'caddy.exe', '001_control_plane.sql', 'modernc-sqlite-LICENSE.txt', 'modernc-libc-LICENSE.txt', 'modernc-libc-LICENSE-3RD-PARTY.md')) {
+    foreach ($requiredFile in @('Install-L4D2PanelCenter.ps1', 'Update-L4D2PanelCenter.ps1', 'Remove-L4D2PanelCenterData.ps1', 'New-L4D2PanelSetupKey.ps1', 'New-L4D2PanelSetupKey.cmd', 'l4d2panel-control.exe', '001_control_plane.sql', '002_bootstrap_setup_key.sql', 'modernc-sqlite-LICENSE.txt', 'modernc-libc-LICENSE.txt', 'modernc-libc-LICENSE-3RD-PARTY.md')) {
         Assert-True ($fileNames -contains $requiredFile) "Required MSI payload file $requiredFile is missing."
     }
     foreach ($forbiddenFile in @('postgres.exe', 'initdb.exe', 'pg_ctl.exe', 'psql.exe', 'createdb.exe', 'pg_dump.exe')) {
         Assert-True ($fileNames -notcontains $forbiddenFile) "Forbidden PostgreSQL payload file $forbiddenFile is present."
     }
+    $executables = @($fileNames | Where-Object { $_ -like '*.exe' })
+    Assert-True ($executables.Count -eq 1 -and $executables[0] -eq 'l4d2panel-control.exe') 'MSI must contain exactly one executable payload: Control.'
     Assert-True ((Get-Item -LiteralPath $resolvedMsi).Length -le 35MB) 'MSI exceeds the 35 MiB size target.'
 
     $mediaCabinets = @(Invoke-MsiQuery -Database $database -Sql 'SELECT `Cabinet` FROM `Media`' -FieldCount 1 | ForEach-Object { $_.Fields[0] })

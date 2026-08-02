@@ -14,10 +14,7 @@ import (
 const bootstrapCookieTTL = 15 * time.Minute
 
 type bootstrapOwnerRequest struct {
-	Username             string `json:"username"`
-	DisplayName          string `json:"display_name"`
-	Password             string `json:"password"`
-	PasswordConfirmation string `json:"password_confirmation"`
+	SetupKey string `json:"setup_key"`
 }
 
 func (s *Server) handleBootstrapStatus(w http.ResponseWriter, r *http.Request) {
@@ -28,7 +25,12 @@ func (s *Server) handleBootstrapStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if !required {
 		s.clearBootstrapCookie(w)
-		writeJSON(w, http.StatusOK, map[string]any{"required": false})
+		writeJSON(w, http.StatusOK, map[string]any{"required": false, "key_configured": false})
+		return
+	}
+	keyConfigured, err := s.store.SetupKeyConfigured(r.Context())
+	if err != nil {
+		s.fail(w, err)
 		return
 	}
 
@@ -48,8 +50,9 @@ func (s *Server) handleBootstrapStatus(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true, Secure: s.config.CookieSecure, SameSite: http.SameSiteStrictMode, Expires: expires,
 		MaxAge: int(bootstrapCookieTTL.Seconds())})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"required":   true,
-		"csrf_token": deriveBootstrapCSRFToken(s.config.MasterKey, rawToken),
+		"required":       true,
+		"key_configured": keyConfigured,
+		"csrf_token":     deriveBootstrapCSRFToken(s.config.MasterKey, rawToken),
 	})
 }
 
@@ -58,14 +61,18 @@ func (s *Server) handleBootstrapOwner(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "bootstrap_csrf_failed", "bootstrap CSRF token is missing or invalid")
 		return
 	}
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" || len(idempotencyKey) > 200 {
+		writeError(w, http.StatusBadRequest, "idempotency_key_required", "Idempotency-Key is required and must not exceed 200 characters")
+		return
+	}
 	var request bootstrapOwnerRequest
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	request.Username = strings.TrimSpace(request.Username)
-	request.DisplayName = strings.TrimSpace(request.DisplayName)
-	if err := validateBootstrapOwnerRequest(request); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_bootstrap_request", err.Error())
+	request.SetupKey = strings.TrimSpace(request.SetupKey)
+	if !ValidSetupKey(request.SetupKey) {
+		writeError(w, http.StatusBadRequest, "invalid_setup_key_format", "setup key format is invalid")
 		return
 	}
 
@@ -76,9 +83,8 @@ func (s *Server) handleBootstrapOwner(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many bootstrap attempts")
 		return
 	}
-	// Count every request that reaches the expensive password hash. A successful
-	// bootstrap clears the per-operation bucket below; failures and races stay
-	// bounded even when they use otherwise valid input.
+	// Count every syntactically valid attempt before looking up the key. A
+	// successful bootstrap clears the per-operation bucket below.
 	s.limiter.failure(ipAddress, limiterIdentity)
 	required, err := s.store.NeedsBootstrap(r.Context())
 	if err != nil {
@@ -90,19 +96,18 @@ func (s *Server) handleBootstrapOwner(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "bootstrap_complete", "the first owner has already been created")
 		return
 	}
-	hash, err := HashPassword(request.Password)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_bootstrap_request", err.Error())
+	if err := s.store.ValidateSetupKey(r.Context(), request.SetupKey); err != nil {
+		s.writeSetupKeyError(w, err)
 		return
 	}
-	user, created, err := s.store.BootstrapOwner(r.Context(), request.Username, request.DisplayName, hash)
+	hash, err := HashPassword(request.SetupKey)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	if !created {
-		s.clearBootstrapCookie(w)
-		writeError(w, http.StatusConflict, "bootstrap_complete", "the first owner has already been created")
+	user, err := s.store.BootstrapOwnerWithSetupKey(r.Context(), request.SetupKey, hash)
+	if err != nil {
+		s.writeSetupKeyError(w, err)
 		return
 	}
 	if bindings, bindingErr := s.store.RoleBindings(r.Context(), user.ID); bindingErr == nil {
@@ -131,29 +136,17 @@ func (s *Server) handleBootstrapOwner(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"user": user, "csrf_token": csrfToken})
 }
 
-func validateBootstrapOwnerRequest(request bootstrapOwnerRequest) error {
-	if len(request.Username) < 1 || len(request.Username) > 128 || containsControlCharacter(request.Username) {
-		return errors.New("username must be between 1 and 128 bytes without control characters")
+func (s *Server) writeSetupKeyError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrSetupKeyNotConfigured):
+		writeError(w, http.StatusConflict, "setup_key_not_configured", "run the local setup-key command first")
+	case errors.Is(err, ErrInvalidSetupKey):
+		writeError(w, http.StatusUnauthorized, "invalid_setup_key", "setup key is invalid")
+	case errors.Is(err, ErrBootstrapComplete):
+		writeError(w, http.StatusConflict, "bootstrap_complete", "the first owner has already been created")
+	default:
+		s.fail(w, err)
 	}
-	if len(request.DisplayName) < 1 || len(request.DisplayName) > 128 || containsControlCharacter(request.DisplayName) {
-		return errors.New("display_name must be between 1 and 128 bytes without control characters")
-	}
-	if request.Password != request.PasswordConfirmation {
-		return errors.New("password confirmation does not match")
-	}
-	if len(request.Password) < 12 || len(request.Password) > 1024 || strings.ContainsAny(request.Password, "\r\n\x00") {
-		return errors.New("password must be a single line between 12 and 1024 characters")
-	}
-	return nil
-}
-
-func containsControlCharacter(value string) bool {
-	for _, character := range value {
-		if character < 0x20 || character == 0x7f {
-			return true
-		}
-	}
-	return false
 }
 
 func validBootstrapCookie(value string) bool {

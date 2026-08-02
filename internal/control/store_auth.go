@@ -119,6 +119,9 @@ func (s *Store) BootstrapOwner(ctx context.Context, username, displayName, passw
 	if err != nil {
 		return domain.User{}, false, err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM bootstrap_setup_key WHERE singleton=1`); err != nil {
+		return domain.User{}, false, err
+	}
 	return user, true, tx.Commit()
 }
 
