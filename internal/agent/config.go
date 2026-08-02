@@ -145,14 +145,30 @@ func (c *Config) validateURL() error {
 	case "https", "wss":
 		return nil
 	case "http", "ws":
-		host := u.Hostname()
-		if strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback() {
+		if plaintextControlHostAllowed(u.Hostname()) {
 			return nil
 		}
-		return errors.New("central_url must use TLS (https or wss) outside localhost")
+		return errors.New("central_url must use TLS (https or wss) outside localhost or a private/link-local IP address")
 	default:
 		return errors.New("central_url scheme must be https, wss, http, or ws")
 	}
+}
+
+func plaintextControlHostAllowed(host string) bool {
+	host = strings.TrimSuffix(host, ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	// url.Hostname retains an IPv6 zone identifier. ParseIP deliberately does
+	// not accept it, so remove only the zone suffix before classifying the
+	// literal address. Hostnames are not resolved here: allowing a DNS name
+	// based on one lookup would let a later DNS-rebinding response expose the
+	// enrollment token or long-lived Agent credential over plaintext.
+	if zone := strings.LastIndexByte(host, '%'); zone >= 0 {
+		host = host[:zone]
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast())
 }
 
 func durationOr(value string, fallback time.Duration, field string) (time.Duration, error) {

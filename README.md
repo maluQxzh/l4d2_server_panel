@@ -140,6 +140,8 @@ Windows 节点以管理员 PowerShell 运行：
   -NodeName game-windows-01
 ```
 
+默认应使用受信任证书的 HTTPS 中心地址。确实位于同一主机或可信隔离局域网时，也可以把 `CENTRAL_URL`/`-CentralUrl` 设置为 `http://localhost:19090`、回环 IP 或明确的私网/链路本地 IP；Agent 会相应使用普通 WebSocket。为避免 DNS 重绑定后把凭据发送到公网，明文模式不解析或接受 `panel.lan` 一类主机名，必须填写 IP（`localhost` 除外），且公网 HTTP 仍会被拒绝。HTTP 不加密一次性注册令牌、长期节点凭据、任务和结果，能够监听或篡改局域网流量的设备可以接管节点；只应在受控网络中使用。
+
 正式发布包附带 Agent 与 SHA-256 文件。从源码测试时通过 `AGENT_BINARY` 或 `-AgentBinary` 指向本地二进制。重复运行安装器会保留现有节点凭据并升级二进制，因此升级时可省略注册令牌。
 
 - 正式支持 amd64 Windows 10/11、Windows Server 2019+、Ubuntu 22.04/24.04、Debian 12。

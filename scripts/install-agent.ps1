@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidatePattern('^https://')][string]$CentralUrl,
+    [Parameter(Mandatory = $true)][ValidatePattern('^https?://')][string]$CentralUrl,
     [ValidatePattern('^[A-Za-z0-9._-]*$')][string]$EnrollmentToken = '',
     [ValidatePattern('^[A-Za-z0-9._-]+$')][string]$NodeName = $env:COMPUTERNAME,
     [string]$AgentBinary,
@@ -113,6 +113,9 @@ Assert-Administrator
 if (-not [Environment]::Is64BitOperatingSystem) { throw '首版仅支持 amd64 Windows。' }
 $os = Get-CimInstance Win32_OperatingSystem
 if ([int]$os.BuildNumber -lt 17763) { throw '需要 Windows 10/11 或 Windows Server 2019+（Build 17763+）。' }
+if ($CentralUrl.StartsWith('http://', [StringComparison]::OrdinalIgnoreCase)) {
+    Write-Warning '局域网 HTTP 不加密注册令牌、节点凭据、任务和结果；仅应在可信隔离网络中使用。Agent 会拒绝公网 HTTP 地址。'
+}
 
 $programRoot = Join-Path $env:ProgramFiles 'L4D2Panel'
 $dataRoot = Join-Path $env:ProgramData 'L4D2Panel'
@@ -231,6 +234,6 @@ if ((Get-Service -Name $serviceName).Status -ne [ServiceProcess.ServiceControlle
 
 $enabledProfiles = Get-NetFirewallProfile | Where-Object Enabled
 if ($enabledProfiles) {
-    Write-Warning 'Windows 防火墙已启用。节点只需出站 HTTPS 443；创建实例后请仅开放该实例实际使用的游戏/A2S/RCON 端口，并限制 RCON 来源。'
+    Write-Warning 'Windows 防火墙已启用。节点只需出站连接 CentralUrl 对应端口；创建实例后请仅开放该实例实际使用的游戏/A2S/RCON 端口，并限制 RCON 来源。'
 }
 Write-Host "节点 Agent 已以低权限虚拟账号 $serviceAccount 安装并启动。"

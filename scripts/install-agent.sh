@@ -24,6 +24,7 @@ target_binary=$install_root/l4d2panel-agent
 
 usage() {
   echo "用法: sudo CENTRAL_URL=https://panel.example.com ENROLLMENT_TOKEN=... $0" >&2
+  echo "回环或私网 IP 可显式使用 http://；公网地址必须使用 https://。" >&2
   echo "升级现有节点时 ENROLLMENT_TOKEN 可省略；可用 AGENT_BINARY 指向本地 amd64 二进制。" >&2
 }
 
@@ -34,8 +35,11 @@ run_as_agent() {
 
 [ "$(id -u)" -eq 0 ] || die '安装系统服务需要 root 权限。'
 [ -n "$CENTRAL_URL" ] || { usage; exit 2; }
-case "$CENTRAL_URL" in https://*) ;; *) die 'CENTRAL_URL 必须使用 https://' ;; esac
-case "$CENTRAL_URL" in *[!A-Za-z0-9._:/-]*|*..*) die 'CENTRAL_URL 包含不允许的字符或路径' ;; esac
+case "$CENTRAL_URL" in https://*|http://*) ;; *) die 'CENTRAL_URL 必须使用 https://，或对回环/私网 IP 使用 http://。' ;; esac
+case "$CENTRAL_URL" in *[[:space:]]*|*'"'*|*'\'*|*'@'*|*'?'*|*'#'*|*..*) die 'CENTRAL_URL 包含不允许的字符或路径' ;; esac
+case "$CENTRAL_URL" in
+  http://*) echo '警告: 局域网 HTTP 不加密注册令牌、节点凭据、任务和结果；仅应在可信隔离网络中使用。' >&2 ;;
+esac
 case "$(uname -m)" in x86_64|amd64) ;; *) die '首版仅支持 amd64。' ;; esac
 case "$NODE_NAME" in ''|*[!A-Za-z0-9._-]*) die 'NODE_NAME 只能包含字母、数字、点、下划线和连字符。' ;; esac
 case "$ENROLLMENT_TOKEN" in *[!A-Za-z0-9._-]*) die '注册令牌格式无效。' ;; esac
@@ -234,8 +238,8 @@ fi
 systemctl is-active --quiet "$service_name.service" || die 'Agent systemd 服务未能启动。'
 
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  echo '提示: UFW 已启用。节点只需出站 HTTPS 443；创建实例后请仅开放实际使用的游戏/A2S/RCON 端口。' >&2
+  echo '提示: UFW 已启用。节点只需出站连接 CENTRAL_URL 对应端口；创建实例后请仅开放实际使用的游戏/A2S/RCON 端口。' >&2
 elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-  echo '提示: firewalld 已启用。节点只需出站 HTTPS 443；创建实例后请仅开放实际使用的游戏/A2S/RCON 端口。' >&2
+  echo '提示: firewalld 已启用。节点只需出站连接 CENTRAL_URL 对应端口；创建实例后请仅开放实际使用的游戏/A2S/RCON 端口。' >&2
 fi
 echo "节点 Agent 已以低权限账号 $service_user 安装并启动。"
