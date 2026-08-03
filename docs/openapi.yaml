@@ -678,7 +678,7 @@ paths:
     post:
       tags: [Instances]
       summary: 将已验证游戏安装绑定为实例
-      description: "推荐提交 `game_installation_id`；也可提交节点绝对 `path`，由 Control 登记、校验并建立独占绑定。不会自动安装游戏或启动服务器。"
+      description: "提交所选运行节点上已就绪且未绑定的 `game_installation_id`。Agent 直接建立独占绑定并生成配置，不重复校验或安装游戏，也不会启动服务器。"
       parameters:
         - { $ref: "#/components/parameters/CSRF" }
         - { $ref: "#/components/parameters/IdempotencyKey" }
@@ -689,7 +689,7 @@ paths:
             schema: { $ref: "#/components/schemas/CreateInstanceRequest" }
       responses:
         "202":
-          description: 实例记录和安装/导入任务已创建
+          description: 实例记录和绑定任务已创建
           content:
             application/json:
               schema:
@@ -2538,7 +2538,7 @@ components:
         extra_args:
           type: array
           maxItems: 128
-          description: 每项不能为空且不得含 NUL、CR/LF 或分号；托管参数、`-basedir`、`-defaultgamedir` 与 `-tickrate` 会返回 invalid_config。
+          description: 每项不能为空且不得含 NUL、CR/LF 或分号；托管参数、`-basedir` 与 `-defaultgamedir` 会返回 invalid_config。`-tickrate` 可出现一次，后面必须是 1–1000 的整数值。
           items:
             {
               type: string,
@@ -2554,7 +2554,7 @@ components:
             { type: string, maxLength: 4096, pattern: '^[^\u0000\r\n]*$' }
           description: CVar 名不得带首尾空白；`rcon_password` 与 `sv_password`（不区分大小写）被拒绝，必须使用加密秘密字段。值由 Control 另按 UTF-8 字节限制为 4096。
         auto_restart: { type: boolean }
-      description: Control 在持久化前执行这些约束；原版 L4D2 不支持可调 tickrate，危险或与面板托管值冲突的高级参数直接返回 400 invalid_config，Agent 派发后仍会再次校验。
+      description: Control 在持久化前执行这些约束；危险或与面板托管值冲突的高级参数直接返回 400 invalid_config，`-tickrate` 按唯一的 1–1000 整数参数校验，Agent 派发后仍会再次校验。
 
     Instance:
       type: object
@@ -2619,20 +2619,11 @@ components:
 
     CreateInstanceRequest:
       type: object
-      required: [node_id, name, config]
+      required: [node_id, game_installation_id, name, config]
       properties:
         node_id: { type: string, format: uuid }
         name: { type: string, minLength: 1, maxLength: 128 }
-        game_installation_id: { type: string, format: uuid, description: 推荐：已验证且未绑定的游戏安装 }
-        operation: { type: string, enum: [import], default: import }
-        path:
-          { type: string, description: 不使用 game_installation_id 时必需，为节点主机绝对路径 }
-        executable:
-          {
-            type: string,
-            enum: [srcds.exe, srcds_run, srcds_linux],
-            description: 导入时可传扫描候选返回的受支持可执行文件名；省略时由 Agent 按平台选择,
-          }
+        game_installation_id: { type: string, format: uuid, description: 所选节点上已就绪且未绑定的游戏安装 }
         host: { type: string, default: 0.0.0.0 }
         port:
           {

@@ -98,10 +98,9 @@ test("运行环境可配置自定义 SteamCMD 并手动登记游戏目录", asyn
   await expect.poll(() => steamBody).toEqual({ action: "configure", path: "/opt/steamcmd/steamcmd.sh" });
 
   await page.getByRole("button", { name: "添加游戏安装" }).click();
-  await page.getByLabel("根目录索引").fill("1");
-  await page.getByLabel("相对路径").fill("existing/server-b");
+  await page.getByLabel("节点绝对路径").fill("/srv/l4d2/server-b");
   await page.getByRole("button", { name: "提交任务" }).click();
-  await expect.poll(() => gameBody).toEqual({ root_index: 1, path: "existing/server-b", operation: "import" });
+  await expect.poll(() => gameBody).toEqual({ path: "/srv/l4d2/server-b", operation: "import" });
 });
 
 test("轮换节点凭据后一次性显示明文和重启提示", async ({ page }) => {
@@ -222,14 +221,18 @@ test("运行中实例重启必须确认并提交固定维护倒计时", async ({
   await expect.poll(() => actionBody).toEqual({ type: "restart", payload: { maintenance: true, warning_seconds: [600, 300, 60] } });
 });
 
-test("创建与导入实例会提交白名单相对路径", async ({ page }) => {
+test("创建实例从运行节点绑定可用安装并提交模式、官方地图和 Tickrate", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/environments", (route) => json(route, { items: [environment] }));
-  await page.route("**/api/v1/environments/environment-1/game-installations", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/environments/environment-1/game-installations", (route) => json(route, { items: [gameInstallation] }));
   await page.route("**/api/v1/instances", async (route) => {
     if (route.request().method() === "GET") return json(route, { items: [] });
     const body = route.request().postDataJSON() as Record<string, unknown>;
-    expect(body).toMatchObject({ node_id: node.id, operation: "import", path: "existing/server-a", root_index: 0 });
+    expect(body).toMatchObject({ node_id: node.id, game_installation_id: gameInstallation.id, name: "专家战役 #1",
+      config: { mode: "mutation4", start_map: "c14m2_lighthouse", extra_args: ["-tickrate", "60"] } });
+    expect(body).not.toHaveProperty("operation");
+    expect(body).not.toHaveProperty("path");
+    expect(body).not.toHaveProperty("root_index");
     return json(route, { instance, job_id: "job-import" }, 202);
   });
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance }));
@@ -237,11 +240,17 @@ test("创建与导入实例会提交白名单相对路径", async ({ page }) => 
 
   await page.goto("/instances");
   await page.getByRole("button", { name: "创建第一个实例" }).click();
+  await expect(page.getByText("选择已验证安装", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("手动填写游戏路径", { exact: true })).toHaveCount(0);
   await page.getByLabel("实例名称").fill("专家战役 #1");
-  await page.getByLabel("运行环境").selectOption(environment.id);
-  await page.getByRole("button", { name: "手动填写游戏路径" }).click();
-  await page.getByLabel("游戏安装相对路径").fill("existing/server-a");
-  await page.getByRole("button", { name: "校验并创建实例" }).click();
+  await page.getByRole("combobox", { name: "运行节点", exact: true }).selectOption(environment.id);
+  await page.getByRole("combobox", { name: /^可用游戏安装/ }).selectOption(gameInstallation.id);
+  await page.getByLabel("游戏模式").selectOption("mutation4");
+  await expect(page.getByLabel("初始地图").locator("option")).toHaveCount(57);
+  await page.getByLabel("初始地图").selectOption("c14m2_lighthouse");
+  await page.getByRole("switch", { name: "启用 Tickrate" }).click();
+  await page.getByLabel("Tickrate 数值").fill("60");
+  await page.getByRole("dialog", { name: "创建游戏实例" }).getByRole("button", { name: "创建实例" }).click();
   await expect(page).toHaveURL(/\/instances\/instance-1/);
 });
 

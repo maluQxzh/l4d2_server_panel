@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -94,6 +95,9 @@ func validateConfigExtraArgs(args []string) error {
 	if len(args) > 128 {
 		return errors.New("too many advanced startup arguments")
 	}
+	if err := validateTickrateArguments(args); err != nil {
+		return err
+	}
 	reserved := map[string]bool{
 		"-console": true, "-game": true, "-port": true, "+hostport": true,
 		"+map": true, "+mp_gamemode": true, "+maxplayers": true, "+exec": true,
@@ -104,14 +108,36 @@ func validateConfigExtraArgs(args []string) error {
 			return fmt.Errorf("advanced argument %d contains invalid text", index)
 		}
 		name := configArgumentName(argument)
-		if name == "-tickrate" {
-			return errors.New("L4D2 does not expose a supported adjustable tickrate")
-		}
 		if reserved[name] {
 			return fmt.Errorf("advanced argument %q conflicts with a managed setting", argument)
 		}
 		if name == "-basedir" || name == "-defaultgamedir" {
 			return fmt.Errorf("unsafe startup parameter %q", argument)
+		}
+	}
+	return nil
+}
+
+func validateTickrateArguments(args []string) error {
+	seen := false
+	for index, argument := range args {
+		if configArgumentName(argument) != "-tickrate" {
+			continue
+		}
+		if seen {
+			return errors.New("-tickrate may only be supplied once")
+		}
+		seen = true
+		value := ""
+		trimmed := strings.TrimSpace(argument)
+		if separator := strings.IndexFunc(trimmed, func(r rune) bool { return r == '=' || unicode.IsSpace(r) }); separator >= 0 {
+			value = strings.TrimLeftFunc(trimmed[separator:], func(r rune) bool { return r == '=' || unicode.IsSpace(r) })
+		} else if index+1 < len(args) {
+			value = strings.TrimSpace(args[index+1])
+		}
+		tickrate, err := strconv.Atoi(value)
+		if err != nil || tickrate < 1 || tickrate > 1000 {
+			return errors.New("-tickrate must be followed by an integer between 1 and 1000")
 		}
 	}
 	return nil

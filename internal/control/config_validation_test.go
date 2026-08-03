@@ -12,7 +12,7 @@ func TestValidateInstanceConfigAcceptsStructuredDefaults(t *testing.T) {
 	config := domain.InstanceConfig{
 		Hostname: "专家战役 #1", Mode: "coop", Difficulty: "normal", MaxPlayers: 8,
 		StartMap: "c1m1_hotel", Region: "255", SteamGroupID: "12345678901234567890",
-		ExtraArgs: []string{"-insecure", "+sv_lan", "0", "+sv_tags=coop campaign"}, CVars: map[string]string{"sv_consistency": "1"},
+		ExtraArgs: []string{"-insecure", "-tickrate", "100", "+sv_lan", "0", "+sv_tags=coop campaign"}, CVars: map[string]string{"sv_consistency": "1"},
 		MaintenanceCron: "0 4 * * *",
 	}
 	if err := validateStructuredConfig(config); err != nil {
@@ -30,7 +30,11 @@ func TestValidateInstanceConfigRejectsAgentIncompatibleValues(t *testing.T) {
 		{SteamGroupID: "12-not-digits"},
 		{ServerPassword: "safe\nquit"},
 		{ServerPassword: strings.Repeat("a", 257)},
-		{ExtraArgs: []string{"-tickrate", "100"}},
+		{ExtraArgs: []string{"-tickrate"}},
+		{ExtraArgs: []string{"-tickrate", "0"}},
+		{ExtraArgs: []string{"-tickrate=1001"}},
+		{ExtraArgs: []string{"-tickrate", "fast"}},
+		{ExtraArgs: []string{"-tickrate", "100", "-tickrate", "60"}},
 		{ExtraArgs: []string{"+sv_password", "plaintext"}},
 		{ExtraArgs: []string{"+rcon_password plaintext"}},
 		{ExtraArgs: []string{"+sv_password\tplaintext"}},

@@ -61,6 +61,7 @@ import {
 import { bytes, dateTime, duration, jobLabels } from "../lib/format";
 import { buildInstanceConfigUpdate, type ServerPasswordChange } from "../lib/instance-config";
 import { buildStartupArgumentPreview, canAccessInstance, lifecycleActionAllowed, maintenancePayload } from "../lib/instance-lifecycle";
+import { defaultTickrate, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
 import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, PackageRecord, Player, PlayerBan, ScheduleRecord } from "../lib/types";
 
 const tabs = [
@@ -326,7 +327,8 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
     },
     onError: (error) => toast.push(error.message, "error"),
   });
-  const containsTickrate = /(^|\s)-tickrate(?:\s|$)/i.test(extraArgs);
+  const tickrateEnabled = /(^|\s)-tickrate(?:\s|=|$)/i.test(extraArgs);
+  const tickrateValue = readTickrate(extraArgs) ?? defaultTickrate;
   const passwordValue =
     passwordChange.kind === "set" ? passwordChange.value : "";
   const passwordHint =
@@ -429,11 +431,7 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
                   setConfig({ ...config, mode: event.target.value })
                 }
               >
-                <option value="coop">战役</option>
-                <option value="realism">写实</option>
-                <option value="versus">对抗</option>
-                <option value="survival">生还者</option>
-                <option value="scavenge">清道夫</option>
+                {gameModes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}
               </select>
             </Field>
             <Field label="难度">
@@ -466,12 +464,15 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
           </div>
           <div className="form-grid">
             <Field label="初始地图">
-              <input
+              <select
                 value={config.start_map}
                 onChange={(event) =>
                   setConfig({ ...config, start_map: event.target.value })
                 }
-              />
+              >
+                {!officialMapGroups.some((group) => group.maps.some(([value]) => value === config.start_map)) && <option value={config.start_map}>{config.start_map}</option>}
+                {officialMapGroups.map((group) => <optgroup label={group.campaign} key={group.campaign}>{group.maps.map(([value, label]) => <option value={value} key={value}>{label} · {value}</option>)}</optgroup>)}
+              </select>
             </Field>
             <Field label="地区代码">
               <input
@@ -530,6 +531,10 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
           </button>
           {advanced && (
             <div className="advanced-fields">
+              <div className="form-grid">
+                <Toggle checked={tickrateEnabled} onChange={(checked) => setExtraArgs(writeTickrate(extraArgs, checked ? tickrateValue : null))} label="启用 Tickrate" description="作为 -tickrate 启动参数传递" />
+                {tickrateEnabled && <Field label="Tickrate 数值" hint={`${minTickrate}–${maxTickrate} 的整数`}><input type="number" min={minTickrate} max={maxTickrate} step={1} value={tickrateValue} onChange={(event) => setExtraArgs(writeTickrate(extraArgs, Number(event.target.value)))} required /></Field>}
+              </div>
               <Field
                 label="额外启动参数"
                 hint="参数会按数组安全传递，不经过 Shell。"
@@ -541,13 +546,6 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
                   placeholder="+sv_lan 0"
                 />
               </Field>
-              {containsTickrate && (
-                <div className="form-warning">
-                  <ShieldAlert size={17} />
-                  原版 L4D2 不支持可调
-                  tickrate；该参数不会产生预期效果，请移除。
-                </div>
-              )}
               <Field
                 label="自定义 CVar"
                 hint="每行一个变量，例如 sv_consistency 1"
@@ -1292,6 +1290,31 @@ function Toggle({ checked, onChange, label, description }: { checked: boolean; o
 
 function splitArgs(value: string) {
   return value.match(/(?:[^\s"]+|"[^"]*")+/g)?.map((item) => item.replace(/^"|"$/g, "")) || [];
+}
+
+function readTickrate(value: string) {
+  const args = splitArgs(value);
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    const inline = argument.match(/^-tickrate(?:=|\s+)(\d+)$/i);
+    if (inline) return Number(inline[1]);
+    if (argument.toLowerCase() === "-tickrate" && /^\d+$/.test(args[index + 1] || "")) return Number(args[index + 1]);
+  }
+  return null;
+}
+
+function writeTickrate(value: string, tickrate: number | null) {
+  const args = splitArgs(value);
+  const result: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (/^-tickrate(?:=|\s|$)/i.test(args[index])) {
+      if (args[index].toLowerCase() === "-tickrate" && /^\d+$/.test(args[index + 1] || "")) index += 1;
+      continue;
+    }
+    result.push(args[index]);
+  }
+  if (tickrate !== null) result.push("-tickrate", String(tickrate));
+  return result.map((item) => /\s/.test(item) ? `"${item.replaceAll('"', '\\"')}"` : item).join(" ");
 }
 
 function parseCVars(value: string) {

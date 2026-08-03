@@ -61,14 +61,14 @@ func ValidateStartArgs(args []string) error {
 	if len(args) == 0 || len(args) > 256 {
 		return errors.New("startup arguments must contain between 1 and 256 elements")
 	}
+	if err := validateTickrateArguments(args); err != nil {
+		return err
+	}
 	for i, arg := range args {
 		if err := validateArgumentText(arg); err != nil {
 			return fmt.Errorf("argument %d: %w", i, err)
 		}
 		name, inlineValue, hasInlineValue := splitStartArgument(arg)
-		if name == "-tickrate" {
-			return errors.New("L4D2 does not expose a supported adjustable tickrate")
-		}
 		if name == "-basedir" || name == "-defaultgamedir" {
 			return fmt.Errorf("unsafe startup parameter %q", arg)
 		}
@@ -107,20 +107,43 @@ func validateExtraStartArgs(args []string) error {
 	if len(args) > 128 {
 		return errors.New("too many advanced startup arguments")
 	}
+	if err := validateTickrateArguments(args); err != nil {
+		return err
+	}
 	reserved := map[string]bool{"-console": true, "-game": true, "-port": true, "+hostport": true, "+map": true, "+mp_gamemode": true, "+maxplayers": true, "+exec": true, "+tv_port": true, "+rcon_password": true, "+sv_password": true, "+plugin_load": true}
 	for i, arg := range args {
 		if err := validateArgumentText(arg); err != nil {
 			return fmt.Errorf("advanced argument %d: %w", i, err)
 		}
 		name, _, _ := splitStartArgument(arg)
-		if name == "-tickrate" {
-			return errors.New("L4D2 does not expose a supported adjustable tickrate")
-		}
 		if reserved[name] {
 			return fmt.Errorf("advanced argument %q conflicts with a managed setting", arg)
 		}
 		if name == "-basedir" || name == "-defaultgamedir" {
 			return fmt.Errorf("unsafe startup parameter %q", arg)
+		}
+	}
+	return nil
+}
+
+func validateTickrateArguments(args []string) error {
+	seen := false
+	for index, argument := range args {
+		name, inlineValue, hasInlineValue := splitStartArgument(argument)
+		if name != "-tickrate" {
+			continue
+		}
+		if seen {
+			return errors.New("-tickrate may only be supplied once")
+		}
+		seen = true
+		value := inlineValue
+		if !hasInlineValue && index+1 < len(args) {
+			value = strings.TrimSpace(args[index+1])
+		}
+		tickrate, err := strconv.Atoi(value)
+		if err != nil || tickrate < 1 || tickrate > 1000 {
+			return errors.New("-tickrate must be followed by an integer between 1 and 1000")
 		}
 	}
 	return nil
