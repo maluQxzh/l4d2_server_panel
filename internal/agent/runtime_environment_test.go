@@ -111,6 +111,50 @@ func TestGameMaintenanceRejectsUnregisteredInstallation(t *testing.T) {
 	}
 }
 
+func TestBindRegisteredInstallationSkipsRepeatedStructureValidation(t *testing.T) {
+	data, gameRoot := t.TempDir(), t.TempDir()
+	store, err := newRuntimeEnvironmentStore(&Config{DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.update(func(state *runtimeEnvironmentState) {
+		state.Installations["installation-one"] = runtimeGameRecord{RootIndex: 0, RelativePath: "servers/one"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := filepath.Join(gameRoot, "servers", "one")
+	if err := os.MkdirAll(filepath.Join(instancePath, "left4dead2", "cfg"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := NewPathGuard([]string{gameRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := OpenRegistry(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &Executor{
+		config: &Config{DataDir: data}, paths: paths, registry: registry, runtimeEnvironment: store,
+		processes: &ProcessManager{items: make(map[string]*managedProcess)},
+	}
+	job := domain.Job{ID: "job-one", InstanceID: "instance-one", InstallationID: "installation-one", Payload: map[string]any{
+		"operation": "bind", "root_index": 0, "path": "servers/one", "rcon_password": "secret",
+		"instance": map[string]any{"id": "instance-one", "name": "one", "path": "servers/one", "port": 27015,
+			"config": map[string]any{"hostname": "one", "mode": "mutation4", "difficulty": "normal", "max_players": 4,
+				"start_map": "c1m1_hotel", "region": "255", "extra_args": []any{"-tickrate", "100"}}},
+	}}
+	if _, err := executor.importInstance(context.Background(), job, func(int, string) {}); err != nil {
+		t.Fatalf("registered installation binding repeated structure validation: %v", err)
+	}
+	if _, ok := registry.Get("instance-one"); !ok {
+		t.Fatal("bound instance was not registered")
+	}
+	if _, err := os.Stat(filepath.Join(instancePath, "left4dead2", "cfg", "l4d2panel.cfg")); err != nil {
+		t.Fatalf("generated configuration missing: %v", err)
+	}
+}
+
 func TestValidateSteamCMDPathLinuxPermissionsAndLinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Linux launcher permission semantics")

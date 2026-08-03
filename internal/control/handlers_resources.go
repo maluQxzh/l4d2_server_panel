@@ -316,6 +316,12 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobType, operation := "game.import", "import"
+	if provisionalInstallationID == "" {
+		// A ready installation has already been inspected and registered by the
+		// Agent. Creation only binds it and writes the instance configuration;
+		// it does not repeat the installation structure validation.
+		jobType, operation = "import", "bind"
+	}
 	jobPayload := map[string]any{"operation": operation, "instance": instance, "path": request.Path, "name": instance.Name, "port": instance.Port}
 	if request.Executable != "" {
 		jobPayload["executable"] = request.Executable

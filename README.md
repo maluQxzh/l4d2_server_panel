@@ -6,7 +6,7 @@
 
 - 节点与任务：一次性注册令牌、可轮换/吊销的节点凭据、断线离线队列、任务幂等、任务取消，以及 `queued/dispatched/running/succeeded/failed/canceled` 状态机。
 - 运行环境：每个节点维护一套活动 SteamCMD 和多个独占游戏安装。中心端可在线校验自定义 SteamCMD 绝对路径，或让 Agent 在自身数据目录安装托管版本；游戏安装、导入、校验、更新、重装和隔离统一从“运行环境”手动触发，不扫描磁盘。
-- 实例：绑定一套已验证且未被占用的游戏安装，负责端口、配置、既有进程受控接管、启停/重启、RCON 优雅退出和崩溃自动恢复。删除实例默认解除绑定并保留游戏文件。
+- 实例：从所选运行节点绑定一套已就绪且未被占用的游戏安装；创建时不重复校验安装结构，随后负责端口、配置、既有进程受控接管、启停/重启、RCON 优雅退出和崩溃自动恢复。删除实例默认解除绑定并保留游戏文件。
 - 游戏管理：A2S 状态、RCON 玩家/踢出/封禁/地图/广播、结构化配置与版本回滚、受限文件读写、上传或 HTTPS/Workshop 安装 VPK/SourceMod/Metamod、非 Workshop 单文件 VPK/SMX 最近 3 个历史版本回退、备份与计划任务。文件 API 不允许改写可执行或加载关键文件，这些内容必须经包管理流程安装。
 - 管理与安全：所有者/管理员/操作员/观察者，支持全局、节点或实例范围绑定；团队账号与绑定只允许全局所有者的交互式会话管理；HttpOnly 会话、CSRF、Argon2id、TOTP 与一次性恢复码、有限期且可限定资源的 API Token、不可编辑审计记录。
 - 可观测性：10 秒心跳、15 秒指标、A2S 探测、站内通知、SMTP、带 HMAC-SHA256 签名和出站 SSRF 防护的 Webhook、公开状态页，以及节点本地日志的有限检索/分块下载。
@@ -237,4 +237,4 @@ CI 还执行上述 20/100 模拟验收、Go race 测试、Windows/Linux Control 
 - VPK 格式：[Valve Developer Community](https://developer.valvesoftware.com/wiki/VPK)
 - SourceMod 安装：[AlliedModders Wiki](https://wiki.alliedmods.net/Installing_SourceMod)
 
-原版 L4D2 不把 `-tickrate` 作为面板可调设置；高级参数校验会提示该参数无效。
+实例可选用 `-tickrate <数值>` 启动参数；Control 与 Agent 都只接受 1–1000 的单个整数值，并继续使用参数数组直接启动游戏进程。

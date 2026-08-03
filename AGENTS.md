@@ -43,7 +43,7 @@ Do not weaken or remove pinned security versions merely to make an older local t
 - Enforce RBAC in Control handlers and stores, not only in the UI. Resource-scoped events must fail closed when node/instance ownership is unknown.
 - Persistent browser events must retain commit-to-broadcast cursor ordering. Ephemeral console/metric frames may be dropped for slow clients and must not be persisted merely to simplify delivery.
 - Keep the Control plane single-instance unless the Agent connection registry, event ordering, dispatch leases, and authorization invalidation are explicitly redesigned for HA.
-- The UI remains responsive, dark, and Simplified Chinese. Do not bundle Valve artwork or expose `-tickrate` as a valid L4D2 setting.
+- The UI remains responsive, dark, and Simplified Chinese. Do not bundle Valve artwork. `-tickrate` may be exposed as an explicit numeric startup option; Control and Agent must both require one integer value in the supported 1–1000 range and continue passing it as an argument array without a Shell.
 
 ## Code and schema conventions
 

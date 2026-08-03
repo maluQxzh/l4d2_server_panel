@@ -18,7 +18,11 @@ func TestBuildStartArgsUsesArgumentVector(t *testing.T) {
 
 func TestStartArgsRejectManagedConflictsAndInjection(t *testing.T) {
 	for _, extra := range [][]string{
-		{"-tickrate", "100"},
+		{"-tickrate"},
+		{"-tickrate", "0"},
+		{"-tickrate=1001"},
+		{"-tickrate", "fast"},
+		{"-tickrate", "100", "-tickrate", "60"},
 		{"+rcon_password", "secret"},
 		{"+rcon_password secret"},
 		{"+sv_password\tsecret"},
@@ -62,10 +66,13 @@ func TestBuildStartArgsRejectsManagedSecretOverrides(t *testing.T) {
 }
 
 func TestBuildStartArgsKeepsSafePackedArgumentsAvailable(t *testing.T) {
-	for _, argument := range []string{"-secure=true", "+sv_tags=coop campaign", "+hostname Community Server"} {
+	for _, argument := range []string{"-secure=true", "-tickrate=100", "+sv_tags=coop campaign", "+hostname Community Server"} {
 		if _, err := BuildStartArgs(StartOptions{Port: 27015, MaxPlayers: 8, Map: "c1m1_hotel", Mode: "coop", ExtraArgs: []string{argument}}); err != nil {
 			t.Fatalf("BuildStartArgs rejected safe argument %q: %v", argument, err)
 		}
+	}
+	if _, err := BuildStartArgs(StartOptions{Port: 27015, MaxPlayers: 8, ExtraArgs: []string{"-tickrate", "60"}}); err != nil {
+		t.Fatalf("BuildStartArgs rejected separate tickrate value: %v", err)
 	}
 	for _, args := range [][]string{
 		{"-console", "-game=left4dead2", "+exec=l4d2panel.cfg"},

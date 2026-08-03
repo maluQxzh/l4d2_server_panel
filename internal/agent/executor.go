@@ -960,6 +960,16 @@ func (e *Executor) importInstance(ctx context.Context, job domain.Job, progress 
 	if err != nil {
 		return nil, err
 	}
+	bindRegistered := payload.Operation == "bind"
+	if bindRegistered {
+		if job.InstallationID == "" || e.runtimeEnvironment == nil {
+			return nil, errors.New("binding requires a registered game installation")
+		}
+		registered, ok := e.runtimeEnvironment.snapshot().Installations[job.InstallationID]
+		if !ok || !sameInstancePathForOS(rootIndex, relative, registered.RootIndex, registered.RelativePath, runtime.GOOS) {
+			return nil, errors.New("game installation is not registered at the requested path")
+		}
+	}
 	for _, existing := range e.registry.List() {
 		if existing.ID == job.InstanceID {
 			continue
@@ -976,19 +986,21 @@ func (e *Executor) importInstance(ctx context.Context, job domain.Job, progress 
 	if err := validateServerExecutable(executable); err != nil {
 		return nil, err
 	}
-	exePath, err := ResolveWithin(path, executable)
-	if err != nil {
-		return nil, err
-	}
-	if st, err := os.Stat(exePath); err != nil || st.IsDir() {
-		return nil, errors.New("path does not contain an L4D2 dedicated server executable")
-	}
-	gameInfo, err := ResolveWithin(path, "left4dead2/gameinfo.txt")
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat(gameInfo); err != nil {
-		return nil, errors.New("path does not contain left4dead2/gameinfo.txt")
+	if !bindRegistered {
+		exePath, err := ResolveWithin(path, executable)
+		if err != nil {
+			return nil, err
+		}
+		if st, err := os.Stat(exePath); err != nil || st.IsDir() {
+			return nil, errors.New("path does not contain an L4D2 dedicated server executable")
+		}
+		gameInfo, err := ResolveWithin(path, "left4dead2/gameinfo.txt")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := os.Stat(gameInfo); err != nil {
+			return nil, errors.New("path does not contain left4dead2/gameinfo.txt")
+		}
 	}
 	config := payload.Instance.Config
 	args := append([]string(nil), payload.Args...)
@@ -1023,7 +1035,11 @@ func (e *Executor) importInstance(ctx context.Context, job domain.Job, progress 
 	}
 	host := localGameEndpointHost(payload.Instance.Host, payload.RCONHost)
 	name := firstNonEmpty(payload.Name, payload.Instance.Name, job.InstanceID)
-	external, likelyRunning := installationProcessForDirectory(path, activeSrcdsProcesses(ctx))
+	var external discoveredProcess
+	likelyRunning := false
+	if !bindRegistered {
+		external, likelyRunning = installationProcessForDirectory(path, activeSrcdsProcesses(ctx))
+	}
 	record := InstanceRecord{ID: job.InstanceID, Name: name, RootIndex: rootIndex, RelativePath: relative, Executable: executable, Args: args, AutoRestart: autoRestart, DesiredStateKnown: true, RCONHost: host, RCONPort: port, TVPort: payload.Instance.TVPort}
 	if likelyRunning {
 		record.ExternalPID = external.PID
@@ -1052,7 +1068,11 @@ func (e *Executor) importInstance(ctx context.Context, job domain.Job, progress 
 			return nil, err
 		}
 	}
-	progress(100, "existing installation imported")
+	if bindRegistered {
+		progress(100, "registered game installation bound")
+	} else {
+		progress(100, "existing installation imported")
+	}
 	result := map[string]any{"path": path, "root_index": rootIndex, "port": record.RCONPort, "managed": !likelyRunning,
 		"likely_running": likelyRunning, "requires_controlled_restart": likelyRunning}
 	if likelyRunning {
