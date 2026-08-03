@@ -171,8 +171,7 @@ type GameInstallation struct {
 	ID              string     `json:"id"`
 	EnvironmentID   string     `json:"environment_id"`
 	NodeID          string     `json:"node_id"`
-	RootIndex       int        `json:"root_index"`
-	RelativePath    string     `json:"path"`
+	Path            string     `json:"path"`
 	AppID           int        `json:"app_id"`
 	Status          string     `json:"status"`
 	BuildID         string     `json:"build_id,omitempty"`

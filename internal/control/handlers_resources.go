@@ -181,7 +181,6 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		InstallationID string                `json:"game_installation_id,omitempty"`
 		Name           string                `json:"name"`
 		Path           string                `json:"path,omitempty"`
-		RootIndex      *int                  `json:"root_index,omitempty"`
 		Executable     string                `json:"executable,omitempty"`
 		Host           string                `json:"host"`
 		Port           int                   `json:"port"`
@@ -204,7 +203,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Operation == "import" && request.InstallationID == "" {
-		if err := validateImportLocation(request.Path, request.RootIndex); err != nil {
+		if err := validateImportLocation(request.Path); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_import_path", err.Error())
 			return
 		}
@@ -258,15 +257,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, ErrConflict)
 			return
 		}
-		request.Operation, request.Path = "import", installation.RelativePath
-		rootIndex := installation.RootIndex
-		request.RootIndex = &rootIndex
+		request.Operation, request.Path = "import", installation.Path
 	} else if request.Operation == "import" {
-		rootIndex := 0
-		if request.RootIndex != nil {
-			rootIndex = *request.RootIndex
-		}
-		installation, createErr := s.store.CreateGameInstallation(r.Context(), "environment-"+request.NodeID, rootIndex, request.Path)
+		installation, createErr := s.store.CreateGameInstallation(r.Context(), "environment-"+request.NodeID, request.Path)
 		if createErr != nil {
 			s.fail(w, createErr)
 			return
@@ -325,9 +318,6 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	jobPayload := map[string]any{"operation": operation, "instance": instance, "path": request.Path, "name": instance.Name, "port": instance.Port}
 	if request.Executable != "" {
 		jobPayload["executable"] = request.Executable
-	}
-	if request.RootIndex != nil {
-		jobPayload["root_index"] = *request.RootIndex
 	}
 	job, reused, err := s.store.QueueInstanceJobWithFingerprint(r.Context(), instance.ID, jobType, jobPayload, principal.User.ID,
 		idempotencyKey, requestFingerprint)
@@ -924,24 +914,27 @@ func parseInt(value string, fallback int) int {
 	return n
 }
 
-func validateImportLocation(relativePath string, rootIndex *int) error {
-	if rootIndex == nil {
-		return errors.New("root_index is required for import")
-	}
-	if *rootIndex < 0 {
-		return errors.New("root_index must not be negative")
-	}
+func validateImportLocation(relativePath string) error {
 	normalized := strings.ReplaceAll(strings.TrimSpace(relativePath), `\`, "/")
 	if normalized == "" {
 		return errors.New("path is required for import")
 	}
-	if strings.HasPrefix(normalized, "/") || (len(normalized) >= 2 && normalized[1] == ':') {
-		return errors.New("path must be relative to the selected instance root")
+	if !absoluteGamePathSyntax(normalized) {
+		return errors.New("path must be an absolute path on the node host")
 	}
 	for _, segment := range strings.Split(normalized, "/") {
-		if segment == ".." {
-			return errors.New("path must stay within the selected instance root")
+		if segment == "." || segment == ".." {
+			return errors.New("absolute path must not contain dot segments")
 		}
 	}
 	return nil
+}
+
+func absoluteGamePathSyntax(value string) bool {
+	value = strings.ReplaceAll(strings.TrimSpace(value), `\`, "/")
+	if strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//") {
+		return true
+	}
+	return len(value) >= 3 && value[1] == ':' && value[2] == '/' &&
+		((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z'))
 }

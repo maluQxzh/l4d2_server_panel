@@ -41,12 +41,12 @@ func TestRuntimeEnvironmentStateUpdatePersistsAtomically(t *testing.T) {
 	if err := store.update(func(state *runtimeEnvironmentState) {
 		state.SteamCMDPath = filepath.Join(data, "steamcmd", "steamcmd")
 		state.SteamCMDSource = "managed"
-		state.Installations["installation-one"] = runtimeGameRecord{RootIndex: 2, RelativePath: "servers/one"}
+		state.Installations["installation-one"] = runtimeGameRecord{Path: filepath.Join(data, "servers", "one")}
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.update(func(state *runtimeEnvironmentState) {
-		state.Installations["installation-two"] = runtimeGameRecord{RootIndex: 3, RelativePath: "servers/two"}
+		state.Installations["installation-two"] = runtimeGameRecord{Path: filepath.Join(data, "servers", "two")}
 	}); err != nil {
 		t.Fatalf("replace existing runtime state: %v", err)
 	}
@@ -55,8 +55,33 @@ func TestRuntimeEnvironmentStateUpdatePersistsAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := reloaded.snapshot()
-	if state.SteamCMDSource != "managed" || state.Installations["installation-one"].RelativePath != "servers/one" || state.Installations["installation-two"].RelativePath != "servers/two" {
+	if state.SteamCMDSource != "managed" || state.Installations["installation-one"].Path != filepath.Join(data, "servers", "one") || state.Installations["installation-two"].Path != filepath.Join(data, "servers", "two") {
 		t.Fatalf("unexpected persisted state: %#v", state)
+	}
+}
+
+func TestRuntimeEnvironmentStoreRemovesLegacyRelativeInstallationPaths(t *testing.T) {
+	data := t.TempDir()
+	store, err := newRuntimeEnvironmentStore(&Config{DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.update(func(state *runtimeEnvironmentState) {
+		state.Installations["legacy-relative"] = runtimeGameRecord{Path: "servers/legacy"}
+		state.Installations["absolute"] = runtimeGameRecord{Path: filepath.Join(data, "servers", "absolute")}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := newRuntimeEnvironmentStore(&Config{DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := reloaded.snapshot()
+	if _, ok := state.Installations["legacy-relative"]; ok {
+		t.Fatal("legacy relative runtime installation survived upgrade")
+	}
+	if _, ok := state.Installations["absolute"]; !ok {
+		t.Fatal("absolute runtime installation was removed")
 	}
 }
 
@@ -104,7 +129,7 @@ func TestGameMaintenanceRejectsUnregisteredInstallation(t *testing.T) {
 	executor := &Executor{config: &Config{DataDir: data, SteamCMDConcurrency: 1}, paths: paths, runtimeEnvironment: store}
 	_, err = executor.gameInstallationAction(context.Background(), domain.Job{
 		InstallationID: "installation-missing",
-		Payload:        map[string]any{"root_index": 0, "path": "servers/missing"},
+		Payload:        map[string]any{"path": filepath.Join(gameRoot, "servers", "missing")},
 	}, "game.update", func(int, string) {})
 	if err == nil || err.Error() != "game installation is not registered on this Agent" {
 		t.Fatalf("unregistered installation was not rejected: %v", err)
@@ -112,21 +137,20 @@ func TestGameMaintenanceRejectsUnregisteredInstallation(t *testing.T) {
 }
 
 func TestBindRegisteredInstallationSkipsRepeatedStructureValidation(t *testing.T) {
-	data, gameRoot := t.TempDir(), t.TempDir()
+	data, configuredRoot, installationPath := t.TempDir(), t.TempDir(), t.TempDir()
 	store, err := newRuntimeEnvironmentStore(&Config{DataDir: data})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := store.update(func(state *runtimeEnvironmentState) {
-		state.Installations["installation-one"] = runtimeGameRecord{RootIndex: 0, RelativePath: "servers/one"}
+		state.Installations["installation-one"] = runtimeGameRecord{Path: installationPath}
 	}); err != nil {
 		t.Fatal(err)
 	}
-	instancePath := filepath.Join(gameRoot, "servers", "one")
-	if err := os.MkdirAll(filepath.Join(instancePath, "left4dead2", "cfg"), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Join(installationPath, "left4dead2", "cfg"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	paths, err := NewPathGuard([]string{gameRoot})
+	paths, err := NewPathGuard([]string{configuredRoot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,8 +163,8 @@ func TestBindRegisteredInstallationSkipsRepeatedStructureValidation(t *testing.T
 		processes: &ProcessManager{items: make(map[string]*managedProcess)},
 	}
 	job := domain.Job{ID: "job-one", InstanceID: "instance-one", InstallationID: "installation-one", Payload: map[string]any{
-		"operation": "bind", "root_index": 0, "path": "servers/one", "rcon_password": "secret",
-		"instance": map[string]any{"id": "instance-one", "name": "one", "path": "servers/one", "port": 27015,
+		"operation": "bind", "path": installationPath, "rcon_password": "secret",
+		"instance": map[string]any{"id": "instance-one", "name": "one", "path": installationPath, "port": 27015,
 			"config": map[string]any{"hostname": "one", "mode": "mutation4", "difficulty": "normal", "max_players": 4,
 				"start_map": "c1m1_hotel", "region": "255", "extra_args": []any{"-tickrate", "100"}}},
 	}}
@@ -150,8 +174,40 @@ func TestBindRegisteredInstallationSkipsRepeatedStructureValidation(t *testing.T
 	if _, ok := registry.Get("instance-one"); !ok {
 		t.Fatal("bound instance was not registered")
 	}
-	if _, err := os.Stat(filepath.Join(instancePath, "left4dead2", "cfg", "l4d2panel.cfg")); err != nil {
+	if _, err := os.Stat(filepath.Join(installationPath, "left4dead2", "cfg", "l4d2panel.cfg")); err != nil {
 		t.Fatalf("generated configuration missing: %v", err)
+	}
+}
+
+func TestGameImportChecksOnlySrcdsAtAbsolutePath(t *testing.T) {
+	data, configuredRoot, installationPath := t.TempDir(), t.TempDir(), t.TempDir()
+	store, err := newRuntimeEnvironmentStore(&Config{DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := NewPathGuard([]string{configuredRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installationPath, defaultServerExecutable()), []byte("srcds"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executor := &Executor{config: &Config{DataDir: data, SteamCMDConcurrency: 1}, paths: paths, runtimeEnvironment: store}
+	result, err := executor.gameInstallationAction(context.Background(), domain.Job{
+		InstallationID: "installation-absolute",
+		Payload:        map[string]any{"path": installationPath},
+	}, "game.import", func(int, string) {})
+	if err != nil {
+		t.Fatalf("absolute installation with srcds was rejected: %v", err)
+	}
+	if result["path"] != installationPath {
+		t.Fatalf("result path = %#v, want %q", result["path"], installationPath)
+	}
+	if record := store.snapshot().Installations["installation-absolute"]; record.Path != installationPath {
+		t.Fatalf("runtime installation path = %q, want %q", record.Path, installationPath)
+	}
+	if _, err := os.Stat(filepath.Join(installationPath, "left4dead2", "gameinfo.txt")); !os.IsNotExist(err) {
+		t.Fatalf("test unexpectedly supplied gameinfo.txt: %v", err)
 	}
 }
 

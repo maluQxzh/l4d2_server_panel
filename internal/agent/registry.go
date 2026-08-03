@@ -58,11 +58,13 @@ func OpenRegistry(dataDir string) (*Registry, error) {
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	if err := r.validateUniquePathsLocked(); err != nil {
-		return nil, err
-	}
 	legacyMigrated := false
 	for id, record := range r.records {
+		if record.RelativePath != "" && !filepath.IsAbs(record.RelativePath) {
+			delete(r.records, id)
+			legacyMigrated = true
+			continue
+		}
 		if record.DesiredStateKnown {
 			continue
 		}
@@ -72,6 +74,9 @@ func OpenRegistry(dataDir string) (*Registry, error) {
 		record.DesiredStateKnown = true
 		r.records[id] = record
 		legacyMigrated = true
+	}
+	if err := r.validateUniquePathsLocked(); err != nil {
+		return nil, err
 	}
 	if legacyMigrated {
 		if err := r.persistLocked(); err != nil {
@@ -177,15 +182,27 @@ func (r *Registry) conflictingPathOwnerLocked(excludeID string, candidate Instan
 func sameInstancePathForOS(rootA int, relativeA string, rootB int, relativeB string, goos string) bool {
 	// A blank path is used by legacy/incomplete records and does not identify a
 	// directory. Create/import validation supplies a non-empty relative path.
-	if relativeA == "" || relativeB == "" || rootA != rootB {
+	if relativeA == "" || relativeB == "" {
 		return false
 	}
 	a := normalizeInstanceRelativePath(relativeA, goos)
 	b := normalizeInstanceRelativePath(relativeB, goos)
+	absA, absB := instancePathIsAbsolute(a, goos), instancePathIsAbsolute(b, goos)
+	if absA != absB || (!absA && rootA != rootB) {
+		return false
+	}
 	if goos == "windows" {
 		return strings.EqualFold(a, b)
 	}
 	return a == b
+}
+
+func instancePathIsAbsolute(value, goos string) bool {
+	if goos == "windows" {
+		value = strings.ReplaceAll(value, `\`, "/")
+		return len(value) >= 3 && value[1] == ':' && value[2] == '/'
+	}
+	return strings.HasPrefix(value, "/")
 }
 
 func normalizeInstanceRelativePath(relative, goos string) string {

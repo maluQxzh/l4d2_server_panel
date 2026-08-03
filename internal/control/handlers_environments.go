@@ -102,9 +102,7 @@ func (s *Server) handleInspectEnvironment(w http.ResponseWriter, r *http.Request
 	}
 	known := make([]map[string]any, 0, len(installations))
 	for _, installation := range installations {
-		if installation.Status != "quarantined" {
-			known = append(known, map[string]any{"id": installation.ID, "root_index": installation.RootIndex, "path": installation.RelativePath})
-		}
+		known = append(known, map[string]any{"id": installation.ID, "path": installation.Path})
 	}
 	s.queueEnvironmentRequest(w, r, item, "", "environment.inspect", map[string]any{"installations": known})
 }
@@ -158,7 +156,6 @@ func (s *Server) handleCreateGameInstallation(w http.ResponseWriter, r *http.Req
 		return
 	}
 	var request struct {
-		RootIndex int    `json:"root_index"`
 		Path      string `json:"path"`
 		Operation string `json:"operation"`
 	}
@@ -168,6 +165,14 @@ func (s *Server) handleCreateGameInstallation(w http.ResponseWriter, r *http.Req
 	request.Operation = strings.ToLower(strings.TrimSpace(request.Operation))
 	if request.Operation != "install" && request.Operation != "import" {
 		writeError(w, http.StatusBadRequest, "invalid_operation", "operation must be install or import")
+		return
+	}
+	if !s.agents.Supports(item.NodeID, "absolute_game_paths") {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "connected Agent does not support absolute game installation paths")
+		return
+	}
+	if err := validateImportLocation(request.Path); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_game_installation_path", err.Error())
 		return
 	}
 	action := "game." + request.Operation
@@ -194,12 +199,12 @@ func (s *Server) handleCreateGameInstallation(w http.ResponseWriter, r *http.Req
 		s.fail(w, lookupErr)
 		return
 	}
-	installation, err := s.store.CreateGameInstallation(r.Context(), item.ID, request.RootIndex, request.Path)
+	installation, err := s.store.CreateGameInstallation(r.Context(), item.ID, request.Path)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	payload := map[string]any{"root_index": installation.RootIndex, "path": installation.RelativePath, "app_id": installation.AppID}
+	payload := map[string]any{"path": installation.Path, "app_id": installation.AppID}
 	job, reused, err := s.store.QueueEnvironmentJob(r.Context(), item.ID, installation.ID, action, payload, principal.User.ID,
 		idempotencyKey, fingerprint)
 	if err != nil {
@@ -236,9 +241,8 @@ func (s *Server) handleGameInstallationAction(w http.ResponseWriter, r *http.Req
 		return
 	}
 	var request struct {
-		Action    string  `json:"action"`
-		RootIndex *int    `json:"root_index,omitempty"`
-		Path      *string `json:"path,omitempty"`
+		Action string  `json:"action"`
+		Path   *string `json:"path,omitempty"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
@@ -249,8 +253,22 @@ func (s *Server) handleGameInstallationAction(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "invalid_action", "unsupported game installation action")
 		return
 	}
-	if (request.RootIndex == nil) != (request.Path == nil) || (request.RootIndex != nil && request.Action != "import") {
-		writeError(w, http.StatusBadRequest, "invalid_game_installation_path", "root_index and path may only be supplied together for import")
+	if request.Path != nil && request.Action != "import" {
+		writeError(w, http.StatusBadRequest, "invalid_game_installation_path", "path may only be supplied for import")
+		return
+	}
+	if request.Path != nil {
+		if !s.agents.Supports(item.NodeID, "absolute_game_paths") {
+			writeError(w, http.StatusConflict, "agent_upgrade_required", "connected Agent does not support absolute game installation paths")
+			return
+		}
+		if err := validateImportLocation(*request.Path); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_game_installation_path", err.Error())
+			return
+		}
+	}
+	if !s.agents.Supports(item.NodeID, "absolute_game_paths") {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "connected Agent does not support this absolute game installation path")
 		return
 	}
 	action := "game." + request.Action
@@ -272,14 +290,14 @@ func (s *Server) handleGameInstallationAction(w http.ResponseWriter, r *http.Req
 		s.fail(w, lookupErr)
 		return
 	}
-	if request.RootIndex != nil && request.Path != nil {
-		installation, err = s.store.UpdateGameInstallationLocation(r.Context(), installation.ID, *request.RootIndex, *request.Path)
+	if request.Path != nil {
+		installation, err = s.store.UpdateGameInstallationLocation(r.Context(), installation.ID, *request.Path)
 		if err != nil {
 			s.fail(w, err)
 			return
 		}
 	}
-	payload := map[string]any{"root_index": installation.RootIndex, "path": installation.RelativePath, "app_id": installation.AppID}
+	payload := map[string]any{"path": installation.Path, "app_id": installation.AppID}
 	if request.Action == "import" && installation.BoundInstanceID != "" {
 		instance, instanceErr := s.store.GetInstance(r.Context(), installation.BoundInstanceID)
 		if instanceErr != nil {
@@ -289,25 +307,4 @@ func (s *Server) handleGameInstallationAction(w http.ResponseWriter, r *http.Req
 		payload["instance"], payload["name"], payload["port"] = instance, instance.Name, instance.Port
 	}
 	s.queueEnvironmentRequestWithFingerprint(w, r, item, installation.ID, action, payload, fingerprint)
-}
-
-func (s *Server) handleQuarantineGameInstallation(w http.ResponseWriter, r *http.Request) {
-	item, ok := s.environmentForRequest(w, r, PermissionManage)
-	if !ok || !s.requireEnvironmentAgent(w, item) {
-		return
-	}
-	installation, ok := s.installationForRequest(w, r, item)
-	if !ok {
-		return
-	}
-	if installation.BoundInstanceID != "" {
-		s.fail(w, ErrConflict)
-		return
-	}
-	if installation.Status == "quarantined" {
-		s.fail(w, ErrConflict)
-		return
-	}
-	payload := map[string]any{"root_index": installation.RootIndex, "path": installation.RelativePath}
-	s.queueEnvironmentRequest(w, r, item, installation.ID, "game.quarantine", payload)
 }

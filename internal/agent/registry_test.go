@@ -44,6 +44,31 @@ func TestOpenRegistryMigratesLegacyDesiredState(t *testing.T) {
 	}
 }
 
+func TestOpenRegistryRemovesLegacyRelativeInstancePaths(t *testing.T) {
+	dataDir := t.TempDir()
+	records := map[string]InstanceRecord{
+		"legacy-relative": {ID: "legacy-relative", RelativePath: "servers/legacy"},
+		"absolute":        {ID: "absolute", RelativePath: filepath.Join(t.TempDir(), "absolute")},
+	}
+	raw, err := json.Marshal(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "instances.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := OpenRegistry(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := registry.Get("legacy-relative"); ok {
+		t.Fatal("legacy relative instance registry record survived upgrade")
+	}
+	if _, ok := registry.Get("absolute"); !ok {
+		t.Fatal("absolute instance registry record was removed")
+	}
+}
+
 func TestRegistryPutAtomicallyRejectsConcurrentDuplicatePaths(t *testing.T) {
 	registry, err := OpenRegistry(t.TempDir())
 	if err != nil {
@@ -151,6 +176,14 @@ func TestSameInstancePathForOS(t *testing.T) {
 			rootB: 1, relativeB: "servers/alpha", goos: "windows", want: false,
 		},
 		{
+			name: "absolute Windows paths ignore legacy root indexes", rootA: 0, relativeA: `D:\Servers\Alpha`,
+			rootB: 9, relativeB: "d:/servers/alpha", goos: "windows", want: true,
+		},
+		{
+			name: "absolute Linux paths ignore legacy root indexes", rootA: 0, relativeA: "/srv/l4d2/alpha",
+			rootB: 9, relativeB: "/srv/l4d2/alpha", goos: "linux", want: true,
+		},
+		{
 			name: "legacy blank paths are not registered directories", rootA: 0, relativeA: "",
 			rootB: 0, relativeB: "", goos: "windows", want: false,
 		},
@@ -167,9 +200,10 @@ func TestSameInstancePathForOS(t *testing.T) {
 
 func TestOpenRegistryRejectsPersistedDuplicatePaths(t *testing.T) {
 	dataDir := t.TempDir()
+	absolute := filepath.Join(t.TempDir(), "servers", "shared")
 	records := map[string]InstanceRecord{
-		"alpha": {ID: "alpha", RootIndex: 0, RelativePath: "servers/shared"},
-		"bravo": {ID: "bravo", RootIndex: 0, RelativePath: "servers/staging/../shared"},
+		"alpha": {ID: "alpha", RootIndex: 0, RelativePath: absolute},
+		"bravo": {ID: "bravo", RootIndex: 0, RelativePath: filepath.Join(filepath.Dir(absolute), "staging", "..", "shared")},
 	}
 	raw, err := json.Marshal(records)
 	if err != nil {

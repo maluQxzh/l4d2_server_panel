@@ -22,6 +22,26 @@ func TestDirectConfigPathUsesExecutableDirectory(t *testing.T) {
 	}
 }
 
+func TestServiceConfigurationUsesPortableBinaryAndAutostart(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	cfg := serviceConfiguration(configPath)
+	if cfg.WorkingDirectory == "" || !filepath.IsAbs(cfg.WorkingDirectory) {
+		t.Fatalf("service working directory = %q, want absolute binary directory", cfg.WorkingDirectory)
+	}
+	if len(cfg.Arguments) != 3 || cfg.Arguments[0] != "run" || cfg.Arguments[1] != "--config" || cfg.Arguments[2] != configPath {
+		t.Fatalf("service arguments = %#v", cfg.Arguments)
+	}
+	if cfg.Option["Restart"] != "always" || cfg.Option["DelayedAutoStart"] != true || cfg.Option["OnFailure"] != "restart" {
+		t.Fatalf("service autostart options = %#v", cfg.Option)
+	}
+	if runtime.GOOS == "windows" && cfg.UserName != `NT SERVICE\l4d2panel-agent` {
+		t.Fatalf("Windows service user = %q", cfg.UserName)
+	}
+	if runtime.GOOS == "linux" && cfg.UserName != "l4d2panel" {
+		t.Fatalf("Linux service user = %q", cfg.UserName)
+	}
+}
+
 func TestPrepareDirectConfigCreatesFirstStartConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.yaml")
 	cfg, err := prepareDirectConfig(path, "http://localhost:19090", "one-time-token", "wsl-node")

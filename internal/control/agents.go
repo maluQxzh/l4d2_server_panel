@@ -522,6 +522,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, sent := client.sent[job.ID]
 		_, canceled := client.canceled[job.ID]
 		_, runtimeEnvironmentSupported := client.capabilities["runtime_environment_v1"]
+		_, absoluteGamePathsSupported := client.capabilities["absolute_game_paths"]
 		client.mu.Unlock()
 		if job.Status != domain.JobCanceled && (sent || canceled) {
 			continue
@@ -530,6 +531,19 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 			// A node may reconnect with an older Agent after a job was queued.
 			// Leave the durable intent queued until a compatible Agent returns.
 			continue
+		}
+		if !absoluteGamePathsSupported {
+			usesAbsolutePath := jobPayloadContainsAbsoluteGamePath(job.Payload)
+			if job.InstanceID != "" {
+				if instance, instanceErr := h.store.GetInstance(ctx, job.InstanceID); instanceErr == nil {
+					usesAbsolutePath = usesAbsolutePath || absoluteGamePathSyntax(instance.Path)
+				}
+			}
+			if usesAbsolutePath {
+				// Keep the durable intent queued if a node rolls back to an Agent
+				// that predates absolute-path installation support.
+				continue
+			}
 		}
 		if job.Status == domain.JobCanceled {
 			// A cancel_pending row is the durable cancellation outbox. Re-send it
@@ -612,6 +626,29 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 				Data: map[string]any{"job_id": job.ID, "node_id": job.NodeID, "instance_id": job.InstanceID}}, true)
 		}
 	}
+}
+
+func jobPayloadContainsAbsoluteGamePath(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if key == "path" {
+				if path, ok := child.(string); ok && absoluteGamePathSyntax(path) {
+					return true
+				}
+			}
+			if jobPayloadContainsAbsoluteGamePath(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if jobPayloadContainsAbsoluteGamePath(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *AgentHub) dispatchSoon(nodeID string) {

@@ -65,6 +65,26 @@ func (g *PathGuard) ResolveAbsolute(path string) (string, int, error) {
 	return "", -1, ErrPathEscape
 }
 
+// ResolveInstallation accepts both legacy root-relative installation paths and
+// explicitly registered absolute paths. Absolute paths establish the game
+// installation directory itself as the filesystem boundary; callers must use
+// ResolveWithin for every path below the returned directory.
+func (g *PathGuard) ResolveInstallation(rootIndex int, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if !filepath.IsAbs(value) {
+		return g.Resolve(rootIndex, value)
+	}
+	clean := filepath.Clean(value)
+	if err := rejectLinkedAncestors(clean); err != nil {
+		return "", err
+	}
+	return clean, nil
+}
+
+func resolveInstanceRecordPath(guard *PathGuard, record InstanceRecord) (string, error) {
+	return guard.ResolveInstallation(record.RootIndex, record.RelativePath)
+}
+
 func ResolveWithin(base, relative string) (string, error) {
 	if relative == "" {
 		return filepath.Clean(base), nil

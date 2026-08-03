@@ -22,8 +22,8 @@ describe("API 客户端", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ job_id: "validate-job" }), { status: 202, headers: { "Content-Type": "application/json" } }));
 
     await api.steamCMDAction("environment/one", "configure", "/opt/steamcmd/steamcmd.sh");
-    await api.createGameInstallation("environment/one", { root_index: 2, path: "servers/one", operation: "import" });
-    await api.gameInstallationAction("environment/one", "game/one", "import", { root_index: 3, path: "servers/moved" });
+    await api.createGameInstallation("environment/one", { path: "D:\\servers\\one", operation: "import" });
+    await api.gameInstallationAction("environment/one", "game/one", "import", { path: "D:\\servers\\moved" });
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "/api/v1/environments/environment%2Fone/steamcmd/actions",
@@ -31,8 +31,8 @@ describe("API 客户端", () => {
       "/api/v1/environments/environment%2Fone/game-installations/game%2Fone/actions",
     ]);
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ action: "configure", path: "/opt/steamcmd/steamcmd.sh" });
-    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({ root_index: 2, path: "servers/one", operation: "import" });
-    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toEqual({ action: "import", root_index: 3, path: "servers/moved" });
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({ path: "D:\\servers\\one", operation: "import" });
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toEqual({ action: "import", path: "D:\\servers\\moved" });
     for (const [, init] of fetchMock.mock.calls) {
       expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
     }

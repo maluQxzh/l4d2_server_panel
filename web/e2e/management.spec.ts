@@ -98,10 +98,9 @@ test("运行环境可配置自定义 SteamCMD 并手动登记游戏目录", asyn
   await expect.poll(() => steamBody).toEqual({ action: "configure", path: "/opt/steamcmd/steamcmd.sh" });
 
   await page.getByRole("button", { name: "添加游戏安装" }).click();
-  await page.getByLabel("根目录索引").fill("1");
-  await page.getByLabel("相对路径").fill("existing/server-b");
+  await page.getByLabel("节点绝对路径").fill("/srv/l4d2/server-b");
   await page.getByRole("button", { name: "提交任务" }).click();
-  await expect.poll(() => gameBody).toEqual({ root_index: 1, path: "existing/server-b", operation: "import" });
+  await expect.poll(() => gameBody).toEqual({ path: "/srv/l4d2/server-b", operation: "import" });
 });
 
 test("轮换节点凭据后一次性显示明文和重启提示", async ({ page }) => {

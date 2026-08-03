@@ -5,8 +5,8 @@
 ## 当前实现
 
 - 节点与任务：一次性注册令牌、可轮换/吊销的节点凭据、断线离线队列、任务幂等、任务取消，以及 `queued/dispatched/running/succeeded/failed/canceled` 状态机。
-- 运行环境：每个节点维护一套活动 SteamCMD 和多个独占游戏安装。中心端可在线校验自定义 SteamCMD 绝对路径，或让 Agent 在自身数据目录安装托管版本；游戏安装、导入、校验、更新、重装和隔离统一从“运行环境”手动触发，不扫描磁盘。
-- 实例：从所选运行节点绑定一套已就绪且未被占用的游戏安装；创建时不重复校验安装结构，随后负责端口、配置、既有进程受控接管、启停/重启、RCON 优雅退出和崩溃自动恢复。删除实例默认解除绑定并保留游戏文件。
+- 运行环境：每个节点维护一套活动 SteamCMD 和多个独占游戏安装。中心端可在线校验自定义 SteamCMD 绝对路径，或让 Agent 在自身数据目录安装托管版本；游戏安装、绝对路径导入、校验、更新和重装统一从“运行环境”手动触发，不扫描磁盘。
+- 实例：从所选运行节点绑定一套已就绪且未被占用的绝对路径游戏安装；创建时不重复校验安装结构，随后负责端口、配置、既有进程受控接管、启停/重启、RCON 优雅退出和崩溃自动恢复。删除实例默认解除绑定并保留游戏文件。
 - 游戏管理：A2S 状态、RCON 玩家/踢出/封禁/地图/广播、结构化配置与版本回滚、受限文件读写、上传或 HTTPS/Workshop 安装 VPK/SourceMod/Metamod、非 Workshop 单文件 VPK/SMX 最近 3 个历史版本回退、备份与计划任务。文件 API 不允许改写可执行或加载关键文件，这些内容必须经包管理流程安装。
 - 管理与安全：所有者/管理员/操作员/观察者，支持全局、节点或实例范围绑定；团队账号与绑定只允许全局所有者的交互式会话管理；HttpOnly 会话、CSRF、Argon2id、TOTP 与一次性恢复码、有限期且可限定资源的 API Token、不可编辑审计记录。
 - 可观测性：10 秒心跳、15 秒指标、A2S 探测、站内通知、SMTP、带 HMAC-SHA256 签名和出站 SSRF 防护的 Webhook、公开状态页，以及节点本地日志的有限检索/分块下载。
@@ -24,8 +24,8 @@
 ```
 
 - 中心端：Go、React、本机 SQLite；硬性限定单控制平面实例，TLS 由部署者管理。
-- 节点端：单个便携 Go Agent，使用二进制同目录的配置和数据直接运行；可由部署者选择自己的进程管理器托管，但不依赖 Windows Service 或 systemd。
-- 游戏实例：每个实例使用独立目录；Agent API 仅允许访问配置的实例根目录和自己的数据目录。当前同一节点的 Agent 与所有游戏进程共用一个低权限服务账号，目录分离不是每实例 OS 沙箱；在部署相互不信任的原生插件或租户前必须另做主机/账号隔离。
+- 节点端：单个旁置部署的 Go Agent，使用二进制同目录的配置和数据；既可直接前台运行，也可通过同一二进制的 `install` 命令注册为 systemd 或 Windows Service 后台常驻并开机自启。
+- 游戏实例：每个实例使用独立目录；游戏安装使用节点绝对路径，该目录本身成为实例文件边界。Agent 的实例文件 API 只能访问已登记实例目录内部及自己的数据目录。升级迁移会删除旧的相对路径游戏安装及其绑定实例，需要管理员用绝对路径重新登记。当前同一节点的 Agent 与所有游戏进程共用一个低权限服务账号，目录分离不是每实例 OS 沙箱；在部署相互不信任的原生插件或租户前必须另做主机/账号隔离。
 - 本地数据：实例备份和完整进程日志保存在节点。中心只保存备份元数据、任务/审计、通知和聚合指标；网页下载使用一次性、最大 1 MiB 的校验分块。
 
 更完整的数据流和存储边界见 [架构说明](docs/architecture.md)。
@@ -123,14 +123,14 @@ Control 固定监听 `0.0.0.0:19090`，SQLite 不监听网络端口。管理员�
 
 ## 注册节点
 
-便携 Agent 是 Windows 和 Linux 节点的正式默认部署方式，不需要安装脚本、Windows Service 或 systemd。先从发布页下载对应平台二进制、`.sha256` 和 `agent.yaml.example`，验证 SHA-256，再把示例复制到二进制同目录并命名为 `agent.yaml`。在中心端“节点”页面创建短期一次性注册令牌，首次启动前只需修改：
+Agent 保持二进制、`agent.yaml` 和 `data` 旁置部署，不需要额外安装脚本；同一二进制同时提供便携前台模式和 systemd/Windows Service 常驻模式。先从发布页下载对应平台二进制、`.sha256` 和 `agent.yaml.example`，验证 SHA-256，再把示例复制到二进制同目录并命名为 `agent.yaml`。在中心端“节点”页面创建短期一次性注册令牌，首次启动前只需修改：
 
 ```yaml
 central_url: "http://localhost:19090"
 enrollment_token: "一次性令牌"
 ```
 
-Linux 限制配置权限后直接启动：
+Linux 限制配置权限后，可以直接以前台便携模式启动：
 
 ```bash
 chmod 600 agent.yaml
@@ -138,14 +138,26 @@ chmod +x l4d2panel-agent-linux-amd64
 ./l4d2panel-agent-linux-amd64
 ```
 
-Windows 在仅受节点管理员控制的永久目录中直接运行：
+也可以一条命令注册为 systemd 服务；非 root 终端会调用 `sudo`，创建专用低权限 `l4d2panel` 账号，安装、启动并启用开机自启：
+
+```bash
+./l4d2panel-agent-linux-amd64 install --config ./agent.yaml
+```
+
+Windows 在仅受节点管理员控制的永久目录中直接运行时同样是前台模式：
 
 ```powershell
 Copy-Item .\agent.yaml.example .\agent.yaml
 .\l4d2panel-agent-windows-amd64.exe
 ```
 
-首次启动会自动注册，把一次性令牌从 `agent.yaml` 中移除并原子写入节点 ID 和长期凭据。未显式配置的数据及实例目录默认为同目录的 `data` 和 `data/instances`；以后仍然只需运行对应二进制。首次启动也可以不预建文件，使用参数创建同目录的 `agent.yaml`：
+若需要后台常驻和开机自启，运行下面的命令；程序会自动请求 UAC，并注册使用 `NT SERVICE\l4d2panel-agent` 虚拟低权限账号的 Windows Service：
+
+```powershell
+.\l4d2panel-agent-windows-amd64.exe install --config .\agent.yaml
+```
+
+前台启动和 `install` 都会在尚未注册时自动注册，把一次性令牌从 `agent.yaml` 中移除并原子写入节点 ID 和长期凭据。未显式配置的数据及实例目录默认为同目录的 `data` 与 `data/instances`。服务模式可用 `start/stop/restart/status/uninstall --config ./agent.yaml` 显式管理；这些命令在需要时同样请求提权。首次前台启动也可以不预建文件，使用参数创建同目录的 `agent.yaml`：
 
 ```bash
 ./l4d2panel-agent-linux-amd64 \
@@ -153,7 +165,7 @@ Copy-Item .\agent.yaml.example .\agent.yaml
   --enrollment-token 一次性令牌
 ```
 
-也兼容 `CENTRAL_URL`、`ENROLLMENT_TOKEN` 和 `NODE_NAME` 环境变量。令牌属于秘密；共享主机上优先使用受限配置文件，避免把令牌写入 shell 历史或暴露在进程参数中。Agent 以前台当前用户身份运行，关闭终端即停止；需要开机自启时可由部署者选择进程管理器，并应使用专用低权限账号和仅允许该账号访问的永久目录。
+也兼容 `CENTRAL_URL`、`ENROLLMENT_TOKEN` 和 `NODE_NAME` 环境变量。令牌属于秘密；共享主机上优先使用受限配置文件，避免把令牌写入 shell 历史或暴露在进程参数中。便携模式使用当前账号且关闭终端即停止；内置服务模式使用平台专用低权限账号、自动重启和开机自启。部署者仍可用显式 `run --config` 交给其他进程管理器。
 
 默认应使用受信任证书的 HTTPS 中心地址。确实位于同一主机或可信隔离局域网时，也可以把 `central_url`/`--central-url` 设置为 `http://localhost:19090`、回环 IP 或明确的私网/链路本地 IP；Agent 会相应使用普通 WebSocket。为避免 DNS 重绑定后把凭据发送到公网，明文模式不解析或接受 `panel.lan` 一类主机名，必须填写 IP（`localhost` 除外），且公网 HTTP 仍会被拒绝。HTTP 不加密一次性注册令牌、长期节点凭据、任务和结果，能够监听或篡改局域网流量的设备可以接管节点；只应在受控网络中使用。
 

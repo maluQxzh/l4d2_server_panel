@@ -418,24 +418,6 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 			status=CASE WHEN status IN ('installing','updating','degraded') THEN 'stopped' ELSE status END,
 			updated_at=?3 WHERE installation_id=?1`, job.InstallationID, stringFromAny(job.Result["build_id"]), jobProjectionTimestamp(job))
 		return err
-	case "game.quarantine":
-		entryName := stringFromAny(job.Result["quarantine_entry"])
-		rootIndex := intFromAny(job.Result["root_index"])
-		if entryName == "" {
-			return errors.New("Agent returned invalid game quarantine metadata")
-		}
-		now := jobProjectionTimestamp(job)
-		_, err := s.db.ExecContext(ctx, `INSERT INTO quarantine_entries(id,node_id,source_job_id,original_instance_id,instance_name,
-			root_index,entry_name,quarantined_at,retention_expires_at)
-			SELECT ?1,installation.node_id,?2,installation.id,installation.relative_path,?3,?4,?5,?6
-			FROM game_installations installation WHERE installation.id=?7
-			ON CONFLICT(source_job_id) DO NOTHING`, uuid.NewString(), job.ID, rootIndex, entryName, now, now.Add(7*24*time.Hour), job.InstallationID)
-		if err != nil {
-			return err
-		}
-		_, err = s.db.ExecContext(ctx, `UPDATE game_installations SET status='quarantined',last_error='',last_checked_at=?2,updated_at=?2 WHERE id=?1`,
-			job.InstallationID, now)
-		return err
 	case "start", "restart":
 		if stringFromAny(job.Result["status"]) == "stopped" {
 			_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,started_at=NULL,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID)
@@ -730,7 +712,7 @@ func applyJobCancellationTx(ctx context.Context, tx *sql.Tx, job domain.Job) err
 		return err
 	}
 	switch job.Type {
-	case "game.install", "game.import", "game.validate", "game.update", "game.reinstall", "game.quarantine":
+	case "game.install", "game.import", "game.validate", "game.update", "game.reinstall":
 		if job.InstallationID == "" {
 			return nil
 		}

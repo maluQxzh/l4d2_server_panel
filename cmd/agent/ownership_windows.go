@@ -26,11 +26,21 @@ func prepareServiceConfigOwnership(path string) error {
 	directories = append(directories, cfg.InstanceRoots...)
 	seen := make(map[string]bool)
 	for _, directory := range directories {
-		if directory == "" || seen[directory] {
+		if directory == "" {
 			continue
 		}
-		seen[directory] = true
-		if err := restrictedACL(directory, `(OI)(CI)M`); err != nil {
+		cleaned, err := safeWindowsServiceDirectory(directory)
+		if err != nil {
+			return err
+		}
+		if seen[cleaned] {
+			continue
+		}
+		seen[cleaned] = true
+		if err := os.MkdirAll(cleaned, 0o700); err != nil {
+			return err
+		}
+		if err := restrictedACL(cleaned, `(OI)(CI)M`); err != nil {
 			return err
 		}
 	}

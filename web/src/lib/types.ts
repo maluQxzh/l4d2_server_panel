@@ -101,10 +101,9 @@ export interface GameInstallationRecord {
   id: string;
   environment_id: string;
   node_id: string;
-  root_index: number;
   path: string;
   app_id: 222860;
-  status: "pending" | "installing" | "validating" | "updating" | "ready" | "degraded" | "quarantined";
+  status: "pending" | "installing" | "validating" | "updating" | "ready" | "degraded";
   build_id?: string;
   last_error?: string;
   bound_instance_id?: string;

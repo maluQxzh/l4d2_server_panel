@@ -210,7 +210,6 @@ func (s *Server) routes() http.Handler {
 			r.Get("/environments/{environmentID}/game-installations", s.handleListGameInstallations)
 			r.Post("/environments/{environmentID}/game-installations", s.handleCreateGameInstallation)
 			r.Post("/environments/{environmentID}/game-installations/{installationID}/actions", s.handleGameInstallationAction)
-			r.Delete("/environments/{environmentID}/game-installations/{installationID}", s.handleQuarantineGameInstallation)
 
 			r.With(s.requirePermission(PermissionRead)).Get("/instances", s.handleListInstances)
 			r.With(s.requireInstancePermission(PermissionRead)).Get("/instances/{instanceID}", s.handleGetInstance)

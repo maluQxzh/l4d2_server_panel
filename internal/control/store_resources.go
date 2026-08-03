@@ -446,7 +446,7 @@ func (s *Store) CreateInstance(ctx context.Context, input CreateInstanceInput) (
 			}
 			return domain.Instance{}, err
 		}
-		if installationNodeID != input.NodeID || bound || installationStatus == "quarantined" {
+		if installationNodeID != input.NodeID || installationStatus != "ready" || bound {
 			return domain.Instance{}, ErrConflict
 		}
 	}
