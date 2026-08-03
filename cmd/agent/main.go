@@ -300,7 +300,17 @@ func installService(configPath string) error {
 			return err
 		}
 		if statusErr == nil && status == service.StatusRunning {
-			fmt.Println("agent service is already installed and running")
+			delegated, err := ensureServicePrivileges([]string{"install", "--config", configPath})
+			if err != nil || delegated {
+				return err
+			}
+			if err := prepareServiceInstall(configPath, cfg); err != nil {
+				return err
+			}
+			if err := prepareServiceConfigOwnership(configPath); err != nil {
+				return err
+			}
+			fmt.Println("agent service is already installed and running; managed path permissions synchronized")
 			return nil
 		}
 		return startInstalledService(s, configPath, cfg)

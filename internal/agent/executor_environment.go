@@ -166,7 +166,7 @@ func (e *Executor) gameInstallationAction(ctx context.Context, job domain.Job, a
 	}
 	status, buildID, message := "", "", ""
 	if action == "game.import" {
-		status, message = e.inspectSrcdsPath(installationPath)
+		status, message = e.inspectSrcdsStructure(installationPath)
 	} else {
 		status, buildID, message = e.inspectGamePath(installationPath)
 	}
@@ -178,6 +178,11 @@ func (e *Executor) gameInstallationAction(ctx context.Context, job domain.Job, a
 			state.Installations[job.InstallationID] = runtimeGameRecord{Path: installationPath}
 		}); err != nil {
 			return nil, err
+		}
+	}
+	if action == "game.import" {
+		if err := verifyGameInstallationWritable(path); err != nil {
+			return nil, fmt.Errorf("game installation is not writable by the Agent service account: %w; rerun this Agent binary's install --config command locally to adopt registered paths, then retry detection", err)
 		}
 	}
 	progress(100, "game installation is ready")
@@ -199,21 +204,85 @@ func (e *Executor) inspectGamePath(installationPath string) (status, buildID, me
 }
 
 func (e *Executor) inspectSrcdsPath(installationPath string) (status, message string) {
+	status, message = e.inspectSrcdsStructure(installationPath)
+	if status != "ready" {
+		return status, message
+	}
+	path, _ := e.paths.ResolveInstallation(0, installationPath)
+	if err := verifyGameInstallationWritable(path); err != nil {
+		return "degraded", fmt.Sprintf("game installation is not writable by the Agent service account: %v; rerun this Agent binary's install --config command locally to adopt registered paths, then retry detection", err)
+	}
+	return "ready", ""
+}
+
+func (e *Executor) inspectSrcdsStructure(installationPath string) (status, message string) {
 	path, err := e.paths.ResolveInstallation(0, installationPath)
 	if err != nil {
 		return "degraded", err.Error()
 	}
-	if err := rejectLinkedPath(path); err != nil {
+	if _, err := ValidateServiceGameInstallation(path); err != nil {
 		return "degraded", err.Error()
+	}
+	return "ready", ""
+}
+
+// ValidateServiceGameInstallation limits privileged service adoption to an
+// exact, already-registered L4D2 installation root. It never accepts a parent
+// directory merely because srcds exists somewhere below it.
+func ValidateServiceGameInstallation(path string) (string, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if !filepath.IsAbs(path) {
+		return "", errors.New("game installation path must be absolute")
+	}
+	if err := rejectLinkedPath(path); err != nil {
+		return "", err
+	}
+	root, err := os.Lstat(path)
+	if err != nil || !root.IsDir() || isReparseOrSymlink(root) {
+		return "", errors.New("game installation root is not a plain directory")
 	}
 	executable, err := ResolveWithin(path, defaultServerExecutable())
 	if err != nil {
-		return "degraded", err.Error()
+		return "", err
 	}
 	if info, err := os.Lstat(executable); err != nil || !info.Mode().IsRegular() || isReparseOrSymlink(info) {
-		return "degraded", "path does not contain a safe srcds executable"
+		return "", errors.New("path does not contain a safe srcds executable")
 	}
-	return "ready", ""
+	return path, nil
+}
+
+func verifyGameInstallationWritable(path string) error {
+	for _, relative := range []string{"", "left4dead2", "left4dead2/cfg"} {
+		directory := path
+		if relative != "" {
+			var err error
+			directory, err = ResolveWithin(path, filepath.FromSlash(relative))
+			if err != nil {
+				return err
+			}
+		}
+		info, err := os.Lstat(directory)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || isReparseOrSymlink(info) {
+			return fmt.Errorf("managed path %s is not a plain directory", relative)
+		}
+		name, err := managedTempName()
+		if err != nil {
+			return err
+		}
+		if err := writeRawFileWithinNoFollow(directory, name, nil, 0o600, true); err != nil {
+			return fmt.Errorf("write %s: %w", directory, err)
+		}
+		if err := deleteManagedFileNoFollow(directory, name); err != nil {
+			return fmt.Errorf("remove write probe from %s: %w", directory, err)
+		}
+	}
+	return nil
 }
 
 func defaultRuntimeSource(value string) string {

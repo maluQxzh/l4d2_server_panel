@@ -60,6 +60,29 @@ func TestRuntimeEnvironmentStateUpdatePersistsAtomically(t *testing.T) {
 	}
 }
 
+func TestLoadRuntimeServicePathsReturnsOnlyAbsoluteLocalPaths(t *testing.T) {
+	data := t.TempDir()
+	store, err := newRuntimeEnvironmentStore(&Config{DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(data, "servers", "one")
+	second := filepath.Join(data, "servers", "two")
+	if err := store.update(func(state *runtimeEnvironmentState) {
+		state.Installations["two"] = runtimeGameRecord{Path: second}
+		state.Installations["one"] = runtimeGameRecord{Path: first}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := LoadRuntimeServicePaths(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths.InstallationPaths) != 2 || paths.InstallationPaths[0] != first || paths.InstallationPaths[1] != second {
+		t.Fatalf("unexpected runtime service paths: %#v", paths)
+	}
+}
+
 func TestRuntimeEnvironmentStoreRemovesLegacyRelativeInstallationPaths(t *testing.T) {
 	data := t.TempDir()
 	store, err := newRuntimeEnvironmentStore(&Config{DataDir: data})
@@ -208,6 +231,29 @@ func TestGameImportChecksOnlySrcdsAtAbsolutePath(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(installationPath, "left4dead2", "gameinfo.txt")); !os.IsNotExist(err) {
 		t.Fatalf("test unexpectedly supplied gameinfo.txt: %v", err)
+	}
+}
+
+func TestValidateServiceGameInstallationRequiresExactPlainRoot(t *testing.T) {
+	parent := t.TempDir()
+	installationPath := filepath.Join(parent, "server")
+	if err := os.MkdirAll(installationPath, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installationPath, defaultServerExecutable()), []byte("srcds"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ValidateServiceGameInstallation(installationPath); err != nil || got != installationPath {
+		t.Fatalf("valid service game installation = %q, %v", got, err)
+	}
+	if _, err := ValidateServiceGameInstallation(parent); err == nil {
+		t.Fatal("parent of a game installation was accepted for service adoption")
+	}
+	linked := filepath.Join(parent, "linked")
+	if err := os.Symlink(installationPath, linked); err == nil {
+		if _, err := ValidateServiceGameInstallation(linked); err == nil {
+			t.Fatal("linked game installation was accepted for service adoption")
+		}
 	}
 }
 

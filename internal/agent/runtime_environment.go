@@ -13,12 +13,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
 const maxSteamCMDArchiveExpanded = int64(256 << 20)
+
+const runtimeEnvironmentStateFilename = "runtime-environment.json"
 
 type runtimeEnvironmentState struct {
 	SteamCMDPath   string                       `json:"steamcmd_path,omitempty"`
@@ -28,6 +31,13 @@ type runtimeEnvironmentState struct {
 
 type runtimeGameRecord struct {
 	Path string `json:"path"`
+}
+
+// RuntimeServicePaths is the local, non-secret subset of runtime state that a
+// privileged portable service reinstall may adopt for the dedicated service
+// account. The caller must still validate every path before changing access.
+type RuntimeServicePaths struct {
+	InstallationPaths []string
 }
 
 type runtimeEnvironmentStore struct {
@@ -40,7 +50,7 @@ func newRuntimeEnvironmentStore(config *Config) (*runtimeEnvironmentStore, error
 	if err := os.MkdirAll(config.DataDir, 0o700); err != nil {
 		return nil, err
 	}
-	store := &runtimeEnvironmentStore{path: filepath.Join(config.DataDir, "runtime-environment.json")}
+	store := &runtimeEnvironmentStore{path: filepath.Join(config.DataDir, runtimeEnvironmentStateFilename)}
 	raw, err := os.ReadFile(store.path)
 	if err == nil {
 		if err := json.Unmarshal(raw, &store.state); err != nil {
@@ -70,6 +80,42 @@ func newRuntimeEnvironmentStore(config *Config) (*runtimeEnvironmentStore, error
 		}
 	}
 	return store, nil
+}
+
+// LoadRuntimeServicePaths reads only paths already persisted by this Agent.
+// It deliberately does not expose installation IDs or any credential-bearing
+// configuration to the service installer.
+func LoadRuntimeServicePaths(dataDir string) (RuntimeServicePaths, error) {
+	if _, err := os.Lstat(dataDir); os.IsNotExist(err) {
+		return RuntimeServicePaths{}, nil
+	} else if err != nil {
+		return RuntimeServicePaths{}, fmt.Errorf("inspect runtime data directory: %w", err)
+	}
+	raw, err := readRegularFileWithinNoFollow(dataDir, runtimeEnvironmentStateFilename, 4<<20)
+	if errors.Is(err, os.ErrNotExist) {
+		return RuntimeServicePaths{}, nil
+	}
+	if err != nil {
+		return RuntimeServicePaths{}, fmt.Errorf("read runtime service paths: %w", err)
+	}
+	var state runtimeEnvironmentState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return RuntimeServicePaths{}, fmt.Errorf("decode runtime service paths: %w", err)
+	}
+	result := RuntimeServicePaths{}
+	seen := make(map[string]bool, len(state.Installations))
+	for _, record := range state.Installations {
+		path := filepath.Clean(strings.TrimSpace(record.Path))
+		if !filepath.IsAbs(path) {
+			return RuntimeServicePaths{}, errors.New("runtime game installation path is not absolute")
+		}
+		if !seen[path] {
+			seen[path] = true
+			result.InstallationPaths = append(result.InstallationPaths, path)
+		}
+	}
+	sort.Strings(result.InstallationPaths)
+	return result, nil
 }
 
 func (s *runtimeEnvironmentStore) snapshot() runtimeEnvironmentState {

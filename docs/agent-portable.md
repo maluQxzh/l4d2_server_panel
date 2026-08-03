@@ -58,6 +58,19 @@ systemd 常驻模式使用：
 
 非 root 运行时程序会通过 `sudo` 重启固定的安装命令。它要求 systemd 为当前 init，创建无登录的 `l4d2panel` 系统账号，只把配置、Agent 数据和已配置实例根交给该账号，并安装、启动及启用 `l4d2panel-agent.service`。数据或实例根不得是 `/` 等宽泛目录，也不能包含 Agent 二进制。
 
+### 接管已有的 root-owned 游戏目录
+
+现有 SteamCMD/L4D2 目录经常由 `root` 或另一个管理员账号创建，而 systemd Agent 固定以低权限 `l4d2panel` 运行。网页首次登记这类目录时，Agent 会先保存已经通过结构检查的绝对路径，再以句柄相对的临时写入探测游戏根及现有 `left4dead2/cfg`；不可写时任务保持异常并提示在节点本机重新执行原安装命令：
+
+```bash
+cd /path/to/agent-directory
+./l4d2panel-agent-linux-amd64 install --config ./agent.yaml
+```
+
+`install` 是幂等的：已运行的同一服务不会被重复注册或中断，而是以本机管理员权限读取 Agent 自己的无秘密运行环境登记，批量处理所有已登记游戏目录。每个目录都必须再次满足：绝对且非宽泛路径、不是 Agent 程序父目录、整条路径无符号链接/重解析点，并且根目录直属位置存在平台固定的普通 `srcds` 可执行文件。Linux 在改属主前还会预检整棵树，拒绝符号链接、硬链接、特殊文件和嵌套挂载点，避免权限变化越过游戏目录；Windows 只给固定虚拟服务 SID、Administrators 和 SYSTEM 配置继承的运行权限。完成后回到网页重试“检测 srcds”。
+
+权限接管刻意不是远程 Agent 任务：Control 被攻破或节点凭据泄露时不能借此取得节点 root/Administrator 权限。通过 Agent 托管安装的新游戏目录原本就由服务账号创建，无需重新接管。自定义 SteamCMD 若由其他账号安装在只读目录中，应改用面板的托管 SteamCMD，或由节点管理员单独把专用 SteamCMD 目录授予服务账号；安装器不会递归接管 `/usr/bin` 等系统程序目录。
+
 Windows 应在仅受节点管理员控制的永久目录中使用前台模式：
 
 ```powershell
@@ -96,7 +109,7 @@ l4d2panel-agent restart --config /absolute/path/to/agent.yaml
 l4d2panel-agent uninstall --config /absolute/path/to/agent.yaml
 ```
 
-`install` 可以幂等重试：属于当前旁置部署且已经运行的服务会直接返回成功；同名服务若指向其他二进制、配置或账号则拒绝接管。`uninstall` 只注销系统服务，保留二进制、`agent.yaml`、`data`、游戏目录和节点身份。
+`install` 可以幂等重试：属于当前旁置部署且已经运行的服务会重新同步配置、数据、实例根及已登记游戏安装的服务账号权限后返回成功；同名服务若指向其他二进制、配置或账号则拒绝接管。`uninstall` 只注销系统服务，保留二进制、`agent.yaml`、`data`、游戏目录和节点身份。
 
 节点上的游戏进程仍由 Agent 的平台进程管理器管理。若使用显式 `run --config` 交给其他守护程序，应让它：
 

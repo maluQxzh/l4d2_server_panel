@@ -24,6 +24,17 @@ func prepareServiceConfigOwnership(path string) error {
 		directories = append(directories, filepath.Dir(cfg.SteamCMDPath))
 	}
 	directories = append(directories, cfg.InstanceRoots...)
+	runtimePaths, err := agent.LoadRuntimeServicePaths(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	for _, installationPath := range runtimePaths.InstallationPaths {
+		cleaned, validateErr := agent.ValidateServiceGameInstallation(installationPath)
+		if validateErr != nil {
+			return fmt.Errorf("refuse service ACL for registered game installation %s: %w", installationPath, validateErr)
+		}
+		directories = append(directories, cleaned)
+	}
 	seen := make(map[string]bool)
 	for _, directory := range directories {
 		if directory == "" {

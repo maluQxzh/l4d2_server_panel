@@ -3,9 +3,12 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/l4d2-panel/l4d2panel/internal/agent"
 )
 
 func TestSafeManagedServicePathRejectsBroadAndExecutableParents(t *testing.T) {
@@ -25,6 +28,32 @@ func TestSafeManagedServicePathRejectsBroadAndExecutableParents(t *testing.T) {
 	}
 }
 
+func TestRegisteredServiceGamePathsUsesExactPersistedInstallations(t *testing.T) {
+	data := t.TempDir()
+	installation := filepath.Join(t.TempDir(), "game", "l4d2")
+	if err := os.MkdirAll(installation, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installation, "srcds_run"), []byte("srcds"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := map[string]any{"installations": map[string]any{"one": map[string]any{"path": installation}}}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(data, "runtime-environment.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := registeredServiceGamePaths(&agent.Config{DataDir: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] != installation {
+		t.Fatalf("registered paths = %#v, want %q", paths, installation)
+	}
+}
+
 func TestPathWithinAny(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "agent-data")
 	parents := map[string]bool{parent: true}
@@ -33,6 +62,21 @@ func TestPathWithinAny(t *testing.T) {
 	}
 	if pathWithinAny(filepath.Join(filepath.Dir(parent), "other"), parents) {
 		t.Fatal("sibling path was treated as nested")
+	}
+}
+
+func TestChownTreeRejectsHardLinksBeforeOwnershipChanges(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	if err := os.WriteFile(first, []byte("shared"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(first, second); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if err := chownTreeWithoutLinks(root, os.Getuid(), os.Getgid()); err == nil {
+		t.Fatal("hard-linked file tree was accepted for recursive service ownership")
 	}
 }
 

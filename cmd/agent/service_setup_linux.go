@@ -115,6 +115,15 @@ func prepareServiceInstall(configPath string, cfg *agent.Config) error {
 		return err
 	}
 	managed := append([]string{cfg.DataDir}, cfg.InstanceRoots...)
+	registeredPaths, err := registeredServiceGamePaths(cfg)
+	if err != nil {
+		return err
+	}
+	managed = append(managed, registeredPaths...)
+	registered := make(map[string]bool, len(registeredPaths))
+	for _, path := range registeredPaths {
+		registered[path] = true
+	}
 	seen := make(map[string]bool, len(managed))
 	for _, path := range managed {
 		cleaned, err := safeManagedServicePath(path)
@@ -130,6 +139,9 @@ func prepareServiceInstall(configPath string, cfg *agent.Config) error {
 		if err := chownTreeWithoutLinks(cleaned, uid, gid); err != nil {
 			return err
 		}
+		if registered[cleaned] {
+			fmt.Printf("adopted registered game installation %s for the l4d2panel service account\n", cleaned)
+		}
 		seen[cleaned] = true
 	}
 	if err := os.Chown(configPath, uid, gid); err != nil {
@@ -139,6 +151,26 @@ func prepareServiceInstall(configPath string, cfg *agent.Config) error {
 		return err
 	}
 	return nil
+}
+
+func registeredServiceGamePaths(cfg *agent.Config) ([]string, error) {
+	runtimePaths, err := agent.LoadRuntimeServicePaths(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(runtimePaths.InstallationPaths))
+	for _, installationPath := range runtimePaths.InstallationPaths {
+		cleaned, validateErr := agent.ValidateServiceGameInstallation(installationPath)
+		if validateErr != nil {
+			return nil, fmt.Errorf("refuse service ownership for registered game installation %s: %w", installationPath, validateErr)
+		}
+		cleaned, validateErr = safeManagedServicePath(cleaned)
+		if validateErr != nil {
+			return nil, validateErr
+		}
+		paths = append(paths, cleaned)
+	}
+	return paths, nil
 }
 
 func accountIDs(account *user.User) (int, int, error) {
@@ -187,6 +219,42 @@ func pathWithinAny(path string, parents map[string]bool) bool {
 }
 
 func chownTreeWithoutLinks(root string, uid, gid int) error {
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return err
+	}
+	rootStat, ok := rootInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("read filesystem identity for %s", root)
+	}
+	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing linked Agent service path %s", path)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("read filesystem identity for %s", path)
+		}
+		if stat.Dev != rootStat.Dev {
+			return fmt.Errorf("refusing mounted filesystem inside Agent service path %s", path)
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing special file inside Agent service path %s", path)
+		}
+		if info.Mode().IsRegular() && stat.Nlink > 1 {
+			return fmt.Errorf("refusing hard-linked file inside Agent service path %s", path)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
