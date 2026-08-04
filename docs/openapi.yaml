@@ -1326,15 +1326,16 @@ paths:
               schema: { $ref: "#/components/schemas/JobReference" }
         "400": { $ref: "#/components/responses/BadRequest" }
 
-  /instances/{instanceId}/files/qq-flash:
+  /instances/{instanceId}/packages/qq-flash:
     post:
-      tags: [Files]
-      summary: 由 Agent 从 QQ 闪传分享链接导入文件
+      tags: [Packages]
+      summary: 由 Agent 从 QQ 闪传分享链接导入模组文件
       description: >
-        需要实例 operate。只接受 qfile.qq.com 的 HTTPS 分享链接；Agent 分页读取分享中的全部文件和目录，
-        从固定腾讯主机逐文件换取短期下载地址并直接流式写入目标白名单目录，Control 不转发文件正文。
-        面板不限制分享内文件数量或文件大小，分享链接在任务中加密保存。当前不鉴定文件内容，但仍拒绝
-        文件 API 禁止的可执行/加载扩展名，并对每个文件执行路径边界、无链接和精确大小检查。
+        需要实例 manage。只接受 qfile.qq.com 的 HTTPS 分享链接；Agent 分页读取分享中的全部文件和目录，
+        从固定腾讯主机逐文件换取短期下载地址并直接流式写入固定的 left4dead2/addons，Control 不转发文件正文。
+        面板不限制分享内文件数量或文件大小，分享链接在任务中加密保存。当前不鉴定文件内容并允许 VPK，
+        但仍拒绝其他危险扩展名，并对每个文件执行路径边界、无链接和精确大小检查。返回的 job_id 可在任务中心
+        持续查看 queued/dispatched/running/terminal 状态、下载进度和消息。
       parameters:
         - { $ref: "#/components/parameters/InstanceID" }
         - { $ref: "#/components/parameters/CSRF" }
@@ -2987,12 +2988,9 @@ components:
 
     QQFlashFileImportRequest:
       type: object
-      required: [relative_path, share_url]
+      required: [share_url]
       additionalProperties: false
       properties:
-        relative_path:
-          type: string
-          description: cfg、addons、logs 或其 left4dead2 对应目录下的实例内目标目录；分享目录结构会保留在其下。
         share_url:
           type: string
           maxLength: 2048

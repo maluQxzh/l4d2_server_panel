@@ -662,7 +662,6 @@ function PackageCard({ item, instanceId }: { item: PackageRecord; instanceId: st
 function InstallPackageModal({ open, instance, onClose }: { open: boolean; instance: InstanceRecord; onClose: () => void }) {
   const [kind, setKind] = useState("workshop");
   const [source, setSource] = useState("");
-  const [qqFlashDestination, setQQFlashDestination] = useState("left4dead2/addons");
   const [upload, setUpload] = useState<{ name: string; size: number; contentBase64: string } | null>(null);
   const [risk, setRisk] = useState(false);
   const toast = useToast();
@@ -692,14 +691,13 @@ function InstallPackageModal({ open, instance, onClose }: { open: boolean; insta
   };
   const resetAndClose = () => {
     setSource("");
-    setQQFlashDestination("left4dead2/addons");
     setUpload(null);
     setRisk(false);
     onClose();
   };
   const install = useMutation({
     mutationFn: () => qqFlash
-      ? api.importQQFlashFile(instance.id, qqFlashDestination, source)
+      ? api.importQQFlashFile(instance.id, source)
       : api.instanceAction(instance.id, "install_package", {
         kind,
         source: source.trim() || undefined,
@@ -715,13 +713,13 @@ function InstallPackageModal({ open, instance, onClose }: { open: boolean; insta
     },
     onError: (error) => toast.push(error.message, "error"),
   });
-  return <Modal open={open} onClose={resetAndClose} title="安装模组或组件" description={qqFlash ? "节点直接下载 QQ闪传分享中的全部文件，不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose}>取消</Button><Button onClick={() => install.mutate()} loading={install.isPending} disabled={(!official && !hasSource) || (qqFlash && !qqFlashDestination.trim()) || (needsRisk && !risk)}>{qqFlash ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlash ? "提交下载" : "提交安装"}</Button></>}>
+  return <Modal open={open} onClose={resetAndClose} title="安装模组或组件" description={qqFlash ? "节点直接下载 QQ闪传分享中的全部文件到 left4dead2/addons，不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose}>取消</Button><Button onClick={() => install.mutate()} loading={install.isPending} disabled={(!official && !hasSource) || (needsRisk && !risk)}>{qqFlash ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlash ? "提交下载" : "提交安装"}</Button></>}>
     <div className="form-stack">
       <Field label="类型"><select value={kind} onChange={(event) => { setKind(event.target.value); setSource(""); setUpload(null); setRisk(false); }}><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="plugin">SourceMod 插件文件</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option><option value="native">第三方原生扩展</option><option value="qq_flash">QQ闪传</option></select></Field>
       {qqFlash ? <>
-        <Field label="实例内目标目录"><input value={qqFlashDestination} onChange={(event) => setQQFlashDestination(event.target.value)} /></Field>
+        <Field label="固定目标目录"><input value="left4dead2/addons" readOnly /></Field>
         <Field label="QQ闪传分享链接" hint="可直接粘贴 QQ 分享文本；节点会导入分享中的全部文件并保留目录结构。"><textarea rows={4} value={source} onChange={(event) => setSource(event.target.value)} placeholder="链接：https://qfile.qq.com/q/Example123" spellCheck={false} /></Field>
-        <div className="form-note"><CloudDownload size={18} /><span><strong>节点直连下载</strong><small>不限制分享内文件数量和文件大小，暂不鉴定文件内容；仍拒绝危险扩展名与特殊路径，并逐文件原子写入。</small></span></div>
+        <div className="form-note"><CloudDownload size={18} /><span><strong>节点直连下载</strong><small>不限制分享内文件数量和文件大小，暂不鉴定文件内容；允许 VPK，仍拒绝其他危险扩展名与特殊路径，并逐文件原子写入。</small></span></div>
       </> : <>
         {official ? <div className="form-note"><ShieldCheck size={18} /><span><strong>自动解析官方稳定版</strong><small>Agent 只接受 AlliedModders 官方白名单地址，并按节点系统选择压缩包。</small></span></div> : <Field label={kind === "workshop" ? "项目或合集 ID" : "HTTPS 来源"} hint={canUpload ? "填写 URL，或在下方从本机选择一个文件" : undefined}><input value={source} onChange={(event) => { setSource(event.target.value); setUpload(null); }} placeholder={kind === "workshop" ? "例如：123456789" : "https://example.org/plugin.zip"} /></Field>}
         {canUpload && <Field label="从本机上传" hint="单个文件上限 8 MiB；载荷会加密保存，并只发送给目标节点"><input type="file" accept={accept} onChange={(event) => { void chooseUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} /></Field>}

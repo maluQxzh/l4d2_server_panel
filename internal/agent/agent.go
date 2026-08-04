@@ -196,7 +196,7 @@ func (a *Agent) runSession(ctx context.Context) error {
 	}
 	defer conn.Close()
 	conn.SetReadLimit(16 << 20)
-	hello, err := protocol.NewEnvelope(protocol.TypeHello, a.config.NodeID, "", protocol.Hello{Name: a.config.NodeName, OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.Version, InstanceRoot: a.config.InstanceRoots[0], Capabilities: []string{"absolute_game_paths", "backup_upload", "check_update", "discover_instances", "purge_quarantine", "qq_flash_file_v1", "runtime_environment_v1", "server_cfg_native"}})
+	hello, err := protocol.NewEnvelope(protocol.TypeHello, a.config.NodeID, "", protocol.Hello{Name: a.config.NodeName, OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.Version, InstanceRoot: a.config.InstanceRoots[0], Capabilities: []string{"absolute_game_paths", "backup_upload", "check_update", "discover_instances", "purge_quarantine", "qq_flash_file_v1", "qq_flash_package_v1", "runtime_environment_v1", "server_cfg_native"}})
 	if err != nil {
 		return err
 	}

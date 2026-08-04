@@ -89,7 +89,7 @@ func TestQQFlashImportsMultipleFilesAndFolders(t *testing.T) {
 				t.Fatal(err)
 			}
 			parent := payload.RequestInfos[0].ParentID
-			body := `{"retcode":0,"error":{"code":0},"data":{"file_lists":[{"is_end":true,"pagination_info":"done","parent_id":"","file_list":[{"name":"alpha.cfg","cli_fileid":"file-a","is_dir":false,"file_physical_size":"5","safe_status":3,"physical":{"id":"physical-a","status":2,"download_limit_status":0}},{"name":"folder","cli_fileid":"folder-id","is_dir":true,"file_physical_size":"0","safe_status":3,"physical":{}}]}]}}`
+			body := `{"retcode":0,"error":{"code":0},"data":{"file_lists":[{"is_end":true,"pagination_info":"done","parent_id":"","file_list":[{"name":"alpha.vpk","cli_fileid":"file-a","is_dir":false,"file_physical_size":"5","safe_status":3,"physical":{"id":"physical-a","status":2,"download_limit_status":0}},{"name":"folder","cli_fileid":"folder-id","is_dir":true,"file_physical_size":"0","safe_status":3,"physical":{}}]}]}}`
 			if parent == "folder-id" {
 				body = `{"retcode":0,"error":{"code":0},"data":{"file_lists":[{"is_end":true,"pagination_info":"done","parent_id":"folder-id","file_list":[{"name":"beta.txt","cli_fileid":"file-b","is_dir":false,"file_physical_size":"11","safe_status":3,"physical":{"id":"physical-b","status":2,"download_limit_status":0}}]}]}}`
 			}
@@ -111,7 +111,10 @@ func TestQQFlashImportsMultipleFilesAndFolders(t *testing.T) {
 	})
 	client := &qqFlashClient{metadata: &http.Client{Transport: transport}, download: &http.Client{Transport: transport}}
 	instancePath := t.TempDir()
-	result, err := client.importFiles(context.Background(), instancePath, "left4dead2/addons/imported", "https://qfile.qq.com/q/share01", func(int, string) {})
+	progressValues := make([]int, 0)
+	result, err := client.importFiles(context.Background(), instancePath, "https://qfile.qq.com/q/share01", func(value int, _ string) {
+		progressValues = append(progressValues, value)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,13 +122,32 @@ func TestQQFlashImportsMultipleFilesAndFolders(t *testing.T) {
 		t.Fatalf("unexpected import result: %#v", result)
 	}
 	for relative, expected := range map[string]string{
-		"left4dead2/addons/imported/alpha.cfg":       "alpha",
-		"left4dead2/addons/imported/folder/beta.txt": "nested beta",
+		"left4dead2/addons/alpha.vpk":       "alpha",
+		"left4dead2/addons/folder/beta.txt": "nested beta",
 	} {
 		raw, err := os.ReadFile(filepath.Join(instancePath, filepath.FromSlash(relative)))
 		if err != nil || string(raw) != expected {
 			t.Fatalf("imported %s = %q, %v", relative, raw, err)
 		}
+	}
+	if len(progressValues) < 3 || progressValues[len(progressValues)-1] != 100 {
+		t.Fatalf("QQ flash progress was not reported: %#v", progressValues)
+	}
+	hasDownloadProgress := false
+	for _, value := range progressValues {
+		if value > 10 && value < 95 {
+			hasDownloadProgress = true
+			break
+		}
+	}
+	if !hasDownloadProgress {
+		t.Fatalf("QQ flash byte progress was not reported: %#v", progressValues)
+	}
+	if err := validateQQFlashFileMutation("left4dead2/addons/package.vpk"); err != nil {
+		t.Fatalf("VPK should be accepted by QQ package imports: %v", err)
+	}
+	if err := validateQQFlashFileMutation("left4dead2/addons/plugin.smx"); err == nil {
+		t.Fatal("non-VPK load-bearing extension was accepted")
 	}
 }
 
@@ -178,7 +200,7 @@ func TestQQFlashLiveImport(t *testing.T) {
 	if shareURL == "" {
 		t.Skip("set RUN_QQ_FLASH_DOWNLOAD to import a live QQ flash share into a temporary instance")
 	}
-	result, err := newQQFlashClient().importFiles(context.Background(), t.TempDir(), "left4dead2/addons/qq-flash", shareURL, func(int, string) {})
+	result, err := newQQFlashClient().importFiles(context.Background(), t.TempDir(), shareURL, func(int, string) {})
 	if err != nil {
 		t.Fatal(err)
 	}

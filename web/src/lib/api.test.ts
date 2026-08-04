@@ -96,15 +96,15 @@ describe("API 客户端", () => {
     expect(JSON.parse(String(init?.body))).toEqual({ content: "hostname test", expected_sha256: "abc123" });
   });
 
-  it("QQ 闪传导入提交目标目录和分享文本", async () => {
+  it("QQ 闪传导入提交分享文本到固定模组端点", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ job_id: "job-qq" }), { status: 202, headers: { "Content-Type": "application/json" } }));
 
-    await api.importQQFlashFile("实例/一", "left4dead2/addons/imported", "链接：https://qfile.qq.com/q/Example123");
+    await api.importQQFlashFile("实例/一", "链接：https://qfile.qq.com/q/Example123");
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/v1/instances/%E5%AE%9E%E4%BE%8B%2F%E4%B8%80/files/qq-flash");
+    expect(url).toBe("/api/v1/instances/%E5%AE%9E%E4%BE%8B%2F%E4%B8%80/packages/qq-flash");
     expect(init?.method).toBe("POST");
-    expect(JSON.parse(String(init?.body))).toEqual({ relative_path: "left4dead2/addons/imported", share_url: "链接：https://qfile.qq.com/q/Example123" });
+    expect(JSON.parse(String(init?.body))).toEqual({ share_url: "链接：https://qfile.qq.com/q/Example123" });
     expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
   });
 

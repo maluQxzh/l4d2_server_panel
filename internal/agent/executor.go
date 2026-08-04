@@ -154,6 +154,8 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 		return e.restore(ctx, job, progress)
 	case "file":
 		return e.file(ctx, job, progress)
+	case "qq.flash.import":
+		return e.importQQFlashPackage(ctx, job, progress)
 	case "list":
 		return e.list(ctx, job, progress)
 	case "rcon":
@@ -1354,7 +1356,7 @@ func (e *Executor) file(ctx context.Context, job domain.Job, progress ProgressFu
 		progress(100, "file written")
 		return map[string]any{"path": relative, "size": size, "sha256": digest}, nil
 	case "qq_flash":
-		return importQQFlashFile(ctx, path, relative, payload.ShareURL, progress)
+		return importQQFlashFiles(ctx, path, payload.ShareURL, progress)
 	case "delete":
 		if err := verifyManagedFilePrecondition(path, relative, payload.ExpectedSHA256); err != nil {
 			return nil, err
@@ -1367,6 +1369,22 @@ func (e *Executor) file(ctx context.Context, job domain.Job, progress ProgressFu
 	default:
 		return nil, errors.New("file operation must be read, write, qq_flash, or delete")
 	}
+}
+
+func (e *Executor) importQQFlashPackage(ctx context.Context, job domain.Job, progress ProgressFunc) (map[string]any, error) {
+	payload, err := decodeOperation(job)
+	if err != nil {
+		return nil, err
+	}
+	record, ok := e.registry.Get(job.InstanceID)
+	if !ok {
+		return nil, errors.New("instance is not registered")
+	}
+	instancePath, err := e.instancePath(record)
+	if err != nil {
+		return nil, err
+	}
+	return importQQFlashFiles(ctx, instancePath, payload.Source, progress)
 }
 
 func verifyManagedFilePrecondition(instancePath, relative, expectedSHA256 string) error {

@@ -164,15 +164,12 @@ func (s *Server) handleWriteInstanceFile(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleImportQQFlashFile(w http.ResponseWriter, r *http.Request) {
 	instanceID := chi.URLParam(r, "instanceID")
 	var request struct {
-		RelativePath string `json:"relative_path"`
+		// RelativePath is accepted only for a cached previous-minor UI. It is
+		// deliberately ignored; both Control and Agent fix the destination.
+		RelativePath string `json:"relative_path,omitempty"`
 		ShareURL     string `json:"share_url"`
 	}
 	if !decodeJSONWithLimit(w, r, &request, 4<<10) {
-		return
-	}
-	relative, err := validateManagedFileAPIMutationPath(request.RelativePath)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_file_path", err.Error())
 		return
 	}
 	shareURL, err := normalizeQQFlashShareURL(request.ShareURL)
@@ -180,8 +177,8 @@ func (s *Server) handleImportQQFlashFile(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid_qq_flash_share_url", err.Error())
 		return
 	}
-	payload := map[string]any{"operation": "qq_flash", "relative_path": relative, "share_url": shareURL}
-	requestFingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "instance-file", instanceID, "qq_flash", payload)
+	payload := map[string]any{"source": shareURL}
+	requestFingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "instance-package", instanceID, "qq_flash", payload)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -205,21 +202,22 @@ func (s *Server) handleImportQQFlashFile(w http.ResponseWriter, r *http.Request)
 		s.fail(w, err)
 		return
 	}
-	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "qq_flash_file_v1") {
+	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "qq_flash_package_v1") {
 		writeError(w, http.StatusConflict, "qq_flash_not_supported", "target node Agent does not support QQ flash file imports")
 		return
 	}
-	if err := sealJobPayloadSecrets(s.config.MasterKey, "file", payload); err != nil {
+	if err := sealJobPayloadSecrets(s.config.MasterKey, "qq_flash_import", payload); err != nil {
 		s.fail(w, err)
 		return
 	}
-	job, reused, err := s.store.QueueInstanceJobWithFingerprint(r.Context(), instanceID, "file", payload, principal.User.ID,
+	job, reused, err := s.store.QueueInstanceJobWithFingerprint(r.Context(), instanceID, "qq_flash_import", payload, principal.User.ID,
 		idempotencyKey, requestFingerprint)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	s.audit(r, "instance.file.qq_flash_requested", "instance", instanceID, map[string]any{"path": relative, "job_id": job.ID})
+	s.audit(r, "instance.package.qq_flash_requested", "instance", instanceID, map[string]any{"path": "left4dead2/addons", "job_id": job.ID})
+	_, _ = s.events.Publish(r.Context(), Event{Type: "job.queued", ResourceType: "job", ResourceID: job.ID, Data: map[string]any{"job": job}}, true)
 	s.dispatchSoon(job.NodeID)
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "idempotent_replay": reused})
 }

@@ -531,6 +531,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, absoluteGamePathsSupported := client.capabilities["absolute_game_paths"]
 		_, serverConfigNativeSupported := client.capabilities["server_cfg_native"]
 		_, qqFlashFileSupported := client.capabilities["qq_flash_file_v1"]
+		_, qqFlashPackageSupported := client.capabilities["qq_flash_package_v1"]
 		client.mu.Unlock()
 		if job.Status != domain.JobCanceled && (sent || canceled) {
 			continue
@@ -541,6 +542,10 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 			continue
 		}
 		if job.Type == "file" && strings.EqualFold(stringFromAny(job.Payload["operation"]), "qq_flash") && !qqFlashFileSupported {
+			// Preserve queued imports created by the previous minor protocol.
+			continue
+		}
+		if job.Type == "qq_flash_import" && !qqFlashPackageSupported {
 			// A queued import may outlive a temporary Agent rollback. Keep the
 			// expiring share intent durable until a compatible Agent reconnects.
 			continue

@@ -28,6 +28,7 @@ const (
 	qqFlashDownloadRPC = "trpc.qqntv2.richmedia.InnerProxy/BatchDownload"
 	qqFlashHMACKey     = "9EB18BB9ED457684"
 	qqFlashUserAgent   = "l4d2panel-agent/1"
+	qqFlashDestination = "left4dead2/addons"
 )
 
 type qqFlashShare struct {
@@ -55,18 +56,12 @@ func newQQFlashClient() *qqFlashClient {
 	}
 }
 
-func importQQFlashFile(ctx context.Context, instancePath, relative, shareURL string, progress ProgressFunc) (map[string]any, error) {
-	return newQQFlashClient().importFiles(ctx, instancePath, relative, shareURL, progress)
+func importQQFlashFiles(ctx context.Context, instancePath, shareURL string, progress ProgressFunc) (map[string]any, error) {
+	return newQQFlashClient().importFiles(ctx, instancePath, shareURL, progress)
 }
 
-func (c *qqFlashClient) importFiles(ctx context.Context, instancePath, relative, shareURL string, progress ProgressFunc) (map[string]any, error) {
-	destination, err := cleanManagedRelative(relative)
-	if err != nil || destination == "" {
-		return nil, errors.New("a managed destination directory is required")
-	}
-	if err := validateManagedFileMutation(destination); err != nil {
-		return nil, err
-	}
+func (c *qqFlashClient) importFiles(ctx context.Context, instancePath, shareURL string, progress ProgressFunc) (map[string]any, error) {
+	destination := qqFlashDestination
 	if err := validateQQFlashShareURL(shareURL); err != nil {
 		return nil, err
 	}
@@ -113,7 +108,7 @@ func (c *qqFlashClient) importFiles(ctx context.Context, instancePath, relative,
 				if cleanErr != nil || cleanedTarget != target {
 					return nil, qqFlashPartialError(imported, errors.New("QQ flash file path escapes the managed destination"))
 				}
-				if err := validateManagedFileMutation(cleanedTarget); err != nil {
+				if err := validateQQFlashFileMutation(cleanedTarget); err != nil {
 					return nil, qqFlashPartialError(imported, err)
 				}
 				caseFolded := strings.ToLower(cleanedTarget)
@@ -121,12 +116,12 @@ func (c *qqFlashClient) importFiles(ctx context.Context, instancePath, relative,
 					return nil, qqFlashPartialError(imported, errors.New("QQ flash share contains colliding file paths"))
 				}
 				seenTargets[caseFolded] = struct{}{}
-				percent := 10
-				if share.TotalFiles > 0 && imported < uint64(share.TotalFiles) {
-					percent += int(imported * 85 / uint64(share.TotalFiles))
-				}
-				progress(percent, "downloading QQ flash files")
-				if err := c.downloadFile(ctx, instancePath, cleanedTarget, file, deviceID); err != nil {
+				startPercent, endPercent := qqFlashFileProgressBounds(share.TotalFiles, imported)
+				progress(startPercent, "downloading QQ flash files")
+				if err := c.downloadFile(ctx, instancePath, cleanedTarget, file, deviceID, func(filePercent int) {
+					overall := startPercent + (endPercent-startPercent)*filePercent/100
+					progress(overall, "downloading QQ flash files")
+				}); err != nil {
 					return nil, qqFlashPartialError(imported, err)
 				}
 				imported++
@@ -146,6 +141,26 @@ func (c *qqFlashClient) importFiles(ctx context.Context, instancePath, relative,
 	}
 	progress(100, "QQ flash files imported")
 	return map[string]any{"path": destination, "files_imported": imported, "source": "qq_flash"}, nil
+}
+
+func validateQQFlashFileMutation(cleaned string) error {
+	if strings.EqualFold(pathpkg.Ext(cleaned), ".vpk") {
+		return nil
+	}
+	return validateManagedFileMutation(cleaned)
+}
+
+func qqFlashFileProgressBounds(totalFiles int64, imported uint64) (int, int) {
+	if totalFiles <= 0 || imported >= uint64(totalFiles) {
+		return 10, 95
+	}
+	total := uint64(totalFiles)
+	start := 10 + int(imported*85/total)
+	end := 10 + int((imported+1)*85/total)
+	if end <= start {
+		end = min(start+1, 95)
+	}
+	return start, end
 }
 
 func qqFlashPartialError(imported uint64, err error) error {
@@ -544,7 +559,7 @@ func (c *qqFlashClient) fetchDownloadURL(ctx context.Context, physicalID, device
 	return downloadURL, nil
 }
 
-func (c *qqFlashClient) downloadFile(ctx context.Context, instancePath, relative string, file qqFlashFile, deviceID string) error {
+func (c *qqFlashClient) downloadFile(ctx context.Context, instancePath, relative string, file qqFlashFile, deviceID string, progress func(int)) error {
 	downloadURL, err := c.fetchDownloadURL(ctx, file.PhysicalID, deviceID)
 	if err != nil {
 		return err
@@ -570,8 +585,30 @@ func (c *qqFlashClient) downloadFile(ctx context.Context, instancePath, relative
 		return errors.New("QQ flash file size changed before download")
 	}
 	options := secureWriteOptions{Mode: 0o640, ExpectedSize: file.Size, Replace: true, RejectExistingLink: true}
-	_, err = writeFileWithinNoFollow(instancePath, relative, response.Body, options)
+	reader := &qqFlashDownloadProgressReader{reader: response.Body, total: file.Size, progress: progress, lastPercent: -1}
+	_, err = writeFileWithinNoFollow(instancePath, relative, reader, options)
 	return err
+}
+
+type qqFlashDownloadProgressReader struct {
+	reader      io.Reader
+	total       int64
+	read        int64
+	lastPercent int
+	progress    func(int)
+}
+
+func (reader *qqFlashDownloadProgressReader) Read(destination []byte) (int, error) {
+	count, err := reader.reader.Read(destination)
+	reader.read += int64(count)
+	if reader.progress != nil && reader.total > 0 {
+		percent := min(int(float64(reader.read)*100/float64(reader.total)), 100)
+		if percent > reader.lastPercent {
+			reader.lastPercent = percent
+			reader.progress(percent)
+		}
+	}
+	return count, err
 }
 
 func (c *qqFlashClient) signedRPC(ctx context.Context, method, command, service string, payload any, deviceID string, destination any) error {
