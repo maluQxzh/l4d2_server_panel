@@ -303,6 +303,7 @@ type operationPayload struct {
 	Archive              string            `json:"archive,omitempty"`
 	SourcePath           string            `json:"source_path,omitempty"`
 	Source               string            `json:"source,omitempty"`
+	ShareURL             string            `json:"share_url,omitempty"`
 	Kind                 string            `json:"kind,omitempty"`
 	SourceID             string            `json:"source_id,omitempty"`
 	PackagePath          string            `json:"package_path,omitempty"`
@@ -1317,7 +1318,7 @@ func (e *Executor) list(_ context.Context, job domain.Job, progress ProgressFunc
 	return map[string]any{"files": files}, nil
 }
 
-func (e *Executor) file(_ context.Context, job domain.Job, progress ProgressFunc) (map[string]any, error) {
+func (e *Executor) file(ctx context.Context, job domain.Job, progress ProgressFunc) (map[string]any, error) {
 	payload, err := decodeOperation(job)
 	if err != nil {
 		return nil, err
@@ -1352,6 +1353,8 @@ func (e *Executor) file(_ context.Context, job domain.Job, progress ProgressFunc
 		}
 		progress(100, "file written")
 		return map[string]any{"path": relative, "size": size, "sha256": digest}, nil
+	case "qq_flash":
+		return importQQFlashFile(ctx, path, relative, payload.ShareURL, progress)
 	case "delete":
 		if err := verifyManagedFilePrecondition(path, relative, payload.ExpectedSHA256); err != nil {
 			return nil, err
@@ -1362,7 +1365,7 @@ func (e *Executor) file(_ context.Context, job domain.Job, progress ProgressFunc
 		progress(100, "file deleted")
 		return map[string]any{"path": relative}, nil
 	default:
-		return nil, errors.New("file operation must be read, write, or delete")
+		return nil, errors.New("file operation must be read, write, qq_flash, or delete")
 	}
 }
 

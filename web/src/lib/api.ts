@@ -361,6 +361,10 @@ export const api = {
     `/instances/${encodeURIComponent(instanceId)}/files/content?path=${encodeURIComponent(path)}`,
     { method: "PUT", body: JSON.stringify(contentBase64 != null ? { content_base64: contentBase64, expected_sha256: expectedSha256 } : { content, expected_sha256: expectedSha256 }) },
   ),
+  importQQFlashFile: (instanceId: string, relativePath: string, shareUrl: string) => request<{ job_id: string }>(
+    `/instances/${encodeURIComponent(instanceId)}/files/qq-flash`,
+    { method: "POST", body: JSON.stringify({ relative_path: relativePath, share_url: shareUrl }) },
+  ),
   deleteFile: (instanceId: string, path: string, expectedSha256?: string) => request<{ job_id: string }>(
     `/instances/${encodeURIComponent(instanceId)}/files/content?path=${encodeURIComponent(path)}`,
     { method: "DELETE", headers: expectedSha256 ? { "If-Match": `"${expectedSha256}"` } : undefined },

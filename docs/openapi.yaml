@@ -1326,6 +1326,33 @@ paths:
               schema: { $ref: "#/components/schemas/JobReference" }
         "400": { $ref: "#/components/responses/BadRequest" }
 
+  /instances/{instanceId}/files/qq-flash:
+    post:
+      tags: [Files]
+      summary: 由 Agent 从 QQ 闪传分享链接导入文件
+      description: >
+        需要实例 operate。只接受 qfile.qq.com 的 HTTPS 分享链接；Agent 分页读取分享中的全部文件和目录，
+        从固定腾讯主机逐文件换取短期下载地址并直接流式写入目标白名单目录，Control 不转发文件正文。
+        面板不限制分享内文件数量或文件大小，分享链接在任务中加密保存。当前不鉴定文件内容，但仍拒绝
+        文件 API 禁止的可执行/加载扩展名，并对每个文件执行路径边界、无链接和精确大小检查。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QQFlashFileImportRequest" }
+      responses:
+        "202":
+          description: 节点直连下载任务已排队
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /jobs:
     get:
       tags: [Jobs]
@@ -2957,6 +2984,19 @@ components:
         content_base64: { type: string, contentEncoding: base64 }
         expected_sha256: { type: string, pattern: "^[A-Fa-f0-9]{64}$" }
       description: content 与 content_base64 互斥；空对象创建/覆盖为空文本文件。
+
+    QQFlashFileImportRequest:
+      type: object
+      required: [relative_path, share_url]
+      additionalProperties: false
+      properties:
+        relative_path:
+          type: string
+          description: cfg、addons、logs 或其 left4dead2 对应目录下的实例内目标目录；分享目录结构会保留在其下。
+        share_url:
+          type: string
+          maxLength: 2048
+          description: 可为单个 https://qfile.qq.com/q/... 链接或包含该链接的 QQ 分享文本。
 
     Schedule:
       type: object

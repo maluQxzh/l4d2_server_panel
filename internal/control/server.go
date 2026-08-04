@@ -241,6 +241,7 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requireInstancePermission(PermissionOperate)).Get("/instances/{instanceID}/files/content", s.handleInstanceFileContent)
 			r.With(s.requireInstancePermission(PermissionOperate)).Put("/instances/{instanceID}/files/content", s.handleWriteInstanceFile)
 			r.With(s.requireInstancePermission(PermissionOperate)).Delete("/instances/{instanceID}/files/content", s.handleDeleteInstanceFile)
+			r.With(s.requireInstancePermission(PermissionOperate)).Post("/instances/{instanceID}/files/qq-flash", s.handleImportQQFlashFile)
 			r.With(s.requirePermission(PermissionRead)).Get("/jobs", s.handleListJobs)
 			r.With(s.requireJobPermission(PermissionRead)).Get("/jobs/{jobID}", s.handleGetJob)
 			r.With(s.requireJobPermission(PermissionOperate)).Post("/jobs/{jobID}/cancel", s.handleCancelJob)

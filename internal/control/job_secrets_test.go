@@ -127,6 +127,23 @@ func TestUploadedPackageContentIsEncryptedAtRest(t *testing.T) {
 	}
 }
 
+func TestQQFlashShareURLIsEncryptedAtRest(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	payload := map[string]any{"operation": "qq_flash", "share_url": "https://qfile.qq.com/q/Example123"}
+	if err := sealJobPayloadSecrets(key, "file", payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["share_url"] != encryptedValuePlaceholder || payload["share_url_ciphertext"] == "" {
+		t.Fatalf("QQ flash share URL was not protected: %#v", payload)
+	}
+	if err := unsealJobPayloadSecrets(key, "file", payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["share_url"] != "https://qfile.qq.com/q/Example123" || payload["share_url_ciphertext"] != nil {
+		t.Fatalf("QQ flash share URL did not round trip safely: %#v", payload)
+	}
+}
+
 func TestJobRedactionRecursivelyHidesSecretLocators(t *testing.T) {
 	payload := map[string]any{
 		"snapshot_path": "package-versions/private.bin",
