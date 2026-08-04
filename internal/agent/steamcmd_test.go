@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -103,5 +104,62 @@ func TestInstalledBuildIDPrefersInstanceManifest(t *testing.T) {
 	}
 	if buildID != "45678901" || source != "instance" {
 		t.Fatalf("unexpected installed build result %q from %q", buildID, source)
+	}
+}
+
+func TestFindWorkshopVPKFilesSupportsDirectAndLinuxLegacyLayouts(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		relative string
+		fileName string
+	}{
+		{name: "direct VPK", relative: filepath.Join("steamapps", "workshop", "content", "550", "123"), fileName: "campaign.vpk"},
+		{name: "Linux legacy VPK", relative: filepath.Join("Steam", "steamapps", "workshop", "content", "550", "123"), fileName: "456_legacy.bin"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			steamRoot := t.TempDir()
+			contentRoot := filepath.Join(steamRoot, test.relative)
+			if err := os.MkdirAll(contentRoot, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			want := filepath.Join(contentRoot, test.fileName)
+			if err := os.WriteFile(want, validTestVPK([]byte("workshop"), 1), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			files, err := findWorkshopVPKFiles(steamRoot, "123")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(files) != 1 || !samePath(files[0], want) {
+				t.Fatalf("unexpected Workshop files: %#v", files)
+			}
+		})
+	}
+}
+
+func TestFindWorkshopVPKFilesPrefersNativeLayout(t *testing.T) {
+	steamRoot := t.TempDir()
+	direct := filepath.Join(steamRoot, "steamapps", "workshop", "content", "550", "123", "direct.vpk")
+	legacy := filepath.Join(steamRoot, "Steam", "steamapps", "workshop", "content", "550", "123", "456_legacy.bin")
+	for _, path := range []string{direct, legacy} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, validTestVPK([]byte("workshop"), 1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	files, err := findWorkshopVPKFiles(steamRoot, "123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := legacy
+	if runtime.GOOS == "windows" {
+		want = direct
+	}
+	if len(files) != 1 || !samePath(files[0], want) {
+		t.Fatalf("unexpected native Workshop layout selection: %#v", files)
 	}
 }

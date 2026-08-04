@@ -83,7 +83,7 @@ func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source s
 			if err != nil {
 				return nil, fmt.Errorf("Workshop item %s contains an invalid VPK: %w", download.itemID, err)
 			}
-			name := download.itemID + "_" + filepath.Base(file)
+			name := workshopInstalledVPKName(download.itemID, filepath.Base(file))
 			relative := filepath.ToSlash(filepath.Join("left4dead2", "addons", name))
 			key := strings.ToLower(filepath.Clean(relative))
 			if destinations[key] {
@@ -131,6 +131,13 @@ func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source s
 		result["collection_lookup_warning"] = boundedError(lookupErr)
 	}
 	return result, nil
+}
+
+func workshopInstalledVPKName(itemID, sourceName string) string {
+	if strings.HasSuffix(strings.ToLower(sourceName), "_legacy.bin") {
+		sourceName = sourceName[:len(sourceName)-len("_legacy.bin")] + ".vpk"
+	}
+	return itemID + "_" + sourceName
 }
 
 func boundedError(err error) string {

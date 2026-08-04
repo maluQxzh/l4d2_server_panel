@@ -119,6 +119,22 @@ func TestInstallWorkshopFallsBackToOrdinaryItemAndInstallsValidatedVPK(t *testin
 	}
 }
 
+func TestInstallWorkshopNormalizesSteamLegacyBinAsVPK(t *testing.T) {
+	executor, instancePath := newWorkshopTestExecutor(t)
+	vpk := filepath.Join(t.TempDir(), "854973547814469364_legacy.bin")
+	writeTestVPK(t, vpk)
+	executor.steam = &workshopSteamOperations{files: map[string][]string{"1089140091": {vpk}}, errors: map[string]error{}}
+	executor.workshopCollectionResolver = func(context.Context, string) (bool, []string, error) { return false, nil, nil }
+
+	if _, err := executor.installWorkshop(context.Background(), domain.Job{ID: "job", InstanceID: "instance"}, "1089140091", func(int, string) {}); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(instancePath, "left4dead2", "addons", "1089140091_854973547814469364.vpk")
+	if _, err := os.Stat(destination); err != nil {
+		t.Fatalf("legacy Workshop VPK was not installed with a .vpk name: %v", err)
+	}
+}
+
 func TestInstallWorkshopDoesNotRaceOverwriteExistingTarget(t *testing.T) {
 	executor, instancePath := newWorkshopTestExecutor(t)
 	vpk := filepath.Join(t.TempDir(), "campaign.vpk")

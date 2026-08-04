@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -438,30 +440,75 @@ func (s *SteamCMD) WorkshopItem(ctx context.Context, itemID string, emit func(in
 	if err := cmd.Wait(); err != nil {
 		return nil, fmt.Errorf("SteamCMD Workshop download failed: %w: %s", err, lastOutput(lines, 20))
 	}
-	root := filepath.Join(filepath.Dir(s.path), "steamapps", "workshop", "content", "550", itemID)
-	files := make([]string, 0)
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return errors.New("Workshop download contains a symlink")
-		}
-		if !entry.IsDir() && strings.EqualFold(filepath.Ext(entry.Name()), ".vpk") {
-			files = append(files, path)
-		}
-		return nil
-	})
+	files, err := findWorkshopVPKFiles(filepath.Dir(s.path), itemID)
 	if err != nil {
 		return nil, err
-	}
-	if len(files) == 0 {
-		return nil, errors.New("Workshop item did not contain a VPK")
 	}
 	if emit != nil {
 		emit(100, "Workshop item downloaded")
 	}
 	return files, nil
+}
+
+// SteamCMD uses two Workshop layouts across the supported platforms. Windows
+// normally writes below steamapps directly, while Linux legacy Workshop depots
+// are written below $HOME/Steam/steamapps. The Agent fixes HOME to steamRoot,
+// so both candidates remain beneath the configured SteamCMD directory.
+func findWorkshopVPKFiles(steamRoot, itemID string) ([]string, error) {
+	if err := validateWorkshopID(itemID); err != nil {
+		return nil, err
+	}
+	relativeRoots := []string{
+		filepath.Join("steamapps", "workshop", "content", "550", itemID),
+		filepath.Join("Steam", "steamapps", "workshop", "content", "550", itemID),
+	}
+	if runtime.GOOS != "windows" {
+		relativeRoots[0], relativeRoots[1] = relativeRoots[1], relativeRoots[0]
+	}
+	foundRoot := false
+	for _, relativeRoot := range relativeRoots {
+		root, err := ResolveWithin(steamRoot, relativeRoot)
+		if err != nil {
+			return nil, fmt.Errorf("resolve Workshop content directory: %w", err)
+		}
+		if _, err := os.Lstat(root); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		foundRoot = true
+		files := make([]string, 0)
+		err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				return errors.New("Workshop download contains a symlink")
+			}
+			if entry.IsDir() || !isWorkshopVPKCandidate(entry.Name()) {
+				return nil
+			}
+			files = append(files, path)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(files) > 0 {
+			sort.Strings(files)
+			return files, nil
+		}
+	}
+	if !foundRoot {
+		return nil, errors.New("Workshop content directory was not created by SteamCMD")
+	}
+	return nil, errors.New("Workshop item did not contain a VPK")
+}
+
+func isWorkshopVPKCandidate(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, ".vpk") || strings.HasSuffix(lower, "_legacy.bin")
 }
 
 func BuildSteamCMDArgs(installDir string, appID int, validate bool) []string {
