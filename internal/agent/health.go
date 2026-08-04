@@ -2,10 +2,7 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net"
-	"strconv"
 	"time"
 )
 
@@ -15,11 +12,6 @@ func (e *Executor) waitForStartHealth(ctx context.Context, record InstanceRecord
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	host, port := rconEndpoint(record, payload)
-	if port <= 0 || port > 65535 {
-		return errors.New("invalid health-check port")
-	}
-	address := net.JoinHostPort(host, strconv.Itoa(port))
 	var lastInfoErr, lastRCONError error
 	for {
 		state := e.processes.State(record.ID)
@@ -27,10 +19,10 @@ func (e *Executor) waitForStartHealth(ctx context.Context, record InstanceRecord
 			return fmt.Errorf("server process exited during health check: %s", state.ExitError)
 		}
 		infoCtx, infoCancel := context.WithTimeout(checkCtx, 2*time.Second)
-		_, lastInfoErr = (A2SClient{Timeout: 2 * time.Second}).Info(infoCtx, address)
+		_, lastInfoErr = queryLocalA2SInfo(infoCtx, record, payload, 2*time.Second)
 		infoCancel()
 		rconCtx, rconCancel := context.WithTimeout(checkCtx, 2*time.Second)
-		_, lastRCONError = (RCONClient{Timeout: 2 * time.Second}).Execute(rconCtx, address, payload.RCONPassword, "status")
+		_, lastRCONError = e.executeInstanceRCON(rconCtx, record, payload, payload.RCONPassword, "status", 2*time.Second)
 		rconCancel()
 		if lastInfoErr == nil && lastRCONError == nil {
 			return nil

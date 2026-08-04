@@ -6,11 +6,11 @@ import (
 )
 
 func TestBuildStartArgsUsesArgumentVector(t *testing.T) {
-	got, err := BuildStartArgs(StartOptions{Port: 27015, TVPort: 27020, MaxPlayers: 8, Map: "c1m1_hotel", Mode: "coop", ExtraArgs: []string{"-secure"}})
+	got, err := BuildStartArgs(StartOptions{Port: 27015, TVPort: 27020, MaxPlayers: 8, Map: "c1m1_hotel", Mode: "coop", Difficulty: "normal", ExtraArgs: []string{"-secure"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"-console", "-game", "left4dead2", "-port", "27015", "+tv_port", "27020", "+map", "c1m1_hotel", "+mp_gamemode", "coop", "+maxplayers", "8", "+exec", "l4d2panel.cfg", "-secure"}
+	want := []string{"-console", "-game", "left4dead2", "-port", "27015", "+tv_port", "27020", "+map", "c1m1_hotel", "+mp_gamemode", "coop", "+maxplayers", "8", "+z_difficulty", "normal", "-secure", "+exec", "server.cfg"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}
@@ -31,6 +31,7 @@ func TestStartArgsRejectManagedConflictsAndInjection(t *testing.T) {
 		{"-basedir", "C:/Windows"},
 		{`-basedir C:\escape`},
 		{"-defaultgamedir=other"},
+		{"-usetcp"},
 		{"+plugin_load addons/evil"},
 		{"+hostname", "safe; quit"},
 	} {
@@ -50,7 +51,13 @@ func TestStartArgsRejectManagedConflictsAndInjection(t *testing.T) {
 	if err := ValidateStartArgs([]string{"-console", "+plugin_load", "addons/evil"}); err == nil {
 		t.Fatal("expected native plugin loader to fail")
 	}
-	for _, argument := range []string{"+rcon_password secret", "+sv_password=secret", "+plugin_load\taddons/evil", `-basedir C:\escape`, "-defaultgamedir=other"} {
+	if err := ValidateStartArgs([]string{"-console", "+exec", "server.cfg"}); err != nil {
+		t.Fatalf("managed server.cfg execution was rejected: %v", err)
+	}
+	if err := ValidateStartArgs([]string{"-console", "+exec", "server.cfg", "+exec", "server.cfg"}); err == nil {
+		t.Fatal("expected duplicate managed server.cfg execution to fail")
+	}
+	for _, argument := range []string{"+rcon_password secret", "+sv_password=secret", "+plugin_load\taddons/evil", `-basedir C:\escape`, "-defaultgamedir=other", "-usetcp"} {
 		if err := ValidateStartArgs([]string{"-console", "-game", "left4dead2", argument}); err == nil {
 			t.Errorf("ValidateStartArgs accepted packed reserved argument %q", argument)
 		}
@@ -77,10 +84,19 @@ func TestBuildStartArgsKeepsSafePackedArgumentsAvailable(t *testing.T) {
 	for _, args := range [][]string{
 		{"-console", "-game=left4dead2", "+exec=l4d2panel.cfg"},
 		{"-console", "-game left4dead2", "+exec l4d2panel.cfg"},
+		{"-console", "-game", "left4dead2", "+exec=server.cfg"},
+		{"-console", "-game", "left4dead2", "+exec", "other.cfg"},
 	} {
-		if err := ValidateStartArgs(args); err != nil {
-			t.Fatalf("ValidateStartArgs rejected safe managed arguments %#v: %v", args, err)
+		if err := ValidateStartArgs(args); err == nil {
+			t.Fatalf("ValidateStartArgs accepted explicit config injection %#v", args)
 		}
+	}
+}
+
+func TestRemoveLegacyGeneratedConfigArgs(t *testing.T) {
+	got, removed := removeLegacyGeneratedConfigArgs([]string{"-console", "+exec", "l4d2panel.cfg", "-secure"})
+	if !removed || !reflect.DeepEqual(got, []string{"-console", "-secure"}) {
+		t.Fatalf("legacy args were not migrated: removed=%v args=%#v", removed, got)
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -383,26 +382,17 @@ func (e *Executor) configure(_ context.Context, job domain.Job, progress Progres
 	if err != nil {
 		return nil, err
 	}
-	progress(100, "generated server configuration updated")
-	return map[string]any{"instance_id": record.ID, "config_path": configPath, "restart_required": e.processes.State(record.ID).Status == "running"}, nil
+	progress(100, "instance launch configuration updated")
+	return map[string]any{"instance_id": record.ID, "server_config_path": configPath, "restart_required": e.processes.State(record.ID).Status == "running"}, nil
 }
 
 func (e *Executor) applyConfiguration(record InstanceRecord, payload operationPayload) (InstanceRecord, string, error) {
-	if payload.RCONPassword == "" {
-		return record, "", errors.New("rcon_password is required to generate configuration")
-	}
 	config := payload.Instance.Config
-	config.ServerPassword = payload.ServerPassword
-	configRaw, err := buildServerConfig(config, payload.RCONPassword)
-	if err != nil {
-		return record, "", err
-	}
 	instancePath, err := e.instancePath(record)
 	if err != nil {
 		return record, "", err
 	}
-	configRelative := "left4dead2/cfg/l4d2panel.cfg"
-	if err := writeGeneratedServerConfig(instancePath, []byte(configRaw)); err != nil {
+	if err := deleteManagedFileNoFollow(instancePath, generatedConfigRelative); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return record, "", err
 	}
 	port := payload.Instance.Port
@@ -416,7 +406,7 @@ func (e *Executor) applyConfiguration(record InstanceRecord, payload operationPa
 	if maxPlayers == 0 {
 		maxPlayers = 8
 	}
-	args, err := BuildStartArgs(StartOptions{Port: port, TVPort: payload.Instance.TVPort, MaxPlayers: maxPlayers, Map: config.StartMap, Mode: config.Mode, ConfigFile: "l4d2panel.cfg", ExtraArgs: append(config.ExtraArgs, payload.ExtraArgs...)})
+	args, err := BuildStartArgs(StartOptions{Port: port, TVPort: payload.Instance.TVPort, MaxPlayers: maxPlayers, Map: config.StartMap, Mode: config.Mode, Difficulty: config.Difficulty, ExtraArgs: append(config.ExtraArgs, payload.ExtraArgs...)})
 	if err != nil {
 		return record, "", err
 	}
@@ -425,14 +415,14 @@ func (e *Executor) applyConfiguration(record InstanceRecord, payload operationPa
 	if tvPort == 0 {
 		tvPort = payload.TVPort
 	}
-	record.Args, record.AutoRestart, record.RCONHost, record.RCONPort, record.TVPort = args, config.AutoRestart, host, port, tvPort
+	record.Args, record.Config, record.AutoRestart, record.RCONHost, record.RCONPort, record.TVPort = args, config, config.AutoRestart, host, port, tvPort
 	if payload.Instance.Name != "" {
 		record.Name = payload.Instance.Name
 	}
 	if err := e.registry.Put(record); err != nil {
 		return record, "", err
 	}
-	return record, configRelative, nil
+	return record, "left4dead2/cfg/server.cfg", nil
 }
 
 func (e *Executor) createRecord(job domain.Job, payload operationPayload) (InstanceRecord, string, string, error) {
@@ -490,19 +480,10 @@ func (e *Executor) createRecord(job domain.Job, payload operationPayload) (Insta
 		}
 	}
 	config := payload.Instance.Config
-	config.ServerPassword = payload.ServerPassword
 	if config.Hostname == "" {
 		config.Hostname = payload.Name
 	}
-	secret := payload.RCONPassword
-	if secret == "" {
-		return InstanceRecord{}, "", "", errors.New("rcon_password is required to create an instance")
-	}
-	configRaw, err := buildServerConfig(config, secret)
-	if err != nil {
-		return InstanceRecord{}, "", "", err
-	}
-	if err := writeGeneratedServerConfig(instancePath, []byte(configRaw)); err != nil {
+	if err := deleteManagedFileNoFollow(instancePath, generatedConfigRelative); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return InstanceRecord{}, "", "", err
 	}
 	maxPlayers := config.MaxPlayers
@@ -520,7 +501,7 @@ func (e *Executor) createRecord(job domain.Job, payload operationPayload) (Insta
 	if mode == "" {
 		mode = payload.Mode
 	}
-	args, err := BuildStartArgs(StartOptions{Port: port, TVPort: tvPort, MaxPlayers: maxPlayers, Map: startMap, Mode: mode, ConfigFile: "l4d2panel.cfg", ExtraArgs: append(config.ExtraArgs, payload.ExtraArgs...)})
+	args, err := BuildStartArgs(StartOptions{Port: port, TVPort: tvPort, MaxPlayers: maxPlayers, Map: startMap, Mode: mode, Difficulty: config.Difficulty, ExtraArgs: append(config.ExtraArgs, payload.ExtraArgs...)})
 	if err != nil {
 		return InstanceRecord{}, "", "", err
 	}
@@ -532,11 +513,11 @@ func (e *Executor) createRecord(job domain.Job, payload operationPayload) (Insta
 		name = job.InstanceID
 	}
 	host := localGameEndpointHost(payload.Instance.Host, payload.RCONHost)
-	record := InstanceRecord{ID: job.InstanceID, Name: name, RootIndex: rootIndex, RelativePath: relative, Executable: defaultServerExecutable(), Args: args, AutoRestart: config.AutoRestart, DesiredStateKnown: true, RCONHost: host, RCONPort: port, TVPort: tvPort}
+	record := InstanceRecord{ID: job.InstanceID, Name: name, RootIndex: rootIndex, RelativePath: relative, Executable: defaultServerExecutable(), Args: args, Config: config, AutoRestart: config.AutoRestart, DesiredStateKnown: true, RCONHost: host, RCONPort: port, TVPort: tvPort}
 	if err := e.registry.Put(record); err != nil {
 		return InstanceRecord{}, "", "", err
 	}
-	return record, instancePath, secret, nil
+	return record, instancePath, payload.RCONPassword, nil
 }
 
 func (e *Executor) install(ctx context.Context, job domain.Job, reinstall bool, progress ProgressFunc) (map[string]any, error) {
@@ -552,17 +533,6 @@ func (e *Executor) install(ctx context.Context, job domain.Job, reinstall bool, 
 			return nil, err
 		}
 		_ = ignored
-	} else if payload.RCONPassword != "" && payload.Instance.ID != "" {
-		temporaryConfig := payload.Instance.Config
-		temporaryConfig.ServerPassword = payload.ServerPassword
-		configRaw, configErr := buildServerConfig(temporaryConfig, payload.RCONPassword)
-		if configErr != nil {
-			return nil, configErr
-		}
-		path, _ := e.instancePath(record)
-		if err := writeGeneratedServerConfig(path, []byte(configRaw)); err != nil {
-			return nil, err
-		}
 	}
 	path, err := e.instancePath(record)
 	if err != nil {
@@ -632,7 +602,7 @@ func (e *Executor) start(ctx context.Context, job domain.Job, progress ProgressF
 	if currentState.Status == "running" || currentState.Status == "starting" || currentState.Status == "degraded" {
 		return nil, errors.New("instance process is already running")
 	}
-	if payload.Instance.ID != "" && payload.RCONPassword != "" {
+	if payload.Instance.ID != "" {
 		record, _, err = e.applyConfiguration(record, payload)
 		if err != nil {
 			return nil, err
@@ -730,9 +700,8 @@ func (e *Executor) stop(ctx context.Context, job domain.Job, progress ProgressFu
 		}
 	}
 	if password != "" {
-		host, port := rconEndpoint(record, payload)
 		progress(15, "requesting graceful RCON shutdown")
-		_, rconErr := (RCONClient{Timeout: minDuration(grace/2, 8*time.Second)}).Execute(ctx, net.JoinHostPort(host, strconv.Itoa(port)), password, "quit")
+		_, rconErr := e.executeInstanceRCON(ctx, record, payload, password, "quit", minDuration(grace/2, 8*time.Second))
 		if rconErr != nil {
 			e.logger.Printf("instance %s RCON quit failed: %v", job.InstanceID, rconErr)
 		} else {
@@ -763,8 +732,8 @@ func (e *Executor) restartExternal(ctx context.Context, job domain.Job, record I
 	if err != nil {
 		return nil, err
 	}
-	if payload.Instance.ID == "" || payload.RCONPassword == "" {
-		return nil, errors.New("controlled restart requires current instance configuration and RCON credentials")
+	if payload.Instance.ID == "" {
+		return nil, errors.New("controlled restart requires current instance configuration")
 	}
 	previousPID := record.ExternalPID
 	path, err := e.instancePath(record)
@@ -774,9 +743,8 @@ func (e *Executor) restartExternal(ctx context.Context, job domain.Job, record I
 	progress(10, "preparing controlled restart of external server")
 	gracefulHandoff := false
 	if externalProcessMatches(ctx, record.ExternalPID, path) && payload.ExistingRCONPassword != "" {
-		host, port := rconEndpoint(record, payload)
 		progress(20, "requesting graceful RCON shutdown")
-		_, rconErr := (RCONClient{Timeout: 5 * time.Second}).Execute(ctx, net.JoinHostPort(host, strconv.Itoa(port)), payload.ExistingRCONPassword, "quit")
+		_, rconErr := e.executeInstanceRCON(ctx, record, payload, payload.ExistingRCONPassword, "quit", 5*time.Second)
 		if rconErr == nil {
 			gracefulHandoff = true
 			deadline := time.Now().Add(8 * time.Second)
@@ -1022,7 +990,7 @@ func (e *Executor) importInstance(ctx context.Context, job domain.Job, progress 
 		if maxPlayers == 0 {
 			maxPlayers = 8
 		}
-		args, err = BuildStartArgs(StartOptions{Port: port, TVPort: payload.Instance.TVPort, MaxPlayers: maxPlayers, Map: firstNonEmpty(config.StartMap, payload.Map), Mode: firstNonEmpty(config.Mode, payload.Mode), ConfigFile: "l4d2panel.cfg", ExtraArgs: append(config.ExtraArgs, payload.ExtraArgs...)})
+		args, err = BuildStartArgs(StartOptions{Port: port, TVPort: payload.Instance.TVPort, MaxPlayers: maxPlayers, Map: firstNonEmpty(config.StartMap, payload.Map), Mode: firstNonEmpty(config.Mode, payload.Mode), Difficulty: config.Difficulty, ExtraArgs: append(config.ExtraArgs, payload.ExtraArgs...)})
 		if err != nil {
 			return nil, err
 		}
@@ -1040,7 +1008,7 @@ func (e *Executor) importInstance(ctx context.Context, job domain.Job, progress 
 	if !bindRegistered {
 		external, likelyRunning = installationProcessForDirectory(path, activeSrcdsProcesses(ctx))
 	}
-	record := InstanceRecord{ID: job.InstanceID, Name: name, RootIndex: rootIndex, RelativePath: relative, Executable: executable, Args: args, AutoRestart: autoRestart, DesiredStateKnown: true, RCONHost: host, RCONPort: port, TVPort: payload.Instance.TVPort}
+	record := InstanceRecord{ID: job.InstanceID, Name: name, RootIndex: rootIndex, RelativePath: relative, Executable: executable, Args: args, Config: config, AutoRestart: autoRestart, DesiredStateKnown: true, RCONHost: host, RCONPort: port, TVPort: payload.Instance.TVPort}
 	if likelyRunning {
 		record.ExternalPID = external.PID
 	}
@@ -1061,7 +1029,7 @@ func (e *Executor) importInstance(ctx context.Context, job domain.Job, progress 
 	// Do not alter files underneath an already-running, externally-owned
 	// server. The generated configuration is installed by restartExternal
 	// immediately before the Agent takes process ownership.
-	if payload.RCONPassword != "" && !likelyRunning {
+	if !likelyRunning {
 		record, _, err = e.applyConfiguration(record, payload)
 		if err != nil {
 			_ = e.registry.Delete(job.InstanceID)
@@ -1431,12 +1399,8 @@ func (e *Executor) rcon(ctx context.Context, job domain.Job, progress ProgressFu
 	if payload.RCONPassword == "" {
 		return nil, errors.New("RCON password was not supplied")
 	}
-	host, port := rconEndpoint(record, payload)
-	if port <= 0 || port > 65535 {
-		return nil, errors.New("invalid RCON port")
-	}
 	progress(30, "sending RCON command")
-	response, err := (RCONClient{}).Execute(ctx, net.JoinHostPort(host, strconv.Itoa(port)), payload.RCONPassword, payload.Command)
+	response, err := e.executeInstanceRCON(ctx, record, payload, payload.RCONPassword, payload.Command, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1467,12 +1431,8 @@ func (e *Executor) rconPlayers(ctx context.Context, job domain.Job, progress Pro
 	if payload.RCONPassword == "" {
 		return nil, errors.New("RCON password was not supplied")
 	}
-	host, port := rconEndpoint(record, payload)
-	if port <= 0 || port > 65535 {
-		return nil, errors.New("invalid RCON port")
-	}
 	progress(30, "querying players through RCON")
-	response, err := (RCONClient{}).Execute(ctx, net.JoinHostPort(host, strconv.Itoa(port)), payload.RCONPassword, "status")
+	response, err := e.executeInstanceRCON(ctx, record, payload, payload.RCONPassword, "status", 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1585,8 +1545,7 @@ func (e *Executor) a2sInfo(ctx context.Context, job domain.Job) (map[string]any,
 	if !ok {
 		return nil, errors.New("instance is not registered")
 	}
-	host, port := rconEndpoint(record, payload)
-	info, err := (A2SClient{}).Info(ctx, net.JoinHostPort(host, strconv.Itoa(port)))
+	info, err := queryLocalA2SInfo(ctx, record, payload, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1618,8 +1577,7 @@ func (e *Executor) a2sPlayers(ctx context.Context, job domain.Job) (map[string]a
 	if !ok {
 		return nil, errors.New("instance is not registered")
 	}
-	host, port := rconEndpoint(record, payload)
-	players, err := (A2SClient{}).Players(ctx, net.JoinHostPort(host, strconv.Itoa(port)))
+	players, err := queryLocalA2SPlayers(ctx, record, payload, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -2043,63 +2001,6 @@ func validateServerExecutable(value string) error {
 	return nil
 }
 
-func buildServerConfig(config domain.InstanceConfig, rconPassword string) (string, error) {
-	var b strings.Builder
-	line := func(name, value string) error {
-		if !sourceIdentifier.MatchString(name) {
-			return fmt.Errorf("invalid CVar name %q", name)
-		}
-		if strings.ContainsAny(value, "\x00\r\n") {
-			return fmt.Errorf("invalid value for %s", name)
-		}
-		value = strings.ReplaceAll(strings.ReplaceAll(value, `\`, `\\`), `"`, `\"`)
-		fmt.Fprintf(&b, "%s \"%s\"\n", name, value)
-		return nil
-	}
-	if config.Hostname != "" {
-		if err := line("hostname", config.Hostname); err != nil {
-			return "", err
-		}
-	}
-	if err := line("rcon_password", rconPassword); err != nil {
-		return "", err
-	}
-	if config.ServerPassword != "" {
-		if err := line("sv_password", config.ServerPassword); err != nil {
-			return "", err
-		}
-	}
-	if config.Difficulty != "" {
-		if err := line("z_difficulty", config.Difficulty); err != nil {
-			return "", err
-		}
-	}
-	if config.Region != "" {
-		if err := line("sv_region", config.Region); err != nil {
-			return "", err
-		}
-	}
-	if config.SteamGroupID != "" {
-		if err := line("sv_steamgroup", config.SteamGroupID); err != nil {
-			return "", err
-		}
-	}
-	keys := make([]string, 0, len(config.CVars))
-	for key := range config.CVars {
-		if isManagedSecretCVar(key) {
-			return "", fmt.Errorf("CVar %q is managed by the encrypted secret store", key)
-		}
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		if err := line(key, config.CVars[key]); err != nil {
-			return "", err
-		}
-	}
-	return b.String(), nil
-}
-
 func isManagedSecretCVar(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "rcon_password", "sv_password":
@@ -2109,21 +2010,9 @@ func isManagedSecretCVar(name string) bool {
 	}
 }
 
-func rconEndpoint(record InstanceRecord, payload operationPayload) (string, int) {
-	host := localGameEndpointHost(payload.RCONHost, record.RCONHost)
-	port := payload.RCONPort
-	if port == 0 {
-		port = payload.Port
-	}
-	if port == 0 {
-		port = record.RCONPort
-	}
-	return host, port
-}
-
-// Game query and RCON operations always target the Agent host itself. Node
-// payloads can contain a wildcard bind address, but they must never turn these
-// fixed protocol clients into an arbitrary network/metadata endpoint.
+// Registry records keep a loopback-safe fallback instead of caller-controlled
+// network targets. Runtime A2S/RCON probing may additionally use addresses that
+// are currently assigned to this Agent host; see localGameEndpointHosts.
 func localGameEndpointHost(candidates ...string) string {
 	for _, candidate := range candidates {
 		candidate = strings.Trim(strings.TrimSpace(candidate), "[]")

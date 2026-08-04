@@ -20,23 +20,19 @@ func TestBackupV2CapturesPortableLaunchConfigWithoutSecrets(t *testing.T) {
 	instancePath := t.TempDir()
 	args, err := BuildStartArgs(StartOptions{
 		Port: 27017, TVPort: 27021, MaxPlayers: 12, Map: "c5m1_waterfront", Mode: "versus",
-		ConfigFile: "l4d2panel.cfg", ExtraArgs: []string{"-secure", "+sv_tags", "community"},
+		Difficulty: "hard", ExtraArgs: []string{"-secure", "+sv_tags", "community"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	config := domain.InstanceConfig{
-		Hostname: "Source server", ServerPassword: "source-server-secret", Difficulty: "hard",
+		Hostname: "Source server", Mode: "versus", Difficulty: "hard", MaxPlayers: 12, StartMap: "c5m1_waterfront",
 		Region: "2", SteamGroupID: "123456789", CVars: map[string]string{"sv_tags": "coop,custom"},
 	}
-	raw, err := buildServerConfig(config, "source-rcon-secret")
-	if err != nil {
+	if err := writeGeneratedServerConfig(instancePath, []byte("rcon_password \"source-rcon-secret\"\nsv_password \"source-server-secret\"\n")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeGeneratedServerConfig(instancePath, []byte(raw)); err != nil {
-		t.Fatal(err)
-	}
-	record := InstanceRecord{Args: args, RCONPort: 27017, TVPort: 27021, AutoRestart: true}
+	record := InstanceRecord{Args: args, Config: config, RCONPort: 27017, TVPort: 27021, AutoRestart: true}
 	launch, err := backupLaunchFromRecord(record, instancePath)
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +56,7 @@ func TestBackupV2CapturesPortableLaunchConfigWithoutSecrets(t *testing.T) {
 		t.Fatalf("extra args = %#v", manifest.Launch.ExtraArgs)
 	}
 	if manifest.Launch.Hostname != "Source server" || manifest.Launch.CVars["sv_tags"] != "coop,custom" {
-		t.Fatalf("safe generated configuration was not captured: %#v", manifest.Launch)
+		t.Fatalf("safe stored configuration was not captured: %#v", manifest.Launch)
 	}
 	reader, err := zip.OpenReader(archive)
 	if err != nil {

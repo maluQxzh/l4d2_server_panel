@@ -11,18 +11,21 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
 var ErrInstancePathRegistered = errors.New("instance path is already registered")
 
 type InstanceRecord struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	RootIndex    int      `json:"root_index"`
-	RelativePath string   `json:"relative_path"`
-	Executable   string   `json:"executable,omitempty"`
-	Args         []string `json:"args,omitempty"`
-	AutoRestart  bool     `json:"auto_restart"`
+	ID           string                `json:"id"`
+	Name         string                `json:"name"`
+	RootIndex    int                   `json:"root_index"`
+	RelativePath string                `json:"relative_path"`
+	Executable   string                `json:"executable,omitempty"`
+	Args         []string              `json:"args,omitempty"`
+	Config       domain.InstanceConfig `json:"config,omitempty"`
+	AutoRestart  bool                  `json:"auto_restart"`
 	// DesiredRunning records the operator's durable intent independently from
 	// the crash-restart policy. DesiredStateKnown distinguishes a deliberate
 	// stopped state from registries written by Agents predating this field.
@@ -65,6 +68,12 @@ func OpenRegistry(dataDir string) (*Registry, error) {
 			legacyMigrated = true
 			continue
 		}
+		cleanedArgs, removedLegacyConfig := removeLegacyGeneratedConfigArgs(record.Args)
+		if removedLegacyConfig {
+			record.Args = cleanedArgs
+			r.records[id] = record
+			legacyMigrated = true
+		}
 		if record.DesiredStateKnown {
 			continue
 		}
@@ -91,6 +100,8 @@ func (r *Registry) Get(id string) (InstanceRecord, bool) {
 	defer r.mu.RUnlock()
 	v, ok := r.records[id]
 	v.Args = append([]string(nil), v.Args...)
+	v.Config.ExtraArgs = append([]string(nil), v.Config.ExtraArgs...)
+	v.Config.CVars = cloneStringMap(v.Config.CVars)
 	return v, ok
 }
 
@@ -100,6 +111,8 @@ func (r *Registry) List() []InstanceRecord {
 	result := make([]InstanceRecord, 0, len(r.records))
 	for _, v := range r.records {
 		v.Args = append([]string(nil), v.Args...)
+		v.Config.ExtraArgs = append([]string(nil), v.Config.ExtraArgs...)
+		v.Config.CVars = cloneStringMap(v.Config.CVars)
 		result = append(result, v)
 	}
 	return result
@@ -121,6 +134,9 @@ func (r *Registry) Put(record InstanceRecord) error {
 		)
 	}
 	record.DesiredStateKnown = true
+	record.Args = append([]string(nil), record.Args...)
+	record.Config.ExtraArgs = append([]string(nil), record.Config.ExtraArgs...)
+	record.Config.CVars = cloneStringMap(record.Config.CVars)
 	old, exists := r.records[record.ID]
 	now := time.Now().UTC()
 	if exists && record.CreatedAt.IsZero() {
@@ -140,6 +156,31 @@ func (r *Registry) Put(record InstanceRecord) error {
 		return err
 	}
 	return nil
+}
+
+func removeLegacyGeneratedConfigArgs(args []string) ([]string, bool) {
+	result := make([]string, 0, len(args))
+	removed := false
+	for index := 0; index < len(args); index++ {
+		name, inline, hasInline := splitStartArgument(args[index])
+		if name != "+exec" {
+			result = append(result, args[index])
+			continue
+		}
+		value := inline
+		if !hasInline && index+1 < len(args) {
+			value = strings.TrimSpace(args[index+1])
+		}
+		if !strings.EqualFold(value, "l4d2panel.cfg") {
+			result = append(result, args[index])
+			continue
+		}
+		removed = true
+		if !hasInline {
+			index++
+		}
+	}
+	return result, removed
 }
 
 func (r *Registry) validateUniquePathsLocked() error {

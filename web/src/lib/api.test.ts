@@ -62,6 +62,12 @@ describe("API 客户端", () => {
     await expect(api.nodes()).rejects.toMatchObject({ status: 403, code: "forbidden", message: "权限不足" } satisfies Partial<ApiError>);
   });
 
+  it("按实例查询任务用于显示 RCON 刷新诊断", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ items: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await api.instanceJobs("instance/one");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/jobs?instance_id=instance%2Fone");
+  });
+
   it("恢复码登录不会同时提交 TOTP", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
       user: { id: "user-1", username: "admin", display_name: "管理员", role: "owner", totp_enabled: true, created_at: "2026-08-01T00:00:00Z" },
@@ -119,18 +125,15 @@ describe("API 客户端", () => {
     expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get("Idempotency-Key")).toBeTruthy();
   });
 
-  it("配置回滚、通知已读与投递重试均为幂等写请求", async () => {
+  it("通知已读与投递重试均为幂等写请求", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify({ instance: {}, job_id: "job-rollback" }), { status: 202, headers: { "Content-Type": "application/json" } }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
 
-    await api.rollbackConfig("instance-1", 2);
     await api.markNotificationRead("notice-1");
     await api.retryNotificationDelivery("delivery-1");
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "/api/v1/instances/instance-1/config-versions/2/rollback",
       "/api/v1/notifications/notice-1/read",
       "/api/v1/notification-deliveries/delivery-1/retry",
     ]);

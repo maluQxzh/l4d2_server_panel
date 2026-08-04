@@ -7,6 +7,13 @@ export const gameModes = [
   { value: "mutation4", label: "绝境求生" },
 ] as const;
 
+export const gameDifficulties = [
+  { value: "easy", label: "简单" },
+  { value: "normal", label: "普通" },
+  { value: "hard", label: "高级" },
+  { value: "impossible", label: "专家" },
+] as const;
+
 export const officialMapGroups = [
   { campaign: "死亡中心", maps: [["c1m1_hotel", "酒店"], ["c1m2_streets", "街道"], ["c1m3_mall", "购物中心"], ["c1m4_atrium", "中庭"]] },
   { campaign: "黑色狂欢节", maps: [["c2m1_highway", "公路"], ["c2m2_fairgrounds", "游乐场"], ["c2m3_coaster", "过山车"], ["c2m4_barns", "谷仓"], ["c2m5_concert", "音乐会"]] },

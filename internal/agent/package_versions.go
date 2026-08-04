@@ -6,11 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -411,11 +409,10 @@ func (e *Executor) verifySourceModAvailable(ctx context.Context, job domain.Job,
 	if !ok {
 		return errors.New("instance disappeared before SourceMod verification")
 	}
-	host, port := rconEndpoint(record, payload)
-	if port <= 0 || port > 65535 {
+	if port := gameEndpointPort(record, payload); port <= 0 || port > 65535 {
 		return errors.New("invalid RCON port for SourceMod verification")
 	}
-	response, err := (RCONClient{Timeout: 8 * time.Second}).Execute(ctx, net.JoinHostPort(host, strconv.Itoa(port)), payload.RCONPassword, "sm plugins list")
+	response, err := e.executeInstanceRCON(ctx, record, payload, payload.RCONPassword, "sm plugins list", 8*time.Second)
 	if err != nil {
 		return err
 	}

@@ -526,7 +526,7 @@ func validInstancePorts(port, tvPort int) bool {
 	return port == 0 || tvPort == 0 || port != tvPort
 }
 
-func (s *Store) UpdateInstance(ctx context.Context, id, name string, config *domain.InstanceConfig, expectedVersion int, userID string) (domain.Instance, error) {
+func (s *Store) UpdateInstance(ctx context.Context, id, name string, config *domain.InstanceConfig, expectedVersion int, _ string) (domain.Instance, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.Instance{}, err
@@ -546,12 +546,6 @@ func (s *Store) UpdateInstance(ctx context.Context, id, name string, config *dom
 		current.Name = strings.TrimSpace(name)
 	}
 	if config != nil {
-		previous, _ := json.Marshal(current.Config)
-		_, err = tx.ExecContext(ctx, `INSERT INTO config_versions(id,instance_id,version,config,created_by) VALUES(?1,?2,?3,?4,?5)
-			ON CONFLICT(instance_id,version) DO NOTHING`, uuid.NewString(), id, current.Version, string(previous), nullableUUID(userID))
-		if err != nil {
-			return domain.Instance{}, err
-		}
 		current.Config = *config
 		current.MaxPlayers = config.MaxPlayers
 	}
@@ -567,7 +561,7 @@ func (s *Store) UpdateInstance(ctx context.Context, id, name string, config *dom
 }
 
 func (s *Store) UpdateInstanceAndQueue(ctx context.Context, id, name string, config *domain.InstanceConfig, expectedVersion int,
-	userID, idempotencyKey string, serverPasswordCiphertext *string) (domain.Instance, domain.Job, bool, error) {
+	userID, idempotencyKey string, rconPasswordCiphertext, serverPasswordCiphertext *string) (domain.Instance, domain.Job, bool, error) {
 	request := map[string]any{"name": name, "config": config, "version": expectedVersion}
 	if serverPasswordCiphertext != nil {
 		// This compatibility path cannot recover the plaintext after encryption.
@@ -576,16 +570,19 @@ func (s *Store) UpdateInstanceAndQueue(ctx context.Context, id, name string, con
 		// changed ciphertext.
 		request["server_password_ciphertext"] = *serverPasswordCiphertext
 	}
+	if rconPasswordCiphertext != nil {
+		request["rcon_password_ciphertext"] = *rconPasswordCiphertext
+	}
 	requestFingerprint, err := canonicalRequestFingerprint("instance-config", id, "configure", request)
 	if err != nil {
 		return domain.Instance{}, domain.Job{}, false, err
 	}
 	return s.UpdateInstanceAndQueueWithFingerprint(ctx, id, name, config, expectedVersion, userID, idempotencyKey,
-		serverPasswordCiphertext, requestFingerprint)
+		rconPasswordCiphertext, serverPasswordCiphertext, requestFingerprint)
 }
 
 func (s *Store) UpdateInstanceAndQueueWithFingerprint(ctx context.Context, id, name string, config *domain.InstanceConfig, expectedVersion int,
-	userID, idempotencyKey string, serverPasswordCiphertext *string, requestFingerprint string) (domain.Instance, domain.Job, bool, error) {
+	userID, idempotencyKey string, rconPasswordCiphertext, serverPasswordCiphertext *string, requestFingerprint string) (domain.Instance, domain.Job, bool, error) {
 	if len(idempotencyKey) > 200 {
 		return domain.Instance{}, domain.Job{}, false, errors.New("idempotency key is too long")
 	}
@@ -642,17 +639,21 @@ func (s *Store) UpdateInstanceAndQueueWithFingerprint(ctx context.Context, id, n
 		current.Name = strings.TrimSpace(name)
 	}
 	if config != nil {
-		previous, _ := json.Marshal(current.Config)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO config_versions(id,instance_id,version,config,created_by) VALUES(?1,?2,?3,?4,?5)
-			ON CONFLICT(instance_id,version) DO NOTHING`, uuid.NewString(), id, current.Version, string(previous), nullableUUID(userID)); err != nil {
-			return domain.Instance{}, domain.Job{}, false, err
-		}
 		config.ServerPassword = ""
 		current.Config = *config
 		current.MaxPlayers = config.MaxPlayers
 	}
 	if serverPasswordCiphertext != nil {
 		tag, err := tx.ExecContext(ctx, `UPDATE instance_secrets SET server_password_ciphertext=NULLIF(?2,''),updated_at=unixepoch('subsec')*1000000 WHERE instance_id=?1`, id, *serverPasswordCiphertext)
+		if err != nil {
+			return domain.Instance{}, domain.Job{}, false, err
+		}
+		if resultRowsAffected(tag) == 0 {
+			return domain.Instance{}, domain.Job{}, false, ErrNotFound
+		}
+	}
+	if rconPasswordCiphertext != nil {
+		tag, err := tx.ExecContext(ctx, `UPDATE instance_secrets SET rcon_ciphertext=?2,updated_at=unixepoch('subsec')*1000000 WHERE instance_id=?1`, id, *rconPasswordCiphertext)
 		if err != nil {
 			return domain.Instance{}, domain.Job{}, false, err
 		}

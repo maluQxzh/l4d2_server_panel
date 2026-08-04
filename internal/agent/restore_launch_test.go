@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
@@ -22,7 +21,7 @@ func TestRestoreV2UsesSourceLaunchConfigAndTargetSecrets(t *testing.T) {
 	executor.processes = processes
 
 	targetArgs, err := BuildStartArgs(StartOptions{
-		Port: 27019, TVPort: 27025, MaxPlayers: 4, Map: "c2m1_highway", Mode: "coop", ConfigFile: "l4d2panel.cfg",
+		Port: 27019, TVPort: 27025, MaxPlayers: 4, Map: "c2m1_highway", Mode: "coop",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -33,11 +32,7 @@ func TestRestoreV2UsesSourceLaunchConfigAndTargetSecrets(t *testing.T) {
 	if err := executor.registry.Put(record); err != nil {
 		t.Fatal(err)
 	}
-	targetConfig, err := buildServerConfig(domain.InstanceConfig{Hostname: "Target hostname", MaxPlayers: 4}, "target-old-rcon")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writeGeneratedServerConfig(targetPath, []byte(targetConfig)); err != nil {
+	if err := writeGeneratedServerConfig(targetPath, []byte("hostname \"Target hostname\"\nrcon_password \"target-old-rcon\"\n")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -89,30 +84,18 @@ func TestRestoreV2UsesSourceLaunchConfigAndTargetSecrets(t *testing.T) {
 	if restoredLaunch.Mode != sourceLaunch.Mode || restoredLaunch.StartMap != sourceLaunch.StartMap || restoredLaunch.MaxPlayers != sourceLaunch.MaxPlayers || !reflect.DeepEqual(restoredLaunch.ExtraArgs, sourceLaunch.ExtraArgs) {
 		t.Fatalf("registry uses the wrong launch configuration: %#v", restoredLaunch)
 	}
-	generated, err := os.ReadFile(filepath.Join(targetPath, "left4dead2", "cfg", "l4d2panel.cfg"))
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join(targetPath, "left4dead2", "cfg", "l4d2panel.cfg")); !os.IsNotExist(err) {
+		t.Fatalf("legacy generated configuration was not removed: %v", err)
 	}
-	text := string(generated)
-	for _, expected := range []string{
-		`hostname "Restored source hostname"`, `rcon_password "target-new-rcon"`,
-		`sv_password "target-new-server-password"`, `z_difficulty "impossible"`, `sv_consistency "1"`,
-	} {
-		if !strings.Contains(text, expected) {
-			t.Fatalf("generated target configuration is missing %q: %s", expected, text)
-		}
-	}
-	for _, forbidden := range []string{"target-old-rcon", "Target hostname"} {
-		if strings.Contains(text, forbidden) {
-			t.Fatalf("generated target configuration retained stale value %q: %s", forbidden, text)
-		}
+	if restoredRecord.Config.Hostname != sourceLaunch.Hostname || restoredRecord.Config.Difficulty != sourceLaunch.Difficulty || !reflect.DeepEqual(restoredRecord.Config.CVars, sourceLaunch.CVars) {
+		t.Fatalf("restored safe configuration was not persisted in the registry: %#v", restoredRecord.Config)
 	}
 }
 
 func TestRestoreCapturedInstanceStateRestoresGeneratedConfigAndRegistry(t *testing.T) {
 	executor, _, instancePath := uploadedPackageExecutor(t)
 	original, _ := executor.registry.Get("instance")
-	original.Args = []string{"-console", "-game", "left4dead2", "-port", "27015", "+map", "c1m1_hotel", "+mp_gamemode", "coop", "+maxplayers", "8", "+exec", "l4d2panel.cfg"}
+	original.Args = []string{"-console", "-game", "left4dead2", "-port", "27015", "+map", "c1m1_hotel", "+mp_gamemode", "coop", "+maxplayers", "8"}
 	if err := executor.registry.Put(original); err != nil {
 		t.Fatal(err)
 	}

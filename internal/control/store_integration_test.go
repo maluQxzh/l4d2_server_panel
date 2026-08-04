@@ -658,7 +658,11 @@ func testAtomicCancellationProjection(t *testing.T, ctx context.Context, store *
 	actions := []string{"start", "stop", "restart", "install", "reinstall", "import", "configure", "update", "validate"}
 	var lastCanceled domain.Job
 	for index, action := range actions {
-		if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
+		status := domain.InstanceStopped
+		if action == "restart" {
+			status = domain.InstanceRunning
+		}
+		if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status=?2 WHERE id=?1`, instance.ID, status); err != nil {
 			t.Fatal(err)
 		}
 		job, reused, err := store.QueueInstanceJob(ctx, instance.ID, action, map[string]any{}, ownerID,
@@ -1494,16 +1498,22 @@ func testIdempotencyRequestEquivalence(t *testing.T, ctx context.Context, store 
 		t.Fatal(err)
 	}
 	firstCiphertext := "random-ciphertext-one"
+	firstRCONCiphertext := "rcon-ciphertext-one"
 	updated, configureJob, reused, err := store.UpdateInstanceAndQueueWithFingerprint(ctx, instanceB.ID, instanceB.Name, &config,
-		instanceB.Version, ownerID, "equivalent-config", &firstCiphertext, configFingerprint)
+		instanceB.Version, ownerID, "equivalent-config", &firstRCONCiphertext, &firstCiphertext, configFingerprint)
 	if err != nil || reused {
 		t.Fatalf("queue configure job: reused=%v err=%v", reused, err)
 	}
 	secondCiphertext := "random-ciphertext-two"
+	secondRCONCiphertext := "rcon-ciphertext-two"
 	replayedInstance, replayedConfigure, reused, err := store.UpdateInstanceAndQueueWithFingerprint(ctx, instanceB.ID, instanceB.Name,
-		&config, instanceB.Version, ownerID, "equivalent-config", &secondCiphertext, configFingerprint)
+		&config, instanceB.Version, ownerID, "equivalent-config", &secondRCONCiphertext, &secondCiphertext, configFingerprint)
 	if err != nil || !reused || replayedConfigure.ID != configureJob.ID || replayedInstance.Version != updated.Version {
 		t.Fatalf("configure replay: instance=%#v job=%#v reused=%v err=%v", replayedInstance, replayedConfigure, reused, err)
+	}
+	storedRCON, storedServer, err := store.InstanceSecrets(ctx, instanceB.ID)
+	if err != nil || storedRCON != firstRCONCiphertext || storedServer != firstCiphertext {
+		t.Fatalf("configure secret update = rcon %q server %q err=%v", storedRCON, storedServer, err)
 	}
 	changedConfigFingerprint, err := canonicalRequestFingerprint("instance-config", instanceB.ID, "configure", map[string]any{
 		"name": instanceB.Name, "config": config, "server_password": "second-password", "version": instanceB.Version,
@@ -1512,7 +1522,7 @@ func testIdempotencyRequestEquivalence(t *testing.T, ctx context.Context, store 
 		t.Fatal(err)
 	}
 	if _, _, _, err := store.UpdateInstanceAndQueueWithFingerprint(ctx, instanceB.ID, instanceB.Name, &config, instanceB.Version,
-		ownerID, "equivalent-config", &secondCiphertext, changedConfigFingerprint); !errors.Is(err, ErrConflict) {
+		ownerID, "equivalent-config", nil, &secondCiphertext, changedConfigFingerprint); !errors.Is(err, ErrConflict) {
 		t.Fatalf("changed config secret reused original key: %v", err)
 	}
 

@@ -36,7 +36,7 @@ var blockedManagedFileExtensions = map[string]bool{
 
 func validateManagedFileMutation(cleaned string) error {
 	if isGeneratedSecretConfig(cleaned) {
-		return errors.New("the generated configuration is not editable through file jobs")
+		return errors.New("legacy l4d2panel.cfg may contain secrets and is not editable through file jobs")
 	}
 	if blockedManagedFileExtensions[strings.ToLower(filepath.Ext(cleaned))] {
 		return errors.New("executable and load-bearing files must be managed through the package workflow")
@@ -93,7 +93,7 @@ func ReadManagedFile(instancePath, relative string) (string, int64, string, erro
 		return "", 0, "", errors.New("a managed file path is required")
 	}
 	if isGeneratedSecretConfig(cleaned) {
-		return "", 0, "", errors.New("the generated secret configuration is not readable through file jobs")
+		return "", 0, "", errors.New("legacy l4d2panel.cfg may contain secrets and is not readable through file jobs")
 	}
 	f, err := openManagedFileNoFollow(instancePath, cleaned)
 	if err != nil {

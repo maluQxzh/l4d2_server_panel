@@ -60,17 +60,3 @@ func TestValidateStructuredConfigRejectsSecretCVars(t *testing.T) {
 		}
 	}
 }
-
-func TestDiffInstanceConfigReportsNestedFields(t *testing.T) {
-	before := domain.InstanceConfig{Hostname: "before", MaxPlayers: 8, CVars: map[string]string{"sv_consistency": "1"}}
-	after := domain.InstanceConfig{Hostname: "after", MaxPlayers: 12, CVars: map[string]string{"sv_consistency": "0", "sv_tags": "panel"}}
-	diff := diffInstanceConfig(before, after)
-	for _, key := range []string{"hostname", "max_players", "cvars.sv_consistency", "cvars.sv_tags"} {
-		if _, ok := diff[key]; !ok {
-			t.Fatalf("missing diff key %q in %#v", key, diff)
-		}
-	}
-	if diff["hostname"].Before != "before" || diff["hostname"].After != "after" {
-		t.Fatalf("unexpected hostname diff: %#v", diff["hostname"])
-	}
-}

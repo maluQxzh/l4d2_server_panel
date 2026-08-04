@@ -37,6 +37,7 @@ const instance = {
   path: "/srv/l4d2panel/instances/expert", host: "game.example.com", port: 27015,
   tv_port: 27020, pid: 4242, map: "c1m1_hotel", mode: "coop", players: 1,
   max_players: 4, build_id: "123456", update_available: false, version: 3,
+  rcon_configured: true,
   config: { hostname: "专家战役 #1", mode: "coop", difficulty: "normal", max_players: 4,
     start_map: "c1m1_hotel", region: "255", public_status: false, auto_restart: true,
     extra_args: [], cvars: {} },
@@ -221,15 +222,16 @@ test("运行中实例重启必须确认并提交固定维护倒计时", async ({
   await expect.poll(() => actionBody).toEqual({ type: "restart", payload: { maintenance: true, warning_seconds: [600, 300, 60] } });
 });
 
-test("创建实例从运行节点绑定可用安装并提交模式、官方地图和 Tickrate", async ({ page }) => {
+test("创建实例从运行节点绑定可用安装并提交难度、RCON 和 Tickrate", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/environments", (route) => json(route, { items: [environment] }));
   await page.route("**/api/v1/environments/environment-1/game-installations", (route) => json(route, { items: [gameInstallation] }));
   await page.route("**/api/v1/instances", async (route) => {
     if (route.request().method() === "GET") return json(route, { items: [] });
     const body = route.request().postDataJSON() as Record<string, unknown>;
-    expect(body).toMatchObject({ node_id: node.id, game_installation_id: gameInstallation.id, name: "专家战役 #1",
-      config: { mode: "mutation4", start_map: "c14m2_lighthouse", extra_args: ["-tickrate", "60"] } });
+    expect(body).toMatchObject({ node_id: node.id, game_installation_id: gameInstallation.id, name: "专家战役 #1", rcon_password: "panel-rcon",
+      config: { mode: "mutation4", difficulty: "impossible", start_map: "c14m2_lighthouse", extra_args: ["-tickrate", "60"] } });
+    expect(body.config).not.toHaveProperty("region");
     expect(body).not.toHaveProperty("operation");
     expect(body).not.toHaveProperty("path");
     expect(body).not.toHaveProperty("root_index");
@@ -246,6 +248,8 @@ test("创建实例从运行节点绑定可用安装并提交模式、官方地�
   await page.getByRole("combobox", { name: "运行节点", exact: true }).selectOption(environment.id);
   await page.getByRole("combobox", { name: /^可用游戏安装/ }).selectOption(gameInstallation.id);
   await page.getByLabel("游戏模式").selectOption("mutation4");
+  await page.getByLabel("难度").selectOption("impossible");
+  await page.getByLabel("RCON 密码（可留空）").fill("panel-rcon");
   await expect(page.getByLabel("初始地图").locator("option")).toHaveCount(57);
   await page.getByLabel("初始地图").selectOption("c14m2_lighthouse");
   await page.getByRole("switch", { name: "启用 Tickrate" }).click();
@@ -413,23 +417,55 @@ test("站内通知可标记已读且失败投递可手动重试", async ({ page 
   await expect.poll(() => retriedDelivery).toBeTruthy();
 });
 
+test("已停止实例卡片保留重启入口但只能启动", async ({ page }) => {
+  await authenticated(page);
+  const stopped = { ...instance, status: "stopped", pid: 0, started_at: null };
+  await page.route("**/api/v1/instances", (route) => json(route, { items: [stopped] }));
+  await page.goto("/instances");
+  const card = page.locator(".instance-card").filter({ hasText: stopped.name });
+  await expect(card.getByRole("button", { name: "启动" })).toBeVisible();
+  await expect(card.getByRole("button", { name: "重启" })).toBeDisabled();
+  await expect(card.getByRole("button", { name: "重启" })).toHaveAttribute("title", "服务器启动后才能重启");
+});
+
+test("空 RCON 的运行实例保持绿色状态并显示独立警告", async ({ page }) => {
+  await authenticated(page);
+  const runningWithoutRCON = { ...instance, status: "running", rcon_configured: false };
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: runningWithoutRCON }));
+  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+
+  await page.goto("/instances/instance-1");
+  await expect(page.locator(".instance-hero .status--running")).toContainText("运行中");
+  await expect(page.getByText("RCON 密码为空", { exact: true })).toBeVisible();
+});
+
+test("RCON 玩家查询失败时显示节点返回的诊断", async ({ page }) => {
+  await authenticated(page);
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance }));
+  await page.route("**/api/v1/instances/instance-1/players", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/instances/instance-1/bans", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/jobs**", (route) => json(route, { items: [{
+    id: "job-rcon-failed", node_id: node.id, instance_id: instance.id, type: "rcon.players",
+    status: "failed", progress: 30, message: "RCON authentication failed", created_at: "2026-08-04T00:00:00Z",
+  }] }));
+
+  await page.goto("/instances/instance-1?tab=players");
+  await expect(page.getByRole("alert")).toContainText("RCON 查询失败：RCON authentication failed");
+});
+
 test("实例控制台、玩家、配置、模组、备份与计划任务", async ({ page }) => {
   await authenticated(page);
-  await page.route("**/api/v1/instances/instance-1/config-versions", (route) => json(route, { items: [{
-    id: "config-v3", instance_id: instance.id, version: 3, config: instance.config,
-    created_name: "系统管理员", created_at: "2026-07-31T00:00:00Z", current: true, diff: {},
-  }, {
-    id: "config-v2", instance_id: instance.id, version: 2, config: { ...instance.config, hostname: "旧版战役服" },
-    created_name: "操作员", created_at: "2026-07-30T00:00:00Z", current: false,
-    diff: { hostname: { before: "旧版战役服", after: "专家战役 #1" } },
-  }] }));
   const configWrites: Record<string, unknown>[] = [];
+  let currentInstance = instance;
   await page.route("**/api/v1/instances/instance-1", async (route) => {
     if (route.request().method() === "PATCH") {
-      configWrites.push(route.request().postDataJSON() as Record<string, unknown>);
-      return json(route, { instance: { ...instance, version: 4 }, job_id: "job-config" });
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      configWrites.push(body);
+      const rconConfigured = body.rcon_password === "" ? false : body.rcon_password ? true : currentInstance.rcon_configured;
+      currentInstance = { ...currentInstance, version: currentInstance.version + 1, rcon_configured: rconConfigured };
+      return json(route, { instance: currentInstance, job_id: "job-config" });
     }
-    return json(route, { instance });
+    return json(route, { instance: currentInstance });
   });
   await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
   await page.route("**/api/v1/audit**", (route) => json(route, { items: [] }));
@@ -480,11 +516,6 @@ test("实例控制台、玩家、配置、模组、备份与计划任务", async
     returned: 1, matched: 1, truncated: false,
   }));
 
-  let rollbackVersion = 0;
-  await page.route("**/api/v1/instances/instance-1/config-versions/*/rollback", (route) => {
-    rollbackVersion = Number(new URL(route.request().url()).pathname.split("/").at(-2));
-    return json(route, { instance: { ...instance, version: 4 }, job_id: "job-rollback" }, 202);
-  });
   let packageRollback = false;
   await page.route("**/api/v1/instances/instance-1/packages/package-1/versions/package-version-1/rollback", (route) => {
     packageRollback = true;
@@ -520,25 +551,26 @@ test("实例控制台、玩家、配置、模组、备份与计划任务", async
   await expect.poll(() => actions.some((item) => item.type === "kick_player")).toBeTruthy();
 
   await page.getByRole("button", { name: "配置" }).click();
+  await expect(page.getByText("配置版本与差异")).toHaveCount(0);
   await page.getByLabel("服务器名称").fill("专家战役 · 已更新");
-  await page.getByRole("button", { name: "保存新版本" }).click();
+  await page.getByRole("button", { name: "保存配置" }).click();
   await expect.poll(() => configWrites.length).toBe(1);
-  expect(configWrites[0]).not.toHaveProperty("server_password");
+  expect(configWrites[0]).not.toHaveProperty("rcon_password");
   expect(configWrites[0].config).not.toHaveProperty("server_password");
+  expect(configWrites[0].config).not.toHaveProperty("region");
   expect(configWrites[0].config).not.toHaveProperty("maintenance_cron");
-  await expect(page.getByText("配置已保存，新版本可随时回滚")).toBeVisible();
-  await page.getByLabel("连接密码").fill("new-server-secret");
-  await page.getByRole("button", { name: "保存新版本" }).click();
+  await expect(page.getByText("配置已保存", { exact: true })).toBeVisible();
+  await page.getByLabel("RCON 密码").fill("new-rcon-secret");
+  await page.getByRole("button", { name: "保存配置" }).click();
   await expect.poll(() => configWrites.length).toBe(2);
-  expect(configWrites[1]).toMatchObject({ server_password: "new-server-secret" });
+  expect(configWrites[1]).toMatchObject({ rcon_password: "new-rcon-secret" });
   expect(configWrites[1].config).not.toHaveProperty("server_password");
-  await page.getByRole("button", { name: "清除现有密码" }).click();
-  await page.getByRole("button", { name: "保存新版本" }).click();
+  await expect(page.getByLabel("RCON 密码")).toHaveAttribute("placeholder", "已保存（输入新密码可替换）");
+  await page.getByRole("button", { name: "清除 RCON 密码" }).click();
+  await page.getByRole("button", { name: "保存配置" }).click();
   await expect.poll(() => configWrites.length).toBe(3);
-  expect(configWrites[2]).toHaveProperty("server_password", "");
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "回滚" }).click();
-  await expect.poll(() => rollbackVersion).toBe(2);
+  expect(configWrites[2]).toHaveProperty("rcon_password", "");
+  await expect(page.getByLabel("RCON 密码")).toHaveAttribute("placeholder", "尚未设置");
 
   await page.getByRole("button", { name: "模组" }).click();
   await expect(page.getByLabel("campaign.vpk 可回退版本")).toBeVisible();
@@ -551,7 +583,10 @@ test("实例控制台、玩家、配置、模组、备份与计划任务", async
   await expect.poll(() => actions.some((item) => item.type === "install_package")).toBeTruthy();
 
   await page.getByRole("button", { name: "文件", exact: true }).click();
-  await page.getByRole("button", { name: /server\.cfg/ }).click();
+  await expect(page.getByRole("button", { name: "cfg", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "addons", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "logs", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "server.cfg", exact: true }).first().click();
   await page.getByLabel("文件内容").fill("hostname after\n");
   await page.getByRole("button", { name: "提交写入" }).click();
   await expect.poll(() => fileWrite).toMatchObject({ content: "hostname after\n", expected_sha256: "sha-before" });
@@ -576,7 +611,6 @@ test("实例控制台、玩家、配置、模组、备份与计划任务", async
 test("缺少节点公开地址时阻止公开实例", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, node_public_address: "" } }));
-  await page.route("**/api/v1/instances/instance-1/config-versions", (route) => json(route, { items: [] }));
 
   await page.goto("/instances/instance-1?tab=config");
   await expect(page.getByText(/需要可供玩家访问的节点地址/)).toBeVisible();
@@ -976,7 +1010,7 @@ test("实例详情展示安装绑定并仅解除实例绑定", async ({ page }) 
   const argv = page.getByLabel("启动参数数组");
   await expect(argv).toContainText('"-console"');
   await expect(argv).toContainText('"27015"');
-  await expect(argv).toContainText('"l4d2panel.cfg"');
+  await expect(argv).not.toContainText('"l4d2panel.cfg"');
   await expect(page.getByText(/不经过 Shell/)).toBeVisible();
   await expect(page.getByText("已绑定独占游戏安装")).toBeVisible();
   await expect(page.getByText(/SteamCMD、更新、校验和重装统一在运行环境中执行/)).toBeVisible();

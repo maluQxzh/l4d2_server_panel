@@ -8,32 +8,32 @@ const config: InstanceConfig = {
   difficulty: "normal",
   max_players: 8,
   start_map: "c1m1_hotel",
-  region: "255",
   public_status: false,
   auto_restart: true,
 };
 
-describe("实例配置密码三态", () => {
+describe("实例 RCON 密码三态", () => {
   it("未编辑时不发送密码", () => {
     const payload = buildInstanceConfigUpdate(3, config, { kind: "unchanged" });
-    expect(payload).not.toHaveProperty("server_password");
+    expect(payload).not.toHaveProperty("rcon_password");
     expect(payload.config).not.toHaveProperty("server_password");
   });
 
   it("新密码只放在顶层字段", () => {
     const payload = buildInstanceConfigUpdate(3, config, { kind: "set", value: "new-secret" });
-    expect(payload.server_password).toBe("new-secret");
+    expect(payload.rcon_password).toBe("new-secret");
     expect(payload.config).not.toHaveProperty("server_password");
   });
 
   it("显式清空会发送空字符串", () => {
     const payload = buildInstanceConfigUpdate(3, config, { kind: "clear" });
-    expect(payload).toHaveProperty("server_password", "");
+    expect(payload).toHaveProperty("rcon_password", "");
   });
 
-  it("清除旧客户端遗留在 config 中的密码", () => {
-    const legacy = { ...config, server_password: "must-not-leak" } as InstanceConfig;
+  it("清除旧客户端遗留在 config 中的连接密码和地区", () => {
+    const legacy = { ...config, server_password: "must-not-leak", region: "255" } as InstanceConfig;
     const payload = buildInstanceConfigUpdate(3, legacy, { kind: "unchanged" });
     expect(payload.config).not.toHaveProperty("server_password");
+    expect(payload.config).not.toHaveProperty("region");
   });
 });

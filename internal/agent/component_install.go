@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"strconv"
 	"strings"
 	"time"
 
@@ -89,15 +87,14 @@ func (e *Executor) verifyServerExtension(ctx context.Context, record InstanceRec
 	if command == "" {
 		return fmt.Errorf("unsupported server extension %q", kind)
 	}
-	host, port := rconEndpoint(record, payload)
-	if port <= 0 || port > 65535 {
+	if port := gameEndpointPort(record, payload); port <= 0 || port > 65535 {
 		return errors.New("invalid RCON port for extension verification")
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	var lastErr error
 	for {
 		attemptCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
-		response, err := (RCONClient{Timeout: 4 * time.Second}).Execute(attemptCtx, net.JoinHostPort(host, strconv.Itoa(port)), payload.RCONPassword, command)
+		response, err := e.executeInstanceRCON(attemptCtx, record, payload, payload.RCONPassword, command, 4*time.Second)
 		cancel()
 		if err == nil {
 			lower := strings.ToLower(response)

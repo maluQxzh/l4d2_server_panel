@@ -6,7 +6,7 @@ const instance = {
   id: "instance-a", node_id: "node-a", port: 27015, tv_port: 27020,
   config: {
     hostname: "Campaign", mode: "coop", difficulty: "normal", max_players: 8,
-    start_map: "c1m1_hotel", region: "255", public_status: false, auto_restart: true,
+    start_map: "c1m1_hotel", public_status: false, auto_restart: true,
     extra_args: ["-secure"],
   },
 } as InstanceRecord;
@@ -34,6 +34,8 @@ describe("实例生命周期权限与状态", () => {
     expect(lifecycleActionAllowed("reinstall", "stopped", { operate: true, manage: true })).toBe(true);
     expect(lifecycleActionAllowed("update", "updating", { operate: true, manage: true })).toBe(false);
     expect(lifecycleActionAllowed("start", "running", { operate: true, manage: true })).toBe(false);
+    expect(lifecycleActionAllowed("restart", "stopped", { operate: true, manage: false })).toBe(false);
+    expect(lifecycleActionAllowed("restart", "running", { operate: true, manage: false })).toBe(true);
   });
 
   it("外部实例只能解除管理，不能隔离文件", () => {
@@ -46,7 +48,7 @@ describe("实例生命周期权限与状态", () => {
     expect(args).toEqual([
       "-console", "-game", "left4dead2", "-port", "27015", "+tv_port", "27020",
       "+map", "c1m1_hotel", "+mp_gamemode", "coop", "+maxplayers", "8",
-      "+exec", "l4d2panel.cfg", "-secure",
+      "+z_difficulty", "normal", "-secure",
     ]);
     expect(args.join(" ")).not.toMatch(/password|secret/i);
   });

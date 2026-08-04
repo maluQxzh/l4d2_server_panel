@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"testing"
 	"time"
+
+	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
 func TestSafeBroadcastCommand(t *testing.T) {
@@ -46,6 +48,24 @@ func TestParseConnectedDuration(t *testing.T) {
 	}
 	if _, ok := parseConnectedDuration("bad; quit"); ok {
 		t.Fatal("invalid connected duration was accepted")
+	}
+}
+
+func TestRCONPlayerRefreshRequiresRunningServerAndCredential(t *testing.T) {
+	t.Parallel()
+	for _, status := range []domain.InstanceStatus{domain.InstanceRunning, domain.InstanceDegraded} {
+		if !rconPlayerRefreshAllowed(domain.Instance{Status: status, RCONConfigured: true}) {
+			t.Fatalf("RCON refresh rejected status %s", status)
+		}
+	}
+	for _, instance := range []domain.Instance{
+		{Status: domain.InstanceStopped, RCONConfigured: true},
+		{Status: domain.InstanceRunning, RCONConfigured: false},
+		{Status: domain.InstanceExternal, RCONConfigured: true},
+	} {
+		if rconPlayerRefreshAllowed(instance) {
+			t.Fatalf("RCON refresh accepted instance %#v", instance)
+		}
 	}
 }
 

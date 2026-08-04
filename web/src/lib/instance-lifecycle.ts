@@ -88,8 +88,8 @@ export function buildStartupArgumentPreview(
     "+map", config.start_map || "c1m1_hotel",
     "+mp_gamemode", config.mode || "coop",
     "+maxplayers", String(config.max_players || 8),
-    "+exec", "l4d2panel.cfg",
   );
+  if (config.difficulty) args.push("+z_difficulty", config.difficulty);
   return args.concat(sanitizeStartupExtraArguments(config.extra_args));
 }
 

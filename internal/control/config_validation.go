@@ -22,6 +22,17 @@ func validInstanceAgentHost(value string) bool {
 	}
 }
 
+// discardRetiredInstanceConfigFields keeps create and patch requests from the
+// previous client shape compatible without persisting fields that are now
+// maintained directly in server.cfg.
+func discardRetiredInstanceConfigFields(config *domain.InstanceConfig) {
+	if config == nil {
+		return
+	}
+	config.ServerPassword = ""
+	config.Region = ""
+}
+
 func validateInstanceConfig(config domain.InstanceConfig) error {
 	if config.MaxPlayers < 0 || config.MaxPlayers > 32 {
 		return errors.New("max_players must be zero or between 1 and 32")
@@ -91,6 +102,13 @@ func validateServerPassword(value string) error {
 	return nil
 }
 
+func validateRCONPassword(value string) error {
+	if len(value) > 256 || strings.ContainsAny(value, "\x00\r\n") {
+		return errors.New("rcon_password contains invalid text")
+	}
+	return nil
+}
+
 func validateConfigExtraArgs(args []string) error {
 	if len(args) > 128 {
 		return errors.New("too many advanced startup arguments")
@@ -100,7 +118,7 @@ func validateConfigExtraArgs(args []string) error {
 	}
 	reserved := map[string]bool{
 		"-console": true, "-game": true, "-port": true, "+hostport": true,
-		"+map": true, "+mp_gamemode": true, "+maxplayers": true, "+exec": true,
+		"+map": true, "+mp_gamemode": true, "+maxplayers": true, "+z_difficulty": true, "+exec": true,
 		"+tv_port": true, "+rcon_password": true, "+sv_password": true, "+plugin_load": true,
 	}
 	for index, argument := range args {
@@ -113,6 +131,9 @@ func validateConfigExtraArgs(args []string) error {
 		}
 		if name == "-basedir" || name == "-defaultgamedir" {
 			return fmt.Errorf("unsafe startup parameter %q", argument)
+		}
+		if name == "-usetcp" {
+			return errors.New("-usetcp disables Source TCP support and RCON")
 		}
 	}
 	return nil

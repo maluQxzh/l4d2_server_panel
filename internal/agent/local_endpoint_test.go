@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestLocalGameEndpointHostCannotBeRedirectedOffNode(t *testing.T) {
 	t.Parallel()
@@ -18,5 +21,28 @@ func TestLocalGameEndpointHostCannotBeRedirectedOffNode(t *testing.T) {
 		if got := localGameEndpointHost(test.candidates...); got != test.want {
 			t.Fatalf("localGameEndpointHost(%q) = %q, want %q", test.candidates, got, test.want)
 		}
+	}
+}
+
+func TestLocalGameEndpointHostsUseOnlyAssignedAndLoopbackAddresses(t *testing.T) {
+	t.Parallel()
+	got := localGameEndpointHostsWithAssigned(
+		[]string{"10.0.0.8", "2001:db8::8", "10.0.0.8", "169.254.10.20"},
+		"203.0.113.9",
+		"10.0.0.8",
+		"0.0.0.0",
+	)
+	want := []string{"10.0.0.8", "2001:db8::8", "127.0.0.1", "::1"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("local hosts = %q, want %q", got, want)
+	}
+}
+
+func TestLocalGameEndpointHostsPreserveSafeExplicitLoopback(t *testing.T) {
+	t.Parallel()
+	got := localGameEndpointHostsWithAssigned([]string{"192.168.1.20"}, "127.0.0.2")
+	want := []string{"127.0.0.2", "192.168.1.20", "127.0.0.1", "::1"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("local hosts = %q, want %q", got, want)
 	}
 }

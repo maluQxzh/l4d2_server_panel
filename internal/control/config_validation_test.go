@@ -37,12 +37,14 @@ func TestValidateInstanceConfigRejectsAgentIncompatibleValues(t *testing.T) {
 		{ExtraArgs: []string{"-tickrate", "100", "-tickrate", "60"}},
 		{ExtraArgs: []string{"+sv_password", "plaintext"}},
 		{ExtraArgs: []string{"+rcon_password plaintext"}},
+		{ExtraArgs: []string{"+z_difficulty hard"}},
 		{ExtraArgs: []string{"+sv_password\tplaintext"}},
 		{ExtraArgs: []string{"+plugin_load addons/evil"}},
 		{ExtraArgs: []string{"-port 27016"}},
 		{ExtraArgs: []string{"-basedir=C:/escape"}},
 		{ExtraArgs: []string{`-basedir C:\escape`}},
 		{ExtraArgs: []string{"-defaultgamedir other"}},
+		{ExtraArgs: []string{"-usetcp"}},
 		{ExtraArgs: []string{" \t "}},
 		{CVars: map[string]string{"rcon_password": "plaintext"}},
 		{CVars: map[string]string{"exec": "safe\nquit"}},
@@ -53,6 +55,35 @@ func TestValidateInstanceConfigRejectsAgentIncompatibleValues(t *testing.T) {
 		if err := validateStructuredConfig(config); err == nil {
 			t.Fatalf("case %d was accepted: %#v", index, config)
 		}
+	}
+}
+
+func TestValidateRCONPasswordAllowsBlankAndRejectsUnsafeText(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"", "safe password"} {
+		if err := validateRCONPassword(value); err != nil {
+			t.Fatalf("valid RCON password rejected: %v", err)
+		}
+	}
+	for _, value := range []string{"bad\rpassword", "bad\x00password", strings.Repeat("a", 257)} {
+		if err := validateRCONPassword(value); err == nil {
+			t.Fatalf("unsafe RCON password was accepted: %q", value)
+		}
+	}
+}
+
+func TestDiscardRetiredInstanceConfigFields(t *testing.T) {
+	t.Parallel()
+	config := domain.InstanceConfig{
+		Hostname: "legacy client", ServerPassword: "old-password", Region: "255",
+		Mode: "coop", Difficulty: "normal", MaxPlayers: 4, StartMap: "c1m1_hotel",
+	}
+	discardRetiredInstanceConfigFields(&config)
+	if config.ServerPassword != "" || config.Region != "" {
+		t.Fatalf("retired fields were preserved: %#v", config)
+	}
+	if err := validateStructuredConfig(config); err != nil {
+		t.Fatalf("sanitized legacy config was rejected: %v", err)
 	}
 }
 

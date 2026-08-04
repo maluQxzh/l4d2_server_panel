@@ -169,7 +169,7 @@ export interface InstanceConfig {
   difficulty: string;
   max_players: number;
   start_map: string;
-  region: string;
+  region?: string;
   steam_group_id?: string;
   public_status: boolean;
   extra_args?: string[];
@@ -197,6 +197,7 @@ export interface InstanceRecord {
   update_available: boolean;
   available_build?: string;
   last_update_checked_at?: string;
+  rcon_configured: boolean;
   version: number;
   config: InstanceConfig;
   started_at?: string;
@@ -325,18 +326,6 @@ export interface APITokenRecord {
   revoked_at?: string;
   last_used_at?: string;
   created_at: string;
-}
-
-export interface ConfigVersionRecord {
-  id: string;
-  instance_id: string;
-  version: number;
-  config: InstanceConfig;
-  created_by?: string;
-  created_name?: string;
-  created_at: string;
-  current: boolean;
-  diff: Record<string, { before?: unknown; after?: unknown }>;
 }
 
 export interface ManagedFileContent {

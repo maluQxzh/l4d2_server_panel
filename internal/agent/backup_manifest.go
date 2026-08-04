@@ -300,9 +300,16 @@ func backupLaunchFromRecord(record InstanceRecord, instancePath string) (BackupL
 		return BackupLaunchConfig{}, err
 	}
 	launch.AutoRestart = record.AutoRestart
-	managed, err := readPortableManagedConfig(instancePath)
-	if err != nil {
-		return BackupLaunchConfig{}, err
+	managed := BackupLaunchConfig{
+		Hostname: record.Config.Hostname, Difficulty: record.Config.Difficulty,
+		Region: record.Config.Region, SteamGroupID: record.Config.SteamGroupID,
+		CVars: cloneStringMap(record.Config.CVars),
+	}
+	if record.Config.Mode == "" && record.Config.StartMap == "" && record.Config.MaxPlayers == 0 {
+		managed, err = readPortableManagedConfig(instancePath)
+		if err != nil {
+			return BackupLaunchConfig{}, err
+		}
 	}
 	launch.Hostname = managed.Hostname
 	launch.Difficulty = managed.Difficulty
@@ -333,12 +340,12 @@ func parsePortableStartArgs(args []string, fallbackPort, fallbackTVPort int) (Ba
 		name, inline, hasInline := splitStartArgument(argument)
 		if name == "-console" {
 			if seen[name] || (hasInline && inline != "") {
-				return BackupLaunchConfig{}, errors.New("registered startup arguments contain invalid or duplicate -console")
+				return BackupLaunchConfig{}, fmt.Errorf("registered startup arguments contain invalid or duplicate %s", name)
 			}
 			seen[name] = true
 			continue
 		}
-		managed := map[string]bool{"-game": true, "-port": true, "+hostport": true, "+tv_port": true, "+map": true, "+mp_gamemode": true, "+maxplayers": true, "+exec": true}
+		managed := map[string]bool{"-game": true, "-port": true, "+hostport": true, "+tv_port": true, "+map": true, "+mp_gamemode": true, "+maxplayers": true, "+z_difficulty": true, "+exec": true}
 		if !managed[name] {
 			launch.ExtraArgs = append(launch.ExtraArgs, argument)
 			continue
@@ -374,8 +381,10 @@ func parsePortableStartArgs(args []string, fallbackPort, fallbackTVPort int) (Ba
 			launch.Mode = value
 		case "+maxplayers":
 			launch.MaxPlayers, parseErr = strconv.Atoi(value)
+		case "+z_difficulty":
+			launch.Difficulty = value
 		case "+exec":
-			if !strings.EqualFold(value, "l4d2panel.cfg") {
+			if !strings.EqualFold(value, "l4d2panel.cfg") && !strings.EqualFold(value, "server.cfg") {
 				return BackupLaunchConfig{}, errors.New("registered startup arguments select an unmanaged config file")
 			}
 		}

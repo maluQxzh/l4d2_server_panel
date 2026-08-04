@@ -14,8 +14,8 @@ import {
   FileCode2,
   Folder,
   Gamepad2,
-  History,
   HardDrive,
+  History,
   Map,
   PackageOpen,
   Play,
@@ -59,9 +59,9 @@ import {
   type BackupDownloadWriter,
 } from "../lib/backup-download";
 import { bytes, dateTime, duration, jobLabels } from "../lib/format";
-import { buildInstanceConfigUpdate, type ServerPasswordChange } from "../lib/instance-config";
+import { buildInstanceConfigUpdate, type RCONPasswordChange } from "../lib/instance-config";
 import { buildStartupArgumentPreview, canAccessInstance, lifecycleActionAllowed, maintenancePayload } from "../lib/instance-lifecycle";
-import { defaultTickrate, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
+import { defaultTickrate, gameDifficulties, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
 import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, PackageRecord, Player, PlayerBan, ScheduleRecord } from "../lib/types";
 
 const tabs = [
@@ -148,18 +148,18 @@ function InstanceHero({ instance }: { instance: InstanceRecord }) {
     setTakeoverOpen(false);
   };
   return <><header className="instance-hero">
-    <div className="instance-hero__identity"><div className="instance-hero__glyph"><Gamepad2 /></div><div><div className="instance-hero__title"><h1>{instance.name}</h1><StatusBadge status={instance.status} pulse={instance.status === "running"} /></div><p><code>{instance.host}:{instance.port}</code><span>·</span><span>{instance.map || instance.config.start_map}</span><span>·</span><span>{instance.players}/{instance.max_players} 玩家</span>{instance.status === "external" && <><span>·</span><strong>受控重启前只读</strong></>}</p></div></div>
+    <div className="instance-hero__identity"><div className="instance-hero__glyph"><Gamepad2 /></div><div><div className="instance-hero__title"><h1>{instance.name}</h1><StatusBadge status={instance.status} pulse={instance.status === "running"} />{instance.status === "running" && !instance.rcon_configured && <span className="instance-rcon-warning">RCON 密码为空</span>}</div><p><code>{instance.host}:{instance.port}</code><span>·</span><span>{instance.map || instance.config.start_map}</span><span>·</span><span>{instance.players}/{instance.max_players} 玩家</span>{instance.status === "external" && <><span>·</span><strong>受控重启前只读</strong></>}</p></div></div>
     <div className="instance-actions">
       {instance.status === "external" ? <Button onClick={() => setTakeoverOpen(true)} disabled={!canRestart} title={!canRestart ? disabledReason : undefined} loading={takeover.isPending}><RefreshCw size={16} />受控重启并接管</Button> : <>
         {instance.status === "stopped" ? <Button onClick={() => action.mutate("start")} disabled={!canStart} title={!canStart ? disabledReason : undefined} loading={action.isPending}><Play size={16} fill="currentColor" />启动</Button> : <Button variant="secondary" onClick={() => action.mutate("stop")} disabled={!canStop} title={!canStop ? disabledReason : undefined} loading={action.isPending}><Square size={14} fill="currentColor" />停止</Button>}
-        <Button variant="secondary" onClick={() => setRestartOpen(true)} disabled={!canRestart} title={!canRestart ? disabledReason : undefined} loading={action.isPending}><RefreshCw size={16} />重启</Button>
+        <Button variant="secondary" onClick={() => setRestartOpen(true)} disabled={!canRestart} title={!canRestart ? instance.status === "stopped" ? "服务器启动后才能重启" : disabledReason : undefined} loading={action.isPending}><RefreshCw size={16} />重启</Button>
       </>}
     </div>
   </header><Modal open={restartOpen} onClose={() => setRestartOpen(false)} title="维护重启实例" description="为了让在线玩家有时间离开，重启会先广播固定倒计时。" footer={<><Button variant="secondary" onClick={() => setRestartOpen(false)}>取消</Button><Button onClick={() => action.mutate("restart")} loading={action.isPending}>确认维护重启</Button></>}>
     <div className="form-stack"><div className="form-warning"><ShieldAlert size={17} />将依次广播 10、5、1 分钟提示，然后优雅停服并重新启动。</div><div className="form-note"><strong>持久化任务</strong><span>提交参数为维护模式，倒计时固定为 600、300、60 秒；断线后不会重复执行。</span></div></div>
   </Modal><Modal open={takeoverOpen} onClose={closeTakeover} title="受控重启并接管" description="现有 RCON 密码仅用于本次优雅停服，不会保存到浏览器状态或审计日志。" footer={<><Button variant="secondary" onClick={closeTakeover}>取消</Button><Button form="external-takeover-form" type="submit" loading={takeover.isPending}>确认重启并接管</Button></>}>
     <form id="external-takeover-form" onSubmit={(event) => { event.preventDefault(); takeover.mutate(); }} className="form-stack">
-      <Field label="现有 RCON 密码" hint="请输入外部 srcds 当前使用的密码；接管完成后将改用面板生成的凭据。"><input ref={takeoverPassword} type="password" autoComplete="off" required /></Field>
+      <Field label="现有 RCON 密码" hint="请输入外部 srcds 当前使用的密码；接管完成后将改用中心端保存的 RCON 凭据。"><input ref={takeoverPassword} type="password" autoComplete="off" required /></Field>
       <div className="form-warning"><ShieldAlert size={17} />Agent 会先通过 RCON 请求退出，超时后才会终止外部进程并以受控模式重新启动。</div>
     </form>
   </Modal></>;
@@ -170,7 +170,7 @@ function OverviewTab({ instance }: { instance: InstanceRecord }) {
   const instanceJobs = (jobs.data?.items || []).filter((job) => job.instance_id === instance.id).slice(0, 5);
   return <div className="overview-layout">
     <div className="overview-main">
-      <section className="detail-stat-grid"><Card><span>在线玩家</span><strong>{instance.players}<small> / {instance.max_players}</small></strong><div className="mini-progress"><ProgressBar value={(instance.players / Math.max(instance.max_players, 1)) * 100} /></div></Card><Card><span>当前地图</span><strong className="text-value">{instance.map || "未载入"}</strong><small><Map size={14} />{instance.mode || instance.config.mode}</small></Card><Card><span>连续运行</span><strong className="text-value">{duration(instance.started_at)}</strong><small><Power size={14} />PID {instance.pid || "—"}</small></Card><Card><span>游戏构建</span><strong className="text-value">{instance.build_id || "待检测"}</strong><small><Box size={14} />配置版本 v{instance.version}</small></Card></section>
+      <section className="detail-stat-grid"><Card><span>在线玩家</span><strong>{instance.players}<small> / {instance.max_players}</small></strong><div className="mini-progress"><ProgressBar value={(instance.players / Math.max(instance.max_players, 1)) * 100} /></div></Card><Card><span>当前地图</span><strong className="text-value">{instance.map || "未载入"}</strong><small><Map size={14} />{instance.mode || instance.config.mode}</small></Card><Card><span>连续运行</span><strong className="text-value">{duration(instance.started_at)}</strong><small><Power size={14} />PID {instance.pid || "—"}</small></Card><Card><span>游戏构建</span><strong className="text-value">{instance.build_id || "待检测"}</strong><small><Box size={14} />当前启动配置</small></Card></section>
       <InstanceBindingCard instance={instance} />
       <Card><div className="card-heading"><div><span className="eyebrow">RECENT OPERATIONS</span><h2>最近操作</h2></div><Link to="/jobs">全部任务 <ChevronRight size={15} /></Link></div>{jobs.isPending ? <LoadingBlock /> : instanceJobs.length ? <div className="detail-job-list">{instanceJobs.map((job) => <div key={job.id}><div className={`job-icon job-icon--${job.status}`}><Code2 size={15} /></div><div><strong>{jobLabels[job.type] || job.type}</strong><small>{job.message || dateTime(job.created_at)}</small></div><StatusBadge status={job.status} />{["queued", "dispatched", "running"].includes(job.status) && <div className="job-inline-progress"><ProgressBar value={job.progress} /><span>{job.progress}%</span></div>}</div>)}</div> : <EmptyState title="还没有操作记录" description="启动、更新或备份实例后，任务进度会显示在这里。" />}</Card>
     </div>
@@ -252,15 +252,42 @@ function LogHistoryCard({ instance }: { instance: InstanceRecord }) {
 }
 
 function PlayersTab({ instance }: { instance: InstanceRecord }) {
-  const players = useQuery({ queryKey: ["instances", instance.id, "players"], queryFn: () => api.players(instance.id), refetchInterval: instance.status === "running" ? 15_000 : false });
+  const serverActive = instance.status === "running" || instance.status === "degraded";
+  const canQueryRCON = serverActive && instance.rcon_configured;
+  const players = useQuery({ queryKey: ["instances", instance.id, "players"], queryFn: () => api.players(instance.id), enabled: canQueryRCON, refetchInterval: canQueryRCON ? 15_000 : false });
+  const probeJobs = useQuery({ queryKey: ["jobs", instance.id, "rcon.players"], queryFn: () => api.instanceJobs(instance.id), enabled: canQueryRCON, refetchInterval: canQueryRCON ? 2_000 : false });
   const bans = useQuery({ queryKey: ["instances", instance.id, "bans"], queryFn: () => api.bans(instance.id), refetchInterval: 30_000 });
   const toast = useToast();
   const client = useQueryClient();
   const [selected, setSelected] = useState<Player | null>(null);
   const action = useMutation({ mutationFn: ({ type, payload }: { type: string; payload: Record<string, unknown> }) => api.instanceAction(instance.id, type, payload), onSuccess: (_data, values) => { toast.push(values.type === "kick_player" ? "已提交踢出操作" : "已提交解封操作"); void client.invalidateQueries({ queryKey: ["instances", instance.id, "bans"] }); }, onError: (error) => toast.push(error.message, "error") });
-  if (players.isPending) return <LoadingBlock label="正在查询 A2S / RCON 玩家列表…" />;
-  if (players.error) return <OptionalUnavailable error={players.error} title="玩家列表尚不可用" description="当前控制端未开放玩家快照接口。仍可在控制台使用 RCON 管理玩家。" />;
-  return <div className="players-stack"><Card><div className="card-heading"><div><span className="eyebrow">CONNECTED PLAYERS</span><h2>在线玩家</h2></div><span className="table-count">{players.data.items.length} / {instance.max_players}</span></div>{players.data.items.length ? <div className="data-table-wrap"><table className="data-table"><thead><tr><th>玩家</th><th>Steam ID</th><th>分数</th><th>延迟</th><th>连接时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{players.data.items.map((player) => <tr key={player.steam_id || player.name}><td><strong>{player.name}</strong></td><td><code>{player.steam_id || "—"}</code></td><td>{player.score ?? "—"}</td><td>{player.ping != null ? `${player.ping} ms` : "—"}</td><td>{dateTime(player.connected_at)}</td><td className="table-actions"><Button variant="ghost" onClick={() => action.mutate({ type: "kick_player", payload: { steam_id: player.steam_id, name: player.name } })}><Power size={14} />踢出</Button><Button variant="ghost" onClick={() => setSelected(player)} disabled={!player.steam_id}><Ban size={14} />封禁</Button></td></tr>)}</tbody></table></div> : <EmptyState title="服务器里暂时没人" description="玩家加入后，可在这里查看延迟、踢出或封禁。" />}</Card><Card><div className="card-heading"><div><span className="eyebrow">ACTIVE BANS</span><h2>封禁记录</h2></div><span className="table-count">{bans.data?.items.length || 0} 条</span></div>{bans.isPending ? <LoadingBlock /> : bans.error ? <ErrorState error={bans.error} retry={() => void bans.refetch()} /> : bans.data.items.length ? <div className="data-table-wrap"><table className="data-table"><thead><tr><th>Steam ID</th><th>原因</th><th>创建时间</th><th>到期时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{bans.data.items.map((ban) => <BanRow key={ban.id} ban={ban} unban={() => action.mutate({ type: "unban_player", payload: { steam_id: ban.steam_id } })} busy={action.isPending} />)}</tbody></table></div> : <EmptyState title="没有有效封禁" description="限时封禁到期后会自动从清单移除；永久封禁需要手动解除。" />}</Card><BanPlayerModal instance={instance} player={selected} onClose={() => setSelected(null)} /></div>;
+  const latestProbe = probeJobs.data?.items.find((job) => job.instance_id === instance.id && job.type === "rcon.players");
+  const handledProbe = useRef("");
+  useEffect(() => {
+    if (latestProbe?.status !== "succeeded" || handledProbe.current === latestProbe.id) return;
+    handledProbe.current = latestProbe.id;
+    void players.refetch();
+  }, [latestProbe?.id, latestProbe?.status, players]);
+
+  const playerItems = players.data?.items || [];
+  let playerContent: ReactNode;
+  if (!serverActive) {
+    playerContent = <div className="form-warning"><ShieldAlert size={17} />服务器尚未启动，RCON 查询只在运行中生效。</div>;
+  } else if (!instance.rcon_configured) {
+    playerContent = <div className="form-warning"><ShieldAlert size={17} />中心端尚未保存 RCON 密码。请设置与 server.cfg 完全一致的密码后重试。</div>;
+  } else if (players.isPending) {
+    playerContent = <LoadingBlock label="正在发起 RCON 玩家查询…" />;
+  } else if (players.error) {
+    playerContent = <ErrorState error={players.error} retry={() => void players.refetch()} />;
+  } else {
+    playerContent = <>
+      {latestProbe?.status === "failed" && <div className="form-error" role="alert">RCON 查询失败：{latestProbe.message || "请确认 server.cfg 密码已在当前游戏进程中生效，并检查任务详情。"}</div>}
+      {latestProbe && ["queued", "dispatched", "running"].includes(latestProbe.status) && <div className="form-note"><RefreshCw className="spin" size={16} />正在通过节点查询最新玩家信息…</div>}
+      {playerItems.length ? <div className="data-table-wrap"><table className="data-table"><thead><tr><th>玩家</th><th>Steam ID</th><th>分数</th><th>延迟</th><th>连接时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{playerItems.map((player) => <tr key={player.steam_id || player.name}><td><strong>{player.name}</strong></td><td><code>{player.steam_id || "—"}</code></td><td>{player.score ?? "—"}</td><td>{player.ping != null ? `${player.ping} ms` : "—"}</td><td>{dateTime(player.connected_at)}</td><td className="table-actions"><Button variant="ghost" onClick={() => action.mutate({ type: "kick_player", payload: { steam_id: player.steam_id, name: player.name } })}><Power size={14} />踢出</Button><Button variant="ghost" onClick={() => setSelected(player)} disabled={!player.steam_id}><Ban size={14} />封禁</Button></td></tr>)}</tbody></table></div> : <EmptyState title="服务器里暂时没人" description="查询成功后，在线玩家会显示在这里；若上方出现错误，请按错误信息检查 RCON。" />}
+    </>;
+  }
+
+  return <div className="players-stack"><Card><div className="card-heading"><div><span className="eyebrow">CONNECTED PLAYERS</span><h2>在线玩家</h2></div><span className="table-count">{playerItems.length} / {instance.max_players}</span></div>{playerContent}</Card><Card><div className="card-heading"><div><span className="eyebrow">ACTIVE BANS</span><h2>封禁记录</h2></div><span className="table-count">{bans.data?.items.length || 0} 条</span></div>{bans.isPending ? <LoadingBlock /> : bans.error ? <ErrorState error={bans.error} retry={() => void bans.refetch()} /> : bans.data.items.length ? <div className="data-table-wrap"><table className="data-table"><thead><tr><th>Steam ID</th><th>原因</th><th>创建时间</th><th>到期时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{bans.data.items.map((ban) => <BanRow key={ban.id} ban={ban} unban={() => action.mutate({ type: "unban_player", payload: { steam_id: ban.steam_id } })} busy={action.isPending} />)}</tbody></table></div> : <EmptyState title="没有有效封禁" description="限时封禁到期后会自动从清单移除；永久封禁需要手动解除。" />}</Card><BanPlayerModal instance={instance} player={selected} onClose={() => setSelected(null)} /></div>;
 }
 
 function BanRow({ ban, unban, busy }: { ban: PlayerBan; unban: () => void; busy: boolean }) {
@@ -292,7 +319,7 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
       .map(([key, value]) => `${key} ${value}`)
       .join("\n"),
   );
-  const [passwordChange, setPasswordChange] = useState<ServerPasswordChange>({
+  const [passwordChange, setPasswordChange] = useState<RCONPasswordChange>({
     kind: "unchanged",
   });
   const toast = useToast();
@@ -320,9 +347,10 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
         ),
       );
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       setPasswordChange({ kind: "unchanged" });
-      toast.push("配置已保存，新版本可随时回滚");
+      client.setQueryData(["instances", instance.id], result.instance);
+      toast.push("配置已保存");
       void client.invalidateQueries({ queryKey: ["instances", instance.id] });
     },
     onError: (error) => toast.push(error.message, "error"),
@@ -333,10 +361,12 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
     passwordChange.kind === "set" ? passwordChange.value : "";
   const passwordHint =
     passwordChange.kind === "unchanged"
-      ? "不输入会保持当前密码不变。"
+      ? instance.rcon_configured
+        ? "RCON 密码已保存；不输入会保持不变。该值需与 server.cfg 一致；刚修改 server.cfg 时需重启服务器后才会生效。"
+        : "当前未保存 RCON 密码；可留空，但 RCON 功能将不可用。"
       : passwordChange.kind === "clear"
-        ? "保存后将清除当前密码，服务器允许公开加入。"
-        : "保存后将替换当前密码。";
+        ? "保存后将清除面板保存的 RCON 凭据。"
+        : "保存后将替换面板使用的 RCON 凭据。";
   const changePublicStatus = (checked: boolean) => {
     if (checked && !publicAddress) {
       toast.push("请先在节点页设置公开连接地址", "error");
@@ -366,7 +396,6 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
             <span className="eyebrow">SERVER CONFIG</span>
             <h2>结构化配置</h2>
           </div>
-          <span className="version-pill">版本 v{instance.version}</span>
         </div>
         <form
           className="form-stack"
@@ -386,19 +415,21 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
               />
             </Field>
             <div className="secret-config-field">
-              <Field label="连接密码" hint={passwordHint}>
+              <Field label="RCON 密码" hint={passwordHint}>
                 <input
                   type="password"
                   value={passwordValue}
                   disabled={passwordChange.kind === "clear"}
                   placeholder={
-                    passwordChange.kind === "unchanged" ? "保持当前密码" : ""
+                    passwordChange.kind === "unchanged"
+                      ? instance.rcon_configured ? "已保存（输入新密码可替换）" : "尚未设置"
+                      : ""
                   }
                   onChange={(event) =>
                     setPasswordChange(
                       event.target.value
                         ? { kind: "set", value: event.target.value }
-                        : { kind: "clear" },
+                        : { kind: "unchanged" },
                     )
                   }
                   autoComplete="new-password"
@@ -410,14 +441,14 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
                   aria-pressed={passwordChange.kind === "clear"}
                   onClick={() => setPasswordChange({ kind: "clear" })}
                 >
-                  清除现有密码
+                  清除 RCON 密码
                 </button>
                 {passwordChange.kind !== "unchanged" && (
                   <button
                     type="button"
                     onClick={() => setPasswordChange({ kind: "unchanged" })}
                   >
-                    保持现有密码
+                    保持现有 RCON 密码
                   </button>
                 )}
               </div>
@@ -441,10 +472,7 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
                   setConfig({ ...config, difficulty: event.target.value })
                 }
               >
-                <option value="easy">简单</option>
-                <option value="normal">普通</option>
-                <option value="hard">高级</option>
-                <option value="impossible">专家</option>
+                {gameDifficulties.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}
               </select>
             </Field>
             <Field label="最大玩家">
@@ -462,7 +490,7 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
               />
             </Field>
           </div>
-          <div className="form-grid">
+          <div>
             <Field label="初始地图">
               <select
                 value={config.start_map}
@@ -473,14 +501,6 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
                 {!officialMapGroups.some((group) => group.maps.some(([value]) => value === config.start_map)) && <option value={config.start_map}>{config.start_map}</option>}
                 {officialMapGroups.map((group) => <optgroup label={group.campaign} key={group.campaign}>{group.maps.map(([value, label]) => <option value={value} key={value}>{label} · {value}</option>)}</optgroup>)}
               </select>
-            </Field>
-            <Field label="地区代码">
-              <input
-                value={config.region}
-                onChange={(event) =>
-                  setConfig({ ...config, region: event.target.value })
-                }
-              />
             </Field>
           </div>
           <Field label="Steam 组 ID">
@@ -566,7 +586,7 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
               disabled={publicStatusBlocked}
             >
               <Save size={16} />
-              保存新版本
+              保存配置
             </Button>
             <Button type="button" variant="secondary" onClick={discard}>
               放弃更改
@@ -577,31 +597,14 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
       <Card className="config-note">
         <FileCode2 size={21} />
         <div>
-          <strong>不会覆盖 server.cfg</strong>
+          <strong>游戏加载 server.cfg</strong>
           <span>
-            面板设置写入独立生成文件；现有配置保持原样，每次保存都会记录差异和审计事件。
+            面板不再生成或注入 l4d2panel.cfg；启动时只固定加载你维护的 server.cfg。RCON 密码仅作为中心端连接凭据保存，请在 server.cfg 中配置相同值。
           </span>
         </div>
       </Card>
-      <ConfigHistoryCard instance={instance} />
     </div>
   );
-}
-
-function ConfigHistoryCard({ instance }: { instance: InstanceRecord }) {
-  const history = useQuery({ queryKey: ["instances", instance.id, "config-versions"], queryFn: () => api.configVersions(instance.id) });
-  const toast = useToast();
-  const client = useQueryClient();
-  const rollback = useMutation({
-    mutationFn: (version: number) => api.rollbackConfig(instance.id, version),
-    onSuccess: () => {
-      toast.push("配置回滚任务已提交；旧配置已保留为新版本");
-      void client.invalidateQueries({ queryKey: ["instances", instance.id] });
-      void client.invalidateQueries({ queryKey: ["instances", instance.id, "config-versions"] });
-    },
-    onError: (error) => toast.push(error.message, "error"),
-  });
-  return <Card className="config-history"><div className="card-heading"><div><span className="eyebrow">VERSION HISTORY</span><h2>配置版本与差异</h2></div><History size={20} /></div>{history.isPending ? <LoadingBlock /> : history.error ? <ErrorState error={history.error} retry={() => void history.refetch()} /> : <div className="config-version-list">{history.data.items.map((item) => { const changed = Object.keys(item.diff || {}); return <div className="config-version-row" key={item.id}><span className="version-pill">v{item.version}{item.current ? " · 当前" : ""}</span><div><strong>{item.created_name || (item.current ? "当前配置" : "系统")}</strong><small>{dateTime(item.created_at)}</small><span>{changed.length ? `变更：${changed.slice(0, 5).join("、")}${changed.length > 5 ? ` 等 ${changed.length} 项` : ""}` : "初始快照"}</span></div>{!item.current && <Button variant="secondary" onClick={() => { if (window.confirm(`确认回滚到 v${item.version}？当前配置仍会作为历史版本保留。`)) rollback.mutate(item.version); }} loading={rollback.isPending}><RotateCcw size={15} />回滚</Button>}</div>; })}</div>}</Card>;
 }
 
 function ModsTab({ instance }: { instance: InstanceRecord }) {
@@ -711,12 +714,20 @@ function InstallPackageModal({ open, instance, onClose }: { open: boolean; insta
 function FilesTab({ instance }: { instance: InstanceRecord }) {
   const [path, setPath] = useState("");
   const [editor, setEditor] = useState<{ path: string; isNew: boolean } | null>(null);
+  const [serverShortcut, setServerShortcut] = useState(false);
   const files = useQuery({ queryKey: ["instances", instance.id, "files", path], queryFn: () => api.files(instance.id, path) });
-  const allowedRoots = ["cfg", "addons", "left4dead2/addons", "left4dead2/cfg", "logs"];
+  const allowedRoots = ["left4dead2/addons", "left4dead2/cfg"];
+  useEffect(() => {
+    if (!serverShortcut || path !== "left4dead2/cfg" || files.isPending || files.error) return;
+    const serverPath = "left4dead2/cfg/server.cfg";
+    const exists = files.data.items.some((item) => item.type === "file" && item.path.toLowerCase() === serverPath);
+    setEditor({ path: serverPath, isNew: !exists });
+    setServerShortcut(false);
+  }, [files.data, files.error, files.isPending, path, serverShortcut]);
   if (files.isPending) return <LoadingBlock label="正在读取实例目录…" />;
   if (files.error) return <OptionalUnavailable error={files.error} title="文件浏览暂不可用" description="当前控制端未开放受限文件列表接口。Agent 仍会强制执行实例根目录边界。" />;
   const newPath = `${path || "left4dead2/cfg"}/new-file.cfg`;
-  return <><Card><div className="card-heading"><div><span className="eyebrow">SANDBOXED FILES</span><h2>文件管理</h2></div><Button variant="secondary" onClick={() => setEditor({ path: newPath, isNew: true })}><Upload size={16} />上传或新建</Button></div><div className="file-browser"><aside>{allowedRoots.map((root) => <button className={path === root ? "active" : ""} onClick={() => setPath(root)} key={root}><Folder size={15} />{root}</button>)}</aside><div className="file-list"><div className="file-path"><button onClick={() => setPath("")}>实例目录</button>{path.split("/").filter(Boolean).map((part, index, all) => <span key={`${part}-${index}`}><ChevronRight size={13} /><button onClick={() => setPath(all.slice(0, index + 1).join("/"))}>{part}</button></span>)}</div>{files.data.items.length ? files.data.items.map((item) => { const generated = item.name.toLowerCase() === "l4d2panel.cfg"; return <button className="file-row" key={item.path} disabled={generated} title={generated ? "由结构化配置自动生成，不可直接修改" : undefined} onClick={() => item.type === "directory" ? setPath(item.path) : setEditor({ path: item.path, isNew: false })}><span className={`file-type file-type--${item.type}`}>{item.type === "directory" ? <Folder size={18} /> : <File size={18} />}</span><strong>{item.name}{generated ? "（面板生成）" : ""}</strong><span>{item.type === "file" ? bytes(item.size) : "文件夹"}</span><time>{dateTime(item.modified_at)}</time><ChevronRight size={15} /></button>; }) : <EmptyState title="目录为空" description="这个受限目录中还没有文件。" />}</div></div></Card><FileEditorModal instance={instance} editor={editor} onClose={() => { setEditor(null); void files.refetch(); }} /></>;
+  return <><Card><div className="card-heading"><div><span className="eyebrow">SANDBOXED FILES</span><h2>文件管理</h2></div><Button variant="secondary" onClick={() => setEditor({ path: newPath, isNew: true })}><Upload size={16} />上传或新建</Button></div><div className="file-browser"><aside><button onClick={() => { setServerShortcut(true); setPath("left4dead2/cfg"); }}><FileCode2 size={15} />server.cfg</button>{allowedRoots.map((root) => <button className={path === root ? "active" : ""} onClick={() => setPath(root)} key={root}><Folder size={15} />{root}</button>)}</aside><div className="file-list"><div className="file-path"><button onClick={() => setPath("")}>实例目录</button>{path.split("/").filter(Boolean).map((part, index, all) => <span key={`${part}-${index}`}><ChevronRight size={13} /><button onClick={() => setPath(all.slice(0, index + 1).join("/"))}>{part}</button></span>)}</div>{files.data.items.length ? files.data.items.map((item) => <button className="file-row" key={item.path} onClick={() => item.type === "directory" ? setPath(item.path) : setEditor({ path: item.path, isNew: false })}><span className={`file-type file-type--${item.type}`}>{item.type === "directory" ? <Folder size={18} /> : <File size={18} />}</span><strong>{item.name}</strong><span>{item.type === "file" ? bytes(item.size) : "文件夹"}</span><time>{dateTime(item.modified_at)}</time><ChevronRight size={15} /></button>) : <EmptyState title="目录为空" description="这个受限目录中还没有文件。" />}</div></div></Card><FileEditorModal instance={instance} editor={editor} onClose={() => { setEditor(null); void files.refetch(); }} /></>;
 }
 
 function FileEditorModal({ instance, editor, onClose }: { instance: InstanceRecord; editor: { path: string; isNew: boolean } | null; onClose: () => void }) {

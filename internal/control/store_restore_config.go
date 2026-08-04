@@ -10,7 +10,6 @@ import (
 	"io"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
@@ -108,17 +107,17 @@ func restoredLaunchConfigFromResult(result map[string]any) (*restoredLaunchConfi
 	return decodeRestoredLaunchConfig(value)
 }
 
-// applyRestoredLaunchConfigTx stores the previous configuration and advances
-// the current version in the caller's transaction. The source_job_id marker
-// makes the operation safe when an Agent replays an unacknowledged terminal
-// journal entry.
+// applyRestoredLaunchConfigTx replaces the current configuration and advances
+// its concurrency revision in the caller's transaction. A content-free job
+// marker makes the operation safe when an Agent replays an unacknowledged
+// terminal journal entry without retaining configuration history.
 func applyRestoredLaunchConfigTx(ctx context.Context, tx *sql.Tx, job domain.Job, restored restoredLaunchConfig) error {
 	current, err := scanInstance(tx.QueryRowContext(ctx, `SELECT `+instanceColumns+` FROM instances WHERE id=?1`, job.InstanceID))
 	if err != nil {
 		return err
 	}
 	var alreadyApplied bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM config_versions WHERE source_job_id=?1)`, job.ID).Scan(&alreadyApplied); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM restore_config_projections WHERE job_id=?1)`, job.ID).Scan(&alreadyApplied); err != nil {
 		return err
 	}
 	if alreadyApplied {
@@ -128,13 +127,8 @@ func applyRestoredLaunchConfigTx(ctx context.Context, tx *sql.Tx, job domain.Job
 	if err != nil {
 		return err
 	}
-	previous, err := json.Marshal(current.Config)
-	if err != nil {
-		return err
-	}
-	tag, err := tx.ExecContext(ctx, `INSERT INTO config_versions(id,instance_id,version,config,created_by,source_job_id)
-		VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(source_job_id) DO NOTHING`, uuid.NewString(), current.ID,
-		current.Version, string(previous), nullableUUID(job.RequestedBy), job.ID)
+	tag, err := tx.ExecContext(ctx, `INSERT INTO restore_config_projections(job_id,instance_id)
+		VALUES(?1,?2) ON CONFLICT(job_id) DO NOTHING`, job.ID, current.ID)
 	if err != nil {
 		return err
 	}

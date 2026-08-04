@@ -33,6 +33,20 @@ func TestValidJobTransition(t *testing.T) {
 	}
 }
 
+func TestRestartRequiresAnActiveServer(t *testing.T) {
+	t.Parallel()
+	for _, status := range []domain.InstanceStatus{domain.InstanceRunning, domain.InstanceDegraded, domain.InstanceExternal} {
+		if !restartableInstanceStatus(status) {
+			t.Fatalf("active status %s cannot restart", status)
+		}
+	}
+	for _, status := range []domain.InstanceStatus{domain.InstanceInstalling, domain.InstanceStopped, domain.InstanceStarting, domain.InstanceStopping, domain.InstanceUpdating} {
+		if restartableInstanceStatus(status) {
+			t.Fatalf("inactive status %s can restart", status)
+		}
+	}
+}
+
 func TestOnlyCancelPendingJobsAcceptLateAgentTerminalOutcome(t *testing.T) {
 	t.Parallel()
 	ordinary := domain.Job{Status: domain.JobCanceled, Result: map[string]any{}}

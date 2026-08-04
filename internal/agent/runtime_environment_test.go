@@ -197,8 +197,8 @@ func TestBindRegisteredInstallationSkipsRepeatedStructureValidation(t *testing.T
 	if _, ok := registry.Get("instance-one"); !ok {
 		t.Fatal("bound instance was not registered")
 	}
-	if _, err := os.Stat(filepath.Join(installationPath, "left4dead2", "cfg", "l4d2panel.cfg")); err != nil {
-		t.Fatalf("generated configuration missing: %v", err)
+	if _, err := os.Stat(filepath.Join(installationPath, "left4dead2", "cfg", "l4d2panel.cfg")); !os.IsNotExist(err) {
+		t.Fatalf("l4d2panel.cfg should not be generated: %v", err)
 	}
 }
 

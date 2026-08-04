@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,8 +15,7 @@ func (e *Executor) maintenanceCountdown(ctx context.Context, record InstanceReco
 	if len(warnings) == 0 {
 		warnings = []int{600, 300, 60}
 	}
-	host, port := rconEndpoint(record, payload)
-	if port <= 0 || port > 65535 {
+	if port := gameEndpointPort(record, payload); port <= 0 || port > 65535 {
 		return errors.New("invalid RCON port for maintenance countdown")
 	}
 	message := strings.TrimSpace(payload.BroadcastMessage)
@@ -35,7 +33,7 @@ func (e *Executor) maintenanceCountdown(ctx context.Context, record InstanceReco
 			text = fmt.Sprintf("%s (%d 秒)", text, seconds)
 		}
 		command := `say "` + strings.ReplaceAll(strings.ReplaceAll(text, `\`, `\\`), `"`, `\"`) + `"`
-		_, err := (RCONClient{Timeout: 8 * time.Second}).Execute(ctx, net.JoinHostPort(host, strconv.Itoa(port)), payload.RCONPassword, command)
+		_, err := e.executeInstanceRCON(ctx, record, payload, payload.RCONPassword, command, 8*time.Second)
 		if err == nil && progress != nil {
 			progress(10, fmt.Sprintf("maintenance warning sent: %d seconds", seconds))
 		}

@@ -569,6 +569,39 @@ func TestSQLiteTypeRoundTrips(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT json_valid(config),typeof(config) FROM instances WHERE id=?1`, instance.ID).Scan(&jsonValid, &jsonType); err != nil || !jsonValid || jsonType != "text" {
 		t.Fatalf("JSON round trip: valid=%v type=%q err=%v", jsonValid, jsonType, err)
 	}
+	var removedHistoryTables, restoreProjectionTables int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='config_versions'`).Scan(&removedHistoryTables); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='restore_config_projections'`).Scan(&restoreProjectionTables); err != nil {
+		t.Fatal(err)
+	}
+	if removedHistoryTables != 0 || restoreProjectionTables != 1 {
+		t.Fatalf("configuration history schema was not removed: history=%d restore_projection=%d", removedHistoryTables, restoreProjectionTables)
+	}
+
+	masterKey := []byte("0123456789abcdef0123456789abcdef")
+	encryptedRCON, err := encryptSecret(masterKey, "rcon-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveInstanceSecrets(ctx, instance.ID, encryptedRCON, ""); err != nil {
+		t.Fatal(err)
+	}
+	secretStateServer := &Server{config: Config{MasterKey: masterKey}, store: store}
+	if err := secretStateServer.populateInstanceSecretState(ctx, &instance); err != nil || !instance.RCONConfigured {
+		t.Fatalf("configured RCON state=%v err=%v", instance.RCONConfigured, err)
+	}
+	encryptedEmptyRCON, err := encryptSecret(masterKey, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveInstanceSecrets(ctx, instance.ID, encryptedEmptyRCON, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := secretStateServer.populateInstanceSecretState(ctx, &instance); err != nil || instance.RCONConfigured {
+		t.Fatalf("empty RCON state=%v err=%v", instance.RCONConfigured, err)
+	}
 
 	token := APIToken{UserID: owner.ID, Name: "all scopes", Scopes: []string{"read", "operate", "manage"}, ExpiresAt: &expiresAt}
 	createdToken, err := store.CreateAPIToken(ctx, token, bytes.Repeat([]byte{0x53}, 32))

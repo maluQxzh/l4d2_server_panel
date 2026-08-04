@@ -163,6 +163,12 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 		}
 		items = filtered
 	}
+	for index := range items {
+		if err := s.populateInstanceSecretState(r.Context(), &items[index]); err != nil {
+			s.fail(w, err)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -172,7 +178,28 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	if err := s.populateInstanceSecretState(r.Context(), &instance); err != nil {
+		s.fail(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"instance": instance})
+}
+
+func (s *Server) populateInstanceSecretState(ctx context.Context, instance *domain.Instance) error {
+	rconCiphertext, _, err := s.store.InstanceSecrets(ctx, instance.ID)
+	if errors.Is(err, ErrNotFound) {
+		instance.RCONConfigured = false
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	rconPassword, err := decryptSecret(s.config.MasterKey, rconCiphertext)
+	if err != nil {
+		return fmt.Errorf("read instance RCON credential state: %w", err)
+	}
+	instance.RCONConfigured = rconPassword != ""
+	return nil
 }
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +214,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		TVPort         int                   `json:"tv_port"`
 		Operation      string                `json:"operation,omitempty"`
 		Config         domain.InstanceConfig `json:"config"`
+		RCONPassword   string                `json:"rcon_password,omitempty"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
@@ -198,7 +226,12 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	if request.Operation == "" {
 		request.Operation = "import"
 	}
+	discardRetiredInstanceConfigFields(&request.Config)
 	if err := validateStructuredConfig(request.Config); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_config", err.Error())
+		return
+	}
+	if err := validateRCONPassword(request.RCONPassword); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_config", err.Error())
 		return
 	}
@@ -230,6 +263,10 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		}
 		response := map[string]any{"job_id": existing.ID, "idempotent_replay": true}
 		if instance, instanceErr := s.store.GetInstance(r.Context(), existing.InstanceID); instanceErr == nil {
+			if stateErr := s.populateInstanceSecretState(r.Context(), &instance); stateErr != nil {
+				s.fail(w, stateErr)
+				return
+			}
 			response["instance"] = instance
 		}
 		writeJSON(w, http.StatusAccepted, response)
@@ -238,15 +275,8 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	serverPassword := request.Config.ServerPassword
 	provisionalInstallationID := ""
 	removeProvisionalInstallation := func() { _ = s.store.RemovePendingGameInstallation(r.Context(), provisionalInstallationID) }
-	rconPassword, err := randomToken(24)
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	request.Config.ServerPassword = ""
 	if request.InstallationID != "" {
 		installation, lookupErr := s.store.GetGameInstallation(r.Context(), request.InstallationID)
 		if lookupErr != nil {
@@ -278,29 +308,20 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	encryptedRCON, err := encryptSecret(s.config.MasterKey, rconPassword)
+	encryptedRCON, err := encryptSecret(s.config.MasterKey, request.RCONPassword)
 	if err != nil {
 		_ = s.store.RemoveInstanceRecord(r.Context(), instance.ID)
 		removeProvisionalInstallation()
 		s.fail(w, err)
 		return
 	}
-	encryptedServerPassword := ""
-	if serverPassword != "" {
-		encryptedServerPassword, err = encryptSecret(s.config.MasterKey, serverPassword)
-		if err != nil {
-			_ = s.store.RemoveInstanceRecord(r.Context(), instance.ID)
-			removeProvisionalInstallation()
-			s.fail(w, err)
-			return
-		}
-	}
-	if err := s.store.SaveInstanceSecrets(r.Context(), instance.ID, encryptedRCON, encryptedServerPassword); err != nil {
+	if err := s.store.SaveInstanceSecrets(r.Context(), instance.ID, encryptedRCON, ""); err != nil {
 		_ = s.store.RemoveInstanceRecord(r.Context(), instance.ID)
 		removeProvisionalInstallation()
 		s.fail(w, err)
 		return
 	}
+	instance.RCONConfigured = request.RCONPassword != ""
 	if _, err := s.store.CreateSchedule(r.Context(), instance.ID, "Daily automatic backup", "0 4 * * *", s.config.Timezone,
 		"backup", map[string]any{"kind": "daily", "retention_daily": 7, "retention_weekly": 4}, true); err != nil {
 		_ = s.store.RemoveInstanceRecord(r.Context(), instance.ID)
@@ -311,7 +332,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	jobType, operation := "game.import", "import"
 	if provisionalInstallationID == "" {
 		// A ready installation has already been inspected and registered by the
-		// Agent. Creation only binds it and writes the instance configuration;
+		// Agent. Creation only binds it and records the instance launch settings;
 		// it does not repeat the installation structure validation.
 		jobType, operation = "import", "bind"
 	}
@@ -338,6 +359,10 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, lookupErr)
 			return
 		}
+		if stateErr := s.populateInstanceSecretState(r.Context(), &original); stateErr != nil {
+			s.fail(w, stateErr)
+			return
+		}
 		s.dispatchSoon(job.NodeID)
 		writeJSON(w, http.StatusAccepted, map[string]any{"instance": original, "job_id": job.ID, "idempotent_replay": true})
 		return
@@ -350,14 +375,15 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePatchInstance(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Name           string                 `json:"name"`
-		Config         *domain.InstanceConfig `json:"config,omitempty"`
-		ServerPassword *string                `json:"server_password,omitempty"`
-		Version        int                    `json:"version"`
+		Name         string                 `json:"name"`
+		Config       *domain.InstanceConfig `json:"config,omitempty"`
+		RCONPassword *string                `json:"rcon_password,omitempty"`
+		Version      int                    `json:"version"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
 	}
+	discardRetiredInstanceConfigFields(request.Config)
 	instanceID := chi.URLParam(r, "instanceID")
 	requestFingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "instance-config", instanceID, "configure", request)
 	if err != nil {
@@ -365,14 +391,8 @@ func (s *Server) handlePatchInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := principalFromContext(r.Context())
-	var serverPassword *string
-	if request.ServerPassword != nil {
-		serverPassword = request.ServerPassword
-	} else if request.Config != nil && request.Config.ServerPassword != "" {
-		serverPassword = &request.Config.ServerPassword
-	}
-	if serverPassword != nil {
-		if err := validateServerPassword(*serverPassword); err != nil {
+	if request.RCONPassword != nil {
+		if err := validateRCONPassword(*request.RCONPassword); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_config", err.Error())
 			return
 		}
@@ -382,29 +402,28 @@ func (s *Server) handlePatchInstance(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_config", err.Error())
 			return
 		}
-		request.Config.ServerPassword = ""
 	}
-	var encryptedServerPassword *string
-	if serverPassword != nil {
-		encrypted := ""
-		var err error
-		if *serverPassword != "" {
-			encrypted, err = encryptSecret(s.config.MasterKey, *serverPassword)
-		}
-		if err != nil {
-			s.fail(w, err)
+	var encryptedRCONPassword *string
+	if request.RCONPassword != nil {
+		encrypted, encryptErr := encryptSecret(s.config.MasterKey, *request.RCONPassword)
+		if encryptErr != nil {
+			s.fail(w, encryptErr)
 			return
 		}
-		encryptedServerPassword = &encrypted
+		encryptedRCONPassword = &encrypted
 	}
 	instance, job, reused, err := s.store.UpdateInstanceAndQueueWithFingerprint(r.Context(), instanceID, request.Name, request.Config,
-		request.Version, principal.User.ID, r.Header.Get("Idempotency-Key"), encryptedServerPassword, requestFingerprint)
+		request.Version, principal.User.ID, r.Header.Get("Idempotency-Key"), encryptedRCONPassword, nil, requestFingerprint)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 	if !principal.AllowsJob(job) {
 		writeTokenScopeDenied(w)
+		return
+	}
+	if err := s.populateInstanceSecretState(r.Context(), &instance); err != nil {
+		s.fail(w, err)
 		return
 	}
 	s.audit(r, "instance.updated", "instance", instance.ID, map[string]any{"version": instance.Version, "job_id": job.ID})

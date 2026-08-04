@@ -15,7 +15,7 @@ type StartOptions struct {
 	MaxPlayers int
 	Map        string
 	Mode       string
-	ConfigFile string
+	Difficulty string
 	ExtraArgs  []string
 }
 
@@ -40,11 +40,12 @@ func BuildStartArgs(options StartOptions) ([]string, error) {
 	if !sourceIdentifier.MatchString(options.Map) || !sourceIdentifier.MatchString(options.Mode) {
 		return nil, errors.New("map and mode may only contain letters, numbers, dash, and underscore")
 	}
-	if options.ConfigFile == "" {
-		options.ConfigFile = "l4d2panel.cfg"
-	}
-	if strings.ContainsAny(options.ConfigFile, `/\\`) || !strings.HasSuffix(strings.ToLower(options.ConfigFile), ".cfg") {
-		return nil, errors.New("config file must be a cfg filename")
+	if options.Difficulty != "" {
+		switch strings.ToLower(options.Difficulty) {
+		case "easy", "normal", "hard", "impossible":
+		default:
+			return nil, errors.New("difficulty must be easy, normal, hard, or impossible")
+		}
 	}
 	if err := validateExtraStartArgs(options.ExtraArgs); err != nil {
 		return nil, err
@@ -53,8 +54,16 @@ func BuildStartArgs(options StartOptions) ([]string, error) {
 	if options.TVPort != 0 {
 		args = append(args, "+tv_port", strconv.Itoa(options.TVPort))
 	}
-	args = append(args, "+map", options.Map, "+mp_gamemode", options.Mode, "+maxplayers", strconv.Itoa(options.MaxPlayers), "+exec", options.ConfigFile)
-	return append(args, options.ExtraArgs...), nil
+	args = append(args, "+map", options.Map, "+mp_gamemode", options.Mode, "+maxplayers", strconv.Itoa(options.MaxPlayers))
+	if options.Difficulty != "" {
+		args = append(args, "+z_difficulty", strings.ToLower(options.Difficulty))
+	}
+	args = append(args, options.ExtraArgs...)
+	// Keep the administrator-owned server.cfg as the sole game configuration
+	// source, but execute it once more after map initialization and all startup
+	// CVars. Some L4D2 SRCDS builds or plugins otherwise leave TCP RCON disabled
+	// even though the file contains a valid rcon_password.
+	return append(args, "+exec", "server.cfg"), nil
 }
 
 func ValidateStartArgs(args []string) error {
@@ -64,6 +73,7 @@ func ValidateStartArgs(args []string) error {
 	if err := validateTickrateArguments(args); err != nil {
 		return err
 	}
+	managedServerConfigExec := 0
 	for i, arg := range args {
 		if err := validateArgumentText(arg); err != nil {
 			return fmt.Errorf("argument %d: %w", i, err)
@@ -71,6 +81,9 @@ func ValidateStartArgs(args []string) error {
 		name, inlineValue, hasInlineValue := splitStartArgument(arg)
 		if name == "-basedir" || name == "-defaultgamedir" {
 			return fmt.Errorf("unsafe startup parameter %q", arg)
+		}
+		if name == "-usetcp" {
+			return errors.New("-usetcp disables Source TCP support and RCON")
 		}
 		if name == "+rcon_password" {
 			return errors.New("RCON password must only be supplied through generated configuration")
@@ -91,12 +104,12 @@ func ValidateStartArgs(args []string) error {
 			}
 		}
 		if name == "+exec" {
-			configFile := inlineValue
-			if !hasInlineValue && i+1 < len(args) {
-				configFile = args[i+1]
+			if hasInlineValue || i+1 >= len(args) || args[i+1] != "server.cfg" {
+				return errors.New("only the managed +exec server.cfg argument pair is allowed")
 			}
-			if !strings.EqualFold(strings.TrimSpace(configFile), "l4d2panel.cfg") {
-				return errors.New("+exec may only select l4d2panel.cfg")
+			managedServerConfigExec++
+			if managedServerConfigExec > 1 {
+				return errors.New("+exec server.cfg may only be supplied once")
 			}
 		}
 	}
@@ -110,7 +123,7 @@ func validateExtraStartArgs(args []string) error {
 	if err := validateTickrateArguments(args); err != nil {
 		return err
 	}
-	reserved := map[string]bool{"-console": true, "-game": true, "-port": true, "+hostport": true, "+map": true, "+mp_gamemode": true, "+maxplayers": true, "+exec": true, "+tv_port": true, "+rcon_password": true, "+sv_password": true, "+plugin_load": true}
+	reserved := map[string]bool{"-console": true, "-game": true, "-port": true, "+hostport": true, "+map": true, "+mp_gamemode": true, "+maxplayers": true, "+z_difficulty": true, "+exec": true, "+tv_port": true, "+rcon_password": true, "+sv_password": true, "+plugin_load": true}
 	for i, arg := range args {
 		if err := validateArgumentText(arg); err != nil {
 			return fmt.Errorf("advanced argument %d: %w", i, err)
@@ -121,6 +134,9 @@ func validateExtraStartArgs(args []string) error {
 		}
 		if name == "-basedir" || name == "-defaultgamedir" {
 			return fmt.Errorf("unsafe startup parameter %q", arg)
+		}
+		if name == "-usetcp" {
+			return errors.New("-usetcp disables Source TCP support and RCON")
 		}
 	}
 	return nil

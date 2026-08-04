@@ -1,6 +1,6 @@
 import type { InstanceConfig } from "./types";
 
-export type ServerPasswordChange =
+export type RCONPasswordChange =
   | { kind: "unchanged" }
   | { kind: "set"; value: string }
   | { kind: "clear" };
@@ -8,7 +8,7 @@ export type ServerPasswordChange =
 export interface InstanceConfigUpdate {
   version: number;
   config: InstanceConfig;
-  server_password?: string;
+  rcon_password?: string;
 }
 
 /**
@@ -19,13 +19,13 @@ export interface InstanceConfigUpdate {
 export function buildInstanceConfigUpdate(
   version: number,
   config: InstanceConfig,
-  password: ServerPasswordChange,
+  password: RCONPasswordChange,
 ): InstanceConfigUpdate {
-  // Defensively discard values from older clients/state that used to put the
-  // password in config. InstanceConfig intentionally no longer declares it.
-  const { server_password: _legacyPassword, ...safeConfig } = config as InstanceConfig & { server_password?: string };
+  // Do not preserve legacy connection-password or region fields when a modern
+  // client writes the current configuration.
+  const { server_password: _legacyPassword, region: _legacyRegion, ...safeConfig } = config as InstanceConfig & { server_password?: string };
   const update: InstanceConfigUpdate = { version, config: safeConfig };
-  if (password.kind === "set") update.server_password = password.value;
-  if (password.kind === "clear") update.server_password = "";
+  if (password.kind === "set") update.rcon_password = password.value;
+  if (password.kind === "clear") update.rcon_password = "";
   return update;
 }

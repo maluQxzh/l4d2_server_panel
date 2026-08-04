@@ -18,12 +18,19 @@ import (
 
 func (s *Server) handleInstancePlayers(w http.ResponseWriter, r *http.Request) {
 	instanceID := chi.URLParam(r, "instanceID")
-	if _, err := s.store.GetInstance(r.Context(), instanceID); err != nil {
+	instance, err := s.store.GetInstance(r.Context(), instanceID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if err := s.populateInstanceSecretState(r.Context(), &instance); err != nil {
 		s.fail(w, err)
 		return
 	}
 	latest, _ := s.store.LatestSuccessfulJob(r.Context(), instanceID, "rcon.players", map[string]any{})
-	s.queueRefresh(r, instanceID, "rcon.players", map[string]any{})
+	if rconPlayerRefreshAllowed(instance) {
+		s.queueRefresh(r, instanceID, "rcon.players", map[string]any{})
+	}
 	items := make([]any, 0)
 	if raw, ok := latest.Result["players"].([]any); ok {
 		for _, entry := range raw {
@@ -39,6 +46,10 @@ func (s *Server) handleInstancePlayers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func rconPlayerRefreshAllowed(instance domain.Instance) bool {
+	return instance.RCONConfigured && (instance.Status == domain.InstanceRunning || instance.Status == domain.InstanceDegraded)
 }
 
 func (s *Server) handleInstanceBans(w http.ResponseWriter, r *http.Request) {

@@ -25,6 +25,10 @@ test("所有者上传便携 ZIP 后可跨短暂断线等待升级成功", async 
   await authenticate(page);
   let uploadSeen = false;
   let statusReads = 0;
+  let settingsLoads = 0;
+  page.on("request", (request) => {
+    if (request.isNavigationRequest() && new URL(request.url()).pathname === "/settings") settingsLoads += 1;
+  });
 
   await page.route("**/api/v1/system/updates", async (route) => {
     if (route.request().method() === "POST") {
@@ -57,7 +61,9 @@ test("所有者上传便携 ZIP 后可跨短暂断线等待升级成功", async 
   await page.getByRole("button", { name: "一键升级" }).click();
 
   await expect.poll(() => uploadSeen).toBeTruthy();
-  await expect(page.getByText("中心端已升级到 1.2.0")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("中心端已升级到 1.2.0，页面即将刷新")).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => settingsLoads, { timeout: 15_000 }).toBeGreaterThanOrEqual(2);
+  await expect(page).toHaveURL(/\/settings$/);
   expect(statusReads).toBeGreaterThanOrEqual(3);
 });
 

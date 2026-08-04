@@ -108,6 +108,9 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 	if instanceStatus == domain.InstanceExternal && !externalInstanceJobAllowed(action, payload) {
 		return domain.Job{}, false, fmt.Errorf("external instance is read-only until a controlled restart: %w", ErrConflict)
 	}
+	if action == "restart" && !restartableInstanceStatus(instanceStatus) {
+		return domain.Job{}, false, fmt.Errorf("instance must be running before it can restart: %w", ErrConflict)
+	}
 	if installationID != "" && (action == "start" || action == "restart") {
 		var installationStatus string
 		if err := tx.QueryRowContext(ctx, `SELECT status FROM game_installations WHERE id=?1`, installationID).Scan(&installationStatus); err != nil {
@@ -145,6 +148,10 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 		}
 	}
 	return job, false, tx.Commit()
+}
+
+func restartableInstanceStatus(status domain.InstanceStatus) bool {
+	return status == domain.InstanceRunning || status == domain.InstanceDegraded || status == domain.InstanceExternal
 }
 
 // QueueNodeJob persists a node-scoped operation using the same idempotency and

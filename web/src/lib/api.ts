@@ -15,7 +15,6 @@ import type {
   PublicServer,
   ScheduleRecord,
   User,
-  ConfigVersionRecord,
   ManagedFileContent,
   NotificationChannelRecord,
   NotificationDeliveryRecord,
@@ -261,7 +260,7 @@ export const api = {
     method: "POST",
     body: JSON.stringify(payload),
   }),
-  updateInstance: (id: string, payload: Partial<Omit<InstanceRecord, "config">> & { config?: InstanceConfig; server_password?: string }) =>
+  updateInstance: (id: string, payload: Partial<Omit<InstanceRecord, "config">> & { config?: InstanceConfig; rcon_password?: string }) =>
     request<{ instance: InstanceRecord }>(`/instances/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
@@ -276,6 +275,7 @@ export const api = {
   ),
 
   jobs: () => list<Job>("/jobs"),
+  instanceJobs: (instanceId: string) => list<Job>(`/jobs?instance_id=${encodeURIComponent(instanceId)}`),
   job: (id: string) => request<{ job: Job }>(`/jobs/${encodeURIComponent(id)}`).then((r) => r.job),
   cancelJob: (id: string) => request<void>(`/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
   audit: (resourceId?: string) => list<AuditEvent>(`/audit${resourceId ? `?resource_id=${encodeURIComponent(resourceId)}` : ""}`),
@@ -364,10 +364,6 @@ export const api = {
   deleteFile: (instanceId: string, path: string, expectedSha256?: string) => request<{ job_id: string }>(
     `/instances/${encodeURIComponent(instanceId)}/files/content?path=${encodeURIComponent(path)}`,
     { method: "DELETE", headers: expectedSha256 ? { "If-Match": `"${expectedSha256}"` } : undefined },
-  ),
-  configVersions: (instanceId: string) => list<ConfigVersionRecord>(`/instances/${encodeURIComponent(instanceId)}/config-versions`),
-  rollbackConfig: (instanceId: string, version: number) => request<{ instance: InstanceRecord; job_id: string }>(
-    `/instances/${encodeURIComponent(instanceId)}/config-versions/${version}/rollback`, { method: "POST" },
   ),
   notifications: () => list<NotificationRecord>("/notifications"),
   markNotificationRead: (id: string) => request<void>(`/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),

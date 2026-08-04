@@ -96,7 +96,7 @@ type InstanceConfig struct {
 	Difficulty      string            `json:"difficulty"`
 	MaxPlayers      int               `json:"max_players"`
 	StartMap        string            `json:"start_map"`
-	Region          string            `json:"region"`
+	Region          string            `json:"region,omitempty"`
 	SteamGroupID    string            `json:"steam_group_id,omitempty"`
 	PublicStatus    bool              `json:"public_status"`
 	ExtraArgs       []string          `json:"extra_args,omitempty"`
@@ -125,6 +125,7 @@ type Instance struct {
 	UpdateAvailable   bool           `json:"update_available"`
 	AvailableBuild    string         `json:"available_build,omitempty"`
 	UpdateCheckedAt   *time.Time     `json:"last_update_checked_at,omitempty"`
+	RCONConfigured    bool           `json:"rcon_configured"`
 	Version           int            `json:"version"`
 	Config            InstanceConfig `json:"config"`
 	StartedAt         *time.Time     `json:"started_at,omitempty"`

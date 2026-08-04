@@ -3,7 +3,7 @@ import {
   Bell, Braces, Check, CheckCircle2, Clipboard, DownloadCloud, KeyRound, LockKeyhole, Mail, Plus, RefreshCw, ShieldCheck,
   Smartphone, Trash2, UserCog, Webhook,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, StatusBadge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
@@ -67,6 +67,8 @@ const updatePhaseLabels: Record<SystemUpdatePhase, string> = {
   rolling_back: "升级失败，正在自动回滚",
 };
 
+const successfulUpdateReloadDelayMs = 1000;
+
 function CenterUpdateCard() {
   const toast = useToast();
   const client = useQueryClient();
@@ -74,6 +76,7 @@ function CenterUpdateCard() {
   const [file, setFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [jobID, setJobID] = useState("");
+  const handledTerminalJobID = useRef("");
   const activeID = jobID || overview.data?.active?.job_id || "";
   const current = useQuery({
     queryKey: ["system-update", activeID],
@@ -98,10 +101,15 @@ function CenterUpdateCard() {
   const state = current.data || overview.data?.active;
 
   useEffect(() => {
-    if (!state || !["succeeded", "failed", "canceled"].includes(state.status)) return;
+    if (!state || !["succeeded", "failed", "canceled"].includes(state.status) || handledTerminalJobID.current === state.job_id) return;
+    handledTerminalJobID.current = state.job_id;
     void client.invalidateQueries({ queryKey: ["system-updates"] });
-    if (state.status === "succeeded") toast.push(`中心端已升级到 ${state.target_version || "新版本"}`);
-    else toast.push(state.rollback === "succeeded" ? "升级失败，已完整恢复旧版本" : "升级及自动回滚失败，请按恢复文档处理", "error");
+    if (state.status === "succeeded") {
+      toast.push(`中心端已升级到 ${state.target_version || "新版本"}，页面即将刷新`);
+      window.setTimeout(() => window.location.reload(), successfulUpdateReloadDelayMs);
+    } else {
+      toast.push(state.rollback === "succeeded" ? "升级失败，已完整恢复旧版本" : "升级及自动回滚失败，请按恢复文档处理", "error");
+    }
     setJobID("");
     setFile(null);
   }, [client, state?.job_id, state?.status]);
@@ -117,7 +125,7 @@ function CenterUpdateCard() {
         <Button disabled={!file || busy} loading={upload.isPending} onClick={() => { if (file && window.confirm(`确认使用“${file.name}”升级中心端？服务会短暂离线，失败时将自动完整回滚。`)) upload.mutate(); }}><RefreshCw size={16} />一键升级</Button>
       </div>
       {upload.isPending && <div className="center-update-progress" role="progressbar" aria-valuenow={uploadProgress}><span style={{ width: `${uploadProgress}%` }} /><small>正在上传 {uploadProgress}%</small></div>}
-      {state && ["queued", "running"].includes(state.status) && <div className="center-update-running"><span className="spinner" /><div><strong>{updatePhaseLabels[state.phase] || state.phase}</strong><small>页面会等待服务恢复并自动显示结果，请勿关闭或移动便携目录。</small></div></div>}
+      {state && ["queued", "running"].includes(state.status) && <div className="center-update-running"><span className="spinner" /><div><strong>{updatePhaseLabels[state.phase] || state.phase}</strong><small>页面会等待服务恢复；升级成功后将自动刷新，请勿关闭或移动便携目录。</small></div></div>}
       {state?.status === "failed" && <div className="form-warning">{state.rollback === "succeeded" ? "升级失败，旧程序、配置和数据库已经恢复。" : "自动回滚失败，服务可能保持停止。"}{state.error ? ` ${state.error}` : ""}</div>}
       {history.length > 0 && <div className="center-update-history"><strong>最近升级</strong>{history.slice(0, 3).map((item) => <div key={item.job_id}><StatusBadge status={item.status} /><span>{item.current_version} → {item.target_version || "未知"}</span><time>{dateTime(item.completed_at || item.updated_at)}</time><small>{item.status === "failed" ? `回滚：${item.rollback === "succeeded" ? "成功" : "失败"}` : "健康检查通过"}</small></div>)}</div>}
     </div></Card>
