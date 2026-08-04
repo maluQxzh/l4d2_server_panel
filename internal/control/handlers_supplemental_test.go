@@ -2,11 +2,26 @@ package control
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
+
+func TestNormalizeQQFlashShareURL(t *testing.T) {
+	input := "测试用户通过QQ闪传分享了文件\n链接：[https://qfile.qq.com/q/Example123](https://qfile.qq.com/q/Example123)"
+	if got, err := normalizeQQFlashShareURL(input); err != nil || got != "https://qfile.qq.com/q/Example123" {
+		t.Fatalf("normalized share URL = %q, %v", got, err)
+	}
+	for _, value := range []string{"https://evil.example/q/Example123", "https://qfile.qq.com.evil.example/q/Example123",
+		"https://qfile.qq.com/q/" + strings.Repeat("a", 65),
+		"https://qfile.qq.com/q/first01 https://qfile.qq.com/q/second02"} {
+		if _, err := normalizeQQFlashShareURL(value); err == nil {
+			t.Fatalf("unsafe QQ share input accepted: %q", value)
+		}
+	}
+}
 
 func TestSafeBroadcastCommand(t *testing.T) {
 	command, err := safeBroadcastCommand("Server restarts in five minutes")

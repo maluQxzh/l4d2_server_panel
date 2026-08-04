@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	pathpkg "path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +24,8 @@ var blockedManagedFileAPIExtensions = map[string]bool{
 	".exe": true, ".ps1": true, ".sh": true, ".smx": true, ".so": true,
 	".vdf": true, ".vpk": true,
 }
+
+var qqFlashShareURLPattern = regexp.MustCompile(`https://qfile\.qq\.com/q/[A-Za-z0-9_-]+`)
 
 func validateManagedFileAPIPath(value string) (string, error) {
 	value = strings.ReplaceAll(strings.TrimSpace(value), "\\", "/")
@@ -155,6 +159,95 @@ func (s *Server) handleWriteInstanceFile(w http.ResponseWriter, r *http.Request)
 	s.audit(r, "instance.file.write_requested", "instance", instanceID, map[string]any{"path": relative, "job_id": job.ID})
 	s.dispatchSoon(job.NodeID)
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "idempotent_replay": reused})
+}
+
+func (s *Server) handleImportQQFlashFile(w http.ResponseWriter, r *http.Request) {
+	instanceID := chi.URLParam(r, "instanceID")
+	var request struct {
+		// RelativePath is accepted only for a cached previous-minor UI. It is
+		// deliberately ignored; both Control and Agent fix the destination.
+		RelativePath string `json:"relative_path,omitempty"`
+		ShareURL     string `json:"share_url"`
+	}
+	if !decodeJSONWithLimit(w, r, &request, 4<<10) {
+		return
+	}
+	shareURL, err := normalizeQQFlashShareURL(request.ShareURL)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_qq_flash_share_url", err.Error())
+		return
+	}
+	payload := map[string]any{"source": shareURL}
+	requestFingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "instance-package", instanceID, "qq_flash", payload)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	principal := principalFromContext(r.Context())
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+	if idempotencyKey != "" {
+		existing, lookupErr := s.store.JobByIdempotencyKeyMatching(r.Context(), principal.User.ID, idempotencyKey, requestFingerprint)
+		if lookupErr == nil {
+			s.dispatchSoon(existing.NodeID)
+			writeJSON(w, http.StatusAccepted, map[string]any{"job_id": existing.ID, "idempotent_replay": true})
+			return
+		}
+		if !errors.Is(lookupErr, ErrNotFound) {
+			s.fail(w, lookupErr)
+			return
+		}
+	}
+	instance, err := s.store.GetInstance(r.Context(), instanceID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "qq_flash_package_v1") {
+		writeError(w, http.StatusConflict, "qq_flash_not_supported", "target node Agent does not support QQ flash file imports")
+		return
+	}
+	if err := sealJobPayloadSecrets(s.config.MasterKey, "qq_flash_import", payload); err != nil {
+		s.fail(w, err)
+		return
+	}
+	job, reused, err := s.store.QueueInstanceJobWithFingerprint(r.Context(), instanceID, "qq_flash_import", payload, principal.User.ID,
+		idempotencyKey, requestFingerprint)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.audit(r, "instance.package.qq_flash_requested", "instance", instanceID, map[string]any{"path": "left4dead2/addons", "job_id": job.ID})
+	_, _ = s.events.Publish(r.Context(), Event{Type: "job.queued", ResourceType: "job", ResourceID: job.ID, Data: map[string]any{"job": job}}, true)
+	s.dispatchSoon(job.NodeID)
+	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "idempotent_replay": reused})
+}
+
+func normalizeQQFlashShareURL(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 2048 {
+		return "", errors.New("a QQ flash share link is required")
+	}
+	matches := qqFlashShareURLPattern.FindAllString(value, -1)
+	unique := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		unique[match] = struct{}{}
+	}
+	if len(unique) != 1 {
+		return "", errors.New("provide exactly one https://qfile.qq.com/q/... share link")
+	}
+	var normalized string
+	for match := range unique {
+		normalized = match
+	}
+	parsed, err := url.Parse(normalized)
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "qfile.qq.com" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return "", errors.New("QQ flash share link is invalid")
+	}
+	parts := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	if len(parts) != 2 || parts[0] != "q" || len(parts[1]) < 6 || len(parts[1]) > 64 {
+		return "", errors.New("QQ flash share code is invalid")
+	}
+	return normalized, nil
 }
 
 func (s *Server) handleDeleteInstanceFile(w http.ResponseWriter, r *http.Request) {

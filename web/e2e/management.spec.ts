@@ -608,6 +608,46 @@ test("实例控制台、玩家、配置、模组、备份与计划任务", async
   await expect.poll(() => actions.some((item) => item.type === "create_schedule")).toBeTruthy();
 });
 
+test("安装模组可选择 QQ闪传批量导入", async ({ page }) => {
+  await authenticated(page);
+  let qqFlashImport: Record<string, unknown> | undefined;
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance }));
+  await page.route("**/api/v1/jobs", (route) => json(route, { items: qqFlashImport ? [{
+    id: "job-qq-flash-import", node_id: node.id, instance_id: instance.id, type: "qq_flash_import",
+    status: "running", progress: 42, message: "downloading QQ flash files", created_at: "2026-08-04T00:00:00Z",
+  }] : [] }));
+  await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/instances/instance-1/files**", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/instances/instance-1/packages/qq-flash", async (route) => {
+    qqFlashImport = route.request().postDataJSON() as Record<string, unknown>;
+    return json(route, { job_id: "job-qq-flash-import" }, 202);
+  });
+
+  await page.goto("/instances/instance-1?tab=mods");
+  await page.getByRole("button", { name: "安装模组", exact: true }).click();
+  await page.getByLabel("类型").selectOption("qq_flash");
+  await expect(page.getByLabel("固定目标目录")).toHaveValue("left4dead2/addons");
+  await expect(page.getByLabel("固定目标目录")).toHaveAttribute("readonly", "");
+  await page.getByLabel("QQ闪传分享链接").fill("链接：https://qfile.qq.com/q/Example123");
+  await expect(page.getByText(/不限制分享内文件数量和文件大小/)).toBeVisible();
+  await page.getByRole("button", { name: "提交下载" }).click();
+
+  await expect.poll(() => qqFlashImport).toEqual({
+    share_url: "链接：https://qfile.qq.com/q/Example123",
+  });
+
+  await page.goto("/jobs");
+  await expect(page.getByText("QQ闪传下载", { exact: true })).toBeVisible();
+  await expect(page.getByText("42%", { exact: true })).toBeVisible();
+
+  await page.goto("/instances/instance-1?tab=files");
+  await page.getByRole("button", { name: "上传或新建" }).click();
+  const fileDialog = page.getByRole("dialog", { name: "上传或新建文件" });
+  await expect(fileDialog.getByLabel("实例内相对路径")).toBeVisible();
+  await expect(fileDialog.getByLabel("从本机选择文件")).toBeVisible();
+  await expect(fileDialog.getByText("QQ闪传", { exact: true })).toHaveCount(0);
+});
+
 test("缺少节点公开地址时阻止公开实例", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, node_public_address: "" } }));

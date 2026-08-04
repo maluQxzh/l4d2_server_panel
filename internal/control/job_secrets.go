@@ -37,6 +37,17 @@ func sealJobPayloadSecrets(masterKey []byte, jobType string, payload map[string]
 		}
 		payload["existing_rcon_password_ciphertext"] = sealed
 		payload["existing_rcon_password"] = encryptedValuePlaceholder
+	case "qq_flash_import":
+		source := stringFromAny(payload["source"])
+		if source == "" {
+			return errors.New("QQ flash share URL is required")
+		}
+		sealed, err := encryptSecret(masterKey, source)
+		if err != nil {
+			return err
+		}
+		payload["source_ciphertext"] = sealed
+		payload["source"] = encryptedValuePlaceholder
 	case "install_mod", "install_package":
 		source := stringFromAny(payload["source"])
 		parsed, err := url.Parse(source)
@@ -59,7 +70,21 @@ func sealJobPayloadSecrets(masterKey []byte, jobType string, payload map[string]
 			payload["content_base64"] = encryptedValuePlaceholder
 		}
 	case "file":
-		if !strings.EqualFold(stringFromAny(payload["operation"]), "write") {
+		operation := stringFromAny(payload["operation"])
+		if strings.EqualFold(operation, "qq_flash") {
+			shareURL := stringFromAny(payload["share_url"])
+			if shareURL == "" {
+				return errors.New("QQ flash share URL is required")
+			}
+			sealed, err := encryptSecret(masterKey, shareURL)
+			if err != nil {
+				return err
+			}
+			payload["share_url_ciphertext"] = sealed
+			payload["share_url"] = encryptedValuePlaceholder
+			return nil
+		}
+		if !strings.EqualFold(operation, "write") {
 			return nil
 		}
 		for _, field := range []string{"content", "content_base64"} {
@@ -121,10 +146,11 @@ func unsealJobPayloadSecrets(masterKey []byte, jobType string, payload map[strin
 		pairs = append(pairs, [2]string{"command_ciphertext", "command"})
 	case "restart":
 		pairs = append(pairs, [2]string{"existing_rcon_password_ciphertext", "existing_rcon_password"})
-	case "install_mod", "install_package":
+	case "install_mod", "install_package", "qq_flash_import":
 		pairs = append(pairs, [2]string{"source_ciphertext", "source"}, [2]string{"content_base64_ciphertext", "content_base64"})
 	case "file":
-		pairs = append(pairs, [2]string{"content_ciphertext", "content"}, [2]string{"content_base64_ciphertext", "content_base64"})
+		pairs = append(pairs, [2]string{"content_ciphertext", "content"}, [2]string{"content_base64_ciphertext", "content_base64"},
+			[2]string{"share_url_ciphertext", "share_url"})
 	case "backup.upload.chunk":
 		pairs = append(pairs, [2]string{"content_base64_ciphertext", "content_base64"})
 	case "restore", "backup.chunk":

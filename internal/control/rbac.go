@@ -37,6 +37,7 @@ var instanceJobPermissions = map[string]Permission{
 	"import":              PermissionManage,
 	"install":             PermissionManage,
 	"install_mod":         PermissionManage,
+	"qq_flash_import":     PermissionManage,
 	"kick_player":         PermissionOperate,
 	"list":                PermissionOperate,
 	"logs.chunk":          PermissionRead,
