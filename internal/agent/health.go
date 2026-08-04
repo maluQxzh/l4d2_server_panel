@@ -22,7 +22,7 @@ func (e *Executor) waitForStartHealth(ctx context.Context, record InstanceRecord
 		_, lastInfoErr = queryLocalA2SInfo(infoCtx, record, payload, 2*time.Second)
 		infoCancel()
 		rconCtx, rconCancel := context.WithTimeout(checkCtx, 2*time.Second)
-		_, lastRCONError = e.executeInstanceRCON(rconCtx, record, payload, payload.RCONPassword, "status", 2*time.Second)
+		_, lastRCONError = executeLocalRCON(rconCtx, record, payload, payload.RCONPassword, "status", 2*time.Second)
 		rconCancel()
 		if lastInfoErr == nil && lastRCONError == nil {
 			return nil

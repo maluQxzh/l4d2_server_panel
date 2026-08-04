@@ -5,16 +5,53 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-const maxLocalGameEndpointHosts = 16
+const (
+	maxLocalGameEndpointHosts  = 16
+	localHostnameLookupTimeout = 500 * time.Millisecond
+)
+
+var cachedLocalHostnameHosts = sync.OnceValue(func() []string {
+	hostname, err := os.Hostname()
+	if err != nil || strings.TrimSpace(hostname) == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), localHostnameLookupTimeout)
+	defer cancel()
+	return resolveLocalHostnameHosts(ctx, hostname, net.DefaultResolver.LookupIPAddr)
+})
 
 func localGameEndpointHosts(candidates ...string) []string {
-	return localGameEndpointHostsWithAssigned(localInterfaceHosts(), candidates...)
+	assigned := localInterfaceHosts()
+	allCandidates := make([]string, 0, len(candidates)+len(cachedLocalHostnameHosts()))
+	allCandidates = append(allCandidates, candidates...)
+	allCandidates = append(allCandidates, cachedLocalHostnameHosts()...)
+	return localGameEndpointHostsWithAssigned(assigned, allCandidates...)
+}
+
+func resolveLocalHostnameHosts(ctx context.Context, hostname string, lookup func(context.Context, string) ([]net.IPAddr, error)) []string {
+	addresses, err := lookup(ctx, strings.TrimSpace(hostname))
+	if err != nil {
+		return nil
+	}
+	hosts := make([]string, 0, len(addresses))
+	seen := make(map[string]bool, len(addresses))
+	for _, address := range addresses {
+		host := normalizedLocalInterfaceHost(address.IP)
+		if host == "" || seen[host] || len(hosts) >= maxLocalGameEndpointHosts {
+			continue
+		}
+		seen[host] = true
+		hosts = append(hosts, host)
+	}
+	return hosts
 }
 
 func localInterfaceHosts() []string {

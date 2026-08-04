@@ -33,7 +33,7 @@ Control 在持久化或发布前校验所有 Agent 入站消息。心跳最多 2
 - Agent 安装和启动不扫描 SteamCMD 或游戏目录。只有进入运行环境或点击刷新才排队 `environment.inspect`，检查已知系统依赖、活动 SteamCMD 和 Agent 本地登记的游戏路径。
 - 节点发现 API 将 `discover_instances` 作为节点级持久任务排队，只对配置的实例根做有界广度优先只读扫描：深度 1–8（默认 6）、最多读取 1–20000 个目录条目（默认 5000）、最多返回 200 个候选；`.quarantine`、`.staging`、回收站和系统卷目录被排除，符号链接/重解析点不会跟随。结果只包含根索引和相对路径，不暴露任意主机路径。
 - 发现结果中的 `root_index + path` 只用于描述旧的受限扫描候选；新建和导入接口不再接受根索引，必须显式提交节点绝对路径。导入会再次验证活动进程的可执行路径。发现为外部运行中的实例以 `external` 状态只读接入；该状态代表所有权边界，即使外部进程随后退出也保持到显式受控重启。受控重启可提交一次性的 `existing_rcon_password`：中心加密持久化且只在派发时解封，Agent 用它向旧进程发送 `quit` 并短暂等待；未提供或优雅退出失败时，Agent 只有在重新匹配 PID 与实例内可执行路径后才强制结束进程树。随后 Agent 使用面板当前启动资料启动受管进程；旧密码不会成为实例秘密，后续 RCON 使用管理员单独保存且与 `server.cfg` 一致的凭据。
-- Windows 以 `CREATE_SUSPENDED` 创建游戏进程，成功配置并加入带 `KILL_ON_JOB_CLOSE` 的 Job Object 后才恢复执行；任一步失败都会终止挂起进程并关闭句柄，因此子进程没有加入 Job 前的逃逸窗口。Linux 使用进程组。启动/重启任务不能覆盖实例登记的可执行文件、参数或环境；Agent 只接受实例根中的平台固定 `srcds` 文件名，重新校验启动参数，并以受限环境变量启动进程，将 `HOME`/`USERPROFILE` 指向实例目录。可选 `-tickrate` 参数在 Control 和 Agent 两端限制为唯一的 1–1000 整数，仍作为参数数组传递。A2S/RCON 只在 Agent 当前回环及已分配网卡地址内探测，以兼容绑定具体接口的 SRCDS；停服先向这些本机地址上的 RCON 发送 `quit`，超时后只终止 Agent 追踪且身份匹配的进程树。
+- Windows 以 `CREATE_SUSPENDED` 创建游戏进程，成功配置并加入带 `KILL_ON_JOB_CLOSE` 的 Job Object 后才恢复执行；任一步失败都会终止挂起进程并关闭句柄，因此子进程没有加入 Job 前的逃逸窗口。Linux 使用进程组。启动/重启任务不能覆盖实例登记的可执行文件、参数或环境；Agent 只接受实例根中的平台固定 `srcds` 文件名，重新校验启动参数，并以受限环境变量启动进程，将 `HOME`/`USERPROFILE` 指向实例目录。可选 `-tickrate` 参数在 Control 和 Agent 两端限制为唯一的 1–1000 整数，仍作为参数数组传递。A2S/RCON 只在 Agent 当前回环、主机名解析出的回环/已分配地址及当前已分配网卡地址内探测，以兼容绑定具体接口或绑定 Linux 主机名回环（如 `127.0.1.1`）的 SRCDS；停服先向这些本机地址上的 RCON 发送 `quit`，超时后只终止 Agent 追踪且身份匹配的进程树。
 - Agent 将“管理员期望运行”与 `auto_restart` 崩溃策略分别持久化。显式 `start/restart` 记录运行意图，显式 `stop` 记录停止意图；`restart` 只允许 `running`、`degraded` 或受控接管前的 `external` 状态，停止状态必须使用 `start`。Agent 重启时只恢复两者都启用的受管实例，并重新校验路径、启动参数和端口。恢复校验/启动失败会报告 `degraded`，显式停止的实例不会因 Agent 重启被意外拉起。该机制完全在节点内执行，因此 Control 短时离线不会停止现有游戏服。
 - 删除 `mode=detach` 只解除管理；`mode=quarantine` 先要求实例停止，再把目录移动到对应根的 `.quarantine/<instance-id>-<UTC timestamp>`。
 
@@ -43,7 +43,7 @@ Agent 永久清理时只接收 Control 墓碑中的 `root_index + entry_name`，
 
 ## 配置、文件和模组
 
-结构化配置只保存面板启动资料，不生成 `left4dead2/cfg/l4d2panel.cfg`。Agent 在启动参数末尾通过固定的 `+exec server.cfg` 让游戏重新加载管理员维护的 `left4dead2/cfg/server.cfg`；文件名不可由调用者替换，密码也不会进入进程参数。这样既保留 `server.cfg` 作为唯一游戏配置源，又避免部分 L4D2 SRCDS 启动顺序或插件覆盖导致 TCP RCON 没有建立。难度作为受控的 `+z_difficulty` 参数传递。RCON 密码是可留空的中心端加密连接凭据，必须由管理员在 `server.cfg` 中配置相同值；留空不阻止启动，进程成功时实例仍为 `running`，但 RCON 查询、广播和优雅停服不可用。API 只投影 `rcon_configured` 布尔值，不回读密码。结构化配置只保留当前值，不保存历史版本；客户端在 PATCH JSON 正文中提交 `version` 作为内部修订号做乐观并发控制。
+结构化配置只保存面板启动资料，不生成 `left4dead2/cfg/l4d2panel.cfg`。Agent 在启动参数末尾通过固定的 `+exec server.cfg` 显式加载管理员维护的 `left4dead2/cfg/server.cfg`；文件名不可由调用者替换，密码也不会进入进程参数，`server.cfg` 是唯一游戏配置源。难度作为受控的 `+z_difficulty` 参数传递。RCON 密码是可留空的中心端加密连接凭据，必须由管理员在 `server.cfg` 中配置相同值；留空不阻止启动，进程成功时实例仍为 `running`，但 RCON 查询、广播和优雅停服不可用。API 只投影 `rcon_configured` 布尔值，不回读密码。结构化配置只保留当前值，不保存历史版本；客户端在 PATCH JSON 正文中提交 `version` 作为内部修订号做乐观并发控制。
 
 新 Agent 通过 `server_cfg_native` 能力声明这一启动契约。涉及创建、配置、启动、重启、恢复或游戏文件维护的任务不会派发给缺少该能力的旧 Agent，而是保持排队，避免节点回滚后重新生成或注入旧配置文件。
 

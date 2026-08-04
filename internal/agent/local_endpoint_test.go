@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"net"
 	"slices"
 	"testing"
 )
@@ -42,6 +44,27 @@ func TestLocalGameEndpointHostsPreserveSafeExplicitLoopback(t *testing.T) {
 	t.Parallel()
 	got := localGameEndpointHostsWithAssigned([]string{"192.168.1.20"}, "127.0.0.2")
 	want := []string{"127.0.0.2", "192.168.1.20", "127.0.0.1", "::1"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("local hosts = %q, want %q", got, want)
+	}
+}
+
+func TestLocalGameEndpointHostsIncludeHostnameResolvedLoopback(t *testing.T) {
+	t.Parallel()
+	resolved := resolveLocalHostnameHosts(context.Background(), "maluQxzh", func(_ context.Context, hostname string) ([]net.IPAddr, error) {
+		if hostname != "maluQxzh" {
+			t.Fatalf("hostname = %q", hostname)
+		}
+		return []net.IPAddr{
+			{IP: net.ParseIP("127.0.1.1")},
+			{IP: net.ParseIP("192.168.1.20")},
+			{IP: net.ParseIP("127.0.1.1")},
+			{IP: net.ParseIP("203.0.113.9")},
+			{IP: net.ParseIP("169.254.10.20")},
+		}, nil
+	})
+	got := localGameEndpointHostsWithAssigned([]string{"192.168.1.20"}, resolved...)
+	want := []string{"127.0.1.1", "192.168.1.20", "127.0.0.1", "::1"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("local hosts = %q, want %q", got, want)
 	}

@@ -33,7 +33,7 @@ func (e *Executor) maintenanceCountdown(ctx context.Context, record InstanceReco
 			text = fmt.Sprintf("%s (%d 秒)", text, seconds)
 		}
 		command := `say "` + strings.ReplaceAll(strings.ReplaceAll(text, `\`, `\\`), `"`, `\"`) + `"`
-		_, err := e.executeInstanceRCON(ctx, record, payload, payload.RCONPassword, command, 8*time.Second)
+		_, err := executeLocalRCON(ctx, record, payload, payload.RCONPassword, command, 8*time.Second)
 		if err == nil && progress != nil {
 			progress(10, fmt.Sprintf("maintenance warning sent: %d seconds", seconds))
 		}

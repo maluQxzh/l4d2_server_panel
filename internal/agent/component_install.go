@@ -94,7 +94,7 @@ func (e *Executor) verifyServerExtension(ctx context.Context, record InstanceRec
 	var lastErr error
 	for {
 		attemptCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
-		response, err := e.executeInstanceRCON(attemptCtx, record, payload, payload.RCONPassword, command, 4*time.Second)
+		response, err := executeLocalRCON(attemptCtx, record, payload, payload.RCONPassword, command, 4*time.Second)
 		cancel()
 		if err == nil {
 			lower := strings.ToLower(response)

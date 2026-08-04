@@ -701,7 +701,7 @@ func (e *Executor) stop(ctx context.Context, job domain.Job, progress ProgressFu
 	}
 	if password != "" {
 		progress(15, "requesting graceful RCON shutdown")
-		_, rconErr := e.executeInstanceRCON(ctx, record, payload, password, "quit", minDuration(grace/2, 8*time.Second))
+		_, rconErr := executeLocalRCON(ctx, record, payload, password, "quit", minDuration(grace/2, 8*time.Second))
 		if rconErr != nil {
 			e.logger.Printf("instance %s RCON quit failed: %v", job.InstanceID, rconErr)
 		} else {
@@ -744,7 +744,7 @@ func (e *Executor) restartExternal(ctx context.Context, job domain.Job, record I
 	gracefulHandoff := false
 	if externalProcessMatches(ctx, record.ExternalPID, path) && payload.ExistingRCONPassword != "" {
 		progress(20, "requesting graceful RCON shutdown")
-		_, rconErr := e.executeInstanceRCON(ctx, record, payload, payload.ExistingRCONPassword, "quit", 5*time.Second)
+		_, rconErr := executeLocalRCON(ctx, record, payload, payload.ExistingRCONPassword, "quit", 5*time.Second)
 		if rconErr == nil {
 			gracefulHandoff = true
 			deadline := time.Now().Add(8 * time.Second)
@@ -1400,7 +1400,7 @@ func (e *Executor) rcon(ctx context.Context, job domain.Job, progress ProgressFu
 		return nil, errors.New("RCON password was not supplied")
 	}
 	progress(30, "sending RCON command")
-	response, err := e.executeInstanceRCON(ctx, record, payload, payload.RCONPassword, payload.Command, 0)
+	response, err := executeLocalRCON(ctx, record, payload, payload.RCONPassword, payload.Command, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1432,7 +1432,7 @@ func (e *Executor) rconPlayers(ctx context.Context, job domain.Job, progress Pro
 		return nil, errors.New("RCON password was not supplied")
 	}
 	progress(30, "querying players through RCON")
-	response, err := e.executeInstanceRCON(ctx, record, payload, payload.RCONPassword, "status", 0)
+	response, err := executeLocalRCON(ctx, record, payload, payload.RCONPassword, "status", 0)
 	if err != nil {
 		return nil, err
 	}

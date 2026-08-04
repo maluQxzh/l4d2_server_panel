@@ -59,10 +59,6 @@ func BuildStartArgs(options StartOptions) ([]string, error) {
 		args = append(args, "+z_difficulty", strings.ToLower(options.Difficulty))
 	}
 	args = append(args, options.ExtraArgs...)
-	// Keep the administrator-owned server.cfg as the sole game configuration
-	// source, but execute it once more after map initialization and all startup
-	// CVars. Some L4D2 SRCDS builds or plugins otherwise leave TCP RCON disabled
-	// even though the file contains a valid rcon_password.
 	return append(args, "+exec", "server.cfg"), nil
 }
 
