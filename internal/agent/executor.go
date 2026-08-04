@@ -37,6 +37,7 @@ type Executor struct {
 	locks                      *keyedLocker
 	officialPackageResolver    func(context.Context, string) (OfficialPackage, error)
 	workshopCollectionResolver func(context.Context, string) (bool, []string, error)
+	workshopItemTitlesResolver func(context.Context, []string) (map[string]string, error)
 	packageDownloader          func(context.Context, string, string, bool) (string, int64, error)
 	packageMutationVerifier    func(string, string) error
 	transferMu                 sync.Mutex
@@ -70,6 +71,7 @@ func NewExecutor(config *Config, paths *PathGuard, registry *Registry, processes
 		config: config, paths: paths, registry: registry, processes: processes,
 		steam: NewSteamCMD(steamPath, config.SteamCMDConcurrency), runtimeEnvironment: runtimeStore, logger: logger, locks: newKeyedLocker(),
 		officialPackageResolver: ResolveOfficialPackage, workshopCollectionResolver: ResolveWorkshopCollection,
+		workshopItemTitlesResolver: ResolveWorkshopItemTitles,
 		packageDownloader: func(ctx context.Context, source, destination string, official bool) (string, int64, error) {
 			if official {
 				return DownloadOfficialHTTPS(ctx, source, destination)

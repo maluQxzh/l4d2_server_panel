@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
@@ -52,6 +53,68 @@ func TestParseWorkshopCollectionDistinguishesOrdinaryItemAndEnforcesLimit(t *tes
 	isCollection, _, err = parseWorkshopCollectionResponse("123", overLimit)
 	if !isCollection || err == nil || !strings.Contains(err.Error(), "item limit") {
 		t.Fatalf("expected collection limit failure, got collection=%v err=%v", isCollection, err)
+	}
+}
+
+func TestResolveWorkshopItemTitlesPostsValveFormAndValidatesL4D2(t *testing.T) {
+	client := &http.Client{Transport: agentRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPost || request.URL.String() != steamPublishedDetailsURL {
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL)
+		}
+		if err := request.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if request.Form.Get("itemcount") != "2" || request.Form.Get("publishedfileids[0]") != "10" || request.Form.Get("publishedfileids[1]") != "20" {
+			t.Fatalf("unexpected form: %#v", request.Form)
+		}
+		body := `{"response":{"result":1,"resultcount":2,"publishedfiledetails":[{"publishedfileid":"10","result":1,"consumer_app_id":550,"title":"First Addon"},{"publishedfileid":"20","result":1,"consumer_app_id":550,"title":"第二个模组"}]}}`
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: request}, nil
+	})}
+	titles, err := resolveWorkshopItemTitlesWithClient(context.Background(), []string{"10", "20"}, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if titles["10"] != "First Addon" || titles["20"] != "第二个模组" {
+		t.Fatalf("unexpected Workshop titles: %#v", titles)
+	}
+}
+
+func TestParseWorkshopItemTitlesRejectsWrongGameAndMissingItem(t *testing.T) {
+	requested := map[string]bool{"10": true}
+	wrongGame := []byte(`{"response":{"publishedfiledetails":[{"publishedfileid":"10","result":1,"consumer_app_id":440,"title":"Wrong game"}]}}`)
+	if _, err := parseWorkshopItemTitlesResponse(requested, wrongGame); err == nil || !strings.Contains(err.Error(), "Left 4 Dead 2") {
+		t.Fatalf("expected wrong-game failure, got %v", err)
+	}
+	missing := []byte(`{"response":{"publishedfiledetails":[]}}`)
+	if _, err := parseWorkshopItemTitlesResponse(requested, missing); err == nil || !strings.Contains(err.Error(), "omitted") {
+		t.Fatalf("expected omitted-item failure, got %v", err)
+	}
+}
+
+func TestSanitizeWorkshopTitleRemovesUnsupportedFilenameCharacters(t *testing.T) {
+	safe, err := sanitizeWorkshopTitle("  Plexi.glass:< Doors / v1?.0 *\u200b\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if safe != "Plexiglass Doors v10" {
+		t.Fatalf("unexpected sanitized title %q", safe)
+	}
+	name, err := workshopInstalledVPKName("1089140091", "plexiglass.doors")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "1089140091_plexiglassdoors.vpk" {
+		t.Fatalf("unexpected Workshop filename %q", name)
+	}
+	if _, err := sanitizeWorkshopTitle(`...<>:"/\|?*`); err == nil {
+		t.Fatal("expected an empty sanitized title to fail")
+	}
+	longTitle, err := sanitizeWorkshopTitle(strings.Repeat("模组", 200))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(longTitle) > maxWorkshopFilenameTitleBytes || !utf8.ValidString(longTitle) {
+		t.Fatalf("long title was not truncated safely: bytes=%d valid=%v", len(longTitle), utf8.ValidString(longTitle))
 	}
 }
 
@@ -106,6 +169,9 @@ func TestInstallWorkshopFallsBackToOrdinaryItemAndInstallsValidatedVPK(t *testin
 	executor.workshopCollectionResolver = func(context.Context, string) (bool, []string, error) {
 		return false, nil, errors.New("Valve API unavailable")
 	}
+	executor.workshopItemTitlesResolver = func(context.Context, []string) (map[string]string, error) {
+		return map[string]string{"123": "campaign"}, nil
+	}
 	result, err := executor.installWorkshop(context.Background(), domain.Job{ID: "job", InstanceID: "instance"}, "123", func(int, string) {})
 	if err != nil {
 		t.Fatal(err)
@@ -125,11 +191,14 @@ func TestInstallWorkshopNormalizesSteamLegacyBinAsVPK(t *testing.T) {
 	writeTestVPK(t, vpk)
 	executor.steam = &workshopSteamOperations{files: map[string][]string{"1089140091": {vpk}}, errors: map[string]error{}}
 	executor.workshopCollectionResolver = func(context.Context, string) (bool, []string, error) { return false, nil, nil }
+	executor.workshopItemTitlesResolver = func(context.Context, []string) (map[string]string, error) {
+		return map[string]string{"1089140091": "plexiglass doors"}, nil
+	}
 
 	if _, err := executor.installWorkshop(context.Background(), domain.Job{ID: "job", InstanceID: "instance"}, "1089140091", func(int, string) {}); err != nil {
 		t.Fatal(err)
 	}
-	destination := filepath.Join(instancePath, "left4dead2", "addons", "1089140091_854973547814469364.vpk")
+	destination := filepath.Join(instancePath, "left4dead2", "addons", "1089140091_plexiglass doors.vpk")
 	if _, err := os.Stat(destination); err != nil {
 		t.Fatalf("legacy Workshop VPK was not installed with a .vpk name: %v", err)
 	}
@@ -148,6 +217,9 @@ func TestInstallWorkshopDoesNotRaceOverwriteExistingTarget(t *testing.T) {
 	}
 	executor.steam = &workshopSteamOperations{files: map[string][]string{"123": {vpk}}, errors: map[string]error{}}
 	executor.workshopCollectionResolver = func(context.Context, string) (bool, []string, error) { return false, nil, nil }
+	executor.workshopItemTitlesResolver = func(context.Context, []string) (map[string]string, error) {
+		return map[string]string{"123": "campaign"}, nil
+	}
 	if _, err := executor.installWorkshop(context.Background(), domain.Job{ID: "job", InstanceID: "instance"}, "123", func(int, string) {}); err == nil {
 		t.Fatal("Workshop install overwrote an existing destination")
 	}
@@ -174,7 +246,16 @@ func newWorkshopTestExecutor(t *testing.T) (*Executor, string) {
 	if err := registry.Put(InstanceRecord{ID: "instance", RootIndex: 0, RelativePath: "instance"}); err != nil {
 		t.Fatal(err)
 	}
-	return &Executor{paths: paths, registry: registry, logger: log.New(io.Discard, "", 0), locks: newKeyedLocker()}, instancePath
+	return &Executor{
+		paths: paths, registry: registry, logger: log.New(io.Discard, "", 0), locks: newKeyedLocker(),
+		workshopItemTitlesResolver: func(_ context.Context, itemIDs []string) (map[string]string, error) {
+			titles := make(map[string]string, len(itemIDs))
+			for _, itemID := range itemIDs {
+				titles[itemID] = "Workshop " + itemID
+			}
+			return titles, nil
+		},
+	}, instancePath
 }
 
 func writeTestVPK(t *testing.T, path string) {

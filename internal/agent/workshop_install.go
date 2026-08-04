@@ -6,14 +6,19 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
 type workshopDownload struct {
 	itemID string
+	title  string
 	files  []string
 }
+
+const maxWorkshopFilenameTitleBytes = 200
 
 func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source string, progress ProgressFunc) (map[string]any, error) {
 	if err := validateWorkshopID(source); err != nil {
@@ -36,6 +41,14 @@ func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source s
 	if len(itemIDs) == 0 || len(itemIDs) > maxWorkshopCollectionItems {
 		return nil, errors.New("Workshop collection item count is invalid")
 	}
+	titleResolver := e.workshopItemTitlesResolver
+	if titleResolver == nil {
+		titleResolver = ResolveWorkshopItemTitles
+	}
+	titles, err := titleResolver(ctx, itemIDs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve Workshop item titles: %w", err)
+	}
 
 	downloads := make([]workshopDownload, 0, len(itemIDs))
 	downloadErrors := make([]string, 0)
@@ -54,7 +67,11 @@ func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source s
 			downloadErrors = append(downloadErrors, fmt.Sprintf("%s: %s", itemID, boundedError(err)))
 			continue
 		}
-		downloads = append(downloads, workshopDownload{itemID: itemID, files: files})
+		title, ok := titles[itemID]
+		if !ok {
+			return nil, fmt.Errorf("Workshop title resolver omitted item %s", itemID)
+		}
+		downloads = append(downloads, workshopDownload{itemID: itemID, title: title, files: files})
 	}
 	if len(downloadErrors) > 0 {
 		return nil, fmt.Errorf("Workshop download failed for %d item(s): %s", len(downloadErrors), strings.Join(downloadErrors, "; "))
@@ -78,12 +95,18 @@ func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source s
 	pending := make([]pendingFile, 0)
 	destinations := make(map[string]bool)
 	for _, download := range downloads {
+		if len(download.files) != 1 {
+			return nil, fmt.Errorf("Workshop item %s contains %d VPK files; title-based installation requires exactly one", download.itemID, len(download.files))
+		}
+		name, err := workshopInstalledVPKName(download.itemID, download.title)
+		if err != nil {
+			return nil, fmt.Errorf("Workshop item %s title cannot be used as a filename: %w", download.itemID, err)
+		}
 		for _, file := range download.files {
 			version, hash, err := validateVPK(file)
 			if err != nil {
 				return nil, fmt.Errorf("Workshop item %s contains an invalid VPK: %w", download.itemID, err)
 			}
-			name := workshopInstalledVPKName(download.itemID, filepath.Base(file))
 			relative := filepath.ToSlash(filepath.Join("left4dead2", "addons", name))
 			key := strings.ToLower(filepath.Clean(relative))
 			if destinations[key] {
@@ -133,11 +156,49 @@ func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source s
 	return result, nil
 }
 
-func workshopInstalledVPKName(itemID, sourceName string) string {
-	if strings.HasSuffix(strings.ToLower(sourceName), "_legacy.bin") {
-		sourceName = sourceName[:len(sourceName)-len("_legacy.bin")] + ".vpk"
+func workshopInstalledVPKName(itemID, title string) (string, error) {
+	safeTitle, err := sanitizeWorkshopTitle(title)
+	if err != nil {
+		return "", err
 	}
-	return itemID + "_" + sourceName
+	return itemID + "_" + safeTitle + ".vpk", nil
+}
+
+func sanitizeWorkshopTitle(title string) (string, error) {
+	var result strings.Builder
+	pendingSpace := false
+	for _, char := range strings.TrimSpace(title) {
+		if unicode.IsControl(char) || unicode.Is(unicode.Cf, char) || strings.ContainsRune(`.<>:"/\|?*`, char) {
+			continue
+		}
+		if unicode.IsSpace(char) {
+			if result.Len() > 0 {
+				pendingSpace = true
+			}
+			continue
+		}
+		charBytes := utf8.RuneLen(char)
+		if charBytes < 0 {
+			continue
+		}
+		extra := charBytes
+		if pendingSpace {
+			extra++
+		}
+		if result.Len()+extra > maxWorkshopFilenameTitleBytes {
+			break
+		}
+		if pendingSpace {
+			result.WriteByte(' ')
+			pendingSpace = false
+		}
+		result.WriteRune(char)
+	}
+	safeTitle := strings.TrimSpace(result.String())
+	if safeTitle == "" {
+		return "", errors.New("title contains no supported filename characters")
+	}
+	return safeTitle, nil
 }
 
 func boundedError(err error) string {
