@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -160,7 +161,7 @@ func TestInstallWorkshopCollectionDownloadsEveryItemBeforeReportingErrors(t *tes
 	}
 }
 
-func TestInstallWorkshopFallsBackToOrdinaryItemAndInstallsValidatedVPK(t *testing.T) {
+func TestInstallWorkshopFallsBackToOrdinaryItemAndInstallsDownloadedPayload(t *testing.T) {
 	executor, instancePath := newWorkshopTestExecutor(t)
 	vpk := filepath.Join(t.TempDir(), "campaign.vpk")
 	writeTestVPK(t, vpk)
@@ -185,10 +186,20 @@ func TestInstallWorkshopFallsBackToOrdinaryItemAndInstallsValidatedVPK(t *testin
 	}
 }
 
-func TestInstallWorkshopNormalizesSteamLegacyBinAsVPK(t *testing.T) {
+func TestInstallWorkshopCopiesSteamLegacyPayloadWithoutVPKValidation(t *testing.T) {
 	executor, instancePath := newWorkshopTestExecutor(t)
+	addons := filepath.Join(instancePath, "left4dead2", "addons")
+	if err := os.MkdirAll(addons, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(addons, "unrelated-invalid.vpk"), []byte("existing file is not inspected"), 0o640); err != nil {
+		t.Fatal(err)
+	}
 	vpk := filepath.Join(t.TempDir(), "854973547814469364_legacy.bin")
-	writeTestVPK(t, vpk)
+	raw := []byte("SteamCMD payload is copied without parsing it as VPK")
+	if err := os.WriteFile(vpk, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	executor.steam = &workshopSteamOperations{files: map[string][]string{"1089140091": {vpk}}, errors: map[string]error{}}
 	executor.workshopCollectionResolver = func(context.Context, string) (bool, []string, error) { return false, nil, nil }
 	executor.workshopItemTitlesResolver = func(context.Context, []string) (map[string]string, error) {
@@ -199,8 +210,38 @@ func TestInstallWorkshopNormalizesSteamLegacyBinAsVPK(t *testing.T) {
 		t.Fatal(err)
 	}
 	destination := filepath.Join(instancePath, "left4dead2", "addons", "1089140091_plexiglass doors.vpk")
-	if _, err := os.Stat(destination); err != nil {
-		t.Fatalf("legacy Workshop VPK was not installed with a .vpk name: %v", err)
+	installed, err := os.ReadFile(destination)
+	if err != nil || string(installed) != string(raw) {
+		t.Fatalf("legacy Workshop payload was not installed unchanged: %q, %v", installed, err)
+	}
+}
+
+func TestInstallWorkshopNumbersMultiplePayloadFiles(t *testing.T) {
+	executor, instancePath := newWorkshopTestExecutor(t)
+	download := t.TempDir()
+	first := filepath.Join(download, "first.vpk")
+	second := filepath.Join(download, "second_legacy.bin")
+	if err := os.WriteFile(first, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executor.steam = &workshopSteamOperations{files: map[string][]string{"123": {first, second}}, errors: map[string]error{}}
+	executor.workshopCollectionResolver = func(context.Context, string) (bool, []string, error) { return false, nil, nil }
+	executor.workshopItemTitlesResolver = func(context.Context, []string) (map[string]string, error) {
+		return map[string]string{"123": "Multi.mod"}, nil
+	}
+
+	if _, err := executor.installWorkshop(context.Background(), domain.Job{ID: "job", InstanceID: "instance"}, "123", func(int, string) {}); err != nil {
+		t.Fatal(err)
+	}
+	for index, want := range []string{"first", "second"} {
+		path := filepath.Join(instancePath, "left4dead2", "addons", fmt.Sprintf("123_Multimod_%d.vpk", index+1))
+		raw, err := os.ReadFile(path)
+		if err != nil || string(raw) != want {
+			t.Fatalf("payload %d was not installed: %q, %v", index+1, raw, err)
+		}
 	}
 }
 

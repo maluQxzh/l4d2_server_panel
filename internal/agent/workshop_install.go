@@ -89,23 +89,23 @@ func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source s
 		itemID   string
 		source   string
 		relative string
-		version  int
 		hash     string
 	}
 	pending := make([]pendingFile, 0)
 	destinations := make(map[string]bool)
 	for _, download := range downloads {
-		if len(download.files) != 1 {
-			return nil, fmt.Errorf("Workshop item %s contains %d VPK files; title-based installation requires exactly one", download.itemID, len(download.files))
-		}
-		name, err := workshopInstalledVPKName(download.itemID, download.title)
+		baseName, err := workshopInstalledVPKName(download.itemID, download.title)
 		if err != nil {
 			return nil, fmt.Errorf("Workshop item %s title cannot be used as a filename: %w", download.itemID, err)
 		}
-		for _, file := range download.files {
-			version, hash, err := validateVPK(file)
+		for index, file := range download.files {
+			hash, _, err := hashRegularFileNoFollow(file)
 			if err != nil {
-				return nil, fmt.Errorf("Workshop item %s contains an invalid VPK: %w", download.itemID, err)
+				return nil, fmt.Errorf("hash Workshop item %s payload: %w", download.itemID, err)
+			}
+			name := baseName
+			if len(download.files) > 1 {
+				name = strings.TrimSuffix(baseName, ".vpk") + fmt.Sprintf("_%d.vpk", index+1)
 			}
 			relative := filepath.ToSlash(filepath.Join("left4dead2", "addons", name))
 			key := strings.ToLower(filepath.Clean(relative))
@@ -113,23 +113,13 @@ func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source s
 				return nil, fmt.Errorf("Workshop items produce the same addon path: %s", relative)
 			}
 			destinations[key] = true
-			pending = append(pending, pendingFile{itemID: download.itemID, source: file, relative: relative, version: version, hash: hash})
+			pending = append(pending, pendingFile{itemID: download.itemID, source: file, relative: relative, hash: hash})
 		}
 	}
 	if len(pending) == 0 {
 		return nil, errors.New("Workshop download contained no installable VPK files")
 	}
-	conflictCandidates := make([]vpkInstallCandidate, 0, len(pending))
-	for _, file := range pending {
-		conflictCandidates = append(conflictCandidates, vpkInstallCandidate{
-			Source: file.source, TargetRelative: file.relative,
-		})
-	}
-	if err := validateVPKContentConflicts(instancePath, conflictCandidates); err != nil {
-		return nil, fmt.Errorf("Workshop VPK content conflict: %w", err)
-	}
-
-	progress(65, "installing validated Workshop VPK files")
+	progress(65, "installing Workshop payload files")
 	created := make([]string, 0, len(pending))
 	installed := make([]map[string]any, 0, len(pending))
 	for _, file := range pending {
@@ -143,7 +133,7 @@ func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source s
 		}
 		created = append(created, file.relative)
 		installed = append(installed, map[string]any{
-			"source_id": file.itemID, "path": file.relative, "sha256": file.hash, "vpk_version": file.version,
+			"source_id": file.itemID, "path": file.relative, "sha256": file.hash, "version": file.hash[:12],
 		})
 	}
 	progress(100, "Workshop package installed")

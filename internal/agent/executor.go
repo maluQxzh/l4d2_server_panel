@@ -1969,13 +1969,6 @@ func (e *Executor) togglePackage(_ context.Context, job domain.Job, progress Pro
 		targetRelative = enabledPath
 	}
 	if relative != targetRelative {
-		if payload.Enabled && isVPKPackageKind(kind) {
-			if err := validateVPKContentConflicts(instancePath, []vpkInstallCandidate{{
-				Source: absolute, TargetRelative: enabledPath,
-			}}); err != nil {
-				return nil, fmt.Errorf("cannot enable conflicting VPK: %w", err)
-			}
-		}
 		if err := moveFileWithinNoFollow(instancePath, relative, targetRelative); err != nil {
 			return nil, fmt.Errorf("toggle package atomically: %w", err)
 		}

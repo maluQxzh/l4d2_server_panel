@@ -57,14 +57,6 @@ func (e *Executor) installVersionedPackage(ctx context.Context, job domain.Job, 
 	if err := validateVersionedPackageFile(kind, source, expectedSHA); err != nil {
 		return nil, nil, err
 	}
-	if isVPKPackageKind(kind) {
-		if err := validateVPKContentConflicts(instancePath, []vpkInstallCandidate{{
-			Source: source, TargetRelative: targetRelative,
-		}}); err != nil {
-			return nil, nil, err
-		}
-	}
-
 	wasRunning := e.packageServerRunning(job.InstanceID)
 	if wasRunning {
 		progress(62, "stopping server before package replacement")
@@ -172,13 +164,6 @@ func (e *Executor) rollbackPackage(ctx context.Context, job domain.Job, progress
 	}
 	if err := validateVersionedPackageFile(payload.Kind, snapshotPath, payload.ExpectedSHA256); err != nil {
 		return nil, fmt.Errorf("saved package version failed verification: %w", err)
-	}
-	if isVPKPackageKind(payload.Kind) {
-		if err := validateVPKContentConflicts(instancePath, []vpkInstallCandidate{{
-			Source: snapshotPath, TargetRelative: targetRelative,
-		}}); err != nil {
-			return nil, fmt.Errorf("saved VPK version conflicts with enabled addons: %w", err)
-		}
 	}
 	currentSHA, _, err := hashRegularFileWithinNoFollow(instancePath, targetRelative, maxPackageDownload)
 	if err != nil {

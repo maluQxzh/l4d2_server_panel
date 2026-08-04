@@ -79,10 +79,17 @@ func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error
 			if path == "" {
 				continue
 			}
+			version := stringFromAny(file["version"])
+			if version == "" && intFromAny(file["vpk_version"]) > 0 {
+				version = fmt.Sprintf("v%d", intFromAny(file["vpk_version"]))
+			}
+			if version == "" && len(stringFromAny(file["sha256"])) >= 12 {
+				version = stringFromAny(file["sha256"])[:12]
+			}
 			packageID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(job.ID+":"+path)).String()
 			_, err := s.db.ExecContext(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,installed_by,last_job_id)
 				VALUES(?1,?2,?3,'workshop',?4,?5,?6,?7,?8,true,?9,?10,?11) ON CONFLICT(id) DO NOTHING`, packageID,
-				job.InstanceID, filepath.Base(path), fmt.Sprintf("v%d", intFromAny(file["vpk_version"])), stringFromAny(job.Payload["source"]),
+				job.InstanceID, filepath.Base(path), version, stringFromAny(job.Payload["source"]),
 				stringFromAny(file["source_id"]), stringFromAny(file["sha256"]), path, riskFromPayload(job.Payload), nullableUUID(job.RequestedBy), job.ID)
 			if err != nil {
 				return err

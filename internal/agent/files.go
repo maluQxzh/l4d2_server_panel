@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -276,6 +277,30 @@ func hashRegularFileWithinNoFollow(root, relative string, maximum int64) (string
 		return "", 0, err
 	}
 	if size != info.Size() || size > maximum {
+		return "", 0, errors.New("file changed size while hashing")
+	}
+	return hex.EncodeToString(hash.Sum(nil)), size, nil
+}
+
+func hashRegularFileNoFollow(path string) (string, int64, error) {
+	file, err := openManagedFileNoFollow(filepath.Dir(path), filepath.Base(path))
+	if err != nil {
+		return "", 0, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", 0, err
+	}
+	if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() == math.MaxInt64 {
+		return "", 0, errors.New("file is not a trusted regular file")
+	}
+	hash := sha256.New()
+	size, err := io.Copy(hash, io.LimitReader(file, info.Size()+1))
+	if err != nil {
+		return "", 0, err
+	}
+	if size != info.Size() {
 		return "", 0, errors.New("file changed size while hashing")
 	}
 	return hex.EncodeToString(hash.Sum(nil)), size, nil

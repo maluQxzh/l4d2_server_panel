@@ -29,6 +29,11 @@ type vpkEntry struct {
 	length  uint32
 }
 
+func isVPKPackageKind(kind string) bool {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	return kind == "vpk" || kind == "vpk_url" || kind == "workshop"
+}
+
 func validateVPK(path string) (int, string, error) {
 	version, hash, _, err := validateVPKDetailed(path)
 	return version, hash, err

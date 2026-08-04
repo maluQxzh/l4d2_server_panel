@@ -36,6 +36,13 @@ func uploadedPackageExecutor(t *testing.T) (*Executor, string, string) {
 
 func TestInstallUploadedVPKPreservesNameAndRemovesStagingFile(t *testing.T) {
 	executor, dataDir, instancePath := uploadedPackageExecutor(t)
+	addons := filepath.Join(instancePath, "left4dead2", "addons")
+	if err := os.MkdirAll(addons, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(addons, "unrelated-invalid.vpk"), []byte("existing file is not inspected"), 0o640); err != nil {
+		t.Fatal(err)
+	}
 	raw := validTestVPK([]byte("uploaded"), 2)
 	result, err := executor.installMod(context.Background(), domain.Job{
 		ID: "upload-vpk", InstanceID: "instance", Payload: map[string]any{
