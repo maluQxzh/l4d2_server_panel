@@ -18,7 +18,8 @@ import (
 
 const (
 	backupLegacyFormatVersion = 1
-	backupFormatVersion       = 2
+	backupLaunchFormatVersion = 2
+	backupFormatVersion       = 3
 	maxBackupFiles            = 100000
 	maxRestoreBytes           = int64(20 << 30)
 )
@@ -26,13 +27,21 @@ const (
 var backupRoots = []string{"cfg", "addons", "left4dead2/cfg", "left4dead2/addons"}
 
 type BackupManifest struct {
-	Version    int                 `json:"version"`
-	InstanceID string              `json:"instance_id"`
-	OS         string              `json:"os"`
-	Arch       string              `json:"arch"`
-	CreatedAt  time.Time           `json:"created_at"`
-	Files      map[string]string   `json:"files"`
-	Launch     *BackupLaunchConfig `json:"launch,omitempty"`
+	Version    int                  `json:"version"`
+	InstanceID string               `json:"instance_id"`
+	OS         string               `json:"os"`
+	Arch       string               `json:"arch"`
+	CreatedAt  time.Time            `json:"created_at"`
+	Files      map[string]string    `json:"files"`
+	Launch     *BackupLaunchConfig  `json:"launch,omitempty"`
+	Maps       []BackupMapReference `json:"maps,omitempty"`
+}
+
+type BackupMapReference struct {
+	ID              string   `json:"id"`
+	AggregateSHA256 string   `json:"aggregate_sha256"`
+	Name            string   `json:"name"`
+	BSPs            []string `json:"bsps"`
 }
 
 func ReadBackupManifest(archivePath string) (BackupManifest, error) {
@@ -45,20 +54,28 @@ func ReadBackupManifest(archivePath string) (BackupManifest, error) {
 }
 
 func CreateBackup(instanceID, instancePath, destination string) (BackupManifest, error) {
-	// Kept for reading/writing test fixtures and rollback archives created by
-	// older Agents. All production backups use CreateBackupWithLaunch so a v2
-	// archive always carries the source instance's portable launch settings.
-	return createBackup(instanceID, instancePath, destination, backupLegacyFormatVersion, nil)
+	// Kept for writing v1 compatibility fixtures. Production backups use
+	// CreateBackupWithMaps and always include the v3 portable launch snapshot.
+	return createBackup(instanceID, instancePath, destination, backupLegacyFormatVersion, nil, nil, nil)
 }
 
 func CreateBackupWithLaunch(instanceID, instancePath, destination string, launch BackupLaunchConfig) (BackupManifest, error) {
 	if err := validateBackupLaunchConfig(launch); err != nil {
 		return BackupManifest{}, fmt.Errorf("backup launch configuration: %w", err)
 	}
-	return createBackup(instanceID, instancePath, destination, backupFormatVersion, &launch)
+	// Retained for v2 compatibility fixtures and callers that intentionally do
+	// not know about map references. The production Executor uses v3 below.
+	return createBackup(instanceID, instancePath, destination, backupLaunchFormatVersion, &launch, nil, nil)
 }
 
-func createBackup(instanceID, instancePath, destination string, version int, launch *BackupLaunchConfig) (BackupManifest, error) {
+func CreateBackupWithMaps(instanceID, instancePath, destination string, launch BackupLaunchConfig, maps []BackupMapReference, excludedMapFiles map[string]bool) (BackupManifest, error) {
+	if err := validateBackupLaunchConfig(launch); err != nil {
+		return BackupManifest{}, fmt.Errorf("backup launch configuration: %w", err)
+	}
+	return createBackup(instanceID, instancePath, destination, backupFormatVersion, &launch, maps, excludedMapFiles)
+}
+
+func createBackup(instanceID, instancePath, destination string, version int, launch *BackupLaunchConfig, maps []BackupMapReference, excludedMapFiles map[string]bool) (BackupManifest, error) {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
 		return BackupManifest{}, err
 	}
@@ -69,7 +86,7 @@ func createBackup(instanceID, instancePath, destination string, version int, lau
 	name := tmp.Name()
 	defer os.Remove(name)
 	zw := zip.NewWriter(tmp)
-	manifest := BackupManifest{Version: version, InstanceID: instanceID, OS: runtime.GOOS, Arch: runtime.GOARCH, CreatedAt: time.Now().UTC(), Files: make(map[string]string), Launch: launch}
+	manifest := BackupManifest{Version: version, InstanceID: instanceID, OS: runtime.GOOS, Arch: runtime.GOARCH, CreatedAt: time.Now().UTC(), Files: make(map[string]string), Launch: launch, Maps: maps}
 	count := 0
 	var total int64
 	for _, root := range backupRoots {
@@ -108,6 +125,12 @@ func createBackup(instanceID, instancePath, destination string, version int, lau
 				return err
 			}
 			rel = filepath.ToSlash(rel)
+			if excludedMapFiles[strings.ToLower(rel)] {
+				return nil
+			}
+			if isReservedMapAddonPath(rel) {
+				return fmt.Errorf("backup found an unregistered reserved map file %q", rel)
+			}
 			if isGeneratedSecretConfig(rel) {
 				return nil
 			}
@@ -366,7 +389,7 @@ func removeRestoreExtras(instancePath string, desired map[string]bool, preserveT
 			if !info.Mode().IsRegular() {
 				return fmt.Errorf("restore refuses non-regular file %q", path)
 			}
-			if desired[relative] || isGeneratedSecretConfig(relative) || (preserveTargetNative && isTargetPlatformNativeFile(relative)) {
+			if desired[relative] || isGeneratedSecretConfig(relative) || isReservedMapAddonPath(relative) || (preserveTargetNative && isTargetPlatformNativeFile(relative)) {
 				return nil
 			}
 			if err := deleteManagedFileNoFollow(instancePath, relative); err != nil && !errors.Is(err, os.ErrNotExist) {

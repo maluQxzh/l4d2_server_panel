@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
@@ -102,7 +103,7 @@ func validateBackupJSONFieldNames(raw []byte) error {
 	}
 	allowedRoot := map[string]bool{
 		"version": true, "instance_id": true, "os": true, "arch": true,
-		"created_at": true, "files": true, "launch": true,
+		"created_at": true, "files": true, "launch": true, "maps": true,
 	}
 	for key := range root {
 		if !allowedRoot[key] {
@@ -189,18 +190,44 @@ func rejectDuplicateJSONKeys(raw []byte) error {
 }
 
 func validateBackupManifest(manifest BackupManifest) error {
-	if manifest.Version != backupLegacyFormatVersion && manifest.Version != backupFormatVersion {
+	if manifest.Version != backupLegacyFormatVersion && manifest.Version != backupLaunchFormatVersion && manifest.Version != backupFormatVersion {
 		return errors.New("unsupported format version")
 	}
 	if manifest.Version == backupLegacyFormatVersion && manifest.Launch != nil {
 		return errors.New("legacy manifest cannot contain launch configuration")
 	}
-	if manifest.Version == backupFormatVersion {
+	if manifest.Version == backupLaunchFormatVersion || manifest.Version == backupFormatVersion {
 		if manifest.Launch == nil {
-			return errors.New("v2 manifest is missing launch configuration")
+			return errors.New("portable manifest is missing launch configuration")
 		}
 		if err := validateBackupLaunchConfig(*manifest.Launch); err != nil {
 			return fmt.Errorf("launch configuration: %w", err)
+		}
+	}
+	if manifest.Version < backupFormatVersion && len(manifest.Maps) != 0 {
+		return errors.New("legacy manifest cannot contain map references")
+	}
+	if manifest.Version == backupFormatVersion {
+		if len(manifest.Maps) > 10000 {
+			return errors.New("map reference count exceeds limit")
+		}
+		seenMaps := make(map[string]bool, len(manifest.Maps))
+		for _, reference := range manifest.Maps {
+			if uuid.Validate(reference.ID) != nil || seenMaps[reference.ID] || !validUploadSHA256(reference.AggregateSHA256) ||
+				validateManifestText("map name", reference.Name, 255, false) != nil || len(reference.BSPs) == 0 || len(reference.BSPs) > 4096 {
+				return errors.New("invalid map reference")
+			}
+			seenMaps[reference.ID] = true
+			seenBSPs := make(map[string]bool, len(reference.BSPs))
+			for _, bsp := range reference.BSPs {
+				key := strings.ToLower(strings.TrimSpace(bsp))
+				if bsp != strings.TrimSpace(bsp) || len(bsp) > 512 || !validMapVirtualPath(bsp) ||
+					!strings.HasPrefix(key, "maps/") || !strings.HasSuffix(key, ".bsp") ||
+					strings.ContainsAny(bsp, "\\:\x00\r\n") || seenBSPs[key] {
+					return errors.New("invalid map BSP reference")
+				}
+				seenBSPs[key] = true
+			}
 		}
 	}
 	if err := validateManifestText("instance_id", manifest.InstanceID, 128, false); err != nil {

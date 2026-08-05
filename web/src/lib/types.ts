@@ -205,6 +205,61 @@ export interface InstanceRecord {
   updated_at: string;
 }
 
+export type MapHealth = "healthy" | "degraded" | "broken" | "deleting";
+
+export interface MapArtifactRecord {
+  id: string;
+  ordinal: number;
+  sha256: string;
+  size: number;
+}
+
+export interface MapBSPRecord {
+  virtual_path: string;
+  start_name?: string;
+  dictionary_present: boolean;
+}
+
+export interface MapWarningRecord {
+  code: string;
+  message: string;
+  virtual_path?: string;
+}
+
+export interface MapReplicaRecord {
+  filesystem_id: string;
+  health: "healthy" | "missing" | "corrupt";
+  verified_at?: string;
+}
+
+export interface MapAssignmentRecord {
+  map_id: string;
+  instance_id: string;
+  restart_required: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MapRecord {
+  id: string;
+  node_id: string;
+  name: string;
+  health: MapHealth;
+  aggregate_sha256: string;
+  total_size: number;
+  source_type: "qq_flash";
+  source_name?: string;
+  removed_files: number;
+  removed_bytes: number;
+  artifacts?: MapArtifactRecord[];
+  bsps?: MapBSPRecord[];
+  warnings?: MapWarningRecord[];
+  replicas?: MapReplicaRecord[];
+  assignments?: MapAssignmentRecord[];
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Job {
   id: string;
   node_id: string;

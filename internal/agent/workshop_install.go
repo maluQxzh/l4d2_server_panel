@@ -96,16 +96,6 @@ func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source s
 	if len(pending) == 0 {
 		return nil, errors.New("Workshop download contained no installable VPK files")
 	}
-	conflictCandidates := make([]vpkInstallCandidate, 0, len(pending))
-	for _, file := range pending {
-		conflictCandidates = append(conflictCandidates, vpkInstallCandidate{
-			Source: file.source, TargetRelative: file.relative,
-		})
-	}
-	if err := validateVPKContentConflicts(instancePath, conflictCandidates); err != nil {
-		return nil, fmt.Errorf("Workshop VPK content conflict: %w", err)
-	}
-
 	progress(65, "installing validated Workshop VPK files")
 	created := make([]string, 0, len(pending))
 	installed := make([]map[string]any, 0, len(pending))

@@ -22,7 +22,7 @@ Windows 10/11 x64 与 Windows Server 2019+ 使用便携 ZIP，不依赖 Docker/W
 
 任务状态固定为 `queued → dispatched → running → succeeded|failed|canceled`。Control 数据库和 Agent 都限制每个实例同时只有一个写操作，并为每个物理游戏安装增加独立写锁；A2S/玩家、目录列表、文件读取以及日志/备份分块不占实例写锁。SteamCMD 并发由每个 Agent 的 `steamcmd_concurrency`（1–4，默认 1）控制，切换活动 SteamCMD 时还会拒绝与安装维护任务并发。
 
-协议按主次版本兼容：主版本必须一致，Control 接受当前次版本和前一个次版本。能力协商用于 `runtime_environment_v1`、`discover_instances`、`purge_quarantine` 等增量命令，避免把新任务派给旧 Agent；即使节点在任务排队后降级重连，运行环境任务也会留在队列等待兼容 Agent。`job_ack` 是可忽略的增量消息；不认识它的前一版本 Agent 会保持既有行为而不会断开连接。
+协议按主次版本兼容：主版本必须一致，Control 接受当前次版本和前一个次版本。能力协商用于 `runtime_environment_v1`、`discover_instances`、`purge_quarantine`、`map_library_v1` 等增量命令，避免把新任务派给旧 Agent；即使节点在任务排队后降级重连，相关任务也会留在队列等待兼容 Agent。`job_ack` 是可忽略的增量消息；不认识它的前一版本 Agent 会保持既有行为而不会断开连接。
 
 Control 在持久化或发布前校验所有 Agent 入站消息。心跳最多 256 KiB/512 个实例；指标最多 512 KiB/512 个样本，同一批不得重复实例，数值范围与“已用不超过总量”关系必须成立；日志只接受 `stdout/stderr`，单行 1–16 KiB、消息最多 128 KiB。指标和日志时间戳只接受过去 15 分钟到未来 2 分钟。所有消息中的实例 ID 必须属于当前 WSS 节点；`job_update` 还必须匹配任务节点/实例，结果中任意嵌套 `instance_id` 都不能跨实例。归属校验按 Agent 连接缓存 2 秒且最多 1024 项；同一实例的并发 miss 合并为一次 SQLite 查询，未知/跨节点 ID 不做负缓存，正常实例删除会立即逐连接清除。运行进度消息最多 32 KiB、终态最多 12 MiB，重复进度丢弃、变化进度按每任务最快 250 ms 合并，终态不节流。
 
@@ -49,9 +49,19 @@ Agent 永久清理时只接收 Control 墓碑中的 `root_index + entry_name`，
 
 文件 API 只开放 `cfg`、`addons`、`logs` 和它们在 `left4dead2` 下的对应目录。目录列表需要实例 `read`，读取正文和所有写操作需要 `operate`。浏览器正文写入上限 8 MiB；写入可用正文 `expected_sha256`，删除可用 `If-Match`，防止覆盖并发修改。模组安装入口另有能力门控的 `qq_flash_package_v1` 导入：Control 只接收并加密保存规范化的 `https://qfile.qq.com/q/...` 分享链接，目标不可由调用者选择；Agent 分页遍历分享中的所有目录和文件，从固定 `qfile.qq.com` 元数据接口逐文件换取固定 `multimedia.qfile.qq.com` 短期地址，并在固定 `left4dead2/addons` 下保留原目录结构，文件正文不经过 Control。该路径不设置文件数量或文件大小上限，也不鉴定内容格式，并按文件下载字节持续上报持久任务进度；每个文件仍执行分享声明的精确大小、公共 DNS 地址、TLS 1.2、零重定向、特殊路径拒绝、实例目录句柄和原子提交保护。多文件导入采用逐文件提交，后续文件失败时已成功文件保持落盘并在任务错误中明确报告。QQ 闪传模组工作流允许 `.vpk`，其余 `.bat/.cmd/.com/.dll/.dylib/.exe/.ps1/.sh/.smx/.so/.vdf` 等危险格式仍拒绝。普通文件 API 继续拒绝包含 `.vpk` 在内的全部可执行或加载关键格式。
 
-包安装支持最大 8 MiB 的网站上传、HTTPS URL、Workshop 项目/合集、VPK、SMX/原生 SourceMod 扩展，以及操作系统匹配的 AlliedModders SourceMod/Metamod 稳定包。上传正文在中心任务中加密，Agent 只在 `data_dir/staging` 临时落盘并在完成后清理；URL 下载使用 HTTPS、大小/重定向/地址边界和归档限制。外部 ZIP/tar 解包先写入拒绝链接的 staging；最终文件、Workshop VPK、单文件组件和启停移动均通过 Linux dirfd 或 Windows NT `RootDirectory` 提交，提交前验证声明大小及可用的 SHA-256，no-replace 与覆盖语义均不跟随目标链接。直接上传、URL、Workshop 安装及 VPK 回退统一验证 VPK v1/v2 结构：目录树最多 64 MiB/100000 项，只接受安全 UTF-8 相对路径和单文件内嵌数据，检查节区边界、终止符、重复/重叠条目及每项 CRC32；v2 签名区只校验长度结构，不把它当作来源真实性证明。Agent 还会提取 VPK 虚拟内容路径，在单文件安装/替换、Workshop 批次安装、版本回退和重新启用前与全部已启用 VPK 做不区分大小写的冲突检查；替换同一包时仅排除该包旧清单，任何其他重叠都会拒绝操作。Workshop 合集解析最多 200 个子项目并逐项报告匿名 SteamCMD 下载失败。官方 SourceMod/Metamod 安装前创建检查点，必要时停服，安装后启动并用 `meta version`/`sm version` 验证，失败恢复检查点和原运行状态。第三方原生包需要显式风险确认。
+包安装支持最大 8 MiB 的网站上传、HTTPS URL、Workshop 项目/合集、VPK、SMX/原生 SourceMod 扩展，以及操作系统匹配的 AlliedModders SourceMod/Metamod 稳定包。上传正文在中心任务中加密，Agent 只在 `data_dir/staging` 临时落盘并在完成后清理；URL 下载使用 HTTPS、大小/重定向/地址边界和归档限制。外部 ZIP/tar 解包先写入拒绝链接的 staging；最终文件、Workshop VPK、单文件组件和启停移动均通过 Linux dirfd 或 Windows NT `RootDirectory` 提交，提交前验证声明大小及可用的 SHA-256，no-replace 与覆盖语义均不跟随目标链接。直接上传、URL、Workshop 安装及 VPK 回退统一验证 VPK v1/v2 结构：目录树最多 64 MiB/100000 项，只接受安全 UTF-8 相对路径和单文件内嵌数据，检查节区边界、终止符、重复/重叠条目及每项 CRC32；v2 签名区只校验长度结构，不把它当作来源真实性证明。地图、普通模组、Workshop 和历史版本之间的 VPK 虚拟路径重叠不再由面板阻断，最终覆盖关系由 Source 实际加载顺序决定；结构、CRC、路径和大小校验仍保留。Workshop 合集解析最多 200 个子项目并逐项报告匿名 SteamCMD 下载失败。官方 SourceMod/Metamod 安装前创建检查点，必要时停服，安装后启动并用 `meta version`/`sm version` 验证，失败恢复检查点和原运行状态。第三方原生包需要显式风险确认。
 
-覆盖非 Workshop 的单文件 VPK 或 SourceMod SMX 时，Agent 会在自己的 `data_dir/package-versions` 中先保存旧文件，并为每个目标保留最近 3 个历史快照；中心保存版本元数据和用于回退派发的 Agent 本地不透明相对定位符，专用版本列表和通用任务响应都不返回该定位符。Workshop 当前按项目/合集首次安装并拒绝目标冲突，不进入此版本历史。版本快照、当前文件校验、替换、回退和失败恢复都使用 no-follow 文件句柄；Linux 启停移动在提交后比较目标 `dev+inode`，Windows 直接按源句柄重命名。版本回退要求包已启用且目标路径未变化，运行中的实例会先停服；Agent 校验所选快照与 SHA-256、原子替换并恢复原运行状态，SMX 还会通过 RCON 检查 SourceMod 响应。失败时恢复被替换文件和先前运行状态。回退会消费所选快照，同时把刚被替换的当前文件保存为新的历史版本。整套 SourceMod/Metamod 与第三方原生扩展也不属于此单文件版本历史。
+覆盖非 Workshop 的单文件 VPK 或 SourceMod SMX 时，Agent 会在自己的 `data_dir/package-versions` 中先保存旧文件，并为每个目标保留最近 3 个历史快照；中心保存版本元数据和用于回退派发的 Agent 本地不透明相对定位符，专用版本列表和通用任务响应都不返回该定位符。Workshop 当前按项目/合集首次安装，不进入此版本历史。版本快照、当前文件校验、替换、回退和失败恢复都使用 no-follow 文件句柄；Linux 启停移动在提交后比较目标 `dev+inode`，Windows 直接按源句柄重命名。版本回退要求包已启用且目标路径未变化，运行中的实例会先停服；Agent 校验所选快照与 SHA-256、原子替换并恢复原运行状态，SMX 还会通过 RCON 检查 SourceMod 响应。失败时恢复被替换文件和先前运行状态。回退会消费所选快照，同时把刚被替换的当前文件保存为新的历史版本。整套 SourceMod/Metamod 与第三方原生扩展也不属于此单文件版本历史。
+
+## 地图对象库
+
+地图导入是 `map_library_v1` 能力门控的固定节点任务，不开放任意解压或 Shell。Control 只加密保存 QQ 闪传链接直到派发；Agent 先完整枚举最多 100000 个文件和 20 GiB 下载声明，再写入 `<data_dir>/maps/staging/<job-id>`。归档按魔数识别，使用纯 Go ZIP、7Z 和 RAR 读取器递归最多三层，统一限制 40 GiB 展开/VPK 虚拟内容、20 GiB 单项、100:1 压缩比并预留 5 GiB 磁盘；加密、分卷、链接、特殊文件、绝对路径、`..`、设备名、ADS 和重解析点均拒绝。成功、失败或取消都会清理整棵 staging。
+
+同一链接内 VPK 按规范化容器路径稳定排序后合并，不区分大小写的重复虚拟路径由后者覆盖；固定去除 `.vtf/.mp3/.wav/.vmf/.vmx` 和无扩展名文件。输入支持 VPK v1/v2、`*_dir.vpk` 外部数据块并逐项校验 CRC 和边界；输出是确定性 VPK v1，按完整文件边界拆成不超过 1.5 GiB 的部件。每个 `maps/*.bsp` 流式查找 `stringtable_dictionary.dct`，缺失只形成持久警告。节点只发布处理后对象，下载、原 VPK、解压目录和输出临时文件都随 staging 删除。
+
+`map_roots` 的第一项始终是 `<data_dir>/maps`，管理员可为其他文件系统卷配置一个绝对根；同卷重复根在 Agent 启动时拒绝。对象按 SHA-256 保存并在同卷复用，跨卷先从健康副本原子复制和校验；未配置实例所在卷或文件系统不支持硬链接时明确失败。Linux 使用 handle-relative `linkat`，Windows 使用带 `RootDirectory` 的 NT 硬链接操作，目标固定为实例 `left4dead2/addons/l4d2panel-map-<map-id>-<part>.vpk`。普通文件、QQ 模组和包接口不能触碰该前缀。节点注册表原子记录对象、副本、实例链接及预期关系；Linux 幂等服务安装只在注册路径全集与 inode 实际链接计数完全相等时豁免这些文件，未知硬链接仍拒绝，符号链接/Junction 规则不放松。
+
+地图导入、发布、分配、取消、校验和删除共享节点地图锁；分配还取得实例写锁但不要求停服，也不占 SteamCMD 槽。运行中分配返回 `restart_required`，稍后重启状态由 Control 持久化并在成功启动/重启后清除；取消由两端要求真实停止。删除必须无分配并使用一次性五分钟确认令牌；未知链接、校验不一致或部分失败保留逻辑记录为异常以便重试。校验在有健康来源时修复副本，无健康来源时标记 broken 并禁止新分配。支持 `map_library_v1` 的 Agent 每次重连完成能力协商后，Control 会为该节点每张地图补充一个去重的 `map.inventory` 校验任务，以发现本地注册表丢失和离线期间的对象异常。
 
 相关格式和上游说明：[Valve VPK](https://developer.valvesoftware.com/wiki/VPK)、[AlliedModders SourceMod 安装](https://wiki.alliedmods.net/Installing_SourceMod)、[SteamDB App 222860](https://steamdb.info/app/222860/config/)。
 
@@ -71,13 +81,16 @@ Agent 永久清理时只接收 Control 墓碑中的 `root_index + entry_name`，
   journal/                            # 本地任务幂等日志
   backups/<instance-id>/*.zip         # 节点本地备份
   package-versions/...                # 节点本地 VPK/SMX 历史快照
+  maps/registry.json                  # 地图对象、副本与实例链接证明
+  maps/objects/...                    # 默认卷的只读内容寻址 VPK
+  maps/staging/...                    # 导入任务临时目录，任务终态清理
   logs/instances/<instance-id>.log*   # 当前日志及最多 19 个轮转段
   staging/                            # 有边界的临时下载/恢复区
 ```
 
-备份只包含 `cfg`、`addons`、`left4dead2/cfg`、`left4dead2/addons`，使用带平台、实例 ID 和逐文件 SHA-256 的清单；不含游戏本体、缓存、日志或旧版本可能遗留且含密码的 `left4dead2/cfg/l4d2panel.cfg`。当前 v2 清单还包含无秘密、与节点端口无关的结构化启动快照：模式、地图、人数、高级参数、自动重启、主机名、难度、地区、Steam 组和安全自定义 CVar；其类型中不存在 RCON/服务器密码字段。Agent 从自己的受限 registry 提取并严格验证这些值。v1 清单作为前一个格式继续读取，但没有启动快照。默认新实例有每日 04:00 计划，保留 7 个日备份、4 个周备份；首次每日备份会按 ISO 周复制一份周备份。Control 在同一事务中投影日备份及新周副本，并按 Agent 返回的已清理路径删除过期元数据，因此两者都能从备份列表选择和下载，重放同一终态不会产生重复周记录。
+备份只包含 `cfg`、`addons`、`left4dead2/cfg`、`left4dead2/addons`，使用带平台、实例 ID 和逐文件 SHA-256 的清单；不含游戏本体、缓存、日志或旧版本可能遗留且含密码的 `left4dead2/cfg/l4d2panel.cfg`。当前 v3 清单包含无秘密、与节点端口无关的结构化启动快照，以及已分配地图的 ID、聚合 SHA-256、自动名称和 BSP 引用；地图硬链接 VPK 不写入 ZIP。v1/v2 继续兼容读取。默认新实例有每日 04:00 计划，保留 7 个日备份、4 个周备份；首次每日备份会按 ISO 周复制一份周备份。Control 在同一事务中投影日备份及新周副本，并按 Agent 返回的已清理路径删除过期元数据，因此两者都能从备份列表选择和下载，重放同一终态不会产生重复周记录。
 
-恢复必须停服并先创建检查点。Agent 在隔离 staging 中验证格式版本、字段边界、条目边界、清单完整性和逐文件 SHA-256；解包、最终 overlay、extras 文件/空目录删除以及旧版遗留配置的回滚均使用句柄相对操作。v2 恢复使用来源启动快照，但端口、回环地址及中心端 RCON 凭据继续取目标实例；`server.cfg` 作为普通可移植配置文件从来源恢复。v1 恢复因无快照而保留目标启动资料。跨平台时 Agent 先按 Metamod → SourceMod 的依赖顺序安装、启动验证目标平台原生组件，再跳过来源平台二进制并把可移植目录作为最终覆盖层精确同步，因此官方包默认 configs 不会覆盖来源用户文件；只保留符合目标系统扩展名的既有原生文件，错误平台的残留会被清理。v2 成功结果把同一份无秘密快照返回 Control；Control 再次严格验证并更新当前配置源真相，使用独立的 restore 任务投影标记保证终态重放不重复递增修订号，也不会保留配置历史正文。目录同步不是文件系统原子交换；归档、组件安装、最终覆盖或启动资料写入任一步失败时，Agent 使用恢复前检查点，并同时恢复原 registry 与旧版遗留配置。恢复任务中的 Agent 本地归档定位符以部署主密钥加密持久化并只在派发时解封，任务/API/事件视图不返回备份、周副本或检查点路径。
+恢复必须停服并先创建检查点。Agent 在隔离 staging 中验证格式版本、字段边界、条目边界、清单完整性和逐文件 SHA-256；解包、最终 overlay、extras 文件/空目录删除以及旧版遗留配置的回滚均使用句柄相对操作。v2/v3 恢复使用来源启动快照，但端口、回环地址及中心端 RCON 凭据继续取目标实例；v3 先按地图 ID、再按聚合哈希匹配节点已有对象并恢复分配，缺失项只返回警告。若来源启动地图属于缺失对象，则保留目标实例当前启动地图。v1 恢复因无快照而保留目标启动资料。跨平台时 Agent 先按 Metamod → SourceMod 的依赖顺序安装、启动验证目标平台原生组件，再跳过来源平台二进制并把可移植目录作为最终覆盖层精确同步。v2/v3 成功结果把无秘密快照返回 Control 并做幂等投影。目录同步不是文件系统原子交换；任一步失败时 Agent 使用含地图引用的恢复前检查点，并同时恢复原 registry 与旧版遗留配置。恢复任务中的 Agent 本地归档定位符以部署主密钥加密持久化并只在派发时解封，任务/API/事件视图不返回备份、周副本或检查点路径。
 
 跨节点恢复使用目标实例上的可续传上传会话。会话初始有效期 24 小时，每个成功分块续期 24 小时；客户端必须顺序发送最大 1 MiB 的 Base64 块、当前 offset、块 SHA-256 和非空幂等键，并等待任务成功及 `received_size` 前进。Control 只持久化会话元数据，分块正文以部署主密钥加密进入任务且在终态清除；目标 Agent 把正文写入受限 `data_dir/backup-uploads`，逐块验证，末块再核对完整大小/SHA-256并原子完成。浏览器下载优先通过 File System Access API 逐块写盘并进行完整 SHA-256 校验；不支持该 API 时只允许最多 512 MiB 的内存聚合回退。Agent 以节点为单位串行核算上传暂存，默认最多 32 个不同会话。首次可信分块会先以严格 JSON、权限 `0600` 的 sidecar 原子持久化 `upload_id/expected_size/expected_sha256`，续块必须完全匹配；旧版无 sidecar 的 `.part/.zip` 在可信续传升级前按 20 GiB 预约。64 GiB 上限按全部会话预约大小加 sidecar/临时元数据和未知常规文件核算，每次写块前还要求磁盘足以兑现所有未完成预约并额外保留 5 GiB，避免多个大文件各占一部分后全部无法完成。配额检查在创建 sidecar、截断或写入 `.part` 前完成，拒绝不会破坏已经提交的分块。无活动未完成 `.part` 的 Agent 保留期约为 25 小时，完整 `.zip` 为 48 小时；完成包的幂等整包校验和每次 restore 校验都会续租完整会话。完成、续租、删除和清理按 UUID 将数据文件、sidecar 与原子临时文件成组处理，因此覆盖 Control 在失败后续期的 24 小时重试窗口，同时不会形成未计费孤儿。只有 ready、完整且未过期的会话可排队标准 restore；同一键重放原任务，失败或取消会把会话续期 24 小时，使用新键可直接重试而无需重传。任务成功后清理 staging。状态为 `uploading/ready/restoring/succeeded/failed/expired`，API 从不返回目标路径或正文。
 

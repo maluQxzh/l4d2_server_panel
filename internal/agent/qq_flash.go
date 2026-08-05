@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	pathpkg "path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ const (
 type qqFlashShare struct {
 	FilesetID  string
 	TotalFiles int64
+	Name       string
 }
 
 type qqFlashFile struct {
@@ -47,6 +49,91 @@ type qqFlashFile struct {
 type qqFlashClient struct {
 	metadata *http.Client
 	download *http.Client
+}
+
+type qqFlashListedFile struct {
+	Relative string
+	File     qqFlashFile
+}
+
+// listAllFiles validates the complete share before any bytes are downloaded.
+// Map imports use it to reserve disk space and to ensure a late page cannot
+// turn a previously acceptable share into an oversized partial import.
+func (c *qqFlashClient) listAllFiles(ctx context.Context, shareURL string, maxFiles int, maxBytes int64) ([]qqFlashListedFile, string, string, int, error) {
+	if err := validateQQFlashShareURL(shareURL); err != nil {
+		return nil, "", "", 0, err
+	}
+	share, deviceID, err := c.fetchShare(ctx, shareURL)
+	if err != nil {
+		return nil, "", "", 0, err
+	}
+	type folder struct {
+		ID       string
+		Relative string
+	}
+	folders := []folder{{}}
+	visitedFolders := map[string]struct{}{"": {}}
+	seenTargets := make(map[string]struct{})
+	files := make([]qqFlashListedFile, 0)
+	var totalBytes int64
+	entries := 0
+	for folderIndex := 0; folderIndex < len(folders); folderIndex++ {
+		current := folders[folderIndex]
+		pagination := ""
+		seenPages := make(map[string]struct{})
+		for {
+			page, next, done, listErr := c.listFolder(ctx, share.FilesetID, current.ID, pagination, deviceID)
+			if listErr != nil {
+				return nil, "", "", 0, listErr
+			}
+			for _, file := range page {
+				entries++
+				if entries > maxFiles {
+					return nil, "", "", 0, errors.New("QQ flash share contains too many entries")
+				}
+				if err := validateQQFlashEntryName(file.Name); err != nil {
+					return nil, "", "", 0, err
+				}
+				child := pathpkg.Join(current.Relative, file.Name)
+				if file.IsDir {
+					if file.FileID == "" || len(file.FileID) > 1024 {
+						return nil, "", "", 0, errors.New("QQ flash folder identifier is invalid")
+					}
+					if _, duplicate := visitedFolders[file.FileID]; duplicate {
+						return nil, "", "", 0, errors.New("QQ flash folder graph contains a duplicate or cycle")
+					}
+					visitedFolders[file.FileID] = struct{}{}
+					folders = append(folders, folder{ID: file.FileID, Relative: child})
+					continue
+				}
+				totalBytes += file.Size
+				if file.Size < 0 || totalBytes < 0 || totalBytes > maxBytes {
+					return nil, "", "", 0, errors.New("QQ flash share exceeds the map download limit")
+				}
+				key := strings.ToLower(child)
+				if _, duplicate := seenTargets[key]; duplicate {
+					return nil, "", "", 0, errors.New("QQ flash share contains colliding file paths")
+				}
+				seenTargets[key] = struct{}{}
+				files = append(files, qqFlashListedFile{Relative: child, File: file})
+			}
+			if done {
+				break
+			}
+			if next == "" {
+				return nil, "", "", 0, errors.New("QQ flash pagination ended without a cursor")
+			}
+			if _, repeated := seenPages[next]; repeated {
+				return nil, "", "", 0, errors.New("QQ flash pagination cursor repeated")
+			}
+			seenPages[next] = struct{}{}
+			pagination = next
+		}
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return strings.ToLower(files[i].Relative) < strings.ToLower(files[j].Relative)
+	})
+	return files, deviceID, share.Name, entries, nil
 }
 
 func newQQFlashClient() *qqFlashClient {
@@ -145,6 +232,9 @@ func (c *qqFlashClient) importFiles(ctx context.Context, instancePath, shareURL 
 
 func validateQQFlashFileMutation(cleaned string) error {
 	if strings.EqualFold(pathpkg.Ext(cleaned), ".vpk") {
+		if isReservedMapAddonPath(cleaned) {
+			return errors.New("reserved map-library VPK names cannot be imported as ordinary files")
+		}
 		return nil
 	}
 	return validateManagedFileMutation(cleaned)
@@ -300,7 +390,14 @@ func parseQQFlashSharePage(html []byte, now time.Time) (qqFlashShare, error) {
 		return qqFlashShare{}, errors.New("QQ flash fileset identifier is invalid")
 	}
 	totalFiles, _ := qqInt64(fileset["total_file_count"])
-	return qqFlashShare{FilesetID: filesetID, TotalFiles: totalFiles}, nil
+	name := ""
+	for _, key := range []string{"name", "fileset_name", "title"} {
+		if candidate, ok := fileset[key].(string); ok && strings.TrimSpace(candidate) != "" {
+			name = candidate
+			break
+		}
+	}
+	return qqFlashShare{FilesetID: filesetID, TotalFiles: totalFiles, Name: name}, nil
 }
 
 func qqRPCSucceeded(response map[string]any) bool {

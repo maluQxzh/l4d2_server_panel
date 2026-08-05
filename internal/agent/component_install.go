@@ -163,6 +163,20 @@ func (e *Executor) rollbackServerExtension(job domain.Job, checkpointPath string
 	if err := restoreCheckpointExact(instancePath, checkpointPath, staging, job.InstanceID); err != nil {
 		restored = false
 		failures = append(failures, fmt.Errorf("restore checkpoint: %w", err))
+	} else if manifest, manifestErr := ReadBackupManifest(checkpointPath); manifestErr != nil {
+		restored = false
+		failures = append(failures, fmt.Errorf("read checkpoint map references: %w", manifestErr))
+	} else if len(manifest.Maps) != 0 && e.maps == nil {
+		restored = false
+		failures = append(failures, errors.New("restore checkpoint map assignments: map library is unavailable"))
+	} else if e.maps != nil {
+		_, mapErr := e.maps.restoreBackupAssignments(job.InstanceID, record, instancePath, manifest.Maps)
+		if mapErr == nil {
+			// Continue with running-state recovery below.
+		} else {
+			restored = false
+			failures = append(failures, fmt.Errorf("restore checkpoint map assignments: %w", mapErr))
+		}
 	}
 	if wasRunning && restored {
 		if _, err := e.start(cleanupCtx, job, func(int, string) {}); err != nil {

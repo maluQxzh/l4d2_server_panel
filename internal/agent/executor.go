@@ -43,6 +43,8 @@ type Executor struct {
 	transferVerifications      map[string]transferVerification
 	telemetryMu                sync.RWMutex
 	telemetry                  map[string]instanceTelemetry
+	maps                       *mapStore
+	mapStoreErr                error
 }
 
 type instanceTelemetry struct {
@@ -66,9 +68,14 @@ func NewExecutor(config *Config, paths *PathGuard, registry *Registry, processes
 	if runtimeStore != nil && runtimeStore.snapshot().SteamCMDPath != "" {
 		steamPath = runtimeStore.snapshot().SteamCMDPath
 	}
+	maps, mapStoreErr := newMapStore(config)
+	if mapStoreErr != nil && logger != nil {
+		logger.Printf("load map library: %v", mapStoreErr)
+	}
 	return &Executor{
 		config: config, paths: paths, registry: registry, processes: processes,
 		steam: NewSteamCMD(steamPath, config.SteamCMDConcurrency), runtimeEnvironment: runtimeStore, logger: logger, locks: newKeyedLocker(),
+		maps: maps, mapStoreErr: mapStoreErr,
 		officialPackageResolver: ResolveOfficialPackage, workshopCollectionResolver: ResolveWorkshopCollection,
 		packageDownloader: func(ctx context.Context, source, destination string, official bool) (string, int64, error) {
 			if official {
@@ -99,8 +106,17 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 		}
 		defer release()
 	}
+	if strings.HasPrefix(action, "map.") {
+		release, err := e.locks.acquire(ctx, "map-library")
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+	}
 	progress(1, "preparing operation")
 	switch action {
+	case "map.import.qq.flash", "map.assign", "map.unassign", "map.verify", "map.delete", "map.inventory":
+		return e.executeMapTask(ctx, action, job, progress)
 	case "environment.inspect":
 		return e.inspectRuntimeEnvironment(ctx, job, progress)
 	case "steamcmd.configure":
@@ -287,6 +303,7 @@ type operationPayload struct {
 	TVPort               int               `json:"tv_port,omitempty"`
 	MaxPlayers           int               `json:"max_players,omitempty"`
 	Map                  string            `json:"map,omitempty"`
+	MapID                string            `json:"map_id,omitempty"`
 	Mode                 string            `json:"mode,omitempty"`
 	ConfigFile           string            `json:"config_file,omitempty"`
 	ExtraArgs            []string          `json:"extra_args,omitempty"`
@@ -1094,7 +1111,15 @@ func (e *Executor) backup(_ context.Context, job domain.Job, progress ProgressFu
 		return nil, err
 	}
 	progress(20, "creating portable backup")
-	manifest, err := CreateBackupWithLaunch(job.InstanceID, path, destination, launch)
+	var mapReferences []BackupMapReference
+	var excludedMapFiles map[string]bool
+	if e.maps != nil {
+		mapReferences, excludedMapFiles, err = e.maps.backupReferences(job.InstanceID, path)
+		if err != nil {
+			return nil, fmt.Errorf("capture map assignments: %w", err)
+		}
+	}
+	manifest, err := CreateBackupWithMaps(job.InstanceID, path, destination, launch, mapReferences, excludedMapFiles)
 	if err != nil {
 		return nil, err
 	}
@@ -1185,6 +1210,10 @@ func (e *Executor) restore(ctx context.Context, job domain.Job, progress Progres
 	if err != nil {
 		return nil, err
 	}
+	currentLaunch, err := backupLaunchFromRecord(record, path)
+	if err != nil {
+		return nil, fmt.Errorf("capture current launch configuration: %w", err)
+	}
 	rollbackState, err := captureRestoreRollbackState(record, path)
 	if err != nil {
 		return nil, fmt.Errorf("capture pre-restore instance state: %w", err)
@@ -1236,15 +1265,37 @@ func (e *Executor) restore(ctx context.Context, job domain.Job, progress Progres
 	if err != nil {
 		return nil, failRestore("restore portable backup overlay", err)
 	}
+	mapWarnings := make([]string, 0)
+	var missingMapReferences []BackupMapReference
+	if len(manifest.Maps) != 0 && e.maps == nil {
+		return nil, failRestore("restore map assignments", errors.New("map library is unavailable"))
+	}
+	if e.maps != nil {
+		missingMapReferences, err = e.maps.restoreBackupAssignments(job.InstanceID, record, path, manifest.Maps)
+		if err != nil {
+			return nil, failRestore("restore map assignments", err)
+		}
+	}
+	for _, reference := range missingMapReferences {
+		mapWarnings = append(mapWarnings, fmt.Sprintf("map %s (%s) is unavailable on this node and was not assigned", reference.Name, reference.ID))
+	}
 	launchRestored := false
 	if manifest.Launch != nil {
 		progress(90, "restoring source launch configuration with target secrets")
-		if _, _, err := e.applyBackupLaunch(record, *manifest.Launch, payload); err != nil {
+		launch := *manifest.Launch
+		for _, reference := range missingMapReferences {
+			if backupMapContainsStartName(reference, launch.StartMap) {
+				launch.StartMap = currentLaunch.StartMap
+				mapWarnings = append(mapWarnings, "backup start map belongs to an unavailable map; retained the target instance start map")
+				break
+			}
+		}
+		if _, _, err := e.applyBackupLaunch(record, launch, payload); err != nil {
 			return nil, failRestore("restore source launch configuration", err)
 		}
 		launchRestored = true
 	}
-	result := map[string]any{"restored_files": len(manifest.Files) - len(skippedBinaries), "format_version": manifest.Version, "launch_config_restored": launchRestored, "legacy_launch_preserved": manifest.Version == backupLegacyFormatVersion, "source_platform": manifest.OS + "/" + manifest.Arch, "cross_platform": crossPlatform, "skipped_binaries": skippedBinaries, "reinstalled_components": reinstalledComponents, "requires_extension_reinstall": crossPlatform && len(skippedBinaries) > 0 && len(reinstalledComponents) == 0, "requires_native_extension_review": crossPlatform && len(skippedBinaries) > 0, "checkpoint": checkpoint}
+	result := map[string]any{"restored_files": len(manifest.Files) - len(skippedBinaries), "format_version": manifest.Version, "launch_config_restored": launchRestored, "legacy_launch_preserved": manifest.Version == backupLegacyFormatVersion, "source_platform": manifest.OS + "/" + manifest.Arch, "cross_platform": crossPlatform, "skipped_binaries": skippedBinaries, "reinstalled_components": reinstalledComponents, "requires_extension_reinstall": crossPlatform && len(skippedBinaries) > 0 && len(reinstalledComponents) == 0, "requires_native_extension_review": crossPlatform && len(skippedBinaries) > 0, "checkpoint": checkpoint, "map_warnings": mapWarnings}
 	if manifest.Launch != nil {
 		// Safe for Control persistence: BackupLaunchConfig has no password fields.
 		// Control uses this projection so later start jobs do not overwrite the
@@ -1948,6 +1999,9 @@ func (e *Executor) togglePackage(_ context.Context, job domain.Job, progress Pro
 		if !strings.HasSuffix(strings.ToLower(base), ".vpk") {
 			return nil, errors.New("VPK package path must end in .vpk")
 		}
+		if isReservedMapAddonBase(base) {
+			return nil, errors.New("reserved map-library VPK names cannot be toggled as ordinary packages")
+		}
 		enabledPath = filepath.ToSlash(filepath.Join("left4dead2", "addons", base))
 		disabledPath = filepath.ToSlash(filepath.Join("left4dead2", "addons", "panel-disabled", base))
 	case "sourcemod", "smx", "plugin":
@@ -1967,13 +2021,6 @@ func (e *Executor) togglePackage(_ context.Context, job domain.Job, progress Pro
 		targetRelative = enabledPath
 	}
 	if relative != targetRelative {
-		if payload.Enabled && isVPKPackageKind(kind) {
-			if err := validateVPKContentConflicts(instancePath, []vpkInstallCandidate{{
-				Source: absolute, TargetRelative: enabledPath,
-			}}); err != nil {
-				return nil, fmt.Errorf("cannot enable conflicting VPK: %w", err)
-			}
-		}
 		if err := moveFileWithinNoFollow(instancePath, relative, targetRelative); err != nil {
 			return nil, fmt.Errorf("toggle package atomically: %w", err)
 		}

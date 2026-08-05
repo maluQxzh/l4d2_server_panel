@@ -46,7 +46,7 @@ func TestBackupV2CapturesPortableLaunchConfigWithoutSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != backupFormatVersion || manifest.Launch == nil {
+	if manifest.Version != backupLaunchFormatVersion || manifest.Launch == nil {
 		t.Fatalf("unexpected manifest: %#v", manifest)
 	}
 	if !reflect.DeepEqual(created.Launch, manifest.Launch) || manifest.Launch.Mode != "versus" || manifest.Launch.StartMap != "c5m1_waterfront" || manifest.Launch.MaxPlayers != 12 || !manifest.Launch.AutoRestart {
@@ -108,6 +108,40 @@ func TestBackupManifestV1RemainsReadableAndRestorable(t *testing.T) {
 	}
 	if manifest.Version != backupLegacyFormatVersion || len(skipped) != 0 {
 		t.Fatalf("legacy restore = %#v, skipped=%#v", manifest, skipped)
+	}
+}
+
+func TestBackupV3StoresMapReferencesWithoutMapVPKBytes(t *testing.T) {
+	t.Parallel()
+	instancePath := t.TempDir()
+	mapRelative := "left4dead2/addons/l4d2panel-map-11111111-1111-1111-1111-111111111111-00.vpk"
+	mapPath := filepath.Join(instancePath, filepath.FromSlash(mapRelative))
+	if err := os.MkdirAll(filepath.Dir(mapPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mapPath, []byte("must not be copied into backup"), 0o440); err != nil {
+		t.Fatal(err)
+	}
+	launch := BackupLaunchConfig{Mode: "coop", StartMap: "custom_map", MaxPlayers: 8}
+	reference := BackupMapReference{
+		ID: "11111111-1111-1111-1111-111111111111", AggregateSHA256: strings.Repeat("a", 64), Name: "Custom Map",
+		BSPs: []string{"maps/custom_map.bsp"},
+	}
+	archive := filepath.Join(t.TempDir(), "portable-v3.zip")
+	created, err := CreateBackupWithMaps("source-instance", instancePath, archive, launch, []BackupMapReference{reference},
+		map[string]bool{strings.ToLower(mapRelative): true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := ReadBackupManifest(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Version != backupFormatVersion || manifest.Version != backupFormatVersion || !reflect.DeepEqual(manifest.Maps, []BackupMapReference{reference}) {
+		t.Fatalf("unexpected v3 map references: created=%#v manifest=%#v", created.Maps, manifest.Maps)
+	}
+	if _, included := manifest.Files[mapRelative]; included {
+		t.Fatal("assigned map VPK bytes were included in backup")
 	}
 }
 

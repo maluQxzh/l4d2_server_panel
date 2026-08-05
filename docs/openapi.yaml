@@ -15,6 +15,7 @@ tags:
   - { name: Nodes, description: 节点注册、凭据和状态 }
   - { name: Environments, description: 节点依赖、SteamCMD 与独占游戏安装 }
   - { name: Instances, description: 实例生命周期和游戏操作 }
+  - { name: Maps, description: 节点共享地图对象库和实例分配 }
   - { name: Files, description: 实例内白名单文件 }
   - { name: Transfers, description: 节点本地日志和备份的消费式分块传输 }
   - { name: Schedules, description: 实例计划任务 }
@@ -916,7 +917,7 @@ paths:
     get:
       tags: [Instances]
       summary: 列出节点本地备份元数据
-      description: 需要目标实例 read 权限；归档排除旧版可能含秘密的 l4d2panel.cfg，用户维护的 server.cfg 正常包含。当前 v2 归档另含无秘密的来源启动快照，RCON 密码不可表示；旧 v1 归档继续可恢复但没有该快照。每日任务产生的新周副本会独立投影到列表，名称以 weekly- 开头并可单独下载；不返回节点路径。
+      description: 需要目标实例 read 权限；归档排除旧版可能含秘密的 l4d2panel.cfg，用户维护的 server.cfg 正常包含。当前 v3 归档另含无秘密的来源启动快照和地图 ID/聚合哈希/BSP 引用，已分配地图 VPK 本身不入包；旧 v1/v2 归档继续可恢复。每日任务产生的新周副本会独立投影到列表，名称以 weekly- 开头并可单独下载；不返回节点路径。
       parameters: [{ $ref: "#/components/parameters/InstanceID" }]
       responses:
         "200":
@@ -1353,6 +1354,139 @@ paths:
               schema: { $ref: "#/components/schemas/JobReference" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "409": { $ref: "#/components/responses/Conflict" }
+
+  /maps:
+    get:
+      tags: [Maps]
+      summary: 列出可见地图
+      description: 需要地图所属节点 read 权限；可用 node_id 查询参数筛选。响应包含 BSP、持久警告、卷副本健康和实例分配，不包含节点绝对路径或 QQ 链接。
+      parameters:
+        - name: node_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 地图列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Map" } }
+
+  /maps/{mapId}:
+    get:
+      tags: [Maps]
+      summary: 获取地图详情
+      parameters: [{ $ref: "#/components/parameters/MapID" }]
+      responses:
+        "200":
+          description: 地图详情
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [map]
+                properties: { map: { $ref: "#/components/schemas/Map" } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Maps]
+      summary: 永久删除未分配地图
+      description: 需要节点 manage 权限、交互式会话及五分钟有效的一次性确认令牌。Agent 发现未知硬链接或不一致时保留记录并允许重试。
+      parameters:
+        - { $ref: "#/components/parameters/MapID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirmation_token]
+              properties: { confirmation_token: { type: string } }
+      responses:
+        "202": { description: 删除任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /nodes/{nodeId}/maps/imports:
+    post:
+      tags: [Maps]
+      summary: 从 QQ 闪传导入一张逻辑地图
+      description: 需要节点 manage 权限和 map_library_v1 Agent。分享链接加密进入任务且不回显；节点完整枚举后下载，递归处理最多三层 ZIP/7Z/RAR，最终只保留确定性服务端 VPK。
+      parameters:
+        - { $ref: "#/components/parameters/NodeID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [share_url]
+              properties: { share_url: { type: string, format: uri, pattern: '^https://qfile\.qq\.com/q/' } }
+      responses:
+        "202": { description: 导入任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /maps/{mapId}/assignments/{instanceId}:
+    put:
+      tags: [Maps]
+      summary: 分配地图给同节点实例
+      description: 运行中也可分配；成功结果可能返回 restart_required=true。使用节点地图锁和实例写锁，不占用 SteamCMD 槽。
+      parameters:
+        - { $ref: "#/components/parameters/MapID" }
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "202": { description: 分配任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [Maps]
+      summary: 取消地图分配
+      description: Control 与 Agent 都要求实例真实停止；重复取消按幂等成功处理。
+      parameters:
+        - { $ref: "#/components/parameters/MapID" }
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "202": { description: 取消任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /maps/{mapId}/verify:
+    post:
+      tags: [Maps]
+      summary: 校验并尽可能修复地图副本
+      parameters:
+        - { $ref: "#/components/parameters/MapID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "202": { description: 校验任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
+
+  /maps/{mapId}/delete-confirmations:
+    post:
+      tags: [Maps]
+      summary: 签发地图永久删除确认令牌
+      description: 仅交互式会话；令牌一次性且五分钟有效，已有分配时拒绝。
+      parameters:
+        - { $ref: "#/components/parameters/MapID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      responses:
+        "201":
+          description: 确认令牌
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [confirmation_token, expires_at]
+                properties:
+                  confirmation_token: { type: string, writeOnly: true }
+                  expires_at: { type: string, format: date-time }
 
   /jobs:
     get:
@@ -1874,6 +2008,13 @@ components:
     InstanceID:
       {
         name: instanceId,
+        in: path,
+        required: true,
+        schema: { type: string, format: uuid },
+      }
+    MapID:
+      {
+        name: mapId,
         in: path,
         required: true,
         schema: { type: string, format: uuid },
@@ -2520,6 +2661,71 @@ components:
           description: CVar 名不得带首尾空白；`rcon_password` 与 `sv_password`（不区分大小写）被拒绝。游戏 CVar 应直接维护在 server.cfg；值由 Control 另按 UTF-8 字节限制为 4096。
         auto_restart: { type: boolean }
       description: Control 在持久化前执行这些约束；危险或与面板托管值冲突的高级参数直接返回 400 invalid_config，`-tickrate` 按唯一的 1–1000 整数参数校验，Agent 派发后仍会再次校验。为兼容旧客户端，请求中旧版 `server_password` 与 `region` 字段会被忽略且不会持久化。
+
+    MapArtifact:
+      type: object
+      required: [id, ordinal, sha256, size]
+      properties:
+        id: { type: string, format: uuid }
+        ordinal: { type: integer, minimum: 0 }
+        sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+        size: { type: integer, format: int64, minimum: 1 }
+
+    MapBSP:
+      type: object
+      required: [virtual_path, dictionary_present]
+      properties:
+        virtual_path: { type: string, pattern: '^maps/.+\.bsp$' }
+        start_name: { type: string, pattern: '^[A-Za-z0-9_-]+$' }
+        dictionary_present: { type: boolean }
+
+    MapWarning:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, maxLength: 64 }
+        message: { type: string, maxLength: 1024 }
+        virtual_path: { type: string, maxLength: 512 }
+
+    MapReplica:
+      type: object
+      required: [filesystem_id, health]
+      properties:
+        filesystem_id: { type: string, description: 不透明卷身份；不是节点绝对路径。 }
+        health: { type: string, enum: [healthy, missing, corrupt] }
+        verified_at: { type: [string, "null"], format: date-time }
+
+    MapAssignment:
+      type: object
+      required: [map_id, instance_id, restart_required, created_at, updated_at]
+      properties:
+        map_id: { type: string, format: uuid }
+        instance_id: { type: string, format: uuid }
+        restart_required: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Map:
+      type: object
+      required: [id, node_id, name, health, aggregate_sha256, total_size, source_type, removed_files, removed_bytes, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        node_id: { type: string, format: uuid }
+        name: { type: string, minLength: 1, maxLength: 255 }
+        health: { type: string, enum: [healthy, degraded, broken, deleting] }
+        aggregate_sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+        total_size: { type: integer, format: int64, minimum: 1 }
+        source_type: { type: string, const: qq_flash }
+        source_name: { type: string, maxLength: 255 }
+        removed_files: { type: integer, minimum: 0 }
+        removed_bytes: { type: integer, format: int64, minimum: 0 }
+        artifacts: { type: array, maxItems: 64, items: { $ref: "#/components/schemas/MapArtifact" } }
+        bsps: { type: array, maxItems: 4096, items: { $ref: "#/components/schemas/MapBSP" } }
+        warnings: { type: array, maxItems: 4096, items: { $ref: "#/components/schemas/MapWarning" } }
+        replicas: { type: array, maxItems: 64, items: { $ref: "#/components/schemas/MapReplica" } }
+        assignments: { type: array, maxItems: 10000, items: { $ref: "#/components/schemas/MapAssignment" } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 
     Instance:
       type: object

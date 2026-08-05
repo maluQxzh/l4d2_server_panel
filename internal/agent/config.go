@@ -32,6 +32,7 @@ type Config struct {
 	NodeID              string   `json:"node_id,omitempty"`
 	NodeName            string   `json:"node_name,omitempty"`
 	InstanceRoots       []string `json:"instance_roots"`
+	MapRoots            []string `json:"map_roots,omitempty"`
 	SteamCMDPath        string   `json:"steamcmd_path"`
 	DataDir             string   `json:"data_dir"`
 	HeartbeatInterval   string   `json:"heartbeat_interval,omitempty"`
@@ -94,6 +95,25 @@ func (c *Config) normalize(configPath string) error {
 			return fmt.Errorf("instance_roots[%d]: %w", i, err)
 		}
 	}
+	defaultMapRoot := filepath.Join(c.DataDir, "maps")
+	mapRoots := make([]string, 0, len(c.MapRoots)+1)
+	seenMapRoots := make(map[string]bool, len(c.MapRoots)+1)
+	for _, root := range append([]string{defaultMapRoot}, c.MapRoots...) {
+		absolute, pathErr := absoluteFrom(base, root)
+		if pathErr != nil {
+			return fmt.Errorf("map_roots: %w", pathErr)
+		}
+		key := absolute
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(key)
+		}
+		if seenMapRoots[key] {
+			continue
+		}
+		seenMapRoots[key] = true
+		mapRoots = append(mapRoots, absolute)
+	}
+	c.MapRoots = mapRoots
 	if c.SteamCMDPath != "" {
 		c.SteamCMDPath, err = absoluteFrom(base, c.SteamCMDPath)
 		if err != nil {
@@ -375,6 +395,10 @@ func marshalSimpleYAML(c *Config) []byte {
 	write("node_name", c.NodeName)
 	b.WriteString("instance_roots:\n")
 	for _, root := range c.InstanceRoots {
+		fmt.Fprintf(&b, "  - %s\n", strconv.Quote(root))
+	}
+	b.WriteString("map_roots:\n")
+	for _, root := range c.MapRoots {
 		fmt.Fprintf(&b, "  - %s\n", strconv.Quote(root))
 	}
 	write("steamcmd_path", c.SteamCMDPath)
