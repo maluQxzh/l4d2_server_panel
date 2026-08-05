@@ -92,7 +92,7 @@ func (e *Executor) importQQFlashMap(ctx context.Context, job domain.Job, payload
 		}
 	}()
 
-	client := newQQFlashClient()
+	client := newQQFlashClient(e.safeDownloadLimiter())
 	progress(3, "enumerating QQ flash share")
 	files, deviceID, taskName, shareEntries, err := client.listAllFiles(ctx, payload.Source, maxMapQQFlashFiles, maxMapQQFlashDownload)
 	if err != nil {

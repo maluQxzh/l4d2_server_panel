@@ -40,6 +40,8 @@ type Executor struct {
 	workshopItemTitlesResolver func(context.Context, []string) (map[string]string, error)
 	packageDownloader          func(context.Context, string, string, bool) (string, int64, error)
 	packageMutationVerifier    func(string, string) error
+	downloadMu                 sync.Mutex
+	downloadLimiter            *downloadConcurrencyLimiter
 	transferMu                 sync.Mutex
 	transferVerifications      map[string]transferVerification
 	telemetryMu                sync.RWMutex
@@ -76,7 +78,7 @@ func NewExecutor(config *Config, paths *PathGuard, registry *Registry, processes
 	return &Executor{
 		config: config, paths: paths, registry: registry, processes: processes,
 		steam: NewSteamCMD(steamPath, config.SteamCMDConcurrency), runtimeEnvironment: runtimeStore, logger: logger, locks: newKeyedLocker(),
-		maps: maps, mapStoreErr: mapStoreErr,
+		maps: maps, mapStoreErr: mapStoreErr, downloadLimiter: newDownloadConcurrencyLimiter(safeDownloadMaxConcurrency),
 		officialPackageResolver: ResolveOfficialPackage, workshopCollectionResolver: ResolveWorkshopCollection,
 		workshopItemTitlesResolver: ResolveWorkshopItemTitles,
 		packageDownloader: func(ctx context.Context, source, destination string, official bool) (string, int64, error) {
@@ -86,6 +88,15 @@ func NewExecutor(config *Config, paths *PathGuard, registry *Registry, processes
 			return DownloadHTTPS(ctx, source, destination)
 		},
 	}
+}
+
+func (e *Executor) safeDownloadLimiter() *downloadConcurrencyLimiter {
+	e.downloadMu.Lock()
+	defer e.downloadMu.Unlock()
+	if e.downloadLimiter == nil {
+		e.downloadLimiter = newDownloadConcurrencyLimiter(safeDownloadMaxConcurrency)
+	}
+	return e.downloadLimiter
 }
 
 func (e *Executor) Execute(ctx context.Context, job domain.Job, progress ProgressFunc) (map[string]any, error) {
@@ -1409,7 +1420,7 @@ func (e *Executor) file(ctx context.Context, job domain.Job, progress ProgressFu
 		progress(100, "file written")
 		return map[string]any{"path": relative, "size": size, "sha256": digest}, nil
 	case "qq_flash":
-		return importQQFlashFiles(ctx, path, payload.ShareURL, progress)
+		return importQQFlashFiles(ctx, path, payload.ShareURL, progress, e.safeDownloadLimiter())
 	case "delete":
 		if err := verifyManagedFilePrecondition(path, relative, payload.ExpectedSHA256); err != nil {
 			return nil, err
@@ -1437,7 +1448,7 @@ func (e *Executor) importQQFlashPackage(ctx context.Context, job domain.Job, pro
 	if err != nil {
 		return nil, err
 	}
-	return importQQFlashFiles(ctx, instancePath, payload.Source, progress)
+	return importQQFlashFiles(ctx, instancePath, payload.Source, progress, e.safeDownloadLimiter())
 }
 
 func verifyManagedFilePrecondition(instancePath, relative, expectedSHA256 string) error {
