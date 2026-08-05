@@ -22,14 +22,15 @@ import (
 )
 
 const (
-	maxQQFlashPageSize = int64(4 << 20)
-	maxQQFlashRPCSize  = int64(16 << 20)
-	qqFlashRPCBase     = "https://qfile.qq.com/http2rpc/gotrpc/noauth/"
-	qqFlashListRPC     = "trpc.file.FileFlashTrans/GetFileList"
-	qqFlashDownloadRPC = "trpc.qqntv2.richmedia.InnerProxy/BatchDownload"
-	qqFlashHMACKey     = "9EB18BB9ED457684"
-	qqFlashUserAgent   = "l4d2panel-agent/1"
-	qqFlashDestination = "left4dead2/addons"
+	maxQQFlashPageSize         = int64(4 << 20)
+	maxQQFlashRPCSize          = int64(16 << 20)
+	qqFlashRPCBase             = "https://qfile.qq.com/http2rpc/gotrpc/noauth/"
+	qqFlashListRPC             = "trpc.file.FileFlashTrans/GetFileList"
+	qqFlashDownloadRPC         = "trpc.qqntv2.richmedia.InnerProxy/BatchDownload"
+	qqFlashHMACKey             = "9EB18BB9ED457684"
+	qqFlashUserAgent           = "l4d2panel-agent/1"
+	qqFlashDestination         = "left4dead2/addons"
+	qqFlashDownloadConcurrency = 8
 )
 
 type qqFlashShare struct {
@@ -47,8 +48,9 @@ type qqFlashFile struct {
 }
 
 type qqFlashClient struct {
-	metadata *http.Client
-	download *http.Client
+	metadata   *http.Client
+	download   *http.Client
+	downloader *safeSegmentedDownloader
 }
 
 type qqFlashListedFile struct {
@@ -136,15 +138,22 @@ func (c *qqFlashClient) listAllFiles(ctx context.Context, shareURL string, maxFi
 	return files, deviceID, share.Name, entries, nil
 }
 
-func newQQFlashClient() *qqFlashClient {
+func newQQFlashClient(limiters ...*downloadConcurrencyLimiter) *qqFlashClient {
+	var limiter *downloadConcurrencyLimiter
+	if len(limiters) > 0 {
+		limiter = limiters[0]
+	}
+	if limiter == nil {
+		limiter = newDownloadConcurrencyLimiter(safeDownloadMaxConcurrency)
+	}
 	return &qqFlashClient{
 		metadata: newRestrictedHTTPClient(map[string]bool{"qfile.qq.com": true}, 30*time.Second, 0),
-		download: newRestrictedHTTPClient(map[string]bool{"multimedia.qfile.qq.com": true}, 0, 0),
+		download: newRestrictedHTTPClient(map[string]bool{"multimedia.qfile.qq.com": true}, 0, 0), downloader: newSafeSegmentedDownloader(limiter),
 	}
 }
 
-func importQQFlashFiles(ctx context.Context, instancePath, shareURL string, progress ProgressFunc) (map[string]any, error) {
-	return newQQFlashClient().importFiles(ctx, instancePath, shareURL, progress)
+func importQQFlashFiles(ctx context.Context, instancePath, shareURL string, progress ProgressFunc, limiters ...*downloadConcurrencyLimiter) (map[string]any, error) {
+	return newQQFlashClient(limiters...).importFiles(ctx, instancePath, shareURL, progress)
 }
 
 func (c *qqFlashClient) importFiles(ctx context.Context, instancePath, shareURL string, progress ProgressFunc) (map[string]any, error) {
@@ -657,55 +666,20 @@ func (c *qqFlashClient) fetchDownloadURL(ctx context.Context, physicalID, device
 }
 
 func (c *qqFlashClient) downloadFile(ctx context.Context, instancePath, relative string, file qqFlashFile, deviceID string, progress func(int)) error {
-	downloadURL, err := c.fetchDownloadURL(ctx, file.PhysicalID, deviceID)
-	if err != nil {
-		return err
+	if c.downloader == nil {
+		c.downloader = newSafeSegmentedDownloader(newDownloadConcurrencyLimiter(safeDownloadMaxConcurrency))
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
-	if err != nil {
-		return errors.New("create QQ flash download request")
-	}
-	request.Header.Set("User-Agent", qqFlashUserAgent)
-	request.Header.Set("Accept-Encoding", "identity")
-	response, err := c.download.Do(request)
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return errors.New("download QQ flash file failed")
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("QQ flash file server returned %s", response.Status)
-	}
-	if response.ContentLength >= 0 && response.ContentLength != file.Size {
-		return errors.New("QQ flash file size changed before download")
-	}
-	options := secureWriteOptions{Mode: 0o640, ExpectedSize: file.Size, Replace: true, RejectExistingLink: true}
-	reader := &qqFlashDownloadProgressReader{reader: response.Body, total: file.Size, progress: progress, lastPercent: -1}
-	_, err = writeFileWithinNoFollow(instancePath, relative, reader, options)
+	headers := make(http.Header)
+	headers.Set("User-Agent", qqFlashUserAgent)
+	_, err := c.downloader.Download(ctx, safeDownloadOptions{
+		Client: c.download,
+		URL: func(ctx context.Context) (string, error) {
+			return c.fetchDownloadURL(ctx, file.PhysicalID, deviceID)
+		},
+		Headers: headers, Root: instancePath, Relative: relative, ExpectedSize: file.Size,
+		Mode: 0o640, Replace: true, RejectLink: true, Concurrency: qqFlashDownloadConcurrency, Progress: progress,
+	})
 	return err
-}
-
-type qqFlashDownloadProgressReader struct {
-	reader      io.Reader
-	total       int64
-	read        int64
-	lastPercent int
-	progress    func(int)
-}
-
-func (reader *qqFlashDownloadProgressReader) Read(destination []byte) (int, error) {
-	count, err := reader.reader.Read(destination)
-	reader.read += int64(count)
-	if reader.progress != nil && reader.total > 0 {
-		percent := min(int(float64(reader.read)*100/float64(reader.total)), 100)
-		if percent > reader.lastPercent {
-			reader.lastPercent = percent
-			reader.progress(percent)
-		}
-	}
-	return count, err
 }
 
 func (c *qqFlashClient) signedRPC(ctx context.Context, method, command, service string, payload any, deviceID string, destination any) error {
