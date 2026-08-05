@@ -66,7 +66,7 @@ func TestRestoreV2UsesSourceLaunchConfigAndTargetSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["launch_config_restored"] != true || result["format_version"] != backupFormatVersion {
+	if result["launch_config_restored"] != true || result["format_version"] != backupLaunchFormatVersion {
 		t.Fatalf("unexpected restore result: %#v", result)
 	}
 	projected, ok := result["restored_launch_config"].(*BackupLaunchConfig)

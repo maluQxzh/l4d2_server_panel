@@ -56,7 +56,17 @@ systemd 常驻模式使用：
 ./l4d2panel-agent-linux-amd64 install --config ./agent.yaml
 ```
 
-非 root 运行时程序会通过 `sudo` 重启固定的安装命令。它要求 systemd 为当前 init，创建无登录的 `l4d2panel` 系统账号，只把配置、Agent 数据和已配置实例根交给该账号，并安装、启动及启用 `l4d2panel-agent.service`。数据或实例根不得是 `/` 等宽泛目录，也不能包含 Agent 二进制。
+非 root 运行时程序会通过 `sudo` 重启固定的安装命令。它要求 systemd 为当前 init，创建无登录的 `l4d2panel` 系统账号，只把配置、Agent 数据、地图对象根和已配置实例根交给该账号，并安装、启动及启用 `l4d2panel-agent.service`。数据、地图或实例根不得是 `/` 等宽泛目录，也不能包含 Agent 二进制。
+
+地图对象默认保存在 `<data_dir>/maps`。实例位于其他文件系统时，必须为该文件系统配置一个绝对 `map_roots` 路径，Agent 才能在该卷保存单份只读副本并硬链接到实例：
+
+```yaml
+map_roots:
+  - "/srv/l4d2panel-maps"
+  - "/mnt/game-volume/l4d2panel-maps"
+```
+
+默认地图根始终存在；配置路径不得重复指向同一文件系统。不要把地图根设为实例目录或由其他程序写入的共享目录。Agent 不会退化为逐实例复制，也不会创建符号链接或 Junction。
 
 ### 接管已有的 root-owned 游戏目录
 
@@ -67,7 +77,7 @@ cd /path/to/agent-directory
 ./l4d2panel-agent-linux-amd64 install --config ./agent.yaml
 ```
 
-`install` 是幂等的：已运行的同一服务不会被重复注册或中断，而是以本机管理员权限读取 Agent 自己的无秘密运行环境登记，批量处理所有已登记游戏目录。每个目录都必须再次满足：绝对且非宽泛路径、不是 Agent 程序父目录、整条路径无符号链接/重解析点，并且根目录直属位置存在平台固定的普通 `srcds` 可执行文件。Linux 在改属主前还会预检整棵树，拒绝符号链接、硬链接、特殊文件和嵌套挂载点，避免权限变化越过游戏目录；Windows 只给固定虚拟服务 SID、Administrators 和 SYSTEM 配置继承的运行权限。完成后回到网页重试“检测 srcds”。
+`install` 是幂等的：已运行的同一服务不会被重复注册或中断，而是以本机管理员权限读取 Agent 自己的无秘密运行环境登记，批量处理所有已登记游戏目录。每个目录都必须再次满足：绝对且非宽泛路径、不是 Agent 程序父目录、整条路径无符号链接/重解析点，并且根目录直属位置存在平台固定的普通 `srcds` 可执行文件。Linux 在改属主前还会预检整棵树，拒绝符号链接、特殊文件和嵌套挂载点，避免权限变化越过游戏目录；硬链接仅在 Agent 地图注册表能够逐个证明源对象、实例目标、文件身份与预期链接计数时豁免，任何未知或证明不完整的硬链接仍拒绝安装。Windows 只给固定虚拟服务 SID、Administrators 和 SYSTEM 配置继承的运行权限。完成后回到网页重试“检测 srcds”。
 
 权限接管刻意不是远程 Agent 任务：Control 被攻破或节点凭据泄露时不能借此取得节点 root/Administrator 权限。通过 Agent 托管安装的新游戏目录原本就由服务账号创建，无需重新接管。自定义 SteamCMD 若由其他账号安装在只读目录中，应改用面板的托管 SteamCMD，或由节点管理员单独把专用 SteamCMD 目录授予服务账号；安装器不会递归接管 `/usr/bin` 等系统程序目录。
 
@@ -84,14 +94,14 @@ Windows Service 常驻模式使用：
 .\l4d2panel-agent-windows-amd64.exe install --config .\agent.yaml
 ```
 
-程序会自动请求 UAC，注册延迟自动启动的 `l4d2panel-agent` 服务，使用 `NT SERVICE\l4d2panel-agent` 虚拟服务账号，并把配置、数据目录、实例根和二进制 ACL 限制到服务 SID、Administrators 与 SYSTEM。
+程序会自动请求 UAC，注册延迟自动启动的 `l4d2panel-agent` 服务，使用 `NT SERVICE\l4d2panel-agent` 虚拟服务账号，并把配置、数据目录、地图对象根、实例根和二进制 ACL 限制到服务 SID、Administrators 与 SYSTEM。
 
 前台启动和服务安装都会在需要时自动注册。成功后 Agent 原子地把 `node_id` 和长期节点凭据写回 `agent.yaml`，并删除一次性令牌。未显式配置时，运行数据和实例目录分别为同目录的 `data` 与 `data/instances`。后续启动不再需要令牌：
 
 ```text
 agent-directory/
   agent.yaml                  # 节点身份和配置，必须保留
-  data/                       # Agent 状态、日志、备份和默认实例根，必须保留
+  data/                       # Agent 状态、日志、备份、默认地图根和默认实例根，必须保留
   l4d2panel-agent-...         # 当前平台二进制，可独立升级
 ```
 
@@ -109,7 +119,7 @@ l4d2panel-agent restart --config /absolute/path/to/agent.yaml
 l4d2panel-agent uninstall --config /absolute/path/to/agent.yaml
 ```
 
-`install` 可以幂等重试：属于当前旁置部署且已经运行的服务会重新同步配置、数据、实例根及已登记游戏安装的服务账号权限后返回成功；同名服务若指向其他二进制、配置或账号则拒绝接管。`uninstall` 只注销系统服务，保留二进制、`agent.yaml`、`data`、游戏目录和节点身份。
+`install` 可以幂等重试：属于当前旁置部署且已经运行的服务会重新同步配置、数据、地图根、实例根及已登记游戏安装的服务账号权限后返回成功；同名服务若指向其他二进制、配置或账号则拒绝接管。`uninstall` 只注销系统服务，保留二进制、`agent.yaml`、`data`、地图对象、游戏目录和节点身份。
 
 节点上的游戏进程仍由 Agent 的平台进程管理器管理。若使用显式 `run --config` 交给其他守护程序，应让它：
 

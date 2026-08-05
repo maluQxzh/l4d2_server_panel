@@ -421,6 +421,9 @@ func approvedVersionedPackageTarget(kind, target string) (string, error) {
 		if target != expected || !strings.HasSuffix(strings.ToLower(base), ".vpk") {
 			return "", errors.New("VPK version target is outside the approved addons directory")
 		}
+		if isReservedMapAddonBase(base) {
+			return "", errors.New("reserved map-library VPK names cannot be managed as ordinary packages")
+		}
 	case isSourceModPluginKind(kind):
 		expected := filepath.ToSlash(filepath.Join("left4dead2", "addons", "sourcemod", "plugins", base))
 		if target != expected || !strings.HasSuffix(strings.ToLower(base), ".smx") {

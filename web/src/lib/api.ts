@@ -31,6 +31,7 @@ import type {
   SystemUpdateRecord,
   RuntimeEnvironmentRecord,
   GameInstallationRecord,
+  MapRecord,
 } from "./types";
 
 const baseURL = (import.meta.env.VITE_API_BASE || "/api/v1").replace(/\/$/, "");
@@ -272,6 +273,27 @@ export const api = {
   instanceAction: (id: string, type: string, payload?: Record<string, unknown>) => request<{ job_id: string }>(
     `/instances/${encodeURIComponent(id)}/actions`,
     { method: "POST", body: JSON.stringify({ type, payload }) },
+  ),
+
+  maps: (nodeId?: string) => list<MapRecord>(`/maps${nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : ""}`),
+  map: (id: string) => request<{ map: MapRecord }>(`/maps/${encodeURIComponent(id)}`).then((result) => result.map),
+  importMap: (nodeId: string, shareUrl: string) => request<{ job_id: string; idempotent_replay?: boolean }>(
+    `/nodes/${encodeURIComponent(nodeId)}/maps/imports`, { method: "POST", body: JSON.stringify({ share_url: shareUrl }) },
+  ),
+  assignMap: (mapId: string, instanceId: string) => request<{ job_id: string; idempotent_replay?: boolean }>(
+    `/maps/${encodeURIComponent(mapId)}/assignments/${encodeURIComponent(instanceId)}`, { method: "PUT" },
+  ),
+  unassignMap: (mapId: string, instanceId: string) => request<{ job_id: string; idempotent_replay?: boolean }>(
+    `/maps/${encodeURIComponent(mapId)}/assignments/${encodeURIComponent(instanceId)}`, { method: "DELETE" },
+  ),
+  verifyMap: (mapId: string) => request<{ job_id: string; idempotent_replay?: boolean }>(
+    `/maps/${encodeURIComponent(mapId)}/verify`, { method: "POST" },
+  ),
+  createMapDeleteConfirmation: (mapId: string) => request<{ confirmation_token: string; expires_at: string }>(
+    `/maps/${encodeURIComponent(mapId)}/delete-confirmations`, { method: "POST" },
+  ),
+  deleteMap: (mapId: string, confirmationToken: string) => request<{ job_id: string; idempotent_replay?: boolean }>(
+    `/maps/${encodeURIComponent(mapId)}`, { method: "DELETE", body: JSON.stringify({ confirmation_token: confirmationToken }) },
   ),
 
   jobs: () => list<Job>("/jobs"),

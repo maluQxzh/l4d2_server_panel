@@ -14,7 +14,7 @@ import (
 )
 
 // restoredLaunchConfig mirrors the secret-free, port-independent launch
-// subset carried by a v2 Agent backup. Server/RCON passwords, public exposure,
+// subset carried by a v2/v3 Agent backup. Server/RCON passwords, public exposure,
 // maintenance policy and node ports are deliberately not representable here.
 type restoredLaunchConfig struct {
 	Hostname     string            `json:"hostname,omitempty"`
@@ -101,8 +101,8 @@ func restoredLaunchConfigFromResult(result map[string]any) (*restoredLaunchConfi
 	if formatVersion == 1 && !launchRestored && (!exists || value == nil) {
 		return nil, nil
 	}
-	if formatVersion != 2 || !launchRestored || !exists || value == nil {
-		return nil, errors.New("restored launch configuration lacks a verified v2 backup provenance marker")
+	if (formatVersion != 2 && formatVersion != 3) || !launchRestored || !exists || value == nil {
+		return nil, errors.New("restored launch configuration lacks a verified portable backup provenance marker")
 	}
 	return decodeRestoredLaunchConfig(value)
 }

@@ -57,6 +57,7 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
             void queryClient.invalidateQueries({ queryKey: ["jobs"] });
             // 任务结果会同时改变实例状态、PID、构建号或地图等派生字段。
             void queryClient.invalidateQueries({ queryKey: ["instances"] });
+			void queryClient.invalidateQueries({ queryKey: ["maps"] });
           }
           if (event.type.startsWith("notification")) void queryClient.invalidateQueries({ queryKey: ["notifications"] });
         } catch {

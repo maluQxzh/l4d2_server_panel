@@ -114,7 +114,12 @@ func prepareServiceInstall(configPath string, cfg *agent.Config) error {
 	if err := verifyExecutableReachable(uid, gid); err != nil {
 		return err
 	}
+	allowedMapLinks, err := agent.ManagedMapHardLinks(cfg)
+	if err != nil {
+		return fmt.Errorf("validate registered map hard links: %w", err)
+	}
 	managed := append([]string{cfg.DataDir}, cfg.InstanceRoots...)
+	managed = append(managed, cfg.MapRoots...)
 	registeredPaths, err := registeredServiceGamePaths(cfg)
 	if err != nil {
 		return err
@@ -136,7 +141,7 @@ func prepareServiceInstall(configPath string, cfg *agent.Config) error {
 		if err := os.MkdirAll(cleaned, 0o750); err != nil {
 			return fmt.Errorf("create Agent service directory %s: %w", cleaned, err)
 		}
-		if err := chownTreeWithoutLinks(cleaned, uid, gid); err != nil {
+		if err := chownTreeAllowingManagedLinks(cleaned, uid, gid, allowedMapLinks); err != nil {
 			return err
 		}
 		if registered[cleaned] {
@@ -219,6 +224,10 @@ func pathWithinAny(path string, parents map[string]bool) bool {
 }
 
 func chownTreeWithoutLinks(root string, uid, gid int) error {
+	return chownTreeAllowingManagedLinks(root, uid, gid, nil)
+}
+
+func chownTreeAllowingManagedLinks(root string, uid, gid int, allowedMapLinks map[string]bool) error {
 	rootInfo, err := os.Lstat(root)
 	if err != nil {
 		return err
@@ -248,7 +257,7 @@ func chownTreeWithoutLinks(root string, uid, gid int) error {
 		if !info.IsDir() && !info.Mode().IsRegular() {
 			return fmt.Errorf("refusing special file inside Agent service path %s", path)
 		}
-		if info.Mode().IsRegular() && stat.Nlink > 1 {
+		if info.Mode().IsRegular() && stat.Nlink > 1 && !allowedMapLinks[filepath.Clean(path)] {
 			return fmt.Errorf("refusing hard-linked file inside Agent service path %s", path)
 		}
 		return nil

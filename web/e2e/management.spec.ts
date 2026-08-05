@@ -648,6 +648,69 @@ test("安装模组可选择 QQ闪传批量导入", async ({ page }) => {
   await expect(fileDialog.getByText("QQ闪传", { exact: true })).toHaveCount(0);
 });
 
+test("地图管理支持导入、警告、运行中分配、重启与两阶段删除", async ({ page }) => {
+  await authenticated(page);
+  const stopped = { ...instance, id: "instance-2", name: "停止实例", status: "stopped", port: 27016, pid: 0, started_at: null };
+  const assignedMap = {
+    id: "11111111-1111-1111-1111-111111111111", node_id: node.id, name: "字典警告地图", health: "healthy",
+    aggregate_sha256: "a".repeat(64), total_size: 1024, source_type: "qq_flash", source_name: "campaign.zip",
+    removed_files: 3, removed_bytes: 4096, artifacts: [{ id: "artifact-1", ordinal: 0, sha256: "b".repeat(64), size: 1024 }],
+    bsps: [{ virtual_path: "maps/custom_map.bsp", start_name: "custom_map", dictionary_present: false }],
+    warnings: [{ code: "missing_stringtable_dictionary", message: "BSP 不包含 stringtable_dictionary.dct", virtual_path: "maps/custom_map.bsp" }],
+    replicas: [{ filesystem_id: "linux:1", health: "healthy" }],
+    assignments: [{ map_id: "11111111-1111-1111-1111-111111111111", instance_id: instance.id, restart_required: true, created_at: "2026-08-05T00:00:00Z", updated_at: "2026-08-05T00:00:00Z" }],
+    created_at: "2026-08-05T00:00:00Z", updated_at: "2026-08-05T00:00:00Z",
+  };
+  const deletableMap = { ...assignedMap, id: "22222222-2222-2222-2222-222222222222", name: "可删除地图", aggregate_sha256: "c".repeat(64), assignments: [], warnings: [] };
+  await page.route("**/api/v1/nodes", (route) => json(route, { items: [node] }));
+  await page.route("**/api/v1/instances", (route) => json(route, { items: [instance, stopped] }));
+  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  const writes: Array<{ method: string; path: string; body?: unknown }> = [];
+  await page.route("**/api/v1/maps**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path === "/api/v1/maps") return json(route, { items: [assignedMap, deletableMap] });
+    writes.push({ method: request.method(), path, body: request.postDataJSON() });
+    if (path.endsWith("/delete-confirmations")) return json(route, { confirmation_token: "mdc_once", expires_at: "2026-08-05T00:05:00Z" }, 201);
+    return json(route, { job_id: `job-${writes.length}` }, 202);
+  });
+  await page.route("**/api/v1/nodes/node-1/maps/imports", async (route) => {
+    writes.push({ method: route.request().method(), path: new URL(route.request().url()).pathname, body: route.request().postDataJSON() });
+    return json(route, { job_id: "job-import-map" }, 202);
+  });
+  await page.route("**/api/v1/instances/instance-1/actions", async (route) => {
+    writes.push({ method: route.request().method(), path: new URL(route.request().url()).pathname, body: route.request().postDataJSON() });
+    return json(route, { job_id: "job-restart-map" }, 202);
+  });
+
+  await page.goto("/maps");
+  await expect(page.getByRole("heading", { name: "地图管理" })).toBeVisible();
+  await expect(page.getByText("BSP 不包含 stringtable_dictionary.dct")).toBeVisible();
+  await expect(page.getByText("等待重启生效")).toBeVisible();
+  await page.getByRole("button", { name: "立即重启" }).click();
+  await expect.poll(() => writes.some((item) => item.path.endsWith("/instances/instance-1/actions") && (item.body as { type?: string })?.type === "restart")).toBeTruthy();
+
+  const assignedCard = page.locator(".map-card").filter({ hasText: "字典警告地图" });
+  await assignedCard.getByRole("button", { name: "分配实例" }).click();
+  const runningAssigned = page.getByRole("dialog", { name: /分配地图/ }).getByRole("checkbox").first();
+  await expect(runningAssigned).toBeDisabled();
+  await page.getByRole("dialog", { name: /分配地图/ }).getByRole("button", { name: "取消" }).click();
+  await assignedCard.getByRole("button", { name: "校验" }).click();
+  await expect.poll(() => writes.some((item) => item.path.endsWith(`/${assignedMap.id}/verify`))).toBeTruthy();
+
+  await page.getByRole("button", { name: "QQ 闪传导入" }).click();
+  await page.getByLabel("目标节点").selectOption(node.id);
+  await page.getByLabel("QQ 闪传链接").fill("https://qfile.qq.com/q/Example123");
+  await page.getByRole("button", { name: "开始导入" }).click();
+  await expect.poll(() => writes.some((item) => item.path.endsWith("/nodes/node-1/maps/imports") && (item.body as { share_url?: string })?.share_url?.includes("Example123"))).toBeTruthy();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  const deletableCard = page.locator(".map-card").filter({ hasText: "可删除地图" });
+  await deletableCard.getByRole("button", { name: "永久删除" }).click();
+  await expect.poll(() => writes.some((item) => item.path.endsWith(`/${deletableMap.id}/delete-confirmations`))).toBeTruthy();
+  await expect.poll(() => writes.some((item) => item.method === "DELETE" && item.path.endsWith(`/maps/${deletableMap.id}`) && (item.body as { confirmation_token?: string })?.confirmation_token === "mdc_once")).toBeTruthy();
+});
+
 test("缺少节点公开地址时阻止公开实例", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, node_public_address: "" } }));

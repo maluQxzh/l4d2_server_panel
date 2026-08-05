@@ -3,3 +3,6 @@
 # token and atomically stores its node ID and credential after enrollment.
 central_url: "https://panel.example.com"
 enrollment_token: "paste-one-time-token-here"
+# data/maps 始终是默认地图根。实例位于其他文件系统卷时，可额外配置该卷的绝对目录：
+# map_roots:
+#   - "D:\\l4d2panel-maps"

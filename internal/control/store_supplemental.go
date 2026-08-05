@@ -353,6 +353,9 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 	if job.Status != domain.JobSucceeded {
 		return nil
 	}
+	if strings.HasPrefix(job.Type, "map.") {
+		return s.applyMapJobResult(ctx, job)
+	}
 	switch job.Type {
 	case "environment.inspect":
 		dependencies, err := json.Marshal(job.Result["system_dependencies"])
@@ -430,7 +433,18 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 				startedAt = parsed
 			}
 		}
-		_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='running',pid=?2,started_at=?3,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID, pid, startedAt)
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx, `UPDATE instances SET status='running',pid=?2,started_at=?3,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID, pid, startedAt); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE map_assignments SET restart_required=0,updated_at=?2 WHERE instance_id=?1`, job.InstanceID, startedAt); err != nil {
+			return err
+		}
+		err = tx.Commit()
 		return err
 	case "stop":
 		_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,started_at=NULL,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID)
@@ -657,6 +671,18 @@ func (s *Store) ApplyJobFailure(ctx context.Context, job domain.Job) error {
 		// UpdateJob atomically published the failed upload state.
 		return nil
 	}
+	if strings.HasPrefix(job.Type, "map.") {
+		mapID := stringFromAny(job.Payload["map_id"])
+		if job.Type == "map.delete" {
+			_, err := s.db.ExecContext(ctx, `UPDATE maps SET health='degraded',updated_at=?2 WHERE id=?1`, mapID, jobProjectionTimestamp(job))
+			return err
+		}
+		if job.Type == "map.verify" || job.Type == "map.inventory" {
+			_, err := s.db.ExecContext(ctx, `UPDATE maps SET health=CASE WHEN health='healthy' THEN 'degraded' ELSE health END,updated_at=?2 WHERE id=?1`, mapID, jobProjectionTimestamp(job))
+			return err
+		}
+		return nil
+	}
 	return nil
 }
 
@@ -684,6 +710,22 @@ func jobProjectionTimestamp(job domain.Job) time.Time {
 func applyJobCancellationTx(ctx context.Context, tx *sql.Tx, job domain.Job) error {
 	if job.Status != domain.JobCanceled {
 		return nil
+	}
+	if strings.HasPrefix(job.Type, "map.") {
+		mapID := strings.TrimSpace(stringFromAny(job.Payload["map_id"]))
+		if mapID == "" {
+			return nil
+		}
+		switch job.Type {
+		case "map.delete":
+			_, err := tx.ExecContext(ctx, `UPDATE maps SET health='degraded',updated_at=?2 WHERE id=?1 AND health='deleting'`, mapID, jobProjectionTimestamp(job))
+			return err
+		case "map.verify", "map.inventory":
+			_, err := tx.ExecContext(ctx, `UPDATE maps SET health=CASE WHEN health='healthy' THEN 'degraded' ELSE health END,updated_at=?2 WHERE id=?1`, mapID, jobProjectionTimestamp(job))
+			return err
+		default:
+			return nil
+		}
 	}
 	if job.Type == "restore" {
 		if job.InstanceID == "" {

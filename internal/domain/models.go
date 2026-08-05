@@ -151,6 +151,70 @@ type Job struct {
 	FinishedAt     *time.Time     `json:"finished_at,omitempty"`
 }
 
+type MapHealth string
+
+const (
+	MapHealthy  MapHealth = "healthy"
+	MapDegraded MapHealth = "degraded"
+	MapBroken   MapHealth = "broken"
+	MapDeleting MapHealth = "deleting"
+)
+
+type MapArtifact struct {
+	ID      string `json:"id"`
+	MapID   string `json:"map_id,omitempty"`
+	Ordinal int    `json:"ordinal"`
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+}
+
+type MapBSP struct {
+	VirtualPath       string `json:"virtual_path"`
+	StartName         string `json:"start_name,omitempty"`
+	DictionaryPresent bool   `json:"dictionary_present"`
+}
+
+type MapWarning struct {
+	Code        string `json:"code"`
+	Message     string `json:"message"`
+	VirtualPath string `json:"virtual_path,omitempty"`
+}
+
+type MapReplica struct {
+	FilesystemID string     `json:"filesystem_id"`
+	Health       string     `json:"health"`
+	VerifiedAt   *time.Time `json:"verified_at,omitempty"`
+}
+
+type MapAssignment struct {
+	MapID           string    `json:"map_id"`
+	InstanceID      string    `json:"instance_id"`
+	RestartRequired bool      `json:"restart_required"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type Map struct {
+	ID              string          `json:"id"`
+	NodeID          string          `json:"node_id"`
+	Name            string          `json:"name"`
+	Health          MapHealth       `json:"health"`
+	AggregateSHA256 string          `json:"aggregate_sha256"`
+	TotalSize       int64           `json:"total_size"`
+	SourceType      string          `json:"source_type"`
+	SourceName      string          `json:"source_name,omitempty"`
+	RemovedFiles    int             `json:"removed_files"`
+	RemovedBytes    int64           `json:"removed_bytes"`
+	Artifacts       []MapArtifact   `json:"artifacts,omitempty"`
+	BSPs            []MapBSP        `json:"bsps,omitempty"`
+	Warnings        []MapWarning    `json:"warnings,omitempty"`
+	Replicas        []MapReplica    `json:"replicas,omitempty"`
+	Assignments     []MapAssignment `json:"assignments,omitempty"`
+	CreatedBy       string          `json:"created_by,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+}
+
 type RuntimeEnvironment struct {
 	ID                 string         `json:"id"`
 	NodeID             string         `json:"node_id"`

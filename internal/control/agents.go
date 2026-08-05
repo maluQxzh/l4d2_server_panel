@@ -237,7 +237,25 @@ func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelop
 			}
 			client.mu.Unlock()
 		}
-		return h.store.SetNodeConnected(ctx, node.ID, "", hello.AgentVersion)
+		if err := h.store.SetNodeConnected(ctx, node.ID, "", hello.AgentVersion); err != nil {
+			return err
+		}
+		if client != nil {
+			client.mu.Lock()
+			_, mapLibrarySupported := client.capabilities["map_library_v1"]
+			client.mu.Unlock()
+			if mapLibrarySupported {
+				jobs, err := h.store.QueueMapInventoryJobs(ctx, node.ID)
+				if err != nil {
+					return err
+				}
+				for _, job := range jobs {
+					_, _ = h.events.Publish(ctx, Event{Type: "job.queued", ResourceType: "job", ResourceID: job.ID,
+						Data: map[string]any{"job": job}}, true)
+				}
+			}
+		}
+		return nil
 	case protocol.TypeHeartbeat:
 		if len(envelope.Payload) > maxAgentHeartbeatPayload {
 			return errors.New("heartbeat payload is too large")
@@ -532,6 +550,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, serverConfigNativeSupported := client.capabilities["server_cfg_native"]
 		_, qqFlashFileSupported := client.capabilities["qq_flash_file_v1"]
 		_, qqFlashPackageSupported := client.capabilities["qq_flash_package_v1"]
+		_, mapLibrarySupported := client.capabilities["map_library_v1"]
 		client.mu.Unlock()
 		if job.Status != domain.JobCanceled && (sent || canceled) {
 			continue
@@ -548,6 +567,9 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		if job.Type == "qq_flash_import" && !qqFlashPackageSupported {
 			// A queued import may outlive a temporary Agent rollback. Keep the
 			// expiring share intent durable until a compatible Agent reconnects.
+			continue
+		}
+		if strings.HasPrefix(job.Type, "map.") && !mapLibrarySupported {
 			continue
 		}
 		if job.InstanceID != "" && serverConfigNativeJobTypes[job.Type] && !serverConfigNativeSupported {

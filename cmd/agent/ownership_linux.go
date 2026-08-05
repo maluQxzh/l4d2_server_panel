@@ -22,7 +22,11 @@ func prepareServiceConfigOwnership(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := chownTreeWithoutLinks(cfg.DataDir, uid, gid); err != nil {
+	allowedMapLinks, err := agent.ManagedMapHardLinks(cfg)
+	if err != nil {
+		return fmt.Errorf("validate registered map hard links: %w", err)
+	}
+	if err := chownTreeAllowingManagedLinks(cfg.DataDir, uid, gid, allowedMapLinks); err != nil {
 		return err
 	}
 	return nil

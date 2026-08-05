@@ -155,8 +155,8 @@ func restartableInstanceStatus(status domain.InstanceStatus) bool {
 }
 
 // QueueNodeJob persists a node-scoped operation using the same idempotency and
-// reconnect semantics as instance jobs. Discovery is the only accepted node
-// operation in v1 and concurrent scans for a node are coalesced.
+// reconnect semantics as instance jobs. Concurrent jobs of the same supported
+// node operation are coalesced.
 func (s *Store) QueueNodeJob(ctx context.Context, nodeID, action string, payload map[string]any, requestedBy, idempotencyKey string) (domain.Job, bool, error) {
 	requestFingerprint, err := nodeJobRequestFingerprint(nodeID, action, payload)
 	if err != nil {
@@ -166,7 +166,7 @@ func (s *Store) QueueNodeJob(ctx context.Context, nodeID, action string, payload
 }
 
 func (s *Store) QueueNodeJobWithFingerprint(ctx context.Context, nodeID, action string, payload map[string]any, requestedBy, idempotencyKey, requestFingerprint string) (domain.Job, bool, error) {
-	if action != "discover_instances" {
+	if action != "discover_instances" && action != "map.import.qq_flash" {
 		return domain.Job{}, false, fmt.Errorf("unsupported node action %q", action)
 	}
 	if len(idempotencyKey) > 200 {

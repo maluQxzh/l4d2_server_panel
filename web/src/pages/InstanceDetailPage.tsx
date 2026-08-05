@@ -306,6 +306,8 @@ function BanPlayerModal({ instance, player, onClose }: { instance: InstanceRecor
 }
 
 function ConfigTab({ instance }: { instance: InstanceRecord }) {
+	const maps = useQuery({ queryKey: ["maps", instance.node_id], queryFn: () => api.maps(instance.node_id) });
+	const assignedMapOptions = (maps.data?.items || []).filter((item) => item.assignments?.some((assignment) => assignment.instance_id === instance.id)).flatMap((item) => (item.bsps || []).filter((bsp) => Boolean(bsp.start_name)).map((bsp) => ({ value: bsp.start_name!, label: item.name })));
   const [config, setConfig] = useState<InstanceConfig>(() => ({
     ...instance.config,
     cvars: { ...instance.config.cvars },
@@ -499,8 +501,9 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
                   setConfig({ ...config, start_map: event.target.value })
                 }
               >
-                {!officialMapGroups.some((group) => group.maps.some(([value]) => value === config.start_map)) && <option value={config.start_map}>{config.start_map}</option>}
+                {!officialMapGroups.some((group) => group.maps.some(([value]) => value === config.start_map)) && !assignedMapOptions.some((item) => item.value === config.start_map) && <option value={config.start_map}>{config.start_map}</option>}
                 {officialMapGroups.map((group) => <optgroup label={group.campaign} key={group.campaign}>{group.maps.map(([value, label]) => <option value={value} key={value}>{label} · {value}</option>)}</optgroup>)}
+				{assignedMapOptions.length > 0 && <optgroup label="已分配地图">{assignedMapOptions.map((item) => <option value={item.value} key={`${item.label}-${item.value}`}>{item.label} · {item.value}</option>)}</optgroup>}
               </select>
             </Field>
           </div>

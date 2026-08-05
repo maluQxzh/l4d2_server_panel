@@ -24,6 +24,7 @@ func prepareServiceConfigOwnership(path string) error {
 		directories = append(directories, filepath.Dir(cfg.SteamCMDPath))
 	}
 	directories = append(directories, cfg.InstanceRoots...)
+	directories = append(directories, cfg.MapRoots...)
 	runtimePaths, err := agent.LoadRuntimeServicePaths(cfg.DataDir)
 	if err != nil {
 		return err

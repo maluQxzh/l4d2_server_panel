@@ -72,6 +72,7 @@ func joinWindowsArguments(arguments []string) string {
 
 func prepareServiceInstall(_ string, cfg *agent.Config) error {
 	directories := append([]string{cfg.DataDir}, cfg.InstanceRoots...)
+	directories = append(directories, cfg.MapRoots...)
 	seen := make(map[string]bool, len(directories))
 	for _, directory := range directories {
 		if directory == "" {

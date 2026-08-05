@@ -37,7 +37,7 @@ func sealJobPayloadSecrets(masterKey []byte, jobType string, payload map[string]
 		}
 		payload["existing_rcon_password_ciphertext"] = sealed
 		payload["existing_rcon_password"] = encryptedValuePlaceholder
-	case "qq_flash_import":
+	case "qq_flash_import", "map.import.qq_flash":
 		source := stringFromAny(payload["source"])
 		if source == "" {
 			return errors.New("QQ flash share URL is required")
@@ -146,7 +146,7 @@ func unsealJobPayloadSecrets(masterKey []byte, jobType string, payload map[strin
 		pairs = append(pairs, [2]string{"command_ciphertext", "command"})
 	case "restart":
 		pairs = append(pairs, [2]string{"existing_rcon_password_ciphertext", "existing_rcon_password"})
-	case "install_mod", "install_package", "qq_flash_import":
+	case "install_mod", "install_package", "qq_flash_import", "map.import.qq_flash":
 		pairs = append(pairs, [2]string{"source_ciphertext", "source"}, [2]string{"content_base64_ciphertext", "content_base64"})
 	case "file":
 		pairs = append(pairs, [2]string{"content_ciphertext", "content"}, [2]string{"content_base64_ciphertext", "content_base64"},
