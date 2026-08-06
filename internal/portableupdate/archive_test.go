@@ -90,7 +90,7 @@ func TestValidateAndExtractRejectsDowngradeAndHashMismatch(t *testing.T) {
 	}
 }
 
-func TestPortableSemanticVersionOrdering(t *testing.T) {
+func TestPortableUpdateVersionPolicy(t *testing.T) {
 	for _, testCase := range []struct {
 		target  string
 		current string
@@ -100,6 +100,11 @@ func TestPortableSemanticVersionOrdering(t *testing.T) {
 		{target: "1.0.0-10", current: "1.0.0-2", allowed: true},
 		{target: "1.0.0-alpha", current: "1.0.0-1", allowed: true},
 		{target: "1.0.0-2", current: "1.0.0-10", allowed: false},
+		{target: "dev", current: "dev", allowed: true},
+		{target: "dev-b", current: "dev-a", allowed: true},
+		{target: "1.1.0", current: "dev", allowed: true},
+		{target: "dev", current: "1.0.0", allowed: false},
+		{target: "dev build", current: "dev", allowed: false},
 		{target: "1.0.0-alpha..1", current: "1.0.0-alpha", allowed: false},
 		{target: "1.0.0-01", current: "1.0.0-1", allowed: false},
 	} {

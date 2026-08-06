@@ -113,3 +113,19 @@ test("Docker 开发构建允许上传其他开发或正式镜像", async ({ page
   await expect(page.getByText("开发版本可替换为其他开发构建或正式版本；最大 1 GiB")).toBeVisible();
   await expect(page.getByLabel("升级包")).toHaveAttribute("accept", ".tar.gz,application/gzip,application/x-gzip");
 });
+
+test("Windows 开发构建允许上传其他开发或正式 ZIP", async ({ page }) => {
+  await authenticate(page);
+  await page.route("**/api/v1/system/updates", (route) => json(route, {
+    supported: true,
+    current_version: "dev",
+    deployment: "windows-portable",
+    package_format: "zip",
+    max_package_bytes: 536870912,
+    history: [],
+  }));
+
+  await page.goto("/settings");
+  await expect(page.getByText("开发版本可替换为其他开发构建或正式版本；最大 512 MiB")).toBeVisible();
+  await expect(page.getByLabel("升级包")).toHaveAttribute("accept", ".zip,application/zip");
+});

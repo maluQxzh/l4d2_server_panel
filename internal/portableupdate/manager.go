@@ -83,9 +83,6 @@ func (m *Manager) Supported() (bool, string) {
 	if !m.ServiceMode {
 		return false, "前台运行模式不支持中心端一键升级"
 	}
-	if strings.Contains(strings.ToLower(m.CurrentVersion), "dev") {
-		return false, "开发构建不支持中心端一键升级"
-	}
 	expectedConfig := filepath.Join(m.Root, "data", "config", "control.json")
 	if !samePath(m.ConfigPath, expectedConfig) || !samePath(m.DatabasePath, filepath.Join(m.Root, "data", "database", "l4d2panel.sqlite3")) {
 		return false, "当前进程不是 Windows 便携部署"

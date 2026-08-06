@@ -11,7 +11,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$') { throw "Version must be a semantic release version: $Version" }
+if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$') { throw "Version must be a safe release or development label: $Version" }
 
 $repoRoot = (Resolve-Path "$PSScriptRoot\..\..").Path
 if (-not $OutputDirectory) { $OutputDirectory = "$repoRoot\dist\windows-center" }
@@ -102,7 +102,8 @@ L4D2 Panel Windows x64 portable center
 
 Do not move the directory after the Windows service is registered. Run
 "l4d2panel-control.exe portable unregister" before moving or removing it.
-Use the Settings page to upload a newer official portable ZIP for one-click upgrade.
+Use the Settings page to upload a trusted portable ZIP for one-click upgrade.
+Development builds may move to another development build or a release.
 '@ | Set-Content -LiteralPath "$payload\PORTABLE-README.txt" -Encoding utf8NoBOM
 
 $manifestFiles = @()

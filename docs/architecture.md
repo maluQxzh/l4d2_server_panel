@@ -10,7 +10,7 @@ React 前端被编译进 Control 二进制并同域提供。浏览器 REST 接�
 
 固定 Compose 把宿主 Docker Socket 只读根文件系统之外挂载为 `/var/run/docker.sock`，并用独立 `app_updates` 卷保存升级 journal、镜像元数据和数据库快照。全局所有者通过交互式会话上传固定标签的单平台 Docker `save` gzip 包；Control 校验归档路径、全部 OCI blob 摘要、产品/版本/平台元数据和正式版本禁止降级规则，再通过固定 Docker Engine API 加载镜像并创建使用当前镜像运行的短期 Worker。没有有序版本号的开发构建允许替换为其他开发构建或转入正式版本，但正式版本不能切回开发标签。Worker 停止当前 Control 后快照 SQLite、WAL/SHM 和主密钥，保留旧容器并用复核后的不可变镜像 ID 复制其 Compose 标签、端口、卷、网络、重启策略和安全配置。新容器通过 Docker exec 访问 `/readyz` 后才删除旧容器；创建、迁移或就绪失败会删除新容器、恢复同一快照和离线标签的旧镜像指向，再重新启动旧容器。终态由新旧 Control 从 `app_updates` 卷协调回 SQLite、审计和持久事件。该设计仍是单 Control，不引入第二个并发访问 SQLite 的服务实例。
 
-Windows 10/11 x64 与 Windows Server 2019+ 使用便携 ZIP，不依赖 Docker/WSL2。EXE 在解压目录旁创建 `data`，只注册 `l4d2panel-control` 虚拟账号服务。Control 固定在 `0.0.0.0:19090` 监听，SQLite 不监听端口；配置、数据库、日志、升级状态和快照均位于受 ACL 限制的旁置目录。Web 升级由服务复制出的独立工作进程执行，因此 Control 停止和程序替换期间状态仍然持久；失败时旧程序、配置与 SQLite 快照作为一个部署版本恢复。ACL 保护的文件 journal 是停服期间的状态源；新旧服务恢复后把任务终态镜像到 SQLite，再依次写入审计和持久事件。
+Windows 10/11 x64 与 Windows Server 2019+ 使用便携 ZIP，不依赖 Docker/WSL2。EXE 在解压目录旁创建 `data`，只注册 `l4d2panel-control` 虚拟账号服务。Control 固定在 `0.0.0.0:19090` 监听，SQLite 不监听端口；配置、数据库、日志、升级状态和快照均位于受 ACL 限制的旁置目录。Web 升级由服务复制出的独立工作进程执行，因此 Control 停止和程序替换期间状态仍然持久；失败时旧程序、配置与 SQLite 快照作为一个部署版本恢复。无序开发构建可以替换为其他开发构建或转入正式版本；有序语义版本只能同版重装或向上升级，不能切回开发标签。ACL 保护的文件 journal 是停服期间的状态源；新旧服务恢复后把任务终态镜像到 SQLite，再依次写入审计和持久事件。
 
 ## 节点协议与任务流
 

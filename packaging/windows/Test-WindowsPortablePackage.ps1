@@ -19,7 +19,7 @@ try {
     $reader = [IO.StreamReader]::new($manifestEntry.Open(), [Text.Encoding]::UTF8)
     try { $manifest = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
     if ($manifest.format_version -ne 1 -or $manifest.product -ne 'l4d2panel-center' -or $manifest.platform -ne 'windows' -or $manifest.architecture -ne 'amd64') { throw 'Portable manifest identity is invalid.' }
-    if ([string]$manifest.version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$') { throw 'Portable manifest version is invalid.' }
+    if ([string]$manifest.version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$') { throw 'Portable manifest version is invalid.' }
     $listed = @{}
     foreach ($file in $manifest.files) {
         if ($listed.ContainsKey([string]$file.path)) { throw "Duplicate manifest path: $($file.path)" }

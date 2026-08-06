@@ -7,6 +7,20 @@ import (
 	"testing"
 )
 
+func TestManagerSupportsDevelopmentBuilds(t *testing.T) {
+	if !RuntimeSupported() {
+		t.Skip("portable manager support is Windows x64 specific")
+	}
+	root := t.TempDir()
+	configPath := filepath.Join(root, "data", "config", "control.json")
+	databasePath := filepath.Join(root, "data", "database", "l4d2panel.sqlite3")
+	writeTestFile(t, filepath.Join(root, ManifestName), "{}")
+	manager := &Manager{Root: root, ConfigPath: configPath, DatabasePath: databasePath, CurrentVersion: "dev", ServiceMode: true}
+	if supported, reason := manager.Supported(); !supported {
+		t.Fatalf("development portable build should support updates: %s", reason)
+	}
+}
+
 func TestManagerCreateEnforcesIdempotencyAndSingleActiveUpdate(t *testing.T) {
 	if !RuntimeSupported() {
 		t.Skip("portable manager creation is Windows x64 specific")

@@ -51,7 +51,10 @@ type ValidatedPackage struct {
 	Files    map[string]ManifestFile
 }
 
-var releaseVersionPattern = regexp.MustCompile(`^v?([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?$`)
+var (
+	releaseVersionPattern  = regexp.MustCompile(`^v?([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?$`)
+	portableVersionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$`)
+)
 
 func ValidateAndExtract(zipPath, destination, currentVersion string) (ValidatedPackage, error) {
 	info, err := os.Stat(zipPath)
@@ -165,11 +168,15 @@ func validateManifest(manifest Manifest, entries map[string]*zip.File, currentVe
 	if manifest.FormatVersion != portableFormat || manifest.Product != portableProduct || manifest.Platform != portablePlatform || manifest.Architecture != portableArchitecture {
 		return nil, errors.New("update package is not an L4D2 Panel Windows x64 portable package")
 	}
-	if _, ok := parseVersion(manifest.Version); !ok {
-		return nil, errors.New("portable manifest version is not a release semantic version")
+	if !portableVersionPattern.MatchString(manifest.Version) {
+		return nil, errors.New("portable manifest version is not a valid release or development label")
 	}
-	if current, ok := parseVersion(currentVersion); ok {
-		target, _ := parseVersion(manifest.Version)
+	current, currentIsRelease := parseVersion(currentVersion)
+	target, targetIsRelease := parseVersion(manifest.Version)
+	if currentIsRelease {
+		if !targetIsRelease {
+			return nil, errors.New("release portable builds cannot update to an unordered development version")
+		}
 		if compareVersion(target, current) < 0 {
 			return nil, fmt.Errorf("downgrade from %s to %s is not allowed", currentVersion, manifest.Version)
 		}
