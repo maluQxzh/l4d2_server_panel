@@ -75,6 +75,107 @@ func TestSafeSegmentedDownloaderUsesEightRangesAndAssemblesFile(t *testing.T) {
 	}
 }
 
+func TestSafeSegmentedDownloaderAcceptsRangeDependentLastModifiedForImmutableSource(t *testing.T) {
+	raw := bytes.Repeat([]byte("qq-range"), 1<<15)
+	var ifRangeSeen atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		start, end, ranged := testDownloadRange(t, request, int64(len(raw)))
+		if !ranged {
+			writer.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+			_, _ = writer.Write(raw)
+			return
+		}
+		if request.Header.Get("If-Range") != "" {
+			ifRangeSeen.Store(true)
+		}
+		body := raw[start : end+1]
+		writer.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(raw)))
+		writer.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		// QQ Flash currently derives this timestamp from the byte-range offset,
+		// so it is not an HTTP representation validator for the whole object.
+		writer.Header().Set("Last-Modified", time.Unix(1_700_000_000+start/1024, 0).UTC().Format(http.TimeFormat))
+		writer.WriteHeader(http.StatusPartialContent)
+		_, _ = writer.Write(body)
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	downloader := newSafeSegmentedDownloader(newDownloadConcurrencyLimiter(8))
+	downloader.segmentSize = 16 << 10
+	result, err := downloader.Download(context.Background(), safeDownloadOptions{
+		Client: server.Client(), URL: staticDownloadURL(server.URL), SourceIsImmutable: true,
+		Root: root, Relative: "file.bin", ExpectedSize: int64(len(raw)), Mode: 0o600, Concurrency: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, readErr := os.ReadFile(filepath.Join(root, "file.bin"))
+	if readErr != nil || !bytes.Equal(installed, raw) || !result.Segmented || ifRangeSeen.Load() {
+		t.Fatalf("immutable ranged download result=%#v if_range=%v size=%d err=%v", result, ifRangeSeen.Load(), len(installed), readErr)
+	}
+}
+
+func TestSafeSegmentedDownloaderRejectsRangeDependentLastModifiedForMutableSource(t *testing.T) {
+	raw := bytes.Repeat([]byte("mutable-range"), 4096)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		start, end, _ := testDownloadRange(t, request, int64(len(raw)))
+		body := raw[start : end+1]
+		writer.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(raw)))
+		writer.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		writer.Header().Set("Last-Modified", time.Unix(1_700_000_000+start, 0).UTC().Format(http.TimeFormat))
+		writer.WriteHeader(http.StatusPartialContent)
+		_, _ = writer.Write(body)
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	downloader := newSafeSegmentedDownloader(newDownloadConcurrencyLimiter(8))
+	downloader.segmentSize = 4096
+	_, err := downloader.Download(context.Background(), safeDownloadOptions{
+		Client: server.Client(), URL: staticDownloadURL(server.URL), Root: root, Relative: "file.bin",
+		ExpectedSize: int64(len(raw)), Mode: 0o600, Concurrency: 8,
+	})
+	if err == nil || !strings.Contains(err.Error(), "Last-Modified changed") {
+		t.Fatalf("mutable source accepted inconsistent Last-Modified: %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(root, "file.bin")); !os.IsNotExist(statErr) {
+		t.Fatalf("mutable source identity error committed a target: %v", statErr)
+	}
+}
+
+func TestSafeSegmentedDownloaderPrefersStrongETagOverLastModified(t *testing.T) {
+	raw := bytes.Repeat([]byte("strong-etag"), 4096)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		start, end, ranged := testDownloadRange(t, request, int64(len(raw)))
+		if !ranged {
+			writer.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+			_, _ = writer.Write(raw)
+			return
+		}
+		if request.Header.Get("Range") != "bytes=0-0" && request.Header.Get("If-Range") != `"stable"` {
+			t.Errorf("range request If-Range = %q", request.Header.Get("If-Range"))
+		}
+		body := raw[start : end+1]
+		writer.Header().Set("ETag", `"stable"`)
+		writer.Header().Set("Last-Modified", time.Unix(1_700_000_000+start, 0).UTC().Format(http.TimeFormat))
+		writer.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(raw)))
+		writer.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		writer.WriteHeader(http.StatusPartialContent)
+		_, _ = writer.Write(body)
+	}))
+	defer server.Close()
+
+	downloader := newSafeSegmentedDownloader(newDownloadConcurrencyLimiter(8))
+	downloader.segmentSize = 4096
+	result, err := downloader.Download(context.Background(), safeDownloadOptions{
+		Client: server.Client(), URL: staticDownloadURL(server.URL), Root: t.TempDir(), Relative: "file.bin",
+		ExpectedSize: int64(len(raw)), Mode: 0o600, Concurrency: 8,
+	})
+	if err != nil || !result.Segmented {
+		t.Fatalf("strong ETag download result=%#v err=%v", result, err)
+	}
+}
+
 func TestSafeSegmentedDownloaderDefaultsToFourAndCapsAtEight(t *testing.T) {
 	if safeDownloadDefaultConcurrency != 4 || safeDownloadMaxConcurrency != 8 || qqFlashDownloadConcurrency != 8 {
 		t.Fatalf("download concurrency defaults changed: generic=%d max=%d qq=%d", safeDownloadDefaultConcurrency, safeDownloadMaxConcurrency, qqFlashDownloadConcurrency)
