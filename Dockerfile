@@ -9,6 +9,7 @@ RUN npm run build
 
 FROM --platform=$BUILDPLATFORM golang:1.25.12-alpine AS go-build
 WORKDIR /src
+ARG GOPROXY=https://proxy.golang.org,direct
 RUN apk add --no-cache ca-certificates git
 COPY go.mod go.sum* ./
 RUN go mod download
@@ -39,7 +40,7 @@ WORKDIR /app
 COPY --from=go-build /out/l4d2panel /usr/local/bin/l4d2panel
 COPY migrations/sqlite ./migrations/sqlite
 COPY docs ./docs
-RUN mkdir -p /app/data /app/spool && chown -R panel:panel /app
+RUN mkdir -p /app/data /app/spool /app/updates && chown -R panel:panel /app
 USER panel:panel
 EXPOSE 19090
 ENV LISTEN_ADDR=:19090 DATABASE_PATH=/app/data/l4d2panel.sqlite3 MIGRATIONS_DIR=/app/migrations/sqlite DATA_DIR=/app/data SPOOL_DIR=/app/spool

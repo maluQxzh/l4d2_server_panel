@@ -6,7 +6,9 @@ Control 是唯一可信协调者，负责身份、资源权限、期望状态、
 
 React 前端被编译进 Control 二进制并同域提供。浏览器 REST 接口位于 `/api/v1`，实时事件位于 `/api/v1/events`，Agent 注册使用 `/api/v1/agent/enroll`，长期连接使用 `/agent/v1/connect`。Control 提供明文 HTTP，部署者负责通过外部反向代理终止 TLS 并转发 HTTP/WebSocket。
 
-中心 Compose 栈始终运行 Linux 容器，可部署在 Linux Docker Engine 或 macOS Docker Desktop。Control 镜像提供 `linux/amd64` 与 `linux/arm64` 构建路径，Docker Desktop 在 Intel Mac 和 Apple Silicon 上自动选择对应架构；这不会把 macOS 加入 Agent 或游戏服节点的支持平台。
+中心 Compose 栈始终运行 Linux 容器，可部署在 Linux Docker Engine 或 macOS Docker Desktop。Control 镜像提供 `linux/amd64` 与 `linux/arm64` 构建路径，Docker Desktop 在 Intel Mac 和 Apple Silicon 上自动选择对应架构；这不会把 macOS 加入 Agent 或游戏服节点的支持平台。离线镜像由 `docker load` 导入，固定 Compose 模板通过 `docker compose up -d` 启动。Docker Compose 显式配置持久主密钥文件时，Control 首次启动在 `app_data` 卷中生成该文件，后续启动复用；同一启动路径自动运行数据库迁移并在失败时拒绝监听。预构建镜像模板默认只向 `127.0.0.1` 发布 Control 端口，外部反向代理必须由管理员显式扩大监听并收紧宿主防火墙。
+
+固定 Compose 把宿主 Docker Socket 只读根文件系统之外挂载为 `/var/run/docker.sock`，并用独立 `app_updates` 卷保存升级 journal、镜像元数据和数据库快照。全局所有者通过交互式会话上传固定标签的单平台 Docker `save` gzip 包；Control 校验归档路径、全部 OCI blob 摘要、产品/版本/平台元数据和禁止降级规则，再通过固定 Docker Engine API 加载镜像并创建使用当前镜像运行的短期 Worker。Worker 停止当前 Control 后快照 SQLite、WAL/SHM 和主密钥，保留旧容器并用复核后的不可变镜像 ID 复制其 Compose 标签、端口、卷、网络、重启策略和安全配置。新容器通过 Docker exec 访问 `/readyz` 后才删除旧容器；创建、迁移或就绪失败会删除新容器、恢复同一快照和离线标签的旧镜像指向，再重新启动旧容器。终态由新旧 Control 从 `app_updates` 卷协调回 SQLite、审计和持久事件。该设计仍是单 Control，不引入第二个并发访问 SQLite 的服务实例。
 
 Windows 10/11 x64 与 Windows Server 2019+ 使用便携 ZIP，不依赖 Docker/WSL2。EXE 在解压目录旁创建 `data`，只注册 `l4d2panel-control` 虚拟账号服务。Control 固定在 `0.0.0.0:19090` 监听，SQLite 不监听端口；配置、数据库、日志、升级状态和快照均位于受 ACL 限制的旁置目录。Web 升级由服务复制出的独立工作进程执行，因此 Control 停止和程序替换期间状态仍然持久；失败时旧程序、配置与 SQLite 快照作为一个部署版本恢复。ACL 保护的文件 journal 是停服期间的状态源；新旧服务恢复后把任务终态镜像到 SQLite，再依次写入审计和持久事件。
 

@@ -4,6 +4,10 @@
 
 - Control、本机 SQLite、部署主密钥和用户管理的 TLS 代理位于可信中心环境。单个 Control 进程是授权和派发决策点。
 - Windows 便携中心端只注册 Control 虚拟服务账号。Control 监听 `0.0.0.0:19090`，SQLite 不监听网络端口，首次运行为 19090 添加入站规则；管理员必须把该规则收紧到可信代理来源。解压目录及旁置 `data` 禁用 ACL 继承，只允许 Administrators、SYSTEM 和 Control 服务 SID 修改。服务命令行只出现配置路径，不出现主密钥。
+- Linux/macOS 离线镜像必须先通过发布方提供的 SHA-256 或签名校验并选择原生平台。预构建 Compose 通过绝对 `MASTER_KEY_FILE` 路径让 Control 在 `app_data` 卷中以权限 `0600`、无覆盖方式创建随机部署主密钥；后续启动复用该文件，显式 `MASTER_KEY` 与文件不一致时失败关闭，链接或非普通密钥文件也被拒绝。预构建 Compose 默认把明文 Control 端口只发布到 `127.0.0.1`，使用只读根文件系统和 `no-new-privileges`。PID 1 仅在启动最前段以 root 和 `CHOWN/FOWNER/SETGID/SETUID` 初始化三个固定卷目录、采用 Docker Socket 的组 ID，随后不可逆降为 `panel`；正常服务阶段有效 capabilities 为空。
+- 固定 Compose 把宿主 `/var/run/docker.sock` 读写挂载给 Control 以支持网页自更新。Docker API 能创建特权容器和挂载任意宿主路径，因此该 Socket 实际授予宿主 root 级控制权；容器降权、只读根文件系统和 capabilities 限制不能把已攻陷的 Control 与宿主隔离。只有全局所有者的交互式会话可以发起升级，接口仍要求 CSRF 和幂等键，但这不能降低 Control 进程自身被攻陷后的影响。宿主只能运行受信任的 Control 镜像，不得在同一 Docker daemon 上混放需要与面板隔离的工作负载，Docker daemon、部署目录和卷的访问权只能授予中心管理员。
+- 容器在线升级包限制为 1 GiB、一个 `l4d2panel/control:offline` 镜像和当前宿主架构；归档拒绝链接/穿越/重复路径并校验全部内容寻址 blob，产品、版本和目标镜像 ID 在停服前后重复核对，版本降级被拒绝。SHA-256 和 OCI 内容摘要只验证完整性，不证明发布者身份；管理员仍必须在上传前校验发布方独立提供的校验值或签名。升级 Worker 只接收内部固定子命令和持久 job spec，不接受用户 Shell、任意容器参数或宿主路径。它在停服后快照 SQLite、WAL/SHM 与主密钥，新容器未通过 `/readyz` 时恢复快照和旧容器。Docker Socket 本身仍然是上述不可消除的高权限边界。
+- Compose 不安装 Docker、不修改宿主防火墙；管理员显式改为外部监听时必须自行限制为只允许可信 HTTPS 代理访问。
 - Agent 是节点上唯一拥有实例文件与受管游戏进程操作权的组件。面板管理员不会因此获得操作系统 Shell；Agent 只接受固定任务类型和经过校验的参数。
 - RCON 可执行游戏命令，因此属于高权限游戏接口。命令通过权限检查，敏感形态在审计/任务视图中脱敏，明文命令只以部署主密钥加密后排队。
 - VPK、SMX、SourceMod 插件和原生扩展是不可信内容。特别是 `.dll/.so` 会在游戏进程权限内执行，只允许管理员安装，第三方原生包还必须显式确认风险。
@@ -44,7 +48,7 @@
 
 ## 秘密和任务数据
 
-- `MASTER_KEY` 必须解码为正好 32 字节，用于加密 TOTP、中心端保存的 RCON 凭据、SMTP/Webhook 秘密，以及任务中的 RCON 命令、外部实例旧 RCON 密码、带查询参数的下载 URL、QQ 闪传分享链接、备份/恢复归档定位符、文件/包上传正文、日志查询关键字和传输正文。
+- 显式 `MASTER_KEY` 或 `MASTER_KEY_FILE` 的内容必须解码为正好 32 字节，用于加密 TOTP、中心端保存的 RCON 凭据、SMTP/Webhook 秘密，以及任务中的 RCON 命令、外部实例旧 RCON 密码、带查询参数的下载 URL、QQ 闪传分享链接、备份/恢复归档定位符、文件/包上传正文、日志查询关键字和传输正文。
 - 计划任务的 payload 以普通 JSON 保存，因此创建接口只允许 `start/stop/restart/update/validate/backup/broadcast`，并按动作复制已知字段；任意 RCON、URL、文件正文和包安装等秘密/高风险动作不能进入计划表。
 - RCON 与 SMTP/Webhook 密钥不会通过普通资源列表返回。API Token、恢复码、注册令牌和节点凭据只存摘要。实例 RCON 凭据可以留空；Control 不把它写入游戏文件，管理员必须在 `server.cfg` 中配置匹配值。
 - 文件内容与日志/备份分块虽然经过 Control，但不以明文持久化。日志搜索结果和下载块在读取后从任务结果删除；再次读取返回 `410 Gone`。

@@ -38,17 +38,23 @@
 - Linux：Docker Engine 24+ 与 Docker Compose v2。
 - macOS：带 Docker Compose v2 的 Docker Desktop，支持 Apple Silicon 和 Intel Mac。中心端仍运行在 Linux 容器中；macOS 只作为中心端宿主机，不属于游戏节点 Agent 的支持平台。
 
-在 Linux Shell 或 macOS“终端”中复制环境变量示例，并替换所有占位值：
+如果使用已经构建好的 `linux/amd64` 或 `linux/arm64` 离线镜像，不需要源码和本地镜像构建工具链。把镜像包附带的 `docker-compose.yml` 放入永久部署目录后，`docker load` 导入镜像，`docker compose up -d` 即会自动生成并持久保存部署主密钥、创建 SQLite、执行迁移和启动检查并启动 Control；最后单独运行本地 `setup-key issue` 命令安全领取初始化密钥。固定 Compose 会把宿主机 `/var/run/docker.sock` 挂载给 Control，使全局所有者可以在设置页上传同平台 `.tar.gz` 镜像并由独立 Worker 自动重建 Control 和失败回滚。Docker Socket 权限实际等同宿主机 root，部署前必须接受这一信任边界。架构选择、校验、首次部署、在线升级与回滚见 [Linux/macOS 容器中心端安装说明](docs/container-center-installation.md)。下面继续说明从当前源码构建镜像的部署流程。
+
+```bash
+docker load --input l4d2panel-control-<version>-linux-<arch>.tar.gz
+docker compose up -d
+docker compose exec -T app /usr/local/bin/l4d2panel setup-key issue
+```
+
+默认配置可直接启动，Control 明文端口只发布到宿主机 `127.0.0.1:19090`，部署主密钥首次启动时在 `app_data` 卷内生成为权限 `0600` 的 `control-master.key`。生产部署应在 `.env` 中配置最终 HTTPS 地址和精确可信代理：
 
 ```bash
 cp .env.example .env
-openssl rand -base64 32
 ```
-
-将输出写入 `MASTER_KEY`，并令 `PUBLIC_URL` 指向用户配置的 HTTPS 地址。Control 默认在容器和宿主机发布明文 TCP `19090`；该端口只应允许 HTTPS 代理访问：
 
 ```dotenv
 PUBLIC_URL=https://panel.example.com
+CONTROL_BIND_ADDRESS=127.0.0.1
 CONTROL_PORT=19090
 TRUSTED_PROXIES=127.0.0.1/32,::1/128
 ```
@@ -60,7 +66,7 @@ TRUSTED_PROXIES=127.0.0.1/32,::1/128
 ```bash
 docker compose build app
 docker compose up -d
-docker compose exec -T app setup-key issue
+docker compose exec -T app /usr/local/bin/l4d2panel setup-key issue
 ```
 
 最后一条命令只在当前终端输出一次 `l4d2p_setup_...` 初始化密钥。配置 HTTPS 后打开 `PUBLIC_URL/setup` 并输入密钥；系统会原子创建 `admin`／`系统管理员` 根所有者并登录，密钥同时是初始密码。进入设置后应立即修改密码。初始化接口继续使用 15 分钟有效的 HttpOnly/SameSite 引导 Cookie、独立 CSRF 令牌、速率限制和数据库立即事务；丢失密钥时可在尚无用户前重新运行命令，新密钥会使旧密钥失效。
@@ -106,7 +112,7 @@ server {
 
 无界面的自动化部署仍可使用 `docker compose run --rm -T app bootstrap-owner ...` 命令。旧版 `BOOTSTRAP_USERNAME`、`BOOTSTRAP_PASSWORD` 和 `BOOTSTRAP_DISPLAY_NAME` 启动环境变量也继续兼容，但不再写入示例配置或作为推荐流程。数据库已有任意用户后，网页初始化和命令行引导都会拒绝再次创建，后续账号应从已认证的团队管理页面维护。
 
-SQLite 数据库位于 `app_data` 卷的 `/app/data/l4d2panel.sqlite3`。迁移在 Control 启动时按文件名顺序、以立即写事务执行；迁移失败、未知迁移或已应用迁移校验和变化都会中止启动。SQLite 文件、WAL 与 SHM 必须位于容器本机持久卷，禁止放到 NFS、CIFS 或 SMB bind mount。中心端不支持多个 Control 共享数据库。
+SQLite 数据库位于 `app_data` 卷的 `/app/data/l4d2panel.sqlite3`，自动生成的主密钥位于同一卷的 `/app/data/control-master.key`。迁移在 Control 启动时按文件名顺序、以立即写事务执行；迁移失败、未知迁移或已应用迁移校验和变化都会中止启动。SQLite 文件、WAL 与 SHM 必须位于容器本机持久卷，禁止放到 NFS、CIFS 或 SMB bind mount。中心端不支持多个 Control 共享数据库。备份和恢复必须同时保留数据库与原主密钥，换用其他主密钥会导致已加密秘密无法恢复。
 
 升级不会自动迁移或清理旧版捆绑代理的服务、状态目录或 Docker 孤立卷；确认不再使用后，由管理员按原部署方式自行处理。
 

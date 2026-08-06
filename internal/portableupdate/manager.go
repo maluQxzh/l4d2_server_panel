@@ -45,6 +45,9 @@ type State struct {
 type Overview struct {
 	Supported      bool    `json:"supported"`
 	CurrentVersion string  `json:"current_version"`
+	Deployment     string  `json:"deployment,omitempty"`
+	PackageFormat  string  `json:"package_format,omitempty"`
+	MaxPackageSize int64   `json:"max_package_bytes,omitempty"`
 	Active         *State  `json:"active,omitempty"`
 	History        []State `json:"history"`
 	Reason         string  `json:"reason,omitempty"`
@@ -94,7 +97,7 @@ func (m *Manager) Supported() (bool, string) {
 }
 
 func (m *Manager) Overview() Overview {
-	overview := Overview{CurrentVersion: m.CurrentVersion, History: []State{}}
+	overview := Overview{CurrentVersion: m.CurrentVersion, Deployment: "windows-portable", PackageFormat: "zip", MaxPackageSize: MaxPackageBytes, History: []State{}}
 	overview.Supported, overview.Reason = m.Supported()
 	if !overview.Supported {
 		return overview
@@ -112,6 +115,10 @@ func (m *Manager) Overview() Overview {
 	}
 	return overview
 }
+
+func (m *Manager) PackageFormat() string { return "zip" }
+
+func (m *Manager) MaxPackageBytes() int64 { return MaxPackageBytes }
 
 func (m *Manager) State(jobID string) (State, error) {
 	if _, err := uuid.Parse(jobID); err != nil {

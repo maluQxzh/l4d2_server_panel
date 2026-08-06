@@ -17,12 +17,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/l4d2-panel/l4d2panel/internal/containerupdate"
 	"github.com/l4d2-panel/l4d2panel/internal/control"
 	"github.com/l4d2-panel/l4d2panel/internal/version"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if err := prepareContainerRuntimeIdentity(); err != nil {
+		logger.Error("prepare container runtime identity", "error", err)
+		os.Exit(1)
+	}
 	if err := runCLI(logger, os.Args[1:], os.Stdin); err != nil {
 		logger.Error("control plane stopped", "error", err)
 		os.Exit(1)
@@ -64,6 +69,8 @@ func runCLI(logger *slog.Logger, args []string, stdin io.Reader) error {
 		return runBootstrapOwner(logger, args[1:], stdin)
 	case "setup-key":
 		return runSetupKey(args[1:], os.Stdout)
+	case "container-update-worker":
+		return containerupdate.RunWorker(logger, args[1:])
 	case "service":
 		return runServiceCommand(args[1:])
 	case "portable":

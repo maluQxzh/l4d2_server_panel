@@ -31,6 +31,9 @@ export interface SystemUpdateRecord {
 export interface SystemUpdateOverview {
   supported: boolean;
   current_version: string;
+  deployment?: "windows-portable" | "docker-compose";
+  package_format?: "zip" | "tar.gz";
+  max_package_bytes?: number;
   active?: SystemUpdateRecord;
   history: SystemUpdateRecord[];
   reason?: string;

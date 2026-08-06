@@ -13,12 +13,14 @@ Read `README.md` before substantial work. For protocol, persistence, authorizati
 - `cmd/control`: Control service and owner-bootstrap entry point.
 - `cmd/agent`: portable foreground Agent entry point and optional process-manager integration commands.
 - `internal/control`: HTTP/WebSocket APIs, RBAC, persistence, scheduling, notifications, and embedded web assets.
+- `internal/containerupdate`: constrained Docker Engine API client, Docker-save archive validation, Compose self-recreation worker, persistent update state, and rollback.
 - `internal/agent`: lifecycle, SteamCMD, A2S/RCON, packages, backups, files, and platform process management.
 - `internal/domain` and `internal/protocol`: shared domain and wire types.
 - `migrations/sqlite`: active ordered SQLite migrations. SQLite is the only supported database; add a new numbered migration and never rewrite an applied migration.
 - `web`: React 19, TypeScript, Vite, Vitest, and Playwright application.
 - `docs/openapi.yaml`: public API contract. `docs/architecture.md` and `docs/security.md` describe invariants and threat boundaries.
 - `packaging/windows`: Windows x64 portable Control ZIP build, structure validation, elevated lifecycle/upgrade smoke, and portable deployment documentation.
+- `deploy/docker-compose.image.yml`: fixed prebuilt-image Compose deployment used by Linux/macOS offline releases; keep it aligned with the root source-build Compose file.
 
 ## Required toolchain
 
@@ -44,6 +46,10 @@ Do not weaken or remove pinned security versions merely to make an older local t
 - Enforce RBAC in Control handlers and stores, not only in the UI. Resource-scoped events must fail closed when node/instance ownership is unknown.
 - Persistent browser events must retain commit-to-broadcast cursor ordering. Ephemeral console/metric frames may be dropped for slow clients and must not be persisted merely to simplify delivery.
 - Keep the Control plane single-instance unless the Agent connection registry, event ordering, dispatch leases, and authorization invalidation are explicitly redesigned for HA.
+- Docker center self-update is supported only for the fixed Compose `app` service, `/var/run/docker.sock`, local named volumes at `/app/data`, `/app/spool`, and `/app/updates`, and the `l4d2panel/control:offline` release tag. Keep Docker API requests internal and structured; never accept caller-supplied container names, daemon endpoints, images, mounts, host paths, commands, capabilities, networks, or arbitrary Docker JSON.
+- Container update archives are single-image gzip-compressed Docker-save packages, bounded to 1 GiB upload/4 GiB expansion/2048 entries, with the fixed offline tag, native `linux/amd64` or `linux/arm64` platform, product/version labels, safe regular paths, and verified content-addressed blob hashes. Continue pinning replacement creation to the validated immutable image ID, reject downgrades, and restore both persistent data and the offline tag to the old image on failure.
+- The detached container update Worker must stop the only Control before snapshotting SQLite/WAL/SHM and the master key, retain the old stopped container until the new container is ready and terminal success state is durable, and restore the snapshot/old container on any install, migration, readiness, or terminal-state failure. Worker startup and early errors must become durable terminal state rather than leaving an active queued job.
+- The official Compose process starts as root only with `CHOWN/FOWNER/SETGID/SETUID` so it can initialize the three fixed volume roots and adopt the Docker Socket group, then irreversibly drops to `panel` with zero effective capabilities. The Docker Socket is nevertheless host-root-equivalent; do not describe the container hardening as isolation from a compromised Control.
 - The UI remains responsive, dark, and Simplified Chinese. Do not bundle Valve artwork. `-tickrate` may be exposed as an explicit numeric startup option; Control and Agent must both require one integer value in the supported 1–1000 range and continue passing it as an argument array without a Shell.
 
 ## Code and schema conventions
@@ -68,17 +74,20 @@ Do not weaken or remove pinned security versions merely to make an older local t
 - Portable upgrades must preserve beside-binary `agent.yaml` and `data`, validate the staged binary and checksum before stopping the old process, keep one previous binary for rollback, and replace only the platform binary. Never require a new enrollment token for an already enrolled node.
 - `dist` remains ignored build output. Do not add portable Agent binaries or generated checksums to source commits.
 
-## Current project status (2026-08-01)
+## Current project status (2026-08-07)
 
 - The main Go Control/Agent, React web application, SQLite persistence, Docker deployment, and Windows/Linux Agent packaging are present. Treat the project as under active development rather than production-complete.
-- Linux and macOS center deployments use Docker Compose. The first owner is created at `/setup`, and the published HTTP/HTTPS ports are configurable.
+- Linux and macOS center deployments use Docker Compose. The default offline flow is `docker load` followed by `docker compose up -d`; first start creates a persistent `0600` master-key file, opens SQLite, applies migrations, runs readiness checks, and then exposes `/setup`. The published Control port defaults to host loopback and remains configurable for an administrator-managed HTTPS proxy.
+- The fixed Compose deployment mounts `/var/run/docker.sock` and an `app_updates` volume. Global owners can upload a native-architecture `l4d2panel/control:offline` Docker-save `.tar.gz` in Settings; Control validates it through the constrained Docker API client and launches a detached Worker that recreates only its current Compose `app` container by immutable image ID.
+- Docker update success and failure paths were exercised against the native Docker Engine in the `l4d2` WSL2 distribution: same-version upload/recreation preserved the owner session and SQLite volumes; a deliberately broken image failed to start, restored the database/key snapshot, old container/name/readiness, and the offline tag. PID 1 ran as UID/GID `100:101`, retained the Socket GID only as a supplementary group, had `CapEff=0`, and kept `NoNewPrivs=1` after bootstrap.
+- Local offline artifacts were built and archive-validated for `linux/amd64` and `linux/arm64`; the ARM64 binary was executed through registered QEMU/binfmt. Generated images/checksums remain ignored beneath `dist/container` and are not source commits or registry publications.
 - Windows center releases are x64 portable ZIPs for Windows 10/11 and Windows Server 2019+. The fixed beside-EXE layout contains Control, SQLite migrations, licenses, SBOM, an unsigned integrity manifest, and `data`; HTTPS remains administrator-managed.
 - No-argument launch requests UAC, registers only `l4d2panel-control`, fixes Control at `0.0.0.0:19090`, applies restricted ACLs, and creates the TCP 19090 firewall rule. SQLite has no listener.
 - Global owners can upload a trusted newer ZIP or reinstall the same version. The detached worker validates package limits and hashes, checkpoints SQLite, snapshots managed files/config/database, replaces only manifest-managed files, runs forward migrations and readiness, and fully rolls back on failure. It retains the newest three snapshots and durable sanitized state.
 - `packaging/windows/Build-WindowsPortable.ps1` creates the release ZIP. `Test-WindowsPortablePackage.ps1` validates its exact structure and hashes; `Test-WindowsPortableInstall.ps1` performs an elevated real install, first-owner, same-version upgrade, unregister, and purge smoke.
 - The portable deployment deliberately does not import, uninstall, or clean up legacy Windows center products or `%ProgramData%` data. A conflicting fixed service name is rejected and must be removed through the old deployment method first.
 - SQLite validation includes ordinary Go tests, isolated migration/credential/update integration, and the opt-in 20-node/100-instance fleet test. PowerShell parsing, portable structure, elevated lifecycle/upgrade, and Docker runtime gates remain required in proportion to changed delivery code.
-- Outstanding release gates include a real SteamCMD App 222860 install/start/A2S/RCON/update/restart test, the Windows 10/11 and Server 2019/2022/2025 VM matrix, Linux/macOS runtime revalidation, Docker restart persistence, elevated portable rollback smoke, and signed release artifacts.
+- Outstanding release gates include a real SteamCMD App 222860 install/start/A2S/RCON/update/restart test, the Windows 10/11 and Server 2019/2022/2025 VM matrix, native macOS Docker Desktop runtime/self-update validation, elevated portable rollback smoke, and signed release artifacts. The current container packages have SHA-256 checksums but no publisher signature and have not been published to a registry.
 
 ## Validation
 

@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/l4d2-panel/l4d2panel/internal/containerupdate"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 	"github.com/l4d2-panel/l4d2panel/internal/portableupdate"
 	"github.com/l4d2-panel/l4d2panel/internal/version"
@@ -46,7 +47,7 @@ type Server struct {
 	eventsAfter              func(context.Context, int64, int) ([]Event, error)
 	eventAuthRefreshInterval time.Duration
 	eventCatchupInterval     time.Duration
-	updates                  *portableupdate.Manager
+	updates                  systemUpdateManager
 }
 
 func NewServer(config Config, store *Store, logger *slog.Logger) *Server {
@@ -55,7 +56,11 @@ func NewServer(config Config, store *Store, logger *slog.Logger) *Server {
 	}
 	events := NewEventBroker(store)
 	s := &Server{config: config, store: store, events: events, logger: logger, limiter: newLoginLimiter()}
-	s.updates = portableupdate.Detect(config.ConfigPath, config.DatabasePath, version.Version, config.PortableService)
+	if containerupdate.Configured() {
+		s.updates = containerupdate.Detect(config.DatabasePath, version.Version)
+	} else {
+		s.updates = portableupdate.Detect(config.ConfigPath, config.DatabasePath, version.Version, config.PortableService)
+	}
 	s.revalidateEventPrincipal = store.RevalidatePrincipal
 	s.eventsAfter = store.EventsAfter
 	s.eventAuthRefreshInterval = time.Second
@@ -70,7 +75,7 @@ func (s *Server) Handler() http.Handler { return s.handler }
 func (s *Server) Close() { s.agents.Close() }
 
 func (s *Server) RunHousekeeping(ctx context.Context) {
-	s.reconcilePortableUpdates(ctx)
+	s.reconcileSystemUpdates(ctx)
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -78,7 +83,7 @@ func (s *Server) RunHousekeeping(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.reconcilePortableUpdates(ctx)
+			s.reconcileSystemUpdates(ctx)
 			if err := s.store.AggregateMetrics(ctx); err != nil && ctx.Err() == nil {
 				s.logger.Error("aggregate monitoring metrics", "error", err)
 			}

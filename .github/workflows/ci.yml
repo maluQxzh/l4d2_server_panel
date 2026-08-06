@@ -147,8 +147,10 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Validate Compose configuration
         env:
-          MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-        run: docker compose config --quiet
+          CONTROL_IMAGE: l4d2panel/control:ci
+        run: |
+          docker compose config --quiet
+          docker compose --file deploy/docker-compose.image.yml config --quiet
       - name: Build production image
         uses: docker/build-push-action@v6
         with:
@@ -157,8 +159,6 @@ jobs:
           tags: l4d2panel/control:ci
           platforms: linux/amd64,linux/arm64
       - name: Start, restart, and verify SQLite persistence
-        env:
-          MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
         run: |
           docker compose up -d --build app
           for attempt in $(seq 1 30); do
@@ -167,11 +167,17 @@ jobs:
             sleep 2
           done
           wget -qO- http://127.0.0.1:19090/readyz >/dev/null
-          setup_key="$(docker compose exec -T app setup-key issue)"
+          setup_key="$(docker compose exec -T app /usr/local/bin/l4d2panel setup-key issue)"
           printf '%s' "$setup_key" | grep -Eq '^l4d2p_setup_[A-Za-z0-9_-]{43}$'
           docker compose exec -T app wget -qO- http://127.0.0.1:19090/api/v1/auth/bootstrap | grep -q '"key_configured":true'
           unset setup_key
           docker compose exec -T app test -s /app/data/l4d2panel.sqlite3
+          docker compose exec -T app test -S /var/run/docker.sock
+          docker compose exec -T app sh -c 'test "$(stat -c "%u:%g" /app/updates)" = "100:101"'
+          docker compose exec -T app sh -c "grep -Eq '^Uid:[[:space:]]+100[[:space:]]+100[[:space:]]+100[[:space:]]+100$' /proc/1/status"
+          docker compose exec -T app sh -c "grep -Eq '^CapEff:[[:space:]]+0+$' /proc/1/status"
+          test "$(docker compose exec -T app stat -c '%a' /app/data/control-master.key)" = 600
+          master_key_hash_before="$(docker compose exec -T app sha256sum /app/data/control-master.key | awk '{print $1}')"
           docker compose stop app
           doctor=$(docker compose run --rm --no-deps app doctor)
           echo "$doctor" | grep -q '"database_engine":"sqlite"'
@@ -182,5 +188,7 @@ jobs:
             if [ "$attempt" = 30 ]; then docker compose logs app; exit 1; fi
             sleep 2
           done
+          master_key_hash_after="$(docker compose exec -T app sha256sum /app/data/control-master.key | awk '{print $1}')"
+          test "$master_key_hash_before" = "$master_key_hash_after"
           docker compose exec -T app wget -qO- http://127.0.0.1:19090/api/v1/auth/bootstrap | grep -q '"key_configured":true'
           docker compose down

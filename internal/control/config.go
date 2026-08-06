@@ -2,6 +2,7 @@ package control
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -141,6 +142,7 @@ func buildConfig(source configFile, configDir string) (Config, error) {
 		trustedRaw = strings.Join(*source.TrustedProxies, ",")
 	}
 	masterKeyRaw := strings.TrimSpace(source.MasterKey)
+	masterKeyFile := ""
 
 	cfg.ListenAddress = envAnyDefault([]string{"LISTEN_ADDR", "CONTROL_LISTEN"}, cfg.ListenAddress)
 	if databasePath := envAnyDefault([]string{"DATABASE_PATH", "CONTROL_DATABASE_PATH"}, ""); databasePath != "" {
@@ -154,6 +156,7 @@ func buildConfig(source configFile, configDir string) (Config, error) {
 	cfg.LogFile = envAnyDefault([]string{"LOG_FILE", "CONTROL_LOG_FILE"}, cfg.LogFile)
 	trustedRaw = envAnyDefault([]string{"TRUSTED_PROXIES", "CONTROL_TRUSTED_PROXIES"}, trustedRaw)
 	masterKeyRaw = envAnyDefault([]string{"MASTER_KEY", "CONTROL_MASTER_KEY"}, masterKeyRaw)
+	masterKeyFile = envAnyDefault([]string{"MASTER_KEY_FILE", "CONTROL_MASTER_KEY_FILE"}, masterKeyFile)
 	if raw := envAnyDefault([]string{"SESSION_TTL", "CONTROL_SESSION_TTL"}, ""); raw != "" {
 		d, err := time.ParseDuration(raw)
 		if err != nil || d < 15*time.Minute {
@@ -192,12 +195,131 @@ func buildConfig(source configFile, configDir string) (Config, error) {
 		return Config{}, fmt.Errorf("resolve database path: %w", err)
 	}
 	cfg.DatabasePath = absDatabasePath
-	key, err := decodeKey(masterKeyRaw)
+	if strings.TrimSpace(masterKeyFile) != "" && filepath.Clean(masterKeyFile) == cfg.DatabasePath {
+		return Config{}, errors.New("MASTER_KEY_FILE must differ from DATABASE_PATH")
+	}
+	key, err := resolveMasterKey(masterKeyRaw, masterKeyFile)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.MasterKey = key
 	return cfg, nil
+}
+
+const maxMasterKeyFileBytes = 256
+
+func resolveMasterKey(raw, path string) ([]byte, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return decodeKey(raw)
+	}
+	if !filepath.IsAbs(path) {
+		return nil, errors.New("MASTER_KEY_FILE must be an absolute path")
+	}
+
+	var provided []byte
+	if strings.TrimSpace(raw) != "" {
+		var err error
+		provided, err = decodeKey(raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	stored, err := readMasterKeyFile(path)
+	if err == nil {
+		if provided != nil && !bytes.Equal(provided, stored) {
+			return nil, errors.New("MASTER_KEY does not match the persistent MASTER_KEY_FILE")
+		}
+		return stored, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+
+	key := provided
+	if key == nil {
+		key = make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return nil, fmt.Errorf("generate persistent master key: %w", err)
+		}
+	}
+	if err := createMasterKeyFile(path, key); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			stored, readErr := readMasterKeyFile(path)
+			if readErr != nil {
+				return nil, readErr
+			}
+			if provided != nil && !bytes.Equal(provided, stored) {
+				return nil, errors.New("MASTER_KEY does not match the persistent MASTER_KEY_FILE")
+			}
+			return stored, nil
+		}
+		return nil, err
+	}
+	return key, nil
+}
+
+func readMasterKeyFile(path string) ([]byte, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, errors.New("MASTER_KEY_FILE must be a regular file and not a symlink")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open MASTER_KEY_FILE: %w", err)
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect MASTER_KEY_FILE: %w", err)
+	}
+	after, err := os.Lstat(path)
+	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, opened) || !os.SameFile(opened, after) {
+		return nil, errors.New("MASTER_KEY_FILE changed while it was being opened")
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return nil, fmt.Errorf("secure MASTER_KEY_FILE: %w", err)
+	}
+	body, err := io.ReadAll(io.LimitReader(file, maxMasterKeyFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read MASTER_KEY_FILE: %w", err)
+	}
+	if len(body) > maxMasterKeyFileBytes {
+		return nil, errors.New("MASTER_KEY_FILE is too large")
+	}
+	key, err := decodeKey(string(body))
+	if err != nil {
+		return nil, fmt.Errorf("invalid MASTER_KEY_FILE: %w", err)
+	}
+	return key, nil
+}
+
+func createMasterKeyFile(path string, key []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create MASTER_KEY_FILE directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	encoded := base64.StdEncoding.EncodeToString(key) + "\n"
+	if _, err := io.WriteString(file, encoded); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write MASTER_KEY_FILE: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync MASTER_KEY_FILE: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close MASTER_KEY_FILE: %w", err)
+	}
+	return nil
 }
 
 func valueDefault(value, fallback string) string {

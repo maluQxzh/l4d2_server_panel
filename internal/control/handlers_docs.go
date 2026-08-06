@@ -14,8 +14,8 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
 		"paths": map[string]any{
 			"/api/v1/auth/bootstrap":            map[string]any{"get": map[string]any{"summary": "Check first-run setup status"}, "post": map[string]any{"summary": "Create the first owner"}},
 			"/api/v1/auth/login":                map[string]any{"post": map[string]any{"summary": "Create a browser session"}},
-			"/api/v1/system/updates":            map[string]any{"get": map[string]any{"summary": "List portable center updates"}, "post": map[string]any{"summary": "Upload and start a portable center update"}},
-			"/api/v1/system/updates/{jobID}":    map[string]any{"get": map[string]any{"summary": "Get a portable center update"}},
+			"/api/v1/system/updates":            map[string]any{"get": map[string]any{"summary": "List center updates"}, "post": map[string]any{"summary": "Upload and start a center update"}},
+			"/api/v1/system/updates/{jobID}":    map[string]any{"get": map[string]any{"summary": "Get a center update"}},
 			"/api/v1/nodes":                     map[string]any{"get": map[string]any{"summary": "List nodes"}},
 			"/api/v1/nodes/{nodeID}/quarantine": map[string]any{"get": map[string]any{"summary": "List retained quarantine entries"}},
 			"/api/v1/nodes/{nodeID}/quarantine/{entryID}/purge-confirmations": map[string]any{"post": map[string]any{"summary": "Create a one-time quarantine purge confirmation"}},

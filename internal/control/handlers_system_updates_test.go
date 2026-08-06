@@ -25,7 +25,7 @@ func TestSingleSystemUpdatePackageReaderRejectsAdditionalParts(t *testing.T) {
 		t.Fatal(err)
 	}
 	reader := multipart.NewReader(bytes.NewReader(body.Bytes()), writer.Boundary())
-	part, err := nextPackagePart(reader)
+	part, err := nextPackagePart(reader, "zip")
 	if err != nil {
 		t.Fatal(err)
 	}

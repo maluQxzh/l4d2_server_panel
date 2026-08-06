@@ -1,0 +1,53 @@
+name: ${COMPOSE_PROJECT_NAME:-l4d2panel}
+
+services:
+  app:
+    image: ${CONTROL_IMAGE:-l4d2panel/control:offline}
+    pull_policy: never
+    user: "0:0"
+    restart: unless-stopped
+    environment:
+      DATABASE_PATH: /app/data/l4d2panel.sqlite3
+      MASTER_KEY: ${MASTER_KEY:-}
+      MASTER_KEY_FILE: /app/data/control-master.key
+      CONTAINER_UPDATE_ENABLED: "true"
+      CONTAINER_DOCKER_SOCKET: /var/run/docker.sock
+      CONTAINER_UPDATE_ROOT: /app/updates
+      PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1/32,::1/128}
+      BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-}
+      BOOTSTRAP_DISPLAY_NAME: ${BOOTSTRAP_DISPLAY_NAME:-}
+      SESSION_TTL: ${SESSION_TTL:-12h}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TZ: ${TZ:-Asia/Hong_Kong}
+    volumes:
+      - app_data:/app/data
+      - app_spool:/app/spool
+      - app_updates:/app/updates
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "${CONTROL_BIND_ADDRESS:-127.0.0.1}:${CONTROL_PORT:-19090}:19090"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, SETGID, SETUID]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:19090/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+volumes:
+  app_data:
+  app_spool:
+  app_updates:

@@ -1,15 +1,18 @@
 package control
 
 import (
+	"bytes"
+	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestConfigDefaultListenerIs19090(t *testing.T) {
-	for _, name := range []string{"LISTEN_ADDR", "CONTROL_LISTEN", "MASTER_KEY", "CONTROL_MASTER_KEY"} {
+	for _, name := range []string{"LISTEN_ADDR", "CONTROL_LISTEN", "MASTER_KEY", "CONTROL_MASTER_KEY", "MASTER_KEY_FILE", "CONTROL_MASTER_KEY_FILE"} {
 		t.Setenv(name, "")
 	}
 	t.Setenv("MASTER_KEY", strings.Repeat("01", 32))
@@ -23,7 +26,7 @@ func TestConfigDefaultListenerIs19090(t *testing.T) {
 }
 
 func TestConfigAcceptsDeploymentEnvironmentNames(t *testing.T) {
-	for _, name := range []string{"CONTROL_DATABASE_PATH", "CONTROL_MASTER_KEY", "CONTROL_LISTEN", "CONTROL_MIGRATIONS_DIR", "CONTROL_COOKIE_SECURE"} {
+	for _, name := range []string{"CONTROL_DATABASE_PATH", "CONTROL_MASTER_KEY", "MASTER_KEY_FILE", "CONTROL_MASTER_KEY_FILE", "CONTROL_LISTEN", "CONTROL_MIGRATIONS_DIR", "CONTROL_COOKIE_SECURE"} {
 		t.Setenv(name, "")
 	}
 	t.Setenv("DATABASE_PATH", filepath.Join(t.TempDir(), "control.sqlite3"))
@@ -45,6 +48,7 @@ func TestConfigAcceptsDeploymentEnvironmentNames(t *testing.T) {
 func TestConfigFromFileIsStrictAndEnvironmentWins(t *testing.T) {
 	for _, name := range []string{
 		"DATABASE_PATH", "CONTROL_DATABASE_PATH", "MASTER_KEY", "CONTROL_MASTER_KEY",
+		"MASTER_KEY_FILE", "CONTROL_MASTER_KEY_FILE",
 		"LISTEN_ADDR", "CONTROL_LISTEN", "MIGRATIONS_DIR", "CONTROL_MIGRATIONS_DIR",
 		"COOKIE_SECURE", "CONTROL_COOKIE_SECURE", "PUBLIC_URL", "CONTROL_PUBLIC_URL",
 		"TRUSTED_PROXIES", "CONTROL_TRUSTED_PROXIES", "TZ", "CONTROL_TIMEZONE",
@@ -107,5 +111,127 @@ func TestConfigFromFileRejectsUnknownAndTrailingData(t *testing.T) {
 				t.Fatal("expected strict config error")
 			}
 		})
+	}
+}
+
+func TestConfigGeneratesAndReusesPersistentMasterKeyFile(t *testing.T) {
+	for _, name := range []string{"MASTER_KEY", "CONTROL_MASTER_KEY", "MASTER_KEY_FILE", "CONTROL_MASTER_KEY_FILE"} {
+		t.Setenv(name, "")
+	}
+	path := filepath.Join(t.TempDir(), "secrets", "control-master.key")
+	t.Setenv("MASTER_KEY_FILE", path)
+
+	first, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.MasterKey) != 32 {
+		t.Fatalf("generated master key length = %d, want 32", len(first.MasterKey))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
+		t.Fatalf("master key file mode = %o, want 600", got)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, first.MasterKey) {
+		t.Fatal("generated key does not match persistent key file")
+	}
+
+	second, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first.MasterKey, second.MasterKey) {
+		t.Fatal("persistent master key changed between loads")
+	}
+}
+
+func TestConfigSeedsPersistentMasterKeyAndRejectsMismatch(t *testing.T) {
+	for _, name := range []string{"MASTER_KEY", "CONTROL_MASTER_KEY", "MASTER_KEY_FILE", "CONTROL_MASTER_KEY_FILE"} {
+		t.Setenv(name, "")
+	}
+	path := filepath.Join(t.TempDir(), "control-master.key")
+	t.Setenv("MASTER_KEY_FILE", path)
+	t.Setenv("MASTER_KEY", strings.Repeat("01", 32))
+
+	seeded, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(seeded.MasterKey, bytes.Repeat([]byte{1}, 32)) {
+		t.Fatal("explicit MASTER_KEY did not seed the persistent key file")
+	}
+
+	t.Setenv("MASTER_KEY", strings.Repeat("02", 32))
+	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("mismatched persistent master key was accepted: %v", err)
+	}
+}
+
+func TestConfigRejectsSymlinkMasterKeyFile(t *testing.T) {
+	for _, name := range []string{"MASTER_KEY", "CONTROL_MASTER_KEY", "MASTER_KEY_FILE", "CONTROL_MASTER_KEY_FILE"} {
+		t.Setenv(name, "")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "control-master.key")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	t.Setenv("MASTER_KEY_FILE", link)
+	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "not a symlink") {
+		t.Fatalf("symlink MASTER_KEY_FILE was accepted: %v", err)
+	}
+}
+
+func TestConfigRejectsMasterKeyFileAtDatabasePath(t *testing.T) {
+	for _, name := range []string{"MASTER_KEY", "CONTROL_MASTER_KEY", "MASTER_KEY_FILE", "CONTROL_MASTER_KEY_FILE"} {
+		t.Setenv(name, "")
+	}
+	path := filepath.Join(t.TempDir(), "control.sqlite3")
+	t.Setenv("DATABASE_PATH", path)
+	t.Setenv("MASTER_KEY_FILE", path)
+	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "must differ") {
+		t.Fatalf("database path was accepted as MASTER_KEY_FILE: %v", err)
+	}
+}
+
+func TestConfigDoesNotChangeExistingMasterKeyDirectoryMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix directory modes")
+	}
+	for _, name := range []string{"MASTER_KEY", "CONTROL_MASTER_KEY", "MASTER_KEY_FILE", "CONTROL_MASTER_KEY_FILE"} {
+		t.Setenv(name, "")
+	}
+	dir := filepath.Join(t.TempDir(), "shared-data")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MASTER_KEY_FILE", filepath.Join(dir, "control-master.key"))
+	if _, err := ConfigFromEnv(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o750 {
+		t.Fatalf("existing master key directory mode = %o, want 750", got)
 	}
 }

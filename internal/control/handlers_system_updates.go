@@ -9,13 +9,23 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 	"github.com/l4d2-panel/l4d2panel/internal/portableupdate"
 )
+
+type systemUpdateManager interface {
+	Supported() (bool, string)
+	Overview() portableupdate.Overview
+	State(string) (portableupdate.State, error)
+	Create(io.Reader, string) (portableupdate.State, error)
+	PendingReconciliation() []portableupdate.State
+	MarkReconciled(string) error
+	PackageFormat() string
+	MaxPackageBytes() int64
+}
 
 func (s *Server) handleListSystemUpdates(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.updates.Overview())
@@ -44,13 +54,13 @@ func (s *Server) handleCreateSystemUpdate(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "idempotency_key_required", "Idempotency-Key is required and must not exceed 200 characters")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, portableupdate.MaxPackageBytes+(1<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, s.updates.MaxPackageBytes()+(1<<20))
 	reader, err := r.MultipartReader()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "system_update_multipart_required", "multipart package upload is required")
 		return
 	}
-	part, err := nextPackagePart(reader)
+	part, err := nextPackagePart(reader, s.updates.PackageFormat())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "system_update_package_required", err.Error())
 		return
@@ -60,6 +70,7 @@ func (s *Server) handleCreateSystemUpdate(w http.ResponseWriter, r *http.Request
 	scopedKey := fmt.Sprintf("%x", sha256.Sum256([]byte(principal.User.ID+"\x00"+idempotencyKey)))
 	state, err := s.updates.Create(&singlePackageReader{part: part, multipart: reader}, scopedKey)
 	if err != nil {
+		s.logger.Warn("reject system update request", "error", err)
 		systemUpdateError(w, err)
 		return
 	}
@@ -77,10 +88,10 @@ func (s *Server) handleCreateSystemUpdate(w http.ResponseWriter, r *http.Request
 	})
 }
 
-func nextPackagePart(reader *multipart.Reader) (*multipart.Part, error) {
+func nextPackagePart(reader *multipart.Reader, format string) (*multipart.Part, error) {
 	part, err := reader.NextPart()
 	if errors.Is(err, io.EOF) {
-		return nil, errors.New("ZIP package field is required")
+		return nil, errors.New("update package field is required")
 	}
 	if err != nil {
 		return nil, err
@@ -89,9 +100,11 @@ func nextPackagePart(reader *multipart.Reader) (*multipart.Part, error) {
 		part.Close()
 		return nil, errors.New("multipart body may contain only the package field")
 	}
-	if filename := part.FileName(); filename == "" || !strings.EqualFold(filepath.Ext(filename), ".zip") {
+	filename := strings.ToLower(part.FileName())
+	valid := format == "zip" && strings.HasSuffix(filename, ".zip") || format == "tar.gz" && strings.HasSuffix(filename, ".tar.gz")
+	if filename == "" || !valid {
 		part.Close()
-		return nil, errors.New("package must be a ZIP file")
+		return nil, fmt.Errorf("package must be a .%s file", format)
 	}
 	return part, nil
 }
@@ -132,14 +145,14 @@ func systemUpdateError(w http.ResponseWriter, err error) {
 	}
 }
 
-func (s *Server) reconcilePortableUpdates(ctx context.Context) {
+func (s *Server) reconcileSystemUpdates(ctx context.Context) {
 	for _, state := range s.updates.PendingReconciliation() {
 		if err := s.store.SyncSystemUpdate(ctx, state, ""); err != nil {
 			s.logger.Error("reconcile portable update task", "job_id", state.JobID, "error", err)
 			continue
 		}
 		action := "system.update." + state.Status
-		event := domain.AuditEvent{ActorName: "portable-updater", Action: action, ResourceType: "system_update", ResourceID: state.JobID,
+		event := domain.AuditEvent{ActorName: "system-updater", Action: action, ResourceType: "system_update", ResourceID: state.JobID,
 			Metadata: map[string]any{"current_version": state.CurrentVersion, "target_version": state.TargetVersion, "rollback": state.Rollback}}
 		if state.Error != "" {
 			event.Metadata["error"] = state.Error
