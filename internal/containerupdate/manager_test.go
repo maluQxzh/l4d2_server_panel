@@ -18,7 +18,9 @@ func TestRejectDowngrade(t *testing.T) {
 		{name: "newer major", current: "1.2.3", target: "2.0.0"},
 		{name: "older patch", current: "1.2.3", target: "1.2.2", wantError: true, contains: "downgrade"},
 		{name: "development reinstall", current: "dev", target: "dev"},
-		{name: "development mismatch", current: "dev", target: "1.2.3", wantError: true, contains: "same-version"},
+		{name: "development to release", current: "dev", target: "1.2.3"},
+		{name: "development to another development build", current: "dev-a", target: "dev-b"},
+		{name: "release to development", current: "1.2.3", target: "dev", wantError: true, contains: "cannot update"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

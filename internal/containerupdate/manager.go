@@ -506,8 +506,14 @@ func rejectDowngrade(current, target string) error {
 	}
 	currentVersion, currentOK := parseReleaseVersion(current)
 	targetVersion, targetOK := parseReleaseVersion(target)
-	if !currentOK || !targetOK {
-		return errors.New("development builds only support same-version container reinstall")
+	if !currentOK {
+		// Development versions do not carry an ordered release number. Allow a
+		// trusted owner to replace one with another development build or move to
+		// a formal release; package identity and platform checks still apply.
+		return nil
+	}
+	if !targetOK {
+		return errors.New("release container builds cannot update to an unordered development version")
 	}
 	for index := range currentVersion {
 		if targetVersion[index] < currentVersion[index] {

@@ -97,3 +97,19 @@ test("升级失败历史明确显示自动回滚结果", async ({ page }) => {
   await expect(page.getByText("1.1.0 → 1.2.0")).toBeVisible();
   await expect(page.getByText("回滚：成功")).toBeVisible();
 });
+
+test("Docker 开发构建允许上传其他开发或正式镜像", async ({ page }) => {
+  await authenticate(page);
+  await page.route("**/api/v1/system/updates", (route) => json(route, {
+    supported: true,
+    current_version: "dev",
+    deployment: "docker-compose",
+    package_format: "tar.gz",
+    max_package_bytes: 1073741824,
+    history: [],
+  }));
+
+  await page.goto("/settings");
+  await expect(page.getByText("开发版本可替换为其他开发构建或正式版本；最大 1 GiB")).toBeVisible();
+  await expect(page.getByLabel("升级包")).toHaveAttribute("accept", ".tar.gz,application/gzip,application/x-gzip");
+});

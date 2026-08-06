@@ -1889,7 +1889,8 @@ paths:
       description: |
         仅全局所有者交互式会话可用，要求 CSRF 与非空 Idempotency-Key。Windows ZIP 最大 512 MiB；
         Docker 镜像 .tar.gz 最大 1 GiB。校验未签名清单/OCI 内容、产品、架构、版本、文件大小与 SHA-256。
-        允许同版本重装和向上升级，禁止降级。服务会短暂离线；失败时独立升级工作器恢复旧程序或镜像、
+        正式版本允许同版本重装和向上升级，禁止降级；Docker 开发构建允许替换为其他开发构建或正式版本。
+        服务会短暂离线；失败时独立升级工作器恢复旧程序或镜像、
         SQLite 和 Docker 主密钥快照。Docker 模式需要向 Control 挂载 /var/run/docker.sock，等同授予宿主机 root 级能力。
       parameters:
         - { $ref: "#/components/parameters/RequiredIdempotencyKey" }
