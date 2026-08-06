@@ -53,18 +53,22 @@ func (limiter *downloadConcurrencyLimiter) acquire(ctx context.Context) (func(),
 }
 
 type safeDownloadOptions struct {
-	Client         *http.Client
-	URL            func(context.Context) (string, error)
-	Headers        http.Header
-	Root           string
-	Relative       string
-	ExpectedSize   int64
-	ExpectedSHA256 string
-	Mode           os.FileMode
-	Replace        bool
-	RejectLink     bool
-	Concurrency    int
-	Progress       func(int)
+	Client  *http.Client
+	URL     func(context.Context) (string, error)
+	Headers http.Header
+	// SourceIsImmutable is reserved for fixed Agent integrations whose remote
+	// object identifier cannot be rebound to different bytes. It allows those
+	// sources to use byte ranges when an origin exposes no usable HTTP validator.
+	SourceIsImmutable bool
+	Root              string
+	Relative          string
+	ExpectedSize      int64
+	ExpectedSHA256    string
+	Mode              os.FileMode
+	Replace           bool
+	RejectLink        bool
+	Concurrency       int
+	Progress          func(int)
 }
 
 type safeDownloadResult struct {
@@ -240,13 +244,27 @@ func (identity safeDownloadIdentity) apply(request *http.Request) {
 }
 
 func (identity safeDownloadIdentity) validate(response *http.Response) error {
-	if identity.etag != "" && response.Header.Get("ETag") != identity.etag {
+	if identity.etag != "" && strings.TrimSpace(response.Header.Get("ETag")) != identity.etag {
 		return errors.New("download ETag changed between byte ranges")
 	}
-	if identity.lastModified != "" && response.Header.Get("Last-Modified") != identity.lastModified {
+	if identity.lastModified != "" && strings.TrimSpace(response.Header.Get("Last-Modified")) != identity.lastModified {
 		return errors.New("download Last-Modified changed between byte ranges")
 	}
 	return nil
+}
+
+func safeDownloadIdentityFromResponse(response *http.Response, sourceIsImmutable bool) safeDownloadIdentity {
+	// A strong ETag is the most precise HTTP representation validator. Do not
+	// additionally require Last-Modified when one is available: intermediaries
+	// can legally omit or normalize the weaker timestamp independently.
+	etag := strings.TrimSpace(response.Header.Get("ETag"))
+	if etag != "" && !strings.HasPrefix(strings.ToUpper(etag), "W/") {
+		return safeDownloadIdentity{etag: etag}
+	}
+	if sourceIsImmutable {
+		return safeDownloadIdentity{}
+	}
+	return safeDownloadIdentity{lastModified: strings.TrimSpace(response.Header.Get("Last-Modified"))}
 }
 
 func (downloader *safeSegmentedDownloader) probeRange(ctx context.Context, options safeDownloadOptions, urls *safeDownloadURLState) (safeDownloadIdentity, bool, error) {
@@ -299,7 +317,7 @@ func (downloader *safeSegmentedDownloader) probeRange(ctx context.Context, optio
 		if readErr != nil || len(raw) != 1 {
 			return safeDownloadIdentity{}, false, errors.New("download range probe returned an invalid body")
 		}
-		return safeDownloadIdentity{etag: response.Header.Get("ETag"), lastModified: response.Header.Get("Last-Modified")}, true, nil
+		return safeDownloadIdentityFromResponse(response, options.SourceIsImmutable), true, nil
 	}
 	return safeDownloadIdentity{}, false, errors.New("download range probe exhausted retries")
 }

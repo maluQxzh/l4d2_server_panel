@@ -676,7 +676,9 @@ func (c *qqFlashClient) downloadFile(ctx context.Context, instancePath, relative
 		URL: func(ctx context.Context) (string, error) {
 			return c.fetchDownloadURL(ctx, file.PhysicalID, deviceID)
 		},
-		Headers: headers, Root: instancePath, Relative: relative, ExpectedSize: file.Size,
+		// QQ's physical ID identifies one immutable uploaded object, while its CDN
+		// reports a range-dependent Last-Modified value for large files.
+		Headers: headers, SourceIsImmutable: true, Root: instancePath, Relative: relative, ExpectedSize: file.Size,
 		Mode: 0o640, Replace: true, RejectLink: true, Concurrency: qqFlashDownloadConcurrency, Progress: progress,
 	})
 	return err
