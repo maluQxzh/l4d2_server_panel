@@ -29,7 +29,7 @@ function EnvironmentCard({ environment, configureSteam, addGame }: { environment
   const inspect = useMutation({ mutationFn: () => api.inspectEnvironment(environment.id), onSuccess: () => { toast.push("运行环境检测任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
   const action = useMutation({ mutationFn: ({ item, type, location }: { item: GameInstallationRecord; type: "import" | "validate" | "update" | "reinstall"; location?: { path: string } }) => api.gameInstallationAction(environment.id, item.id, type, location), onSuccess: () => { toast.push("游戏安装检测或维护任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
   const items = installations.data?.items || [];
-  const canManage = canAccessNode(user, environment.node_id, "manage");
+  const canManage = canAccessNode(user, environment.node_id, "environments.manage");
   const canRunTasks = canManage && environment.agent_supported && environment.node_status === "online";
   return <Card className="environment-card">
     <div className="card-heading"><div><span className="eyebrow">{environment.node_status}</span><h2>{environment.node_name || environment.node_id}</h2></div><StatusBadge status={environment.node_status} pulse={environment.node_status === "online"} /></div>

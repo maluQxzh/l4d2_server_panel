@@ -280,7 +280,7 @@ func redactEventForPrincipal(event Event, principal Principal) Event {
 			data["job"] = redactJobForPrincipal(job, principal)
 		case map[string]any:
 			jobScope := domain.Job{NodeID: eventString(job, "node_id"), InstanceID: eventString(job, "instance_id")}
-			canOperate := (jobScope.NodeID != "" || jobScope.InstanceID != "") && principal.AllowsJobPermission(jobScope, PermissionOperate)
+			canOperate := (jobScope.NodeID != "" || jobScope.InstanceID != "") && principal.AllowsJobPermission(jobScope, PermissionJobsDetails)
 			copyJob := make(map[string]any, len(job))
 			for key, value := range job {
 				if canOperate || (key != "payload" && key != "result") {

@@ -3,14 +3,18 @@ import { Box, Filter, Gamepad2, Map, MoreHorizontal, Play, Plus, RefreshCw, Sear
 import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, StatusBadge } from "../components/ui";
+import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
 import { useToast } from "../context/ToastContext";
 import { api } from "../lib/api";
+import { hasAnyPermission, hasInstancePermission } from "../lib/account-permissions";
 import { relativeTime } from "../lib/format";
 import { defaultTickrate, gameDifficulties, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
 import type { InstanceRecord } from "../lib/types";
 
 export function InstancesPage() {
+  const { user } = useAuth();
+  const canCreate = hasAnyPermission(user, "instances.create");
   const [createOpen, setCreateOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
@@ -23,14 +27,15 @@ export function InstancesPage() {
   }), [instances.data, search, status]);
 
   return <div>
-    <PageHeader eyebrow="GAME SERVERS" title="游戏实例" description="部署、运行和维护彼此隔离的 L4D2 专用服务器。" actions={<><Button variant="secondary" onClick={() => void instances.refetch()}><RefreshCw size={16} />刷新</Button><Button onClick={() => setCreateOpen(true)}><Plus size={17} />创建实例</Button></>} />
+    <PageHeader eyebrow="GAME SERVERS" title="游戏实例" description="部署、运行和维护彼此隔离的 L4D2 专用服务器。" actions={<><Button variant="secondary" onClick={() => void instances.refetch()}><RefreshCw size={16} />刷新</Button>{canCreate && <Button onClick={() => setCreateOpen(true)}><Plus size={17} />创建实例</Button>}</>} />
     <Card className="toolbar-card"><div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索实例、节点、地址或地图" aria-label="搜索实例" /></div><div className="filter-select"><Filter size={16} /><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="按状态筛选"><option value="all">全部状态</option><option value="running">运行中</option><option value="stopped">已停止</option><option value="degraded">异常</option><option value="installing">安装中</option><option value="updating">更新中</option><option value="node_offline">节点离线</option></select></div><span className="toolbar-count">{filtered.length} 个实例</span></Card>
-    {instances.isPending ? <LoadingBlock label="正在获取实例清单…" /> : instances.error ? <ErrorState error={instances.error} retry={() => void instances.refetch()} /> : filtered.length === 0 ? <Card><EmptyState title={instances.data.items.length ? "没有匹配的实例" : "还没有游戏实例"} description={instances.data.items.length ? "尝试调整搜索关键词或状态筛选。" : "先在运行环境中准备或登记游戏目录，再创建实例并手动开服。"} action={!instances.data.items.length && <Button onClick={() => setCreateOpen(true)}><Plus size={16} />创建第一个实例</Button>} /></Card> : <div className="instance-grid">{filtered.map((instance) => <InstanceCard key={instance.id} instance={instance} />)}</div>}
-    <CreateInstanceModal open={createOpen} onClose={() => setCreateOpen(false)} />
+    {instances.isPending ? <LoadingBlock label="正在获取实例清单…" /> : instances.error ? <ErrorState error={instances.error} retry={() => void instances.refetch()} /> : filtered.length === 0 ? <Card><EmptyState title={instances.data.items.length ? "没有匹配的实例" : "还没有游戏实例"} description={instances.data.items.length ? "尝试调整搜索关键词或状态筛选。" : "先在运行环境中准备或登记游戏目录，再创建实例并手动开服。"} action={!instances.data.items.length && canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus size={16} />创建第一个实例</Button> : undefined} /></Card> : <div className="instance-grid">{filtered.map((instance) => <InstanceCard key={instance.id} instance={instance} />)}</div>}
+    <CreateInstanceModal open={canCreate && createOpen} onClose={() => setCreateOpen(false)} />
   </div>;
 }
 
 function InstanceCard({ instance }: { instance: InstanceRecord }) {
+  const { user } = useAuth();
   const toast = useToast();
   const client = useQueryClient();
   const action = useMutation({
@@ -46,11 +51,11 @@ function InstanceCard({ instance }: { instance: InstanceRecord }) {
     },
     onError: (error) => toast.push(`无法检测在线玩家：${error.message}`, "error"),
   });
-  const canStart = instance.status === "stopped";
-  const canStop = ["running", "degraded"].includes(instance.status);
-  const showRestart = ["stopped", "running", "degraded"].includes(instance.status);
+  const canStart = instance.status === "stopped" && hasInstancePermission(user, instance, "instances.start");
+  const canStop = ["running", "degraded"].includes(instance.status) && hasInstancePermission(user, instance, "instances.stop");
+  const showRestart = ["stopped", "running", "degraded"].includes(instance.status) && hasInstancePermission(user, instance, "instances.restart");
   const canRestart = ["running", "degraded"].includes(instance.status);
-  const isExternal = instance.status === "external";
+  const isExternal = instance.status === "external" && hasInstancePermission(user, instance, "instances.restart");
   const nodeUnavailable = instance.node_status !== "online";
   const nodeStatusLabel = instance.node_status === "offline" ? "节点离线" : instance.node_status === "revoked" ? "节点已吊销" : "节点待接入";
   return <Card className={`instance-card instance-card--${instance.status}`}>

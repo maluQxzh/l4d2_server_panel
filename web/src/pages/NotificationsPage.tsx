@@ -3,14 +3,16 @@ import { BellRing, CheckCheck, CircleAlert, Info, RefreshCw, ShieldAlert } from 
 import { Button, Card, EmptyState, ErrorState, LoadingBlock, PageHeader } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../lib/api";
+import { hasGlobalPermission } from "../lib/account-permissions";
 import { dateTime } from "../lib/format";
 import type { ListResponse, NotificationDeliveryRecord, NotificationRecord } from "../lib/types";
 
 export function NotificationsPage() {
   const auth = useAuth();
+  const canManageDeliveries = hasGlobalPermission(auth.user, "notifications.manage");
   const notifications = useQuery({ queryKey: ["notifications"], queryFn: api.notifications, refetchInterval: 30_000 });
-  const deliveries = useQuery({ queryKey: ["notification-deliveries"], queryFn: api.notificationDeliveries, enabled: ["owner", "admin"].includes(auth.user?.role || ""), refetchInterval: 30_000 });
-  return <div><PageHeader eyebrow="ALERT INBOX" title="通知" description="查看节点离线、磁盘预警、更新和任务失败等重要事件。" />{notifications.isPending ? <LoadingBlock label="正在读取通知…" /> : notifications.error ? <ErrorState error={notifications.error} retry={() => void notifications.refetch()} /> : notifications.data.items.length ? <Card className="notification-list">{notifications.data.items.map((item) => <NotificationRow key={item.id} item={item} />)}</Card> : <Card><EmptyState title="没有未处理通知" description="系统状态良好。新告警会通过实时事件自动出现在这里。" /></Card>}{["owner", "admin"].includes(auth.user?.role || "") && <DeliveryCard query={deliveries} />}</div>;
+  const deliveries = useQuery({ queryKey: ["notification-deliveries"], queryFn: api.notificationDeliveries, enabled: canManageDeliveries, refetchInterval: 30_000 });
+  return <div><PageHeader eyebrow="ALERT INBOX" title="通知" description="查看节点离线、磁盘预警、更新和任务失败等重要事件。" />{notifications.isPending ? <LoadingBlock label="正在读取通知…" /> : notifications.error ? <ErrorState error={notifications.error} retry={() => void notifications.refetch()} /> : notifications.data.items.length ? <Card className="notification-list">{notifications.data.items.map((item) => <NotificationRow key={item.id} item={item} />)}</Card> : <Card><EmptyState title="没有未处理通知" description="系统状态良好。新告警会通过实时事件自动出现在这里。" /></Card>}{canManageDeliveries && <DeliveryCard query={deliveries} />}</div>;
 }
 
 function DeliveryCard({ query }: { query: UseQueryResult<ListResponse<NotificationDeliveryRecord>, Error> }) {

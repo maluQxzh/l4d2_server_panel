@@ -130,7 +130,7 @@ func (s *Store) BootstrapOwnerWithSetupKey(ctx context.Context, raw, passwordHas
 		passwordHash, user.Role, user.CreatedAt); err != nil {
 		return domain.User{}, fmt.Errorf("create bootstrap owner: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO role_bindings(id,user_id,role,scope_type) VALUES(?1,?2,'owner','global')`, uuid.NewString(), user.ID); err != nil {
+	if err := insertRoleBindings(ctx, tx, user.ID, user.ID, []domain.RoleBinding{{Role: domain.RoleOwner, ScopeType: "global", Permissions: presetPermissions(domain.RoleOwner)}}); err != nil {
 		return domain.User{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM bootstrap_setup_key WHERE singleton=1`); err != nil {

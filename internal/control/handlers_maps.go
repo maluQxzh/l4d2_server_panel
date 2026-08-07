@@ -14,13 +14,13 @@ import (
 func (s *Server) handleListMaps(w http.ResponseWriter, r *http.Request) {
 	principal := principalFromContext(r.Context())
 	nodeID := strings.TrimSpace(r.URL.Query().Get("node_id"))
-	if nodeID != "" && !principal.AllowsNodePermission(nodeID, PermissionRead) {
+	if nodeID != "" && !principal.AllowsNodePermission(nodeID, PermissionMapsRead) {
 		writeTokenScopeDenied(w)
 		return
 	}
 	limit := parseLimit(r, 200)
 	queryLimit := limit
-	if nodeID == "" && principal.HasResourceRestriction() {
+	if nodeID == "" && !principal.GlobalAllows(PermissionMapsRead) {
 		queryLimit = min(500, limit*5)
 	}
 	items, err := s.store.ListMaps(r.Context(), nodeID, queryLimit)
@@ -30,7 +30,7 @@ func (s *Server) handleListMaps(w http.ResponseWriter, r *http.Request) {
 	}
 	filtered := make([]domain.Map, 0, min(limit, len(items)))
 	for _, item := range items {
-		if principal.AllowsNodePermission(item.NodeID, PermissionRead) {
+		if principal.AllowsNodePermission(item.NodeID, PermissionMapsRead) {
 			filtered = append(filtered, item)
 			if len(filtered) == limit {
 				break
@@ -46,7 +46,7 @@ func (s *Server) handleGetMap(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	if !principalFromContext(r.Context()).AllowsNodePermission(item.NodeID, PermissionRead) {
+	if !principalFromContext(r.Context()).AllowsNodePermission(item.NodeID, PermissionMapsRead) {
 		writeTokenScopeDenied(w)
 		return
 	}
@@ -59,7 +59,7 @@ func (s *Server) handleGetMapPoster(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	if !principalFromContext(r.Context()).AllowsNodePermission(nodeID, PermissionRead) {
+	if !principalFromContext(r.Context()).AllowsNodePermission(nodeID, PermissionMapsRead) {
 		writeTokenScopeDenied(w)
 		return
 	}
@@ -84,7 +84,7 @@ func (s *Server) handleImportMap(w http.ResponseWriter, r *http.Request) {
 	}
 	nodeID := chi.URLParam(r, "nodeID")
 	principal := principalFromContext(r.Context())
-	if !principal.AllowsNodePermission(nodeID, PermissionManage) {
+	if !principal.AllowsNodePermission(nodeID, PermissionMapsImport) {
 		writeError(w, http.StatusForbidden, "forbidden", "map import permission denied")
 		return
 	}
@@ -148,7 +148,7 @@ func (s *Server) handleMapAssignment(w http.ResponseWriter, r *http.Request, act
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if !principal.AllowsNodePermission(item.NodeID, PermissionRead) || !principal.AllowsInstancePermission(instance, PermissionManage) {
+	if !principal.AllowsNodePermission(item.NodeID, PermissionMapsRead) || !principal.AllowsInstancePermission(instance, PermissionMapsAssign) {
 		writeError(w, http.StatusForbidden, "forbidden", "map assignment permission denied")
 		return
 	}
@@ -189,7 +189,7 @@ func (s *Server) handleVerifyMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if !principal.AllowsNodePermission(item.NodeID, PermissionManage) {
+	if !principal.AllowsNodePermission(item.NodeID, PermissionMapsVerify) {
 		writeError(w, http.StatusForbidden, "forbidden", "map verification permission denied")
 		return
 	}
@@ -221,7 +221,7 @@ func (s *Server) handleCreateMapDeleteConfirmation(w http.ResponseWriter, r *htt
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if !principal.AllowsNodePermission(item.NodeID, PermissionManage) {
+	if !principal.AllowsNodePermission(item.NodeID, PermissionMapsDelete) {
 		writeError(w, http.StatusForbidden, "forbidden", "map deletion permission denied")
 		return
 	}
@@ -253,7 +253,7 @@ func (s *Server) handleDeleteMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if !principal.AllowsNodePermission(item.NodeID, PermissionManage) {
+	if !principal.AllowsNodePermission(item.NodeID, PermissionMapsDelete) {
 		writeError(w, http.StatusForbidden, "forbidden", "map deletion permission denied")
 		return
 	}

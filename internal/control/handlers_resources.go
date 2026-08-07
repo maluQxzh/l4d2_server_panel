@@ -54,15 +54,13 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if principal.HasResourceRestriction() {
-		filtered := items[:0]
-		for _, item := range items {
-			if principal.AllowsNodePermission(item.ID, PermissionRead) {
-				filtered = append(filtered, item)
-			}
+	filtered := items[:0]
+	for _, item := range items {
+		if principal.AllowsNodePermission(item.ID, PermissionNodesRead) {
+			filtered = append(filtered, item)
 		}
-		items = filtered
 	}
+	items = filtered
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -154,15 +152,13 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if principal.HasResourceRestriction() {
-		filtered := items[:0]
-		for _, item := range items {
-			if principal.AllowsInstancePermission(item, PermissionRead) {
-				filtered = append(filtered, item)
-			}
+	filtered := items[:0]
+	for _, item := range items {
+		if principal.AllowsInstancePermission(item, PermissionInstancesRead) {
+			filtered = append(filtered, item)
 		}
-		items = filtered
 	}
+	items = filtered
 	for index := range items {
 		if err := s.populateInstanceSecretState(r.Context(), &items[index]); err != nil {
 			s.fail(w, err)
@@ -246,7 +242,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	principal := principalFromContext(r.Context())
-	if !principal.AllowsNodePermission(request.NodeID, PermissionManage) {
+	if !principal.AllowsNodePermission(request.NodeID, PermissionInstancesCreate) {
 		writeTokenScopeDenied(w)
 		return
 	}
@@ -257,7 +253,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	idempotencyKey := r.Header.Get("Idempotency-Key")
 	if existing, err := s.store.JobByIdempotencyKeyMatching(r.Context(), principal.User.ID, idempotencyKey, requestFingerprint); err == nil {
-		if !principal.AllowsJobPermission(existing, PermissionManage) {
+		if !principal.AllowsJobPermission(existing, PermissionInstancesCreate) {
 			writeTokenScopeDenied(w)
 			return
 		}
@@ -774,7 +770,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_job_filter", "background must be include, exclude, or only")
 		return
 	}
-	if nodeID != "" && instanceID == "" && !principal.AllowsNodePermission(nodeID, PermissionRead) {
+	if nodeID != "" && instanceID == "" && !principal.AllowsNodePermission(nodeID, PermissionJobsRead) {
 		writeTokenScopeDenied(w)
 		return
 	}
@@ -784,14 +780,14 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, lookupErr)
 			return
 		}
-		if !principal.AllowsInstancePermission(instance, PermissionRead) || (nodeID != "" && instance.NodeID != nodeID) {
+		if !principal.AllowsInstancePermission(instance, PermissionJobsRead) || (nodeID != "" && instance.NodeID != nodeID) {
 			writeTokenScopeDenied(w)
 			return
 		}
 	}
 	limit := parseLimit(r, 100)
 	queryLimit := limit
-	if principal.HasResourceRestriction() {
+	if !principal.GlobalAllows(PermissionJobsRead) {
 		queryLimit = limit * 5
 		if queryLimit > 500 {
 			queryLimit = 500
@@ -804,7 +800,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	filtered := make([]domain.Job, 0, min(limit, len(items)))
 	for _, item := range items {
-		if principal.AllowsJobPermission(item, PermissionRead) {
+		if principal.AllowsJobPermission(item, PermissionJobsRead) {
 			filtered = append(filtered, redactJobForPrincipal(item, principal))
 			if len(filtered) == limit {
 				break
@@ -820,7 +816,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		visible := make([]domain.Job, 0, len(backgroundItems))
 		for _, item := range backgroundItems {
-			if principal.AllowsJobPermission(item, PermissionRead) {
+			if principal.AllowsJobPermission(item, PermissionJobsRead) {
 				visible = append(visible, item)
 			}
 		}
@@ -886,7 +882,7 @@ func redactJob(job domain.Job, role domain.Role) domain.Job {
 }
 
 func redactJobForPrincipal(job domain.Job, principal Principal) domain.Job {
-	if !principal.AllowsJobPermission(job, PermissionOperate) {
+	if !principal.AllowsJobPermission(job, PermissionJobsDetails) {
 		job.Payload = nil
 		job.Result = nil
 		return job
@@ -924,19 +920,17 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 	principal := principalFromContext(r.Context())
 	resourceID := r.URL.Query().Get("resource_id")
-	if principal.HasResourceRestriction() {
-		if resourceID != "" && !s.tokenAllowsAuditResource(r.Context(), principal, resourceID) {
-			writeTokenScopeDenied(w)
-			return
-		}
+	if resourceID != "" && !s.tokenAllowsAuditResource(r.Context(), principal, resourceID) {
+		writeTokenScopeDenied(w)
+		return
 	}
-	if resourceID == "" && !principal.GlobalAllows(PermissionManage) && !principal.HasResourceRestriction() {
+	if resourceID == "" && principal.GlobalAllows(PermissionAuditRead) && !principal.GlobalAllows(PermissionAuditReadGlobal) {
 		writeError(w, http.StatusForbidden, "forbidden", "global audit access requires administrator permission")
 		return
 	}
 	limit := parseLimit(r, 100)
 	queryLimit := limit
-	if resourceID == "" && principal.HasResourceRestriction() {
+	if resourceID == "" && !principal.GlobalAllows(PermissionAuditReadGlobal) {
 		queryLimit = limit * 5
 		if queryLimit > 500 {
 			queryLimit = 500
@@ -947,7 +941,7 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	if principal.HasResourceRestriction() {
+	if !principal.GlobalAllows(PermissionAuditReadGlobal) {
 		filtered := make([]domain.AuditEvent, 0, min(limit, len(items)))
 		for _, item := range items {
 			if s.auditEventAllowed(r.Context(), principal, item) {
@@ -959,7 +953,7 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		}
 		items = filtered
 	}
-	if !principal.GlobalAllows(PermissionManage) {
+	if !principal.GlobalAllows(PermissionAuditReadGlobal) {
 		for i := range items {
 			items[i].RemoteIP = ""
 		}

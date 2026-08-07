@@ -18,7 +18,7 @@ func (s *Server) handleListEnvironments(w http.ResponseWriter, r *http.Request) 
 	principal := principalFromContext(r.Context())
 	filtered := make([]domain.RuntimeEnvironment, 0, len(items))
 	for _, item := range items {
-		if principal.AllowsNodePermission(item.NodeID, PermissionRead) {
+		if principal.AllowsNodePermission(item.NodeID, PermissionEnvironmentsRead) {
 			item.AgentSupported = s.agents.Supports(item.NodeID, "runtime_environment_v1")
 			filtered = append(filtered, item)
 		}
@@ -41,7 +41,7 @@ func (s *Server) environmentForRequest(w http.ResponseWriter, r *http.Request, p
 }
 
 func (s *Server) handleGetEnvironment(w http.ResponseWriter, r *http.Request) {
-	item, ok := s.environmentForRequest(w, r, PermissionRead)
+	item, ok := s.environmentForRequest(w, r, PermissionEnvironmentsRead)
 	if !ok {
 		return
 	}
@@ -91,7 +91,7 @@ func (s *Server) queueEnvironmentRequestWithFingerprint(w http.ResponseWriter, r
 }
 
 func (s *Server) handleInspectEnvironment(w http.ResponseWriter, r *http.Request) {
-	item, ok := s.environmentForRequest(w, r, PermissionManage)
+	item, ok := s.environmentForRequest(w, r, PermissionEnvironmentsManage)
 	if !ok || !s.requireEnvironmentAgent(w, item) {
 		return
 	}
@@ -108,7 +108,7 @@ func (s *Server) handleInspectEnvironment(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleSteamCMDAction(w http.ResponseWriter, r *http.Request) {
-	item, ok := s.environmentForRequest(w, r, PermissionManage)
+	item, ok := s.environmentForRequest(w, r, PermissionEnvironmentsManage)
 	if !ok || !s.requireEnvironmentAgent(w, item) {
 		return
 	}
@@ -138,7 +138,7 @@ func (s *Server) handleSteamCMDAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListGameInstallations(w http.ResponseWriter, r *http.Request) {
-	item, ok := s.environmentForRequest(w, r, PermissionRead)
+	item, ok := s.environmentForRequest(w, r, PermissionEnvironmentsRead)
 	if !ok {
 		return
 	}
@@ -151,7 +151,7 @@ func (s *Server) handleListGameInstallations(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleCreateGameInstallation(w http.ResponseWriter, r *http.Request) {
-	item, ok := s.environmentForRequest(w, r, PermissionManage)
+	item, ok := s.environmentForRequest(w, r, PermissionEnvironmentsManage)
 	if !ok || !s.requireEnvironmentAgent(w, item) {
 		return
 	}
@@ -232,7 +232,7 @@ func (s *Server) installationForRequest(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Server) handleGameInstallationAction(w http.ResponseWriter, r *http.Request) {
-	item, ok := s.environmentForRequest(w, r, PermissionManage)
+	item, ok := s.environmentForRequest(w, r, PermissionEnvironmentsManage)
 	if !ok || !s.requireEnvironmentAgent(w, item) {
 		return
 	}

@@ -18,29 +18,30 @@ const scopedOperator = {
 
 describe("实例生命周期权限与状态", () => {
   it("按资源绑定而不是最高显示角色授权", () => {
-    expect(canAccessInstance(scopedOperator, instance, "operate")).toBe(true);
-    expect(canAccessInstance(scopedOperator, { id: "instance-b", node_id: "node-a" }, "operate")).toBe(false);
-    expect(canAccessInstance(scopedOperator, instance, "manage")).toBe(false);
+    expect(canAccessInstance(scopedOperator, instance, "instances.start")).toBe(true);
+    expect(canAccessInstance(scopedOperator, { id: "instance-b", node_id: "node-a" }, "instances.start")).toBe(false);
+    expect(canAccessInstance(scopedOperator, instance, "instances.delete")).toBe(false);
   });
 
   it("节点权限不被单实例绑定扩大", () => {
-    expect(canAccessNode(scopedOperator, "node-a", "operate")).toBe(false);
-    expect(canAccessNode({ ...scopedOperator, role_bindings: [{ role: "admin", scope_type: "node", node_id: "node-a" }] }, "node-a", "manage")).toBe(true);
+    expect(canAccessNode(scopedOperator, "node-a", "nodes.update")).toBe(false);
+    expect(canAccessNode({ ...scopedOperator, role_bindings: [{ role: "admin", scope_type: "node", node_id: "node-a" }] }, "node-a", "nodes.update")).toBe(true);
   });
 
   it("稳定状态允许维护，过渡状态全部阻止写操作", () => {
-    expect(lifecycleActionAllowed("update", "running", { operate: true, manage: false })).toBe(true);
-    expect(lifecycleActionAllowed("reinstall", "stopped", { operate: true, manage: false })).toBe(false);
-    expect(lifecycleActionAllowed("reinstall", "stopped", { operate: true, manage: true })).toBe(true);
-    expect(lifecycleActionAllowed("update", "updating", { operate: true, manage: true })).toBe(false);
-    expect(lifecycleActionAllowed("start", "running", { operate: true, manage: true })).toBe(false);
-    expect(lifecycleActionAllowed("restart", "stopped", { operate: true, manage: false })).toBe(false);
-    expect(lifecycleActionAllowed("restart", "running", { operate: true, manage: false })).toBe(true);
+    const operate = () => true;
+    expect(lifecycleActionAllowed("update", "running", operate)).toBe(true);
+    expect(lifecycleActionAllowed("reinstall", "stopped", () => false)).toBe(false);
+    expect(lifecycleActionAllowed("reinstall", "stopped", operate)).toBe(true);
+    expect(lifecycleActionAllowed("update", "updating", operate)).toBe(false);
+    expect(lifecycleActionAllowed("start", "running", operate)).toBe(false);
+    expect(lifecycleActionAllowed("restart", "stopped", operate)).toBe(false);
+    expect(lifecycleActionAllowed("restart", "running", operate)).toBe(true);
   });
 
   it("外部实例只能解除管理，不能隔离文件", () => {
-    expect(lifecycleActionAllowed("detach", "external", { operate: true, manage: true })).toBe(true);
-    expect(lifecycleActionAllowed("quarantine", "external", { operate: true, manage: true })).toBe(false);
+    expect(lifecycleActionAllowed("detach", "external", () => true)).toBe(true);
+    expect(lifecycleActionAllowed("quarantine", "external", () => true)).toBe(false);
   });
 
   it("预览与 Agent 固定参数顺序一致且不含秘密", () => {

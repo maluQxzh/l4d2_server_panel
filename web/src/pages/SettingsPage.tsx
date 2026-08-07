@@ -8,10 +8,10 @@ import { useLocation } from "react-router";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, StatusBadge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
-import { hasRootSecurityPermission } from "../lib/account-permissions";
+import { hasGlobalPermission, hasRootSecurityPermission, permissionAllowedAtScope, permissionCatalog, rolePresetPermissions, tokenScopesForUser } from "../lib/account-permissions";
 import { api, ApiError } from "../lib/api";
 import { dateTime } from "../lib/format";
-import type { Role, RoleBinding, SystemUpdatePhase, User } from "../lib/types";
+import type { Permission, Role, RoleBinding, SystemUpdatePhase, User } from "../lib/types";
 
 export function SettingsPage() {
   const auth = useAuth();
@@ -45,12 +45,12 @@ export function SettingsPage() {
 
     <div className="settings-grid">
       <Card><div className="card-heading"><div><span className="eyebrow">PERSONAL SECURITY</span><h2>账号安全</h2></div><KeyRound size={21} /></div><div className="settings-list"><button onClick={() => setTotpOpen(true)}><span><Smartphone size={18} /><span><strong>TOTP 双重验证</strong><small>{auth.user?.totp_enabled ? "已启用；恢复码每个只能使用一次" : "使用认证器保护登录"}</small></span></span><em>{auth.user?.totp_enabled ? "查看状态" : "启用"}</em></button><button onClick={() => setTokenOpen(true)}><span><KeyRound size={18} /><span><strong>API Token</strong><small>创建带权限、资源范围与有效期的令牌</small></span></span><em>管理</em></button><button onClick={() => { if (window.confirm("确认退出当前登录会话？")) void auth.logout(); }}><span><LockKeyhole size={18} /><span><strong>登录会话</strong><small>撤销当前设备的 HttpOnly 会话 Cookie</small></span></span><em>退出</em></button></div></Card>
-      <Card><div className="card-heading"><div><span className="eyebrow">NOTIFICATION DELIVERY</span><h2>通知渠道</h2></div><Bell size={21} /></div><div className="settings-list"><button onClick={() => setChannelKind("smtp")} disabled={!['owner', 'admin'].includes(auth.user?.role || '')}><span><Mail size={18} /><span><strong>SMTP 邮件</strong><small>强制 STARTTLS，凭据加密保存</small></span></span><em>配置</em></button><button onClick={() => setChannelKind("webhook")} disabled={!['owner', 'admin'].includes(auth.user?.role || '')}><span><Webhook size={18} /><span><strong>Webhook</strong><small>HMAC-SHA256 签名与持久化重试</small></span></span><em>配置</em></button></div></Card>
+      <Card><div className="card-heading"><div><span className="eyebrow">NOTIFICATION DELIVERY</span><h2>通知渠道</h2></div><Bell size={21} /></div><div className="settings-list"><button onClick={() => setChannelKind("smtp")} disabled={!hasGlobalPermission(auth.user, "notifications.manage")}><span><Mail size={18} /><span><strong>SMTP 邮件</strong><small>强制 STARTTLS，凭据加密保存</small></span></span><em>配置</em></button><button onClick={() => setChannelKind("webhook")} disabled={!hasGlobalPermission(auth.user, "notifications.manage")}><span><Webhook size={18} /><span><strong>Webhook</strong><small>HMAC-SHA256 签名与持久化重试</small></span></span><em>配置</em></button></div></Card>
       <Card><div className="card-heading"><div><span className="eyebrow">DISPLAY</span><h2>界面偏好</h2></div><Braces size={21} /></div><label className="preference-row"><span><strong>紧凑布局</strong><small>在表格中显示更多信息</small></span><button type="button" role="switch" aria-checked={compact} className={`switch ${compact ? "switch--on" : ""}`} onClick={() => setCompact((value) => !value)}><span /></button></label><Field label="语言"><select value="zh-CN" disabled><option>简体中文</option></select></Field></Card>
     </div>
     {canManageUsers && <CenterUpdateCard />}
     <TotpModal open={totpOpen} enabled={Boolean(auth.user?.totp_enabled)} onClose={() => setTotpOpen(false)} />
-    <APITokenModal open={tokenOpen} role={auth.user?.role || "viewer"} onClose={() => setTokenOpen(false)} />
+    <APITokenModal open={tokenOpen} user={auth.user || null} onClose={() => setTokenOpen(false)} />
     <NotificationChannelModal kind={channelKind} onClose={() => setChannelKind(null)} />
     <UserModal target={canManageUsers ? managedUser : null} actor={auth.user || null} onClose={() => setManagedUser(null)} />
   </div>;
@@ -143,7 +143,7 @@ function CenterUpdateCard() {
   </section>;
 }
 
-type EditableBinding = Pick<RoleBinding, "role" | "scope_type" | "node_id" | "instance_id">;
+type EditableBinding = Pick<RoleBinding, "role" | "permissions" | "scope_type" | "node_id" | "instance_id">;
 
 function UserModal({ target, actor, onClose }: { target: User | "new" | null; actor: User | null; onClose: () => void }) {
   const open = target != null;
@@ -157,7 +157,7 @@ function UserModal({ target, actor, onClose }: { target: User | "new" | null; ac
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
   const [disabled, setDisabled] = useState(false);
-  const [bindings, setBindings] = useState<EditableBinding[]>([{ role: "viewer", scope_type: "global" }]);
+  const [bindings, setBindings] = useState<EditableBinding[]>([{ role: "viewer", permissions: rolePresetPermissions("viewer"), scope_type: "global" }]);
 
   useEffect(() => {
     if (!target) return;
@@ -165,15 +165,15 @@ function UserModal({ target, actor, onClose }: { target: User | "new" | null; ac
     setDisplayName(creating ? "" : existing?.display_name || "");
     setPassword("");
     setDisabled(Boolean(existing?.disabled));
-    setBindings(creating ? [{ role: "viewer", scope_type: "global" }] : (existing?.role_bindings?.length ? existing.role_bindings.map(cleanBinding) : [{ role: existing?.role || "viewer", scope_type: "global" }]));
+    setBindings(creating ? [{ role: "viewer", permissions: rolePresetPermissions("viewer"), scope_type: "global" }] : (existing?.role_bindings?.length ? existing.role_bindings.map(cleanBinding) : [{ role: existing?.role || "viewer", permissions: rolePresetPermissions(existing?.role || "viewer"), scope_type: "global" }]));
   }, [creating, existing, target]);
 
   const normalizedBindings = bindings.map(cleanBinding);
   const bindingKeys = normalizedBindings.map((item) => `${item.scope_type}:${item.node_id || item.instance_id || "global"}`);
-  const bindingsValid = normalizedBindings.length > 0 && normalizedBindings.every((item) => item.scope_type === "global" || (item.scope_type === "node" ? Boolean(item.node_id) : Boolean(item.instance_id))) && new Set(bindingKeys).size === bindingKeys.length;
+  const bindingsValid = normalizedBindings.length > 0 && normalizedBindings.every((item) => Boolean(item.permissions?.length) && (item.scope_type === "global" || (item.scope_type === "node" ? Boolean(item.node_id) : Boolean(item.instance_id)))) && new Set(bindingKeys).size === bindingKeys.length;
   const originalBindings: EditableBinding[] = existing?.role_bindings?.length
     ? existing.role_bindings.map(cleanBinding)
-    : existing ? [{ role: existing.role, scope_type: "global" }] : [];
+    : existing ? [{ role: existing.role, permissions: rolePresetPermissions(existing.role), scope_type: "global" }] : [];
   const bindingsChanged = existing ? JSON.stringify(normalizedBindings) !== JSON.stringify(originalBindings) : true;
   const changed = creating || displayName.trim() !== existing?.display_name || Boolean(password) || disabled !== Boolean(existing?.disabled) || bindingsChanged;
   const valid = username.trim() && displayName.trim() && (creating ? password.length >= 12 : !password || password.length >= 12) && bindingsValid && changed;
@@ -201,15 +201,43 @@ function UserModal({ target, actor, onClose }: { target: User | "new" | null; ac
   const updateBinding = (index: number, value: EditableBinding) => setBindings((items) => items.map((item, itemIndex) => itemIndex === index ? cleanBinding(value) : item));
   const protectedOwner = Boolean(existing?.bootstrap_owner);
   const availableRoles: Role[] = actor?.role === "owner" ? ["owner", "admin", "operator", "viewer"] : ["admin", "operator", "viewer"];
-  return <Modal open={open} onClose={onClose} title={creating ? "添加团队成员" : `管理 ${existing?.display_name || existing?.username || "用户"}`} description="权限绑定可以限定到全局、单个节点或单个实例；同一资源只允许一条绑定。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={() => save.mutate()} loading={save.isPending} disabled={!valid}>{creating ? "创建账号" : "保存更改"}</Button></>}>
-    <div className="form-stack"><div className="form-grid"><Field label="用户名"><input value={username} onChange={(event) => setUsername(event.target.value)} disabled={!creating} maxLength={128} autoComplete="username" /></Field><Field label="显示名称"><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={128} /></Field></div><Field label={creating ? "初始密码" : "重置密码（可留空）"} hint="至少 12 个字符；修改密码会撤销该账号的全部会话和 API Token"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={12} maxLength={1024} autoComplete="new-password" /></Field>{!creating && <label className={`risk-check ${protectedOwner || existing?.id === actor?.id ? "risk-check--disabled" : ""}`}><input type="checkbox" checked={disabled} onChange={(event) => setDisabled(event.target.checked)} disabled={protectedOwner || existing?.id === actor?.id} /><LockKeyhole size={18} /><span><strong>停用账号</strong><small>{protectedOwner ? "首启根所有者不可停用" : existing?.id === actor?.id ? "不能停用当前登录账号" : "立即撤销该账号的全部会话和 API Token"}</small></span></label>}<div className="binding-editor"><div className="binding-editor__heading"><div><strong>资源权限绑定</strong><span>最高显示角色不扩大具体资源权限</span></div><Button type="button" variant="secondary" onClick={() => setBindings((items) => [...items, { role: "viewer", scope_type: "instance" }])} disabled={protectedOwner || bindings.length >= 50}><Plus size={14} />添加范围</Button></div>{bindings.map((binding, index) => <div className="binding-row" key={`${index}-${binding.scope_type}`}><Field label="角色"><select value={binding.role} disabled={protectedOwner} onChange={(event) => { const role = event.target.value as Role; updateBinding(index, role === "owner" ? { role, scope_type: "global" } : { ...binding, role }); }}>{availableRoles.map((role) => <option value={role} key={role}>{roleName(role)}</option>)}</select></Field><Field label="范围"><select value={binding.scope_type} disabled={protectedOwner || binding.role === "owner"} onChange={(event) => updateBinding(index, { role: binding.role, scope_type: event.target.value as EditableBinding["scope_type"] })}><option value="global">全局</option><option value="node">单个节点</option><option value="instance">单个实例</option></select></Field>{binding.scope_type === "node" ? <Field label="节点"><select value={binding.node_id || ""} disabled={protectedOwner} onChange={(event) => updateBinding(index, { ...binding, node_id: event.target.value })}><option value="">请选择节点</option>{(nodes.data?.items || []).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field> : binding.scope_type === "instance" ? <Field label="实例"><select value={binding.instance_id || ""} disabled={protectedOwner} onChange={(event) => updateBinding(index, { ...binding, instance_id: event.target.value })}><option value="">请选择实例</option>{(instances.data?.items || []).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field> : <div className="binding-global-note"><ShieldCheck size={16} />适用于全部节点与实例</div>}<Button type="button" variant="danger" aria-label="删除权限绑定" onClick={() => setBindings((items) => items.filter((_, itemIndex) => itemIndex !== index))} disabled={protectedOwner || bindings.length === 1}><Trash2 size={14} /></Button></div>)}{!bindingsValid && <div className="form-warning">请选择每条绑定的资源，且不要重复绑定同一资源。</div>}</div></div>
+  return <Modal open={open} onClose={onClose} title={creating ? "添加团队成员" : `管理 ${existing?.display_name || existing?.username || "用户"}`} description="角色用于一键填充预设，实际授权以每个范围勾选的具体权限为准。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={() => save.mutate()} loading={save.isPending} disabled={!valid}>{creating ? "创建账号" : "保存更改"}</Button></>}>
+    <div className="form-stack"><div className="form-grid"><Field label="用户名"><input value={username} onChange={(event) => setUsername(event.target.value)} disabled={!creating} maxLength={128} autoComplete="username" /></Field><Field label="显示名称"><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={128} /></Field></div><Field label={creating ? "初始密码" : "重置密码（可留空）"} hint="至少 12 个字符；修改密码会撤销该账号的全部会话和 API Token"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={12} maxLength={1024} autoComplete="new-password" /></Field>{!creating && <label className={`risk-check ${protectedOwner || existing?.id === actor?.id ? "risk-check--disabled" : ""}`}><input type="checkbox" checked={disabled} onChange={(event) => setDisabled(event.target.checked)} disabled={protectedOwner || existing?.id === actor?.id} /><LockKeyhole size={18} /><span><strong>停用账号</strong><small>{protectedOwner ? "首启根所有者不可停用" : existing?.id === actor?.id ? "不能停用当前登录账号" : "立即撤销该账号的全部会话和 API Token"}</small></span></label>}<div className="binding-editor"><div className="binding-editor__heading"><div><strong>资源权限绑定</strong><span>匹配范围的权限取并集；不支持显式拒绝</span></div><Button type="button" variant="secondary" onClick={() => setBindings((items) => [...items, { role: "viewer", permissions: rolePresetPermissions("viewer").filter((permission) => permissionAllowedAtScope(permission, "instance")), scope_type: "instance" }])} disabled={protectedOwner || bindings.length >= 50}><Plus size={14} />添加范围</Button></div>{bindings.map((binding, index) => <div className="binding-block" key={`${index}-${binding.scope_type}`}><div className="binding-row"><Field label="角色预设"><select value={binding.role} disabled={protectedOwner} onChange={(event) => { const role = event.target.value as Role; const scope = role === "owner" ? "global" : binding.scope_type; updateBinding(index, { ...binding, role, scope_type: scope, permissions: rolePresetPermissions(role).filter((permission) => permissionAllowedAtScope(permission, scope)) }); }}>{availableRoles.map((role) => <option value={role} key={role}>{roleName(role)}</option>)}</select></Field><Field label="范围"><select value={binding.scope_type} disabled={protectedOwner || binding.role === "owner"} onChange={(event) => { const scope = event.target.value as EditableBinding["scope_type"]; updateBinding(index, { ...binding, scope_type: scope, permissions: (binding.permissions || []).filter((permission) => permissionAllowedAtScope(permission, scope)) }); }}><option value="global">全局</option><option value="node">单个节点</option><option value="instance">单个实例</option></select></Field>{binding.scope_type === "node" ? <Field label="节点"><select value={binding.node_id || ""} disabled={protectedOwner} onChange={(event) => updateBinding(index, { ...binding, node_id: event.target.value })}><option value="">请选择节点</option>{(nodes.data?.items || []).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field> : binding.scope_type === "instance" ? <Field label="实例"><select value={binding.instance_id || ""} disabled={protectedOwner} onChange={(event) => updateBinding(index, { ...binding, instance_id: event.target.value })}><option value="">请选择实例</option>{(instances.data?.items || []).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field> : <div className="binding-global-note"><ShieldCheck size={16} />适用于全部节点与实例</div>}<Button type="button" variant="danger" aria-label="删除权限绑定" onClick={() => setBindings((items) => items.filter((_, itemIndex) => itemIndex !== index))} disabled={protectedOwner || bindings.length === 1}><Trash2 size={14} /></Button></div><PermissionCheckboxes binding={binding} disabled={protectedOwner || binding.role === "owner"} onChange={(permissions) => updateBinding(index, { ...binding, permissions })} /></div>)}{!bindingsValid && <div className="form-warning">每条绑定至少选择一个权限，并选择对应资源；同一资源不能重复绑定。</div>}</div></div>
   </Modal>;
 }
 
 function cleanBinding(binding: EditableBinding): EditableBinding {
-  if (binding.scope_type === "node") return { role: binding.role, scope_type: "node", node_id: binding.node_id || "" };
-  if (binding.scope_type === "instance") return { role: binding.role, scope_type: "instance", instance_id: binding.instance_id || "" };
-  return { role: binding.role, scope_type: "global" };
+  const permissions = [...(binding.permissions === undefined ? rolePresetPermissions(binding.role) : binding.permissions)]
+    .filter((permission) => permissionAllowedAtScope(permission, binding.scope_type)).sort();
+  if (binding.scope_type === "node") return { role: binding.role, permissions, scope_type: "node", node_id: binding.node_id || "" };
+  if (binding.scope_type === "instance") return { role: binding.role, permissions, scope_type: "instance", instance_id: binding.instance_id || "" };
+  return { role: binding.role, permissions, scope_type: "global" };
+}
+
+function PermissionCheckboxes({ binding, disabled, onChange }: { binding: EditableBinding; disabled: boolean; onChange: (permissions: Permission[]) => void }) {
+  const available = permissionCatalog.filter((item) => item.id !== "root_security" && permissionAllowedAtScope(item.id, binding.scope_type));
+  const selected = new Set(binding.permissions || []);
+  const preset = rolePresetPermissions(binding.role).filter((permission) => permission !== "root_security" && permissionAllowedAtScope(permission, binding.scope_type)).sort();
+  const customized = JSON.stringify([...selected].sort()) !== JSON.stringify(preset);
+  const groups = [...new Set(available.map((item) => item.group))];
+  const baseRequired = (permission: Permission) => {
+    if (permission === "nodes.read") return available.some((item) => item.class !== "read" && selected.has(item.id) && (item.scope === "node" || binding.scope_type === "node"));
+    if (permission === "instances.read") return available.some((item) => item.class !== "read" && selected.has(item.id) && (item.scope === "instance" || binding.scope_type === "instance"));
+    return false;
+  };
+  const toggle = (permission: Permission, checked: boolean) => {
+    const next = new Set(selected);
+    if (checked) {
+      next.add(permission);
+      const definition = permissionCatalog.find((item) => item.id === permission);
+      if (definition?.class !== "read" && (definition?.scope === "node" || binding.scope_type === "node") && permissionAllowedAtScope("nodes.read", binding.scope_type)) next.add("nodes.read");
+      if (definition?.class !== "read" && (definition?.scope === "instance" || binding.scope_type === "instance") && permissionAllowedAtScope("instances.read", binding.scope_type)) next.add("instances.read");
+    } else {
+      next.delete(permission);
+    }
+    onChange([...next].sort());
+  };
+  return <div className="permission-editor"><div className="permission-editor__summary"><span><strong>{selected.size} 项权限</strong>{customized && <em>已自定义</em>}</span><Button type="button" variant="ghost" disabled={disabled} onClick={() => onChange(preset)}>恢复角色预设</Button></div>{groups.map((group) => <fieldset key={group}><legend>{group}</legend><div className="permission-grid">{available.filter((item) => item.group === group).map((item) => <label key={item.id} title={item.description}><input type="checkbox" checked={selected.has(item.id)} disabled={disabled || baseRequired(item.id)} onChange={(event) => toggle(item.id, event.target.checked)} /><span><strong>{item.label}</strong><small>{item.description || item.id}</small></span></label>)}</div></fieldset>)}</div>;
 }
 
 function roleName(role: Role) {
@@ -219,7 +247,10 @@ function roleName(role: Role) {
 function bindingSummary(bindings?: RoleBinding[]) {
   if (!bindings?.length) return "全局角色";
   const global = bindings.find((item) => item.scope_type === "global");
-  return global ? `${roleName(global.role)} · 全局` : `${bindings.length} 个资源范围`;
+  const customized = bindings.some((binding) => binding.permissions?.length
+    && JSON.stringify([...binding.permissions].sort()) !== JSON.stringify(rolePresetPermissions(binding.role).filter((permission) => permissionAllowedAtScope(permission, binding.scope_type)).sort()));
+  const suffix = customized ? " · 自定义权限" : "";
+  return global ? `${roleName(global.role)} · 全局${suffix}` : `${bindings.length} 个资源范围${suffix}`;
 }
 
 function NotificationChannelModal({ kind, onClose }: { kind: "smtp" | "webhook" | null; onClose: () => void }) {
@@ -293,7 +324,7 @@ function TotpModal({ open, enabled, onClose }: { open: boolean; enabled: boolean
   </Modal>;
 }
 
-function APITokenModal({ open, role, onClose }: { open: boolean; role: Role; onClose: () => void }) {
+function APITokenModal({ open, user, onClose }: { open: boolean; user: User | null; onClose: () => void }) {
   const toast = useToast();
   const client = useQueryClient();
   const tokens = useQuery({ queryKey: ["api-tokens"], queryFn: api.apiTokens, enabled: open });
@@ -301,12 +332,12 @@ function APITokenModal({ open, role, onClose }: { open: boolean; role: Role; onC
   const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: open });
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
-  const [scope, setScope] = useState<"read" | "operate" | "manage">(role === "viewer" ? "read" : "operate");
+  const allowedScopes = useMemo(() => tokenScopesForUser(user), [user]);
+  const [scope, setScope] = useState<"read" | "operate" | "manage">(allowedScopes.includes("operate") ? "operate" : "read");
   const [resource, setResource] = useState<"global" | "node" | "instance">("global");
   const [resourceID, setResourceID] = useState("");
   const [days, setDays] = useState(90);
   const [secret, setSecret] = useState("");
-  const allowedScopes = useMemo(() => role === "viewer" ? ["read"] : role === "operator" ? ["read", "operate"] : ["read", "operate", "manage"], [role]);
   const create = useMutation({
     mutationFn: () => api.createApiToken({
       name: name.trim(), scopes: [scope],
@@ -319,6 +350,7 @@ function APITokenModal({ open, role, onClose }: { open: boolean; role: Role; onC
   });
   const revoke = useMutation({ mutationFn: api.revokeApiToken, onSuccess: () => { void client.invalidateQueries({ queryKey: ["api-tokens"] }); toast.push("API Token 已撤销"); }, onError: (error) => toast.push(error.message, "error") });
   useEffect(() => { if (!open) { setCreating(false); setName(""); setResource("global"); setResourceID(""); setSecret(""); } }, [open]);
+  useEffect(() => { if (!allowedScopes.includes(scope)) setScope(allowedScopes[allowedScopes.length - 1]); }, [allowedScopes, scope]);
 
   const close = () => {
     if (secret && !window.confirm("令牌关闭后不会再次显示。确认已经保存？")) return;

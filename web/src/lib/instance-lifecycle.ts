@@ -1,34 +1,14 @@
-import type { InstanceConfig, InstanceRecord, InstanceStatus, Role, User } from "./types";
+import { hasInstancePermission, hasNodePermission } from "./account-permissions";
+import type { InstanceConfig, InstanceRecord, InstanceStatus, Permission, User } from "./types";
 
-export type InstancePermission = "read" | "operate" | "manage";
 export type LifecycleAction = "start" | "stop" | "restart" | "validate" | "update" | "reinstall" | "detach" | "quarantine";
 
-function roleAllows(role: Role, permission: InstancePermission) {
-  if (permission === "read") return true;
-  if (permission === "operate") return role !== "viewer";
-  return role === "owner" || role === "admin";
+export function canAccessInstance(user: User | null, instance: Pick<InstanceRecord, "id" | "node_id">, permission: Permission) {
+  return hasInstancePermission(user, instance, permission);
 }
 
-export function canAccessInstance(user: User | null, instance: Pick<InstanceRecord, "id" | "node_id">, permission: InstancePermission) {
-  if (!user) return false;
-  const bindings = user.role_bindings || [];
-  if (!bindings.length) return roleAllows(user.role, permission);
-  return bindings.some((binding) => {
-    const matches = binding.scope_type === "global"
-      || (binding.scope_type === "node" && binding.node_id === instance.node_id)
-      || (binding.scope_type === "instance" && binding.instance_id === instance.id);
-    return matches && roleAllows(binding.role, permission);
-  });
-}
-
-export function canAccessNode(user: User | null, nodeID: string, permission: InstancePermission) {
-  if (!user) return false;
-  const bindings = user.role_bindings || [];
-  if (!bindings.length) return roleAllows(user.role, permission);
-  return bindings.some((binding) => {
-    const matches = binding.scope_type === "global" || (binding.scope_type === "node" && binding.node_id === nodeID);
-    return matches && roleAllows(binding.role, permission);
-  });
+export function canAccessNode(user: User | null, nodeID: string, permission: Permission) {
+  return hasNodePermission(user, nodeID, permission);
 }
 
 const sensitiveLaunchArguments = new Set([
@@ -54,25 +34,26 @@ export function sanitizeStartupExtraArguments(extraArgs: string[] = []) {
 export function lifecycleActionAllowed(
   action: LifecycleAction,
   status: InstanceStatus,
-  permissions: { operate: boolean; manage: boolean },
+  allows: (permission: Permission) => boolean,
 ) {
   const stableManaged = status === "stopped" || status === "running" || status === "degraded";
   switch (action) {
   case "start":
-    return permissions.operate && status === "stopped";
+    return allows("instances.start") && status === "stopped";
   case "stop":
-    return permissions.operate && (status === "running" || status === "degraded");
+    return allows("instances.stop") && (status === "running" || status === "degraded");
   case "restart":
-    return permissions.operate && (status === "running" || status === "degraded" || status === "external");
+    return allows("instances.restart") && (status === "running" || status === "degraded" || status === "external");
   case "validate":
+    return allows("instances.validate") && stableManaged;
   case "update":
-    return permissions.operate && stableManaged;
+    return allows("instances.update") && stableManaged;
   case "reinstall":
-    return permissions.manage && stableManaged;
+    return allows("instances.delete") && stableManaged;
   case "detach":
-    return permissions.manage && (status === "stopped" || status === "external");
+    return allows("instances.delete") && (status === "stopped" || status === "external");
   case "quarantine":
-    return permissions.manage && status === "stopped";
+    return allows("instances.delete") && status === "stopped";
   default:
     return false;
   }

@@ -6,6 +6,11 @@ import { RealtimeProvider } from "../context/RealtimeContext";
 import { ToastProvider } from "../context/ToastContext";
 import { api } from "../lib/api";
 import type { InstanceRecord } from "../lib/types";
+
+vi.mock("../context/AuthContext", () => ({
+  useAuth: () => ({ user: { role: "operator" } }),
+}));
+
 import { InstancesPage } from "./InstancesPage";
 
 const instance: InstanceRecord = {

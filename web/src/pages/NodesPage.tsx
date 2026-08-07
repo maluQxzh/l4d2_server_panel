@@ -6,11 +6,14 @@ import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
 import { useToast } from "../context/ToastContext";
 import { api } from "../lib/api";
+import { hasGlobalPermission } from "../lib/account-permissions";
 import { bytes, dateTime, percent, relativeTime } from "../lib/format";
 import { canAccessNode } from "../lib/instance-lifecycle";
 import type { NodeRecord, QuarantineEntry } from "../lib/types";
 
 export function NodesPage() {
+  const { user } = useAuth();
+  const canEnroll = hasGlobalPermission(user, "nodes.enroll");
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [selected, setSelected] = useState<NodeRecord | null>(null);
   const realtime = useRealtime();
@@ -18,8 +21,8 @@ export function NodesPage() {
 
   return (
     <div>
-      <PageHeader eyebrow="NODE FLEET" title="节点" description="管理承载游戏实例的 Windows 与 Linux 主机。" actions={<><Button variant="secondary" onClick={() => void nodes.refetch()}><RefreshCw size={16} />刷新</Button><Button onClick={() => setEnrollOpen(true)}><Plus size={17} />接入节点</Button></>} />
-      {nodes.isPending ? <LoadingBlock label="正在检查节点心跳…" /> : nodes.error ? <ErrorState error={nodes.error} retry={() => void nodes.refetch()} /> : nodes.data.items.length === 0 ? <Card><EmptyState title="还没有节点" description="创建一次性注册令牌，在 Windows 或 Linux 主机上安装 Agent。" action={<Button onClick={() => setEnrollOpen(true)}><Plus size={16} />接入第一个节点</Button>} /></Card> : (
+      <PageHeader eyebrow="NODE FLEET" title="节点" description="管理承载游戏实例的 Windows 与 Linux 主机。" actions={<><Button variant="secondary" onClick={() => void nodes.refetch()}><RefreshCw size={16} />刷新</Button>{canEnroll && <Button onClick={() => setEnrollOpen(true)}><Plus size={17} />接入节点</Button>}</>} />
+      {nodes.isPending ? <LoadingBlock label="正在检查节点心跳…" /> : nodes.error ? <ErrorState error={nodes.error} retry={() => void nodes.refetch()} /> : nodes.data.items.length === 0 ? <Card><EmptyState title="还没有节点" description="创建一次性注册令牌，在 Windows 或 Linux 主机上安装 Agent。" action={canEnroll ? <Button onClick={() => setEnrollOpen(true)}><Plus size={16} />接入第一个节点</Button> : undefined} /></Card> : (
         <div className="node-grid">
           {nodes.data.items.map((node) => (
             <Card className={`node-card node-card--${node.status}`} key={node.id}>
@@ -35,7 +38,7 @@ export function NodesPage() {
           ))}
         </div>
       )}
-      <EnrollmentModal open={enrollOpen} onClose={() => setEnrollOpen(false)} />
+      <EnrollmentModal open={canEnroll && enrollOpen} onClose={() => setEnrollOpen(false)} />
       <NodeManageModal node={selected} onClose={() => setSelected(null)} />
     </div>
   );
@@ -65,7 +68,11 @@ function NodeManageModal({ node, onClose }: { node: NodeRecord | null; onClose: 
   const client = useQueryClient();
   const [newCredential, setNewCredential] = useState("");
   const [publicAddress, setPublicAddress] = useState("");
-  const canManage = Boolean(node && canAccessNode(user, node.id, "manage"));
+  const canUpdate = Boolean(node && canAccessNode(user, node.id, "nodes.update"));
+  const canRotate = Boolean(node && canAccessNode(user, node.id, "nodes.credentials.rotate"));
+  const canDelete = Boolean(node && canAccessNode(user, node.id, "nodes.delete"));
+  const canViewQuarantine = Boolean(node && canAccessNode(user, node.id, "nodes.quarantine.read"));
+  const canPurgeQuarantine = Boolean(node && canAccessNode(user, node.id, "nodes.quarantine.purge"));
   useEffect(() => { setPublicAddress(node?.public_address || ""); }, [node?.id, node?.public_address]);
   const close = () => {
     setNewCredential("");
@@ -98,26 +105,26 @@ function NodeManageModal({ node, onClose }: { node: NodeRecord | null; onClose: 
   const rotateCredential = () => {
     if (window.confirm("轮换会立即断开 Agent。确认已准备好更新 agent.json 并重启 Agent 吗？")) rotate.mutate();
   };
-  return <Modal open={Boolean(node)} onClose={close} title={node?.name || "节点管理"} description="管理节点地址和凭据；SteamCMD 与游戏路径请在运行环境中手动登记。" footer={<><Button variant="secondary" onClick={close}>关闭</Button><Button variant="danger" loading={revoke.isPending} disabled={!canManage} title={!canManage ? "当前角色没有节点管理权限" : undefined} onClick={() => revoke.mutate()}><ShieldAlert size={16} />吊销节点凭据</Button></>}>
+  return <Modal open={Boolean(node)} onClose={close} title={node?.name || "节点管理"} description="管理节点地址和凭据；SteamCMD 与游戏路径请在运行环境中手动登记。" footer={<><Button variant="secondary" onClick={close}>关闭</Button><Button variant="danger" loading={revoke.isPending} disabled={!canDelete} title={!canDelete ? "当前账号没有吊销节点权限" : undefined} onClick={() => revoke.mutate()}><ShieldAlert size={16} />吊销节点凭据</Button></>}>
     {node && <div className="manage-node form-stack">
       <div className="detail-pairs"><div><span>实例根目录</span><code>{node.instance_root || "未上报"}</code></div><div><span>Agent 版本</span><strong>{node.agent_version || "未知"}</strong></div><div><span>主机地址</span><strong>{node.address || "未上报"}</strong></div><div><span>公开连接地址</span><strong>{publicAddress || "未设置"}</strong></div><div><span>运行架构</span><strong>{node.os} / {node.arch}</strong></div></div>
       <section className="node-public-address">
         <div className="node-section-heading"><div><strong>公开状态页连接地址</strong><span>填写玩家可访问的域名或 IP，不含协议、路径和端口；IPv6 请使用方括号。</span></div></div>
         <form className="node-address-form" onSubmit={(event) => { event.preventDefault(); saveNode.mutate(); }}>
           <Field label="公开连接地址" hint="例如 game.example.com、203.0.113.10 或 [2001:db8::10]；留空可清除。"><input value={publicAddress} onChange={(event) => setPublicAddress(event.target.value)} placeholder="game.example.com" /></Field>
-          <Button type="submit" variant="secondary" loading={saveNode.isPending} disabled={!canManage}>保存公开地址</Button>
+          <Button type="submit" variant="secondary" loading={saveNode.isPending} disabled={!canUpdate}>保存公开地址</Button>
         </form>
       </section>
-      <NodeQuarantineSection node={node} canManage={canManage} />
+      <NodeQuarantineSection node={node} canView={canViewQuarantine} canPurge={canPurgeQuarantine} />
       <section className="node-credential-risk">
         <div className="danger-note"><ShieldAlert size={20} /><div><strong>节点凭据属于高风险设置</strong><span>轮换会立即断开 Agent。新凭据只在这里返回一次，必须写入该节点的 agent.json 后重启 Agent。</span></div></div>
-        {newCredential ? <div className="credential-result"><strong>新节点凭据</strong><code>{newCredential}</code><span>请现在更新 agent.json 的 credential 字段并重启 Agent；关闭窗口后无法再次查看。</span></div> : <Button variant="danger" loading={rotate.isPending} disabled={!canManage} onClick={rotateCredential}><RotateCw size={15} />轮换节点凭据</Button>}
+        {newCredential ? <div className="credential-result"><strong>新节点凭据</strong><code>{newCredential}</code><span>请现在更新 agent.json 的 credential 字段并重启 Agent；关闭窗口后无法再次查看。</span></div> : <Button variant="danger" loading={rotate.isPending} disabled={!canRotate} onClick={rotateCredential}><RotateCw size={15} />轮换节点凭据</Button>}
       </section>
     </div>}
   </Modal>;
 }
 
-function NodeQuarantineSection({ node, canManage }: { node: NodeRecord; canManage: boolean }) {
+function NodeQuarantineSection({ node, canView, canPurge }: { node: NodeRecord; canView: boolean; canPurge: boolean }) {
   const toast = useToast();
   const client = useQueryClient();
   const token = useRef("");
@@ -128,7 +135,7 @@ function NodeQuarantineSection({ node, canManage }: { node: NodeRecord; canManag
   const entries = useQuery({
     queryKey: ["nodes", node.id, "quarantine"],
     queryFn: () => api.quarantineEntries(node.id),
-    enabled: canManage,
+    enabled: canView,
   });
   const resetConfirmation = () => {
     token.current = "";
@@ -201,9 +208,9 @@ function NodeQuarantineSection({ node, canManage }: { node: NodeRecord; canManag
   };
   return <section className="node-quarantine">
     <div className="node-section-heading"><div><strong>实例文件隔离区</strong><span>隔离项至少保留 7 天。到期后仍需生成一次性确认并输入完整隔离项名称，系统不会自动彻底清理。</span></div><Archive size={18} /></div>
-    {!canManage ? <div className="form-note"><strong>需要节点管理权限</strong><span>隔离清单和彻底清理只对所有者或节点管理员开放。</span></div> : entries.isPending ? <LoadingBlock label="正在读取隔离清单…" /> : entries.error ? <ErrorState error={entries.error} retry={() => void entries.refetch()} /> : entries.data.items.length ? <div className="quarantine-list">{entries.data.items.map((entry) => {
+    {!canView ? <div className="form-note"><strong>没有查看隔离目录权限</strong><span>请联系所有者分配对应节点权限。</span></div> : entries.isPending ? <LoadingBlock label="正在读取隔离清单…" /> : entries.error ? <ErrorState error={entries.error} retry={() => void entries.refetch()} /> : entries.data.items.length ? <div className="quarantine-list">{entries.data.items.map((entry) => {
       const expired = Date.parse(entry.retention_expires_at) <= now;
-      return <div className="quarantine-row" key={entry.id}><div><strong>{entry.instance_name || entry.entry_name}</strong><code>{entry.entry_name}</code><span>隔离于 {dateTime(entry.quarantined_at)} · {expired ? `保留期已于 ${dateTime(entry.retention_expires_at)} 到期` : `最早可于 ${dateTime(entry.retention_expires_at)} 清理`}</span></div><Button variant="danger" disabled={!expired || Boolean(entry.purge_job_id)} title={!expired ? "7 天最低保留期尚未结束" : entry.purge_job_id ? "清理任务已提交" : "需要二次确认"} onClick={() => choose(entry)}><Trash2 size={14} />{entry.purge_job_id ? "清理中" : "彻底清理"}</Button></div>;
+      return <div className="quarantine-row" key={entry.id}><div><strong>{entry.instance_name || entry.entry_name}</strong><code>{entry.entry_name}</code><span>隔离于 {dateTime(entry.quarantined_at)} · {expired ? `保留期已于 ${dateTime(entry.retention_expires_at)} 到期` : `最早可于 ${dateTime(entry.retention_expires_at)} 清理`}</span></div><Button variant="danger" disabled={!canPurge || !expired || Boolean(entry.purge_job_id)} title={!canPurge ? "没有永久清理权限" : !expired ? "7 天最低保留期尚未结束" : entry.purge_job_id ? "清理任务已提交" : "需要二次确认"} onClick={() => choose(entry)}><Trash2 size={14} />{entry.purge_job_id ? "清理中" : "彻底清理"}</Button></div>;
     })}</div> : <EmptyState title="隔离区为空" description="隔离删除的实例目录会在这里保留至少 7 天。" />}
     <Modal open={Boolean(selected)} onClose={closeConfirmation} title="彻底清理隔离文件" description="此操作不可恢复；一次性确认仅绑定当前管理员和隔离项，并在 5 分钟后失效。" footer={<><Button variant="secondary" onClick={closeConfirmation} disabled={confirmation.isPending || purge.isPending}>取消</Button>{!tokenValid ? <Button variant="danger" onClick={() => { setTypedName(""); confirmation.mutate(); }} loading={confirmation.isPending}>生成一次性确认</Button> : <Button variant="danger" onClick={() => purge.mutate()} loading={purge.isPending} disabled={typedName !== selected?.entry_name}>确认彻底清理</Button>}</>}>
       {selected && <div className="form-stack"><div className="danger-note"><ShieldAlert size={20} /><div><strong>将永久删除节点上的隔离目录</strong><span>该目录已超过最低保留期。请输入完整隔离项名称“{selected.entry_name}”继续；文件无法从面板恢复。</span></div></div>{tokenValid ? <><Field label="隔离项名称确认"><input value={typedName} onChange={(event) => setTypedName(event.target.value)} autoComplete="off" /></Field><div className="form-note"><strong>确认有效期</strong><span>一次性确认将在 {dateTime(tokenExpiresAt)} 失效，确认值不会显示或保存在界面状态中。</span></div></> : <div className="form-note"><strong>二次确认</strong><span>先生成 5 分钟有效的一次性确认，再输入完整名称。生成动作和最终清理都会写入审计记录。</span></div>}</div>}

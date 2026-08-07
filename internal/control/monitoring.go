@@ -110,21 +110,19 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if principal.HasResourceRestriction() {
-		if query.InstanceID != "" {
-			instance, lookupErr := s.store.GetInstance(r.Context(), query.InstanceID)
-			if lookupErr != nil {
-				s.fail(w, lookupErr)
-				return
-			}
-			if !principal.AllowsInstancePermission(instance, PermissionRead) || (query.NodeID != "" && query.NodeID != instance.NodeID) {
-				writeTokenScopeDenied(w)
-				return
-			}
-		} else if !principal.AllowsNodePermission(query.NodeID, PermissionRead) {
+	if query.InstanceID != "" {
+		instance, lookupErr := s.store.GetInstance(r.Context(), query.InstanceID)
+		if lookupErr != nil {
+			s.fail(w, lookupErr)
+			return
+		}
+		if !principal.AllowsInstancePermission(instance, PermissionMetricsRead) || (query.NodeID != "" && query.NodeID != instance.NodeID) {
 			writeTokenScopeDenied(w)
 			return
 		}
+	} else if !principal.AllowsNodePermission(query.NodeID, PermissionMetricsRead) {
+		writeTokenScopeDenied(w)
+		return
 	}
 	items, err := s.store.Metrics(r.Context(), query)
 	if err != nil {

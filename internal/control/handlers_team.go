@@ -24,10 +24,11 @@ func (s *Server) updateTeamUserAndInvalidate(ctx context.Context, actorID, userI
 }
 
 type roleBindingRequest struct {
-	Role       domain.Role `json:"role"`
-	ScopeType  string      `json:"scope_type"`
-	NodeID     string      `json:"node_id,omitempty"`
-	InstanceID string      `json:"instance_id,omitempty"`
+	Role        domain.Role `json:"role"`
+	Permissions []string    `json:"permissions,omitempty"`
+	ScopeType   string      `json:"scope_type"`
+	NodeID      string      `json:"node_id,omitempty"`
+	InstanceID  string      `json:"instance_id,omitempty"`
 }
 
 // requireAccountSecurity is a defence-in-depth check for handlers that expose
@@ -52,7 +53,7 @@ func bindingsFromRequest(role domain.Role, requests []roleBindingRequest) ([]dom
 	}
 	bindings := make([]domain.RoleBinding, 0, len(requests))
 	for _, request := range requests {
-		bindings = append(bindings, domain.RoleBinding{Role: request.Role, ScopeType: request.ScopeType,
+		bindings = append(bindings, domain.RoleBinding{Role: request.Role, Permissions: request.Permissions, ScopeType: request.ScopeType,
 			NodeID: request.NodeID, InstanceID: request.InstanceID})
 	}
 	return normalizeRoleBindings(bindings)

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -54,7 +55,35 @@ func (s *Store) RoleBindings(ctx context.Context, userID string) ([]domain.RoleB
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	permissions, err := s.roleBindingPermissions(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for index := range items {
+		items[index].Permissions = permissions[items[index].ID]
+	}
+	return items, nil
+}
+
+func (s *Store) roleBindingPermissions(ctx context.Context, userID string) (map[string][]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT p.binding_id,p.permission FROM role_binding_permissions p
+		JOIN role_bindings rb ON rb.id=p.binding_id WHERE rb.user_id=?1 ORDER BY p.binding_id,p.permission`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string][]string)
+	for rows.Next() {
+		var bindingID, permission string
+		if err := rows.Scan(&bindingID, &permission); err != nil {
+			return nil, err
+		}
+		result[bindingID] = append(result[bindingID], permission)
+	}
+	return result, rows.Err()
 }
 
 func (s *Store) loadPrincipalBindings(ctx context.Context, principal *Principal) error {
@@ -114,6 +143,29 @@ func normalizeRoleBindings(bindings []domain.RoleBinding) ([]domain.RoleBinding,
 		if !validRole(binding.Role) {
 			return nil, fmt.Errorf("invalid role %q", binding.Role)
 		}
+		if len(binding.Permissions) == 0 {
+			binding.Permissions = presetPermissionsForScope(binding.Role, binding.ScopeType)
+		}
+		if len(binding.Permissions) == 0 || len(binding.Permissions) > len(permissionDefinitions) {
+			return nil, errors.New("permissions must contain at least one known permission")
+		}
+		permissionSeen := make(map[string]bool, len(binding.Permissions))
+		permissions := make([]string, 0, len(binding.Permissions))
+		for _, raw := range binding.Permissions {
+			permission := Permission(strings.TrimSpace(raw))
+			definition, ok := permissionDefinitions[permission]
+			if !ok {
+				return nil, fmt.Errorf("invalid permission %q", raw)
+			}
+			if permissionSeen[string(permission)] {
+				continue
+			}
+			permissionSeen[string(permission)] = true
+			permissions = append(permissions, string(permission))
+			_ = definition
+		}
+		sort.Strings(permissions)
+		binding.Permissions = permissions
 		if binding.Role == domain.RoleOwner && binding.ScopeType != "global" {
 			return nil, errors.New("owner role is only valid at global scope")
 		}
@@ -137,6 +189,28 @@ func normalizeRoleBindings(bindings []domain.RoleBinding) ([]domain.RoleBinding,
 		default:
 			return nil, errors.New("scope_type must be global, node, or instance")
 		}
+		for _, raw := range binding.Permissions {
+			permission := Permission(raw)
+			definition := permissionDefinitions[permission]
+			if permission == PermissionRootSecurity && (binding.Role != domain.RoleOwner || binding.ScopeType != "global") {
+				return nil, errors.New("root_security is fixed to the global owner preset")
+			}
+			if binding.ScopeType == "node" && definition.Scope == permissionScopeGlobal {
+				return nil, fmt.Errorf("permission %q is only valid at global scope", permission)
+			}
+			if binding.ScopeType == "instance" && definition.Scope != permissionScopeInstance && definition.Scope != permissionScopeResource {
+				return nil, fmt.Errorf("permission %q is not valid at instance scope", permission)
+			}
+		}
+		if (permissionSetNeeds(binding.Permissions, permissionScopeNode) || (binding.ScopeType == "node" && permissionSetHasNonRead(binding.Permissions))) && !permissionSeen[string(PermissionNodesRead)] {
+			return nil, errors.New("node operation permissions require nodes.read")
+		}
+		if (permissionSetNeeds(binding.Permissions, permissionScopeInstance) || (binding.ScopeType == "instance" && permissionSetHasNonRead(binding.Permissions))) && !permissionSeen[string(PermissionInstancesRead)] {
+			return nil, errors.New("instance operation permissions require instances.read")
+		}
+		if binding.Role == domain.RoleOwner && !equalStringSets(binding.Permissions, presetPermissionsForScope(domain.RoleOwner, "global")) {
+			return nil, errors.New("owner permissions cannot be customized")
+		}
 		if seen[key] {
 			return nil, fmt.Errorf("duplicate role binding for %s", key)
 		}
@@ -144,6 +218,25 @@ func normalizeRoleBindings(bindings []domain.RoleBinding) ([]domain.RoleBinding,
 		result = append(result, binding)
 	}
 	return result, nil
+}
+
+func permissionSetNeeds(permissions []string, scope permissionScope) bool {
+	for _, raw := range permissions {
+		definition := permissionDefinitions[Permission(raw)]
+		if definition.Scope == scope && definition.Class != PermissionRead {
+			return true
+		}
+	}
+	return false
+}
+
+func permissionSetHasNonRead(permissions []string) bool {
+	for _, raw := range permissions {
+		if permissionDefinitions[Permission(raw)].Class != PermissionRead {
+			return true
+		}
+	}
+	return false
 }
 
 func validateBindingResources(ctx context.Context, tx *sql.Tx, bindings []domain.RoleBinding) error {
@@ -170,14 +263,32 @@ func validateBindingResources(ctx context.Context, tx *sql.Tx, bindings []domain
 
 func insertRoleBindings(ctx context.Context, tx *sql.Tx, userID, actorID string, bindings []domain.RoleBinding) error {
 	for _, binding := range bindings {
+		bindingID := uuid.NewString()
 		_, err := tx.ExecContext(ctx, `INSERT INTO role_bindings(id,user_id,role,scope_type,node_id,instance_id,created_by)
 			VALUES(?1,?2,?3,?4,NULLIF(?5,''),NULLIF(?6,''),NULLIF(?7,''))`,
-			uuid.NewString(), userID, binding.Role, binding.ScopeType, binding.NodeID, binding.InstanceID, actorID)
+			bindingID, userID, binding.Role, binding.ScopeType, binding.NodeID, binding.InstanceID, actorID)
 		if err != nil {
 			return err
 		}
+		for _, permission := range binding.Permissions {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO role_binding_permissions(binding_id,permission) VALUES(?1,?2)`, bindingID, permission); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func equalStringSets(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 type CreateTeamUserInput struct {
