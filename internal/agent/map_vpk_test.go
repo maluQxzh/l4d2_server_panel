@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/binary"
 	"hash/crc32"
+	"image/jpeg"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 type testMapVPKEntry struct {
@@ -56,6 +58,146 @@ func TestBuildMapVPKsUsesStableLaterWinnerAndWarnsForMissingDictionary(t *testin
 	}
 	if got := readMapVPKEntry(t, firstBuild.Outputs[0], "scripts/shared.txt"); string(got) != "second" {
 		t.Fatalf("later VPK did not win, got %q", got)
+	}
+}
+
+func TestBuildMapVPKsProjectsMissionCampaignModesChaptersAndBSPCodes(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "campaign.vpk")
+	mission := `"mission"
+{
+	"Name" "BTS"
+	"DisplayTitle" "#BTS_Title"
+	"Author" "RedRogue"
+	"Version" "1.05"
+	"Description" "#BTS_Description"
+	"modes"
+	{
+		"coop"
+		{
+			"1" { "Map" "bts01" "DisplayName" "#BTS_Chapter1" }
+			"2" { "Map" "bts02" "DisplayName" "#BTS_Chapter2" }
+			"3" { "Map" "bts03" "DisplayName" "#BTS_Chapter3" }
+			"4" { "Map" "bts04" "DisplayName" "#BTS_Chapter4" }
+		}
+		"versus"
+		{
+			"1" { "Map" "bts01" "DisplayName" "#BTS_Chapter1" }
+			"2" { "Map" "bts02" "DisplayName" "#BTS_Chapter2" }
+			"3" { "Map" "bts03" "DisplayName" "#BTS_Chapter3" }
+			"4" { "Map" "bts04" "DisplayName" "#BTS_Chapter4" }
+		}
+	}
+}`
+	writeTestMapVPK(t, input, []testMapVPKEntry{
+		{path: "missions/back_to_school.txt", data: []byte(mission)},
+		{path: "resource/back_to_school_schinese.txt", data: testUTF16LE(`"lang" { "Language" "schinese" "Tokens" { "BTS_Title" "Back to School" "BTS_Description" "Return to class." "BTS_Chapter1" "学校外围" "BTS_Chapter2" "城镇" "BTS_Chapter3" "体育馆" "BTS_Chapter4" "终局" } }`)},
+		{path: "maps/bts01.bsp", data: []byte("stringtable_dictionary.dct")},
+		{path: "maps/bts02.bsp", data: []byte("stringtable_dictionary.dct")},
+		{path: "maps/bts03.bsp", data: []byte("stringtable_dictionary.dct")},
+		{path: "maps/bts04.bsp", data: []byte("stringtable_dictionary.dct")},
+	})
+	result, err := buildMapVPKs(context.Background(), t.TempDir(), []mapVPKInput{{Path: input, SortKey: "campaign.vpk"}}, 0, "", "campaign.vpk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Name != "Back to School" || result.Author != "RedRogue" || result.Version != "1.05" || result.Description != "Return to class." {
+		t.Fatalf("unexpected mission projection: %+v", result)
+	}
+	if len(result.Modes) != 2 || result.Modes[0].Name != "coop" || len(result.Modes[0].Chapters) != 4 || result.Modes[0].Chapters[3].BSPName != "bts04" {
+		t.Fatalf("unexpected mission modes: %+v", result.Modes)
+	}
+	if result.Modes[0].Chapters[0].DisplayName != "学校外围" || result.Modes[0].Chapters[1].DisplayName != "城镇" ||
+		result.Modes[0].Chapters[2].DisplayName != "体育馆" || result.Modes[0].Chapters[3].DisplayName != "终局" {
+		t.Fatalf("localized chapter names were not projected: %+v", result.Modes[0].Chapters)
+	}
+	if len(result.BSPs) != 4 || result.BSPs[0].StartName == "" || result.BSPs[3].StartName == "" {
+		t.Fatalf("BSP codes were lost: %+v", result.BSPs)
+	}
+}
+
+func testUTF16LE(value string) []byte {
+	units := utf16.Encode([]rune(value))
+	result := make([]byte, 2+len(units)*2)
+	copy(result, []byte{0xff, 0xfe})
+	for index, unit := range units {
+		binary.LittleEndian.PutUint16(result[2+index*2:2+index*2+2], unit)
+	}
+	return result
+}
+
+func TestDecodeMapPosterVTFProducesBoundedJPEG(t *testing.T) {
+	raw := make([]byte, 96+4*4*4)
+	copy(raw[:4], []byte{'V', 'T', 'F', 0})
+	binary.LittleEndian.PutUint32(raw[4:8], 7)
+	binary.LittleEndian.PutUint32(raw[8:12], 2)
+	binary.LittleEndian.PutUint32(raw[12:16], 96)
+	binary.LittleEndian.PutUint16(raw[16:18], 4)
+	binary.LittleEndian.PutUint16(raw[18:20], 4)
+	binary.LittleEndian.PutUint16(raw[24:26], 1)
+	binary.LittleEndian.PutUint32(raw[52:56], 0) // RGBA8888
+	raw[56] = 1
+	binary.LittleEndian.PutUint32(raw[57:61], 13)
+	binary.LittleEndian.PutUint16(raw[63:65], 1)
+	for index := 96; index < len(raw); index += 4 {
+		copy(raw[index:index+4], []byte{40, 90, 140, 255})
+	}
+	converted, err := decodeMapPosterVTF(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := jpeg.DecodeConfig(bytes.NewReader(converted))
+	if err != nil || config.Width != 4 || config.Height != 4 || len(converted) > maxMapPosterJPEG {
+		t.Fatalf("unexpected converted poster: config=%+v bytes=%d err=%v", config, len(converted), err)
+	}
+}
+
+func TestDecodeMapPosterVTFUsesVersion73ImageResourceOffset(t *testing.T) {
+	const headerSize = 88
+	raw := make([]byte, headerSize+4*4*4+16)
+	copy(raw[:4], []byte{'V', 'T', 'F', 0})
+	binary.LittleEndian.PutUint32(raw[4:8], 7)
+	binary.LittleEndian.PutUint32(raw[8:12], 3)
+	binary.LittleEndian.PutUint32(raw[12:16], headerSize)
+	binary.LittleEndian.PutUint16(raw[16:18], 4)
+	binary.LittleEndian.PutUint16(raw[18:20], 4)
+	binary.LittleEndian.PutUint16(raw[24:26], 1)
+	binary.LittleEndian.PutUint32(raw[52:56], 0)
+	raw[56] = 1
+	binary.LittleEndian.PutUint32(raw[57:61], 13)
+	binary.LittleEndian.PutUint16(raw[63:65], 1)
+	binary.LittleEndian.PutUint32(raw[68:72], 1)
+	copy(raw[80:83], []byte{0x30, 0, 0})
+	binary.LittleEndian.PutUint32(raw[84:88], headerSize)
+	for index := headerSize; index < headerSize+4*4*4; index += 4 {
+		copy(raw[index:index+4], []byte{60, 100, 150, 255})
+	}
+	if _, err := decodeMapPosterVTF(raw); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDecodeMapPosterVTFRejectsMalformedPayloadWithoutPanicking(t *testing.T) {
+	for _, mutate := range []func([]byte){
+		func(raw []byte) { binary.LittleEndian.PutUint32(raw[52:56], ^uint32(0)) },
+		func(raw []byte) { binary.LittleEndian.PutUint32(raw[12:16], uint32(len(raw)+1)) },
+		func(raw []byte) { raw[56] = 255 },
+	} {
+		raw := make([]byte, 96)
+		copy(raw[:4], []byte{'V', 'T', 'F', 0})
+		binary.LittleEndian.PutUint32(raw[4:8], 7)
+		binary.LittleEndian.PutUint32(raw[8:12], 2)
+		binary.LittleEndian.PutUint32(raw[12:16], 96)
+		binary.LittleEndian.PutUint16(raw[16:18], 4)
+		binary.LittleEndian.PutUint16(raw[18:20], 4)
+		binary.LittleEndian.PutUint16(raw[24:26], 1)
+		binary.LittleEndian.PutUint32(raw[52:56], 0)
+		raw[56] = 1
+		binary.LittleEndian.PutUint32(raw[57:61], 13)
+		binary.LittleEndian.PutUint16(raw[63:65], 1)
+		mutate(raw)
+		if _, err := decodeMapPosterVTF(raw); err == nil {
+			t.Fatal("malformed VTF poster was accepted")
+		}
 	}
 }
 

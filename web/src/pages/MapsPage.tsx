@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Database, HardDrive, Link2, Map as MapIcon, Plus, RefreshCw, RotateCw, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, Database, HardDrive, Link2, Plus, RefreshCw, RotateCw, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, ProgressBar, StatusBadge } from "../components/ui";
 import { useRealtime } from "../context/RealtimeContext";
@@ -52,16 +52,41 @@ function MapCard({ item, instances, onAssignments }: { item: MapRecord; instance
   });
   const restart = useMutation({ mutationFn: (instanceId: string) => api.instanceAction(instanceId, "restart"), onSuccess: () => { toast.push("实例重启任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
   const assigned = (item.assignments || []).map((assignment) => ({ ...assignment, instance: instances.find((value) => value.id === assignment.instance_id) }));
+  const modes = item.modes || [];
+  const primaryMode = modes.find((mode) => mode.name === "coop") || modes[0];
+  const poster = item.poster_url || "/map-default-poster.jpg";
   return <Card className="map-card">
-    <div className="map-card__header"><div className="map-card__glyph"><MapIcon size={21} /></div><div><h2>{item.name}</h2><span>{item.source_name || "QQ 闪传"} · {dateTime(item.created_at)}</span></div><StatusBadge status={item.health} /></div>
+    <div className="map-card__hero">
+      <div className="map-card__poster"><img src={poster} alt={`${item.name} 地图海报`} onError={(event) => { if (!event.currentTarget.src.endsWith("/map-default-poster.jpg")) event.currentTarget.src = "/map-default-poster.jpg"; }} /><div className="map-card__poster-shade" /><span>{item.poster_url ? "MISSION POSTER" : "DEFAULT POSTER"}</span></div>
+      <div className="map-card__profile">
+        <div className="map-card__title"><div><span className="eyebrow">CUSTOM CAMPAIGN</span><h2>{item.name}</h2><small>{item.source_name || "QQ 闪传"} · {dateTime(item.created_at)}</small></div><StatusBadge status={item.health} /></div>
+        <dl className="map-card__facts">
+          <div><dt>战役</dt><dd>{item.name}</dd></div>
+          <div><dt>作者</dt><dd>{item.author || "未提供"}</dd></div>
+          <div><dt>版本</dt><dd>{item.version || "未提供"}</dd></div>
+          <div><dt>模式</dt><dd>{modes.length ? modes.map((mode) => mapModeName(mode.name)).join(" / ") : "未声明"}</dd></div>
+        </dl>
+        {item.description && <p className="map-card__description">{item.description}</p>}
+        <div className="map-card__campaign"><h3>章节{primaryMode ? ` · ${mapModeName(primaryMode.name)}` : ""}</h3>{primaryMode ? <div className="map-chapter-route">{primaryMode.chapters.map((chapter, index) => <div className="map-chapter" key={`${primaryMode.name}-${chapter.ordinal}`}><span>{chapter.ordinal}</span><div><strong>{chapter.display_name}</strong><code>{asBSPFile(chapter.bsp_name)}</code></div>{index < primaryMode.chapters.length - 1 && <i aria-hidden="true">→</i>}</div>)}</div> : <p className="map-muted">Mission 文件未提供章节顺序</p>}</div>
+      </div>
+    </div>
     <div className="map-card__metrics"><span><strong>{bytes(item.total_size)}</strong>处理后</span><span><strong>{item.artifacts?.length || 0}</strong>VPK 部件</span><span><strong>{item.bsps?.length || 0}</strong>BSP</span><span><strong>{item.removed_files}</strong>已清理文件</span></div>
     <div className="map-card__content">
-      <section><h3>可用地图</h3><div className="map-bsp-list">{(item.bsps || []).map((bsp) => <span key={bsp.virtual_path} className={!bsp.dictionary_present ? "warning" : ""}><code>{bsp.start_name || bsp.virtual_path}</code>{!bsp.dictionary_present && <small><AlertTriangle size={12} />缺少字典</small>}</span>)}</div></section>
+      <section><h3>全部 BSP 建图代码</h3><div className="map-bsp-list">{(item.bsps || []).map((bsp) => <span key={bsp.virtual_path} className={!bsp.dictionary_present ? "warning" : ""}><code>{asBSPFile(bsp.start_name || bsp.virtual_path.replace(/^maps\//i, ""))}</code>{!bsp.dictionary_present && <small><AlertTriangle size={12} />缺少字典</small>}</span>)}</div></section>
       <section><h3>实例分配</h3>{assigned.length ? <div className="map-assignment-list">{assigned.map((assignment) => <div key={assignment.instance_id}><span><strong>{assignment.instance?.name || assignment.instance_id.slice(0, 8)}</strong><small>{assignment.restart_required ? "等待重启生效" : "已生效"}</small></span>{assignment.restart_required && <Button variant="ghost" disabled={restart.isPending} onClick={() => restart.mutate(assignment.instance_id)}><RotateCw size={13} />立即重启</Button>}</div>)}</div> : <p className="map-muted">尚未分配给实例</p>}</section>
       {(item.warnings?.length || 0) > 0 && <section className="map-warnings"><h3>处理警告</h3>{item.warnings!.map((warning, index) => <div key={`${warning.code}-${index}`}><AlertTriangle size={14} /><span><strong>{warning.message}</strong>{warning.virtual_path && <code>{warning.virtual_path}</code>}</span></div>)}</section>}
     </div>
     <div className="map-card__footer"><code title={item.aggregate_sha256}>{item.aggregate_sha256.slice(0, 16)}…</code><div><Button variant="secondary" onClick={onAssignments}><Link2 size={14} />分配实例</Button><Button variant="secondary" loading={verify.isPending} onClick={() => verify.mutate()}><ShieldCheck size={14} />校验</Button><Button variant="danger" loading={remove.isPending} disabled={Boolean(item.assignments?.length)} onClick={() => remove.mutate()}><Trash2 size={14} />永久删除</Button></div></div>
   </Card>;
+}
+
+function asBSPFile(value: string) {
+  return value.toLowerCase().endsWith(".bsp") ? value : `${value}.bsp`;
+}
+
+function mapModeName(value: string) {
+  const names: Record<string, string> = { coop: "合作", realism: "写实", versus: "对抗", survival: "生还者", scavenge: "清道夫" };
+  return names[value] || value;
 }
 
 function ImportMapModal({ open, nodes, onClose }: { open: boolean; nodes: Array<{ id: string; name: string; status: string }>; onClose: () => void }) {

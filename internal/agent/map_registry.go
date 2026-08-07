@@ -44,6 +44,9 @@ type mapLocalAssignment struct {
 type mapLocalRecord struct {
 	ID              string                        `json:"id"`
 	Name            string                        `json:"name"`
+	Author          string                        `json:"author,omitempty"`
+	Version         string                        `json:"version,omitempty"`
+	Description     string                        `json:"description,omitempty"`
 	AggregateSHA256 string                        `json:"aggregate_sha256"`
 	SourceName      string                        `json:"source_name,omitempty"`
 	TotalSize       int64                         `json:"total_size"`
@@ -51,6 +54,8 @@ type mapLocalRecord struct {
 	RemovedBytes    int64                         `json:"removed_bytes"`
 	Artifacts       []mapLocalArtifact            `json:"artifacts"`
 	BSPs            []mapLocalBSP                 `json:"bsps"`
+	Modes           []mapLocalMode                `json:"modes,omitempty"`
+	Poster          mapLocalPoster                `json:"poster,omitempty"`
 	Warnings        []mapLocalWarning             `json:"warnings,omitempty"`
 	Assignments     map[string]mapLocalAssignment `json:"assignments,omitempty"`
 }
@@ -93,9 +98,12 @@ func openMapRegistry(defaultMapRoot string) (*mapRegistry, error) {
 }
 
 func validateLocalMapRecord(record mapLocalRecord) error {
-	if uuid.Validate(record.ID) != nil || record.Name == "" || len(record.Name) > 255 || !utf8.ValidString(record.Name) || strings.ContainsAny(record.Name, "\x00\r\n") ||
+	if uuid.Validate(record.ID) != nil || record.Name == "" || utf8.RuneCountInString(record.Name) > 255 || !utf8.ValidString(record.Name) || strings.ContainsAny(record.Name, "\x00\r\n") ||
 		!validUploadSHA256(record.AggregateSHA256) || record.TotalSize <= 0 || len(record.Artifacts) == 0 || len(record.Artifacts) > 64 {
 		return errors.New("invalid map identity or artifact count")
+	}
+	if !validMapMetadataText(record.Author, 255) || !validMapMetadataText(record.Version, 64) || !validMapMetadataText(record.Description, 2048) {
+		return errors.New("invalid map mission metadata")
 	}
 	for index, artifact := range record.Artifacts {
 		if artifact.Ordinal != index || !validUploadSHA256(artifact.SHA256) || artifact.Size <= 0 || len(artifact.Replicas) == 0 || len(artifact.Replicas) > 64 {
@@ -109,6 +117,32 @@ func validateLocalMapRecord(record mapLocalRecord) error {
 	}
 	if len(record.BSPs) == 0 || len(record.BSPs) > 4096 || len(record.Assignments) > 10000 {
 		return errors.New("invalid map BSP or assignment count")
+	}
+	chapterCount := 0
+	seenModes := make(map[string]bool)
+	for _, mode := range record.Modes {
+		if !validSourceMapName(mode.Name) || len(mode.Name) > 64 || seenModes[strings.ToLower(mode.Name)] || len(mode.Chapters) == 0 || len(mode.Chapters) > 4096 {
+			return errors.New("invalid map mission mode")
+		}
+		seenModes[strings.ToLower(mode.Name)] = true
+		seenOrdinals := make(map[int]bool)
+		for _, chapter := range mode.Chapters {
+			if chapter.Ordinal < 1 || chapter.Ordinal > 4096 || seenOrdinals[chapter.Ordinal] || !validSourceMapName(chapter.BSPName) ||
+				!validMapMetadataText(chapter.DisplayName, 255) || chapter.DisplayName == "" || !validMapMetadataText(chapter.Image, 512) {
+				return errors.New("invalid map mission chapter")
+			}
+			seenOrdinals[chapter.Ordinal] = true
+			chapterCount++
+		}
+	}
+	if len(record.Modes) > 64 || chapterCount > 4096 {
+		return errors.New("map mission metadata exceeds limits")
+	}
+	if record.Poster.Relative != "" || record.Poster.SHA256 != "" || record.Poster.Size != 0 || record.Poster.MIME != "" {
+		if record.Poster.MIME != "image/jpeg" || !validUploadSHA256(record.Poster.SHA256) || record.Poster.Size <= 0 || record.Poster.Size > maxMapPosterJPEG ||
+			!validMapPosterRelative(record.ID, record.Poster.Relative) {
+			return errors.New("invalid map poster")
+		}
 	}
 	for _, warning := range record.Warnings {
 		if warning.Code == "" || len(warning.Code) > 64 || warning.Message == "" || len(warning.Message) > 1024 || len(warning.VirtualPath) > 512 {
@@ -126,6 +160,15 @@ func validateLocalMapRecord(record mapLocalRecord) error {
 		}
 	}
 	return nil
+}
+
+func validMapMetadataText(value string, limit int) bool {
+	return utf8.RuneCountInString(value) <= limit && utf8.ValidString(value) && !strings.ContainsAny(value, "\x00\r\n")
+}
+
+func validMapPosterRelative(mapID, relative string) bool {
+	want := filepath.ToSlash(filepath.Join("posters", mapID+".jpg"))
+	return relative == want
 }
 
 func validMapObjectRelative(relative, sha string) bool {
@@ -234,6 +277,11 @@ func cloneLocalMapRecord(record mapLocalRecord) mapLocalRecord {
 		}
 	}
 	cloned.BSPs = append([]mapLocalBSP(nil), record.BSPs...)
+	cloned.Modes = make([]mapLocalMode, len(record.Modes))
+	for index, mode := range record.Modes {
+		cloned.Modes[index] = mode
+		cloned.Modes[index].Chapters = append([]mapLocalChapter(nil), mode.Chapters...)
+	}
 	cloned.Warnings = append([]mapLocalWarning(nil), record.Warnings...)
 	cloned.Assignments = make(map[string]mapLocalAssignment, len(record.Assignments))
 	for key, assignment := range record.Assignments {

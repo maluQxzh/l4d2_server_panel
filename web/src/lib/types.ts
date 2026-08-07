@@ -223,6 +223,18 @@ export interface MapBSPRecord {
   dictionary_present: boolean;
 }
 
+export interface MapChapterRecord {
+  ordinal: number;
+  bsp_name: string;
+  display_name: string;
+  image?: string;
+}
+
+export interface MapModeRecord {
+  name: string;
+  chapters: MapChapterRecord[];
+}
+
 export interface MapWarningRecord {
   code: string;
   message: string;
@@ -247,6 +259,10 @@ export interface MapRecord {
   id: string;
   node_id: string;
   name: string;
+  author?: string;
+  version?: string;
+  description?: string;
+  poster_url?: string;
   health: MapHealth;
   aggregate_sha256: string;
   total_size: number;
@@ -256,6 +272,7 @@ export interface MapRecord {
   removed_bytes: number;
   artifacts?: MapArtifactRecord[];
   bsps?: MapBSPRecord[];
+  modes?: MapModeRecord[];
   warnings?: MapWarningRecord[];
   replicas?: MapReplicaRecord[];
   assignments?: MapAssignmentRecord[];

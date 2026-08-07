@@ -15,13 +15,18 @@ import (
 
 const mapDeleteConfirmationTTL = 5 * time.Minute
 
-const mapColumns = `id,node_id,name,health,aggregate_sha256,total_size,source_type,source_name,
+const mapColumns = `id,node_id,name,author,version,description,CASE WHEN length(poster_data)>0 THEN 1 ELSE 0 END,health,aggregate_sha256,total_size,source_type,source_name,
 	removed_files,removed_bytes,COALESCE(created_by,''),created_at,updated_at`
 
 func scanMap(row scanner) (domain.Map, error) {
 	var item domain.Map
-	err := row.Scan(&item.ID, &item.NodeID, &item.Name, &item.Health, &item.AggregateSHA256, &item.TotalSize,
+	var posterPresent int
+	err := row.Scan(&item.ID, &item.NodeID, &item.Name, &item.Author, &item.Version, &item.Description, &posterPresent,
+		&item.Health, &item.AggregateSHA256, &item.TotalSize,
 		&item.SourceType, &item.SourceName, &item.RemovedFiles, &item.RemovedBytes, &item.CreatedBy, &item.CreatedAt, &item.UpdatedAt)
+	if err == nil && posterPresent != 0 {
+		item.PosterURL = "/api/v1/maps/" + item.ID + "/poster"
+	}
 	return item, err
 }
 
@@ -96,6 +101,32 @@ func (s *Store) hydrateMap(ctx context.Context, item *domain.Map) error {
 		return err
 	}
 
+	modes, err := s.db.QueryContext(ctx, `SELECT mode.name,chapter.ordinal,chapter.bsp_name,chapter.display_name,chapter.image
+		FROM map_modes mode JOIN map_chapters chapter ON chapter.map_id=mode.map_id AND chapter.mode=mode.name
+		WHERE mode.map_id=?1 ORDER BY mode.ordinal,chapter.ordinal`, item.ID)
+	if err != nil {
+		return err
+	}
+	modeIndex := make(map[string]int)
+	for modes.Next() {
+		var modeName string
+		var chapter domain.MapChapter
+		if err := modes.Scan(&modeName, &chapter.Ordinal, &chapter.BSPName, &chapter.DisplayName, &chapter.Image); err != nil {
+			modes.Close()
+			return err
+		}
+		index, exists := modeIndex[modeName]
+		if !exists {
+			index = len(item.Modes)
+			modeIndex[modeName] = index
+			item.Modes = append(item.Modes, domain.MapMode{Name: modeName})
+		}
+		item.Modes[index].Chapters = append(item.Modes[index].Chapters, chapter)
+	}
+	if err := modes.Close(); err != nil {
+		return err
+	}
+
 	warnings, err := s.db.QueryContext(ctx, `SELECT code,message,virtual_path FROM map_warnings WHERE map_id=?1 ORDER BY id`, item.ID)
 	if err != nil {
 		return err
@@ -143,6 +174,19 @@ func (s *Store) hydrateMap(ctx context.Context, item *domain.Map) error {
 		item.Assignments = append(item.Assignments, assignment)
 	}
 	return assignments.Close()
+}
+
+func (s *Store) GetMapPoster(ctx context.Context, id string) (string, string, []byte, error) {
+	var nodeID, mime string
+	var data []byte
+	err := s.db.QueryRowContext(ctx, `SELECT node_id,poster_mime,poster_data FROM maps WHERE id=?1`, id).Scan(&nodeID, &mime, &data)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (mime == "" || len(data) == 0)) {
+		return "", "", nil, ErrNotFound
+	}
+	if err != nil {
+		return "", "", nil, err
+	}
+	return nodeID, mime, data, nil
 }
 
 func (s *Store) QueueMapInstanceJob(ctx context.Context, mapID, instanceID, action, requestedBy, idempotencyKey, requestFingerprint string) (domain.Job, bool, error) {

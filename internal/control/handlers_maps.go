@@ -2,6 +2,7 @@ package control
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -50,6 +51,23 @@ func (s *Server) handleGetMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"map": item})
+}
+
+func (s *Server) handleGetMapPoster(w http.ResponseWriter, r *http.Request) {
+	nodeID, mime, data, err := s.store.GetMapPoster(r.Context(), chi.URLParam(r, "mapID"))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !principalFromContext(r.Context()).AllowsNodePermission(nodeID, PermissionRead) {
+		writeTokenScopeDenied(w)
+		return
+	}
+	w.Header().Set("Content-Type", mime)
+	w.Header().Set("Cache-Control", "private, max-age=86400, immutable")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleImportMap(w http.ResponseWriter, r *http.Request) {

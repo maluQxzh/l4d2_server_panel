@@ -289,6 +289,9 @@ func stripJobFields(jobType string, jobPayload, jobResult map[string]any) {
 		// field from a compromised or newer Agent.
 		retainOnlyJobField(jobPayload, "upload_id")
 		retainOnlyJobField(jobResult, "upload_id")
+	case "map.import.qq_flash":
+		delete(jobResult, "poster_base64")
+		delete(jobResult, "poster_mime")
 	}
 }
 

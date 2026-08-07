@@ -1,14 +1,18 @@
 package control
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/jpeg"
 	"math"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
@@ -42,8 +46,14 @@ func (s *Store) applyMapImportResult(ctx context.Context, job domain.Job) error 
 		return errors.New("Agent returned an invalid map ID")
 	}
 	name := strings.TrimSpace(stringFromAny(job.Result["name"]))
-	if name == "" || len(name) > 255 {
+	if !validProjectedMapText(name, 255, false) {
 		return errors.New("Agent returned an invalid map name")
+	}
+	author := strings.TrimSpace(stringFromAny(job.Result["author"]))
+	version := strings.TrimSpace(stringFromAny(job.Result["version"]))
+	description := strings.TrimSpace(stringFromAny(job.Result["description"]))
+	if !validProjectedMapText(author, 255, true) || !validProjectedMapText(version, 64, true) || !validProjectedMapText(description, 2048, true) {
+		return errors.New("Agent returned invalid map mission metadata")
 	}
 	aggregateSHA := strings.ToLower(strings.TrimSpace(stringFromAny(job.Result["aggregate_sha256"])))
 	if validateSHA256(aggregateSHA) != nil {
@@ -71,6 +81,14 @@ func (s *Store) applyMapImportResult(ctx context.Context, job domain.Job) error 
 	if err != nil {
 		return err
 	}
+	modes, err := mapModesFromResult(job.Result["modes"])
+	if err != nil {
+		return err
+	}
+	posterMIME, posterData, err := mapPosterFromResult(job.Result["poster_mime"], job.Result["poster_base64"])
+	if err != nil {
+		return err
+	}
 	warnings, err := mapWarningsFromResult(job.Result["warnings"])
 	if err != nil {
 		return err
@@ -86,10 +104,11 @@ func (s *Store) applyMapImportResult(ctx context.Context, job domain.Job) error 
 	}
 	defer tx.Rollback()
 	createdAt := jobProjectionTimestamp(job)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO maps(id,node_id,name,health,aggregate_sha256,total_size,source_type,source_name,
-		removed_files,removed_bytes,created_by,created_at,updated_at) VALUES(?1,?2,?3,'healthy',?4,?5,'qq_flash',?6,?7,?8,?9,?10,?10)
-		ON CONFLICT(id) DO NOTHING`, mapID, job.NodeID, name, aggregateSHA, totalSize, sourceName, removedFiles, removedBytes,
-		nullableUUID(job.RequestedBy), createdAt); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO maps(id,node_id,name,author,version,description,poster_mime,poster_data,
+		health,aggregate_sha256,total_size,source_type,source_name,removed_files,removed_bytes,created_by,created_at,updated_at)
+		VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'healthy',?9,?10,'qq_flash',?11,?12,?13,?14,?15,?15)
+		ON CONFLICT(id) DO NOTHING`, mapID, job.NodeID, name, author, version, description, posterMIME, posterData,
+		aggregateSHA, totalSize, sourceName, removedFiles, removedBytes, nullableUUID(job.RequestedBy), createdAt); err != nil {
 		return err
 	}
 	for _, artifact := range artifacts {
@@ -102,6 +121,19 @@ func (s *Store) applyMapImportResult(ctx context.Context, job domain.Job) error 
 		if _, err := tx.ExecContext(ctx, `INSERT INTO map_bsps(map_id,virtual_path,start_name,dictionary_present) VALUES(?1,?2,?3,?4)
 			ON CONFLICT(map_id,virtual_path) DO NOTHING`, mapID, bsp.VirtualPath, bsp.StartName, bsp.DictionaryPresent); err != nil {
 			return err
+		}
+	}
+	for modeIndex, mode := range modes {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO map_modes(map_id,name,ordinal) VALUES(?1,?2,?3)
+			ON CONFLICT(map_id,name) DO NOTHING`, mapID, mode.Name, modeIndex); err != nil {
+			return err
+		}
+		for _, chapter := range mode.Chapters {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO map_chapters(map_id,mode,ordinal,bsp_name,display_name,image)
+				VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(map_id,mode,ordinal) DO NOTHING`, mapID, mode.Name,
+				chapter.Ordinal, chapter.BSPName, chapter.DisplayName, chapter.Image); err != nil {
+				return err
+			}
 		}
 	}
 	for index, warning := range warnings {
@@ -119,6 +151,79 @@ func (s *Store) applyMapImportResult(ctx context.Context, job domain.Job) error 
 		}
 	}
 	return tx.Commit()
+}
+
+func validProjectedMapText(value string, limit int, emptyOK bool) bool {
+	return (emptyOK || value != "") && utf8.ValidString(value) && utf8.RuneCountInString(value) <= limit && !strings.ContainsAny(value, "\x00\r\n")
+}
+
+func mapPosterFromResult(mimeValue, dataValue any) (string, []byte, error) {
+	mime := strings.TrimSpace(stringFromAny(mimeValue))
+	encoded := strings.TrimSpace(stringFromAny(dataValue))
+	if mime == "" && encoded == "" {
+		return "", []byte{}, nil
+	}
+	if mime != "image/jpeg" || encoded == "" || base64.StdEncoding.DecodedLen(len(encoded)) > 1<<20 {
+		return "", nil, errors.New("Agent returned invalid map poster metadata")
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(raw) == 0 || len(raw) > 1<<20 {
+		return "", nil, errors.New("Agent returned invalid map poster content")
+	}
+	config, err := jpeg.DecodeConfig(bytes.NewReader(raw))
+	if err != nil || config.Width <= 0 || config.Height <= 0 || config.Width > 1280 || config.Height > 720 {
+		return "", nil, errors.New("Agent returned invalid map poster image")
+	}
+	return mime, raw, nil
+}
+
+func mapModesFromResult(value any) ([]domain.MapMode, error) {
+	if value == nil {
+		return nil, nil
+	}
+	items, ok := value.([]any)
+	if !ok || len(items) > 64 {
+		return nil, errors.New("Agent returned an invalid map mode list")
+	}
+	result := make([]domain.MapMode, 0, len(items))
+	seenModes := make(map[string]bool)
+	totalChapters := 0
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			return nil, errors.New("Agent returned invalid map mode metadata")
+		}
+		name := strings.ToLower(strings.TrimSpace(stringFromAny(item["name"])))
+		chaptersRaw, ok := item["chapters"].([]any)
+		if !safeMapStartName.MatchString(name) || len(name) > 64 || seenModes[name] || !ok || len(chaptersRaw) == 0 || len(chaptersRaw) > 4096 {
+			return nil, errors.New("Agent returned invalid map mode metadata")
+		}
+		seenModes[name] = true
+		mode := domain.MapMode{Name: name}
+		seenOrdinals := make(map[int]bool)
+		for _, chapterRaw := range chaptersRaw {
+			chapterMap, ok := chapterRaw.(map[string]any)
+			if !ok {
+				return nil, errors.New("Agent returned invalid map chapter metadata")
+			}
+			chapter := domain.MapChapter{Ordinal: intFromAny(chapterMap["ordinal"]),
+				BSPName:     strings.TrimSpace(stringFromAny(chapterMap["bsp_name"])),
+				DisplayName: strings.TrimSpace(stringFromAny(chapterMap["display_name"])),
+				Image:       strings.TrimSpace(stringFromAny(chapterMap["image"]))}
+			if chapter.Ordinal < 1 || chapter.Ordinal > 4096 || seenOrdinals[chapter.Ordinal] || !safeMapStartName.MatchString(chapter.BSPName) ||
+				!validProjectedMapText(chapter.DisplayName, 255, false) || !validProjectedMapText(chapter.Image, 512, true) {
+				return nil, errors.New("Agent returned invalid map chapter metadata")
+			}
+			seenOrdinals[chapter.Ordinal] = true
+			mode.Chapters = append(mode.Chapters, chapter)
+			totalChapters++
+		}
+		result = append(result, mode)
+	}
+	if totalChapters > 4096 {
+		return nil, errors.New("Agent returned too many map chapters")
+	}
+	return result, nil
 }
 
 func (s *Store) applyMapAssignmentResult(ctx context.Context, job domain.Job) error {

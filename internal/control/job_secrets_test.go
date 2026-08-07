@@ -243,6 +243,12 @@ func TestRestoreArchiveIsEncryptedAtRestAndBackupPathsAreRedacted(t *testing.T) 
 	if len(persistedAbortResult) != 1 || persistedAbortResult["upload_id"] != "upload-safe" {
 		t.Fatalf("backup upload abort persisted unsafe terminal fields: %#v", persistedAbortResult)
 	}
+
+	mapResult := map[string]any{"map_id": "safe", "poster_mime": "image/jpeg", "poster_base64": "large-poster-body"}
+	stripJobFields("map.import.qq_flash", map[string]any{}, mapResult)
+	if mapResult["map_id"] != "safe" || mapResult["poster_mime"] != nil || mapResult["poster_base64"] != nil {
+		t.Fatalf("map poster transport body was exposed in the public job result: %#v", mapResult)
+	}
 }
 
 func TestManagedFileContentIsEncryptedAtRest(t *testing.T) {

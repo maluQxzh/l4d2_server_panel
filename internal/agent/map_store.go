@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -48,7 +50,7 @@ func newMapStore(config *Config) (*mapStore, error) {
 		root := mapRoot{Path: filepath.Clean(configured), FilesystemID: filesystemID}
 		store.roots = append(store.roots, root)
 		store.byFS[filesystemID] = root
-		for _, directory := range []string{"objects", "staging"} {
+		for _, directory := range []string{"objects", "posters", "staging"} {
 			if _, err := ensureDataSubdirectory(root.Path, directory); err != nil {
 				return nil, fmt.Errorf("prepare map root %s: %w", root.Path, err)
 			}
@@ -129,7 +131,7 @@ func mapObjectRelative(sha string) string {
 	return filepath.ToSlash(filepath.Join("objects", sha[:2], sha+".vpk"))
 }
 
-func (s *mapStore) publish(record mapLocalRecord, outputs []string) (mapLocalRecord, error) {
+func (s *mapStore) publish(record mapLocalRecord, outputs []string, posterOutputs ...string) (mapLocalRecord, error) {
 	if len(outputs) != len(record.Artifacts) {
 		return record, errors.New("map output count does not match artifact metadata")
 	}
@@ -169,6 +171,27 @@ func (s *mapStore) publish(record mapLocalRecord, outputs []string) (mapLocalRec
 		_ = file.Chmod(0o440)
 		_ = file.Close()
 		artifact.Replicas = map[string]string{root.FilesystemID: relative}
+	}
+	if len(posterOutputs) > 0 && posterOutputs[0] != "" {
+		if record.Poster.MIME != "image/jpeg" || !validUploadSHA256(record.Poster.SHA256) || record.Poster.Size <= 0 || record.Poster.Size > maxMapPosterJPEG {
+			rollback()
+			return record, errors.New("map poster metadata is invalid")
+		}
+		relative := filepath.ToSlash(filepath.Join("posters", record.ID+".jpg"))
+		existingSHA, existingSize, err := hashRegularFileWithinNoFollow(root.Path, relative, maxMapPosterJPEG)
+		if errors.Is(err, os.ErrNotExist) {
+			if err := copyRegularFileToRootNoFollow(posterOutputs[0], root.Path, relative, secureWriteOptions{
+				Mode: 0o440, ExpectedSHA256: record.Poster.SHA256, Replace: false, RejectExistingLink: true,
+			}); err != nil {
+				rollback()
+				return record, fmt.Errorf("publish map poster: %w", err)
+			}
+			created = append(created, relative)
+		} else if err != nil || existingSHA != record.Poster.SHA256 || existingSize != record.Poster.Size {
+			rollback()
+			return record, errors.New("published map poster is inconsistent")
+		}
+		record.Poster.Relative = relative
 	}
 	if record.Assignments == nil {
 		record.Assignments = make(map[string]mapLocalAssignment)
@@ -458,6 +481,19 @@ func (s *mapStore) delete(mapID string) error {
 		return errors.New("map is still assigned to one or more instances")
 	}
 	allRecords := s.registry.list()
+	posterPresent := false
+	if record.Poster.Relative != "" {
+		root := s.defaultRoot()
+		sha, size, err := hashRegularFileWithinNoFollow(root.Path, record.Poster.Relative, maxMapPosterJPEG)
+		if err == nil {
+			if sha != record.Poster.SHA256 || size != record.Poster.Size {
+				return errors.New("map poster checksum is inconsistent")
+			}
+			posterPresent = true
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
 	for _, artifact := range record.Artifacts {
 		for filesystemID, relative := range artifact.Replicas {
 			if mapObjectReferencedByOtherRecord(allRecords, mapID, filesystemID, relative) {
@@ -484,6 +520,12 @@ func (s *mapStore) delete(mapID string) error {
 			if err := deleteManagedFileNoFollow(root.Path, relative); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
+		}
+	}
+	if posterPresent {
+		root := s.defaultRoot()
+		if err := deleteManagedFileNoFollow(root.Path, record.Poster.Relative); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
 	}
 	return s.registry.delete(mapID)
@@ -516,6 +558,15 @@ func (s *mapStore) importResult(record mapLocalRecord) map[string]any {
 	for index, bsp := range record.BSPs {
 		bsps[index] = map[string]any{"virtual_path": bsp.VirtualPath, "start_name": bsp.StartName, "dictionary_present": bsp.DictionaryPresent}
 	}
+	modes := make([]map[string]any, len(record.Modes))
+	for modeIndex, mode := range record.Modes {
+		chapters := make([]map[string]any, len(mode.Chapters))
+		for chapterIndex, chapter := range mode.Chapters {
+			chapters[chapterIndex] = map[string]any{"ordinal": chapter.Ordinal, "bsp_name": chapter.BSPName,
+				"display_name": chapter.DisplayName, "image": chapter.Image}
+		}
+		modes[modeIndex] = map[string]any{"name": mode.Name, "chapters": chapters}
+	}
 	warnings := make([]map[string]any, len(record.Warnings))
 	for index, warning := range record.Warnings {
 		warnings[index] = map[string]any{"code": warning.Code, "message": warning.Message, "virtual_path": warning.VirtualPath}
@@ -527,9 +578,20 @@ func (s *mapStore) importResult(record mapLocalRecord) map[string]any {
 	sort.Slice(replicas, func(i, j int) bool {
 		return mapResultString(replicas[i], "filesystem_id") < mapResultString(replicas[j], "filesystem_id")
 	})
-	return map[string]any{"map_id": record.ID, "name": record.Name, "aggregate_sha256": record.AggregateSHA256,
+	result := map[string]any{"map_id": record.ID, "name": record.Name, "author": record.Author, "version": record.Version,
+		"description": record.Description, "aggregate_sha256": record.AggregateSHA256,
 		"source_name": record.SourceName, "total_size": record.TotalSize, "removed_files": record.RemovedFiles,
-		"removed_bytes": record.RemovedBytes, "artifacts": artifacts, "bsps": bsps, "warnings": warnings, "replicas": replicas}
+		"removed_bytes": record.RemovedBytes, "artifacts": artifacts, "bsps": bsps, "modes": modes, "warnings": warnings, "replicas": replicas}
+	if record.Poster.Relative != "" {
+		if raw, err := readRegularFileWithinNoFollow(s.defaultRoot().Path, record.Poster.Relative, maxMapPosterJPEG); err == nil && int64(len(raw)) == record.Poster.Size {
+			sum := sha256.Sum256(raw)
+			if fmt.Sprintf("%x", sum[:]) == record.Poster.SHA256 {
+				result["poster_mime"] = record.Poster.MIME
+				result["poster_base64"] = base64.StdEncoding.EncodeToString(raw)
+			}
+		}
+	}
+	return result
 }
 
 func (s *mapStore) backupReferences(instanceID, instancePath string) ([]BackupMapReference, map[string]bool, error) {

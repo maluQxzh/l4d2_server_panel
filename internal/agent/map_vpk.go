@@ -50,10 +50,16 @@ type mapPreparedEntry struct {
 
 type mapVPKBuildResult struct {
 	Outputs         []string
+	PosterOutput    string
 	Artifacts       []mapLocalArtifact
 	BSPs            []mapLocalBSP
+	Modes           []mapLocalMode
 	Warnings        []mapLocalWarning
 	Name            string
+	Author          string
+	Version         string
+	Description     string
+	Poster          mapLocalPoster
 	AggregateSHA256 string
 	TotalSize       int64
 	RemovedFiles    int
@@ -126,7 +132,15 @@ func buildMapVPKs(ctx context.Context, stagingRoot string, inputs []mapVPKInput,
 	if len(prepared) == 0 {
 		return mapVPKBuildResult{}, errors.New("map cleanup removed every VPK entry")
 	}
-	result.Name = mapDisplayName(addonInfo, result.BSPs, taskName, sourceName)
+	mission, poster, posterOutput, missionWarnings := inspectMapMissions(ctx, winners, result.BSPs, stagingRoot)
+	result.Warnings = append(result.Warnings, missionWarnings...)
+	result.Author, result.Version, result.Description = mission.Author, mission.Version, mission.Description
+	result.Modes, result.Poster, result.PosterOutput = mission.Modes, poster, posterOutput
+	if mission.Name != "" {
+		result.Name = mission.Name
+	} else {
+		result.Name = mapDisplayName(addonInfo, result.BSPs, taskName, sourceName)
+	}
 
 	groups, err := partitionMapVPKEntries(prepared)
 	if err != nil {

@@ -117,12 +117,14 @@ func (e *Executor) importQQFlashMap(ctx context.Context, job domain.Job, payload
 	if ignored > 0 {
 		result.Warnings = append(result.Warnings, mapLocalWarning{Code: "ignored_non_vpk_files", Message: fmt.Sprintf("Ignored %d non-VPK files from the share and nested archives", ignored)})
 	}
-	record := mapLocalRecord{ID: payload.MapID, Name: result.Name, AggregateSHA256: result.AggregateSHA256,
+	record := mapLocalRecord{ID: payload.MapID, Name: result.Name, Author: result.Author, Version: result.Version,
+		Description: result.Description, AggregateSHA256: result.AggregateSHA256,
 		SourceName: filepath.Base(filepath.FromSlash(sourceName)), TotalSize: result.TotalSize,
 		RemovedFiles: result.RemovedFiles, RemovedBytes: result.RemovedBytes, Artifacts: result.Artifacts,
-		BSPs: result.BSPs, Warnings: result.Warnings, Assignments: make(map[string]mapLocalAssignment)}
+		BSPs: result.BSPs, Modes: result.Modes, Poster: result.Poster, Warnings: result.Warnings,
+		Assignments: make(map[string]mapLocalAssignment)}
 	progress(88, "publishing map objects")
-	record, err = e.maps.publish(record, result.Outputs)
+	record, err = e.maps.publish(record, result.Outputs, result.PosterOutput)
 	if err != nil {
 		return nil, err
 	}

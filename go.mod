@@ -13,6 +13,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/shirou/gopsutil/v4 v4.25.5
 	golang.org/x/crypto v0.46.0
+	golang.org/x/image v0.44.0
 	golang.org/x/sys v0.46.0
 	modernc.org/sqlite v1.55.0
 )

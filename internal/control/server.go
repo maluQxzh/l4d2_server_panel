@@ -250,6 +250,7 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requireInstancePermission(PermissionManage)).Post("/instances/{instanceID}/files/qq-flash", s.handleImportQQFlashFile)
 			r.With(s.requirePermission(PermissionRead)).Get("/maps", s.handleListMaps)
 			r.With(s.requirePermission(PermissionRead)).Get("/maps/{mapID}", s.handleGetMap)
+			r.With(s.requirePermission(PermissionRead)).Get("/maps/{mapID}/poster", s.handleGetMapPoster)
 			r.With(s.requireNodePermission(PermissionManage)).Post("/nodes/{nodeID}/maps/imports", s.handleImportMap)
 			r.With(s.requirePermission(PermissionManage)).Put("/maps/{mapID}/assignments/{instanceID}", s.handleAssignMap)
 			r.With(s.requirePermission(PermissionManage)).Delete("/maps/{mapID}/assignments/{instanceID}", s.handleUnassignMap)

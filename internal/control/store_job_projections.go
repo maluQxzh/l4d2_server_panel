@@ -43,9 +43,14 @@ func (s *Store) ApplyPendingJobProjection(ctx context.Context, id string) (domai
 		}
 	}
 
-	projected, err := scanJob(s.db.QueryRowContext(ctx, `UPDATE jobs SET result=json_remove(result,'$.' || ?2)
+	removePaths := []any{id, jobProjectionPendingField}
+	removeSQL := `json_remove(result,'$.' || ?2)`
+	if current.Type == "map.import.qq_flash" {
+		removeSQL = `json_remove(result,'$.' || ?2,'$.poster_base64','$.poster_mime')`
+	}
+	projected, err := scanJob(s.db.QueryRowContext(ctx, `UPDATE jobs SET result=`+removeSQL+`
 		WHERE id=?1 AND json_extract(result,'$.' || ?2)=1
-		RETURNING `+jobColumns, id, jobProjectionPendingField))
+		RETURNING `+jobColumns, removePaths...))
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Job{}, false, errors.New("terminal projection marker changed unexpectedly")
 	}

@@ -59,7 +59,7 @@ Agent 永久清理时只接收 Control 墓碑中的 `root_index + entry_name`，
 
 地图导入是 `map_library_v1` 能力门控的固定节点任务，不开放任意解压或 Shell。Control 只加密保存 QQ 闪传链接直到派发；Agent 先完整枚举最多 100000 个文件和 20 GiB 下载声明，再写入 `<data_dir>/maps/staging/<job-id>`。归档按魔数识别，使用纯 Go ZIP、7Z 和 RAR 读取器递归最多三层，统一限制 40 GiB 展开/VPK 虚拟内容、20 GiB 单项、100:1 压缩比并预留 5 GiB 磁盘；加密、分卷、链接、特殊文件、绝对路径、`..`、设备名、ADS 和重解析点均拒绝。成功、失败或取消都会清理整棵 staging。
 
-同一链接内 VPK 按规范化容器路径稳定排序后合并，不区分大小写的重复虚拟路径由后者覆盖；固定去除 `.vtf/.mp3/.wav/.vmf/.vmx` 和无扩展名文件。输入支持 VPK v1/v2、`*_dir.vpk` 外部数据块并逐项校验 CRC 和边界；输出是确定性 VPK v1，按完整文件边界拆成不超过 1.5 GiB 的部件。每个 `maps/*.bsp` 流式查找 `stringtable_dictionary.dct`，缺失只形成持久警告。节点只发布处理后对象，下载、原 VPK、解压目录和输出临时文件都随 staging 删除。
+同一链接内 VPK 按规范化容器路径稳定排序后合并，不区分大小写的重复虚拟路径由后者覆盖；固定去除 `.vtf/.mp3/.wav/.vmf/.vmx` 和无扩展名文件。输入支持 VPK v1/v2、`*_dir.vpk` 外部数据块并逐项校验 CRC 和边界；输出是确定性 VPK v1，按完整文件边界拆成不超过 1.5 GiB 的部件。每个 `maps/*.bsp` 流式查找 `stringtable_dictionary.dct`，缺失只形成持久警告。Agent 还以有界 KeyValues 解析器读取 `missions/*.txt`，并从 UTF-8/UTF-16 的 `resource/*_schinese.txt`、繁中、英文及其他语言文件依次解析显示令牌；按实际 BSP 覆盖率确定主 mission 后，投影战役名称、作者、版本、描述、模式及有序章节，并持久报告缺失引用或未引用 BSP。mission 海报引用只可解析到同一 VPK 的固定 `materials` 虚拟路径；相应 VMT/VTF 经过 CRC、大小、维度、帧数和格式限制后转换成至多 1280×720、1 MiB 的 JPEG 交给 Control，原始纹理仍按清理规则删除。节点只发布处理后对象和供终态重放的受限 JPEG sidecar，下载、原 VPK、解压目录和其他输出临时文件都随 staging 删除。
 
 `map_roots` 的第一项始终是 `<data_dir>/maps`，管理员可为其他文件系统卷配置一个绝对根；同卷重复根在 Agent 启动时拒绝。对象按 SHA-256 保存并在同卷复用，跨卷先从健康副本原子复制和校验；未配置实例所在卷或文件系统不支持硬链接时明确失败。Linux 使用 handle-relative `linkat`，Windows 使用带 `RootDirectory` 的 NT 硬链接操作，目标固定为实例 `left4dead2/addons/l4d2panel-map-<map-id>-<part>.vpk`。普通文件、QQ 模组和包接口不能触碰该前缀。节点注册表原子记录对象、副本、实例链接及预期关系；Linux 幂等服务安装只在注册路径全集与 inode 实际链接计数完全相等时豁免这些文件，未知硬链接仍拒绝，符号链接/Junction 规则不放松。
 

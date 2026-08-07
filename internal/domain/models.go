@@ -174,6 +174,18 @@ type MapBSP struct {
 	DictionaryPresent bool   `json:"dictionary_present"`
 }
 
+type MapChapter struct {
+	Ordinal     int    `json:"ordinal"`
+	BSPName     string `json:"bsp_name"`
+	DisplayName string `json:"display_name"`
+	Image       string `json:"image,omitempty"`
+}
+
+type MapMode struct {
+	Name     string       `json:"name"`
+	Chapters []MapChapter `json:"chapters"`
+}
+
 type MapWarning struct {
 	Code        string `json:"code"`
 	Message     string `json:"message"`
@@ -198,6 +210,10 @@ type Map struct {
 	ID              string          `json:"id"`
 	NodeID          string          `json:"node_id"`
 	Name            string          `json:"name"`
+	Author          string          `json:"author,omitempty"`
+	Version         string          `json:"version,omitempty"`
+	Description     string          `json:"description,omitempty"`
+	PosterURL       string          `json:"poster_url,omitempty"`
 	Health          MapHealth       `json:"health"`
 	AggregateSHA256 string          `json:"aggregate_sha256"`
 	TotalSize       int64           `json:"total_size"`
@@ -207,6 +223,7 @@ type Map struct {
 	RemovedBytes    int64           `json:"removed_bytes"`
 	Artifacts       []MapArtifact   `json:"artifacts,omitempty"`
 	BSPs            []MapBSP        `json:"bsps,omitempty"`
+	Modes           []MapMode       `json:"modes,omitempty"`
 	Warnings        []MapWarning    `json:"warnings,omitempty"`
 	Replicas        []MapReplica    `json:"replicas,omitempty"`
 	Assignments     []MapAssignment `json:"assignments,omitempty"`
