@@ -59,21 +59,20 @@ function MapCard({ item, instances, onAssignments }: { item: MapRecord; instance
     <div className="map-card__hero">
       <div className="map-card__poster"><img src={poster} alt={`${item.name} 地图海报`} onError={(event) => { if (!event.currentTarget.src.endsWith("/map-default-poster.jpg")) event.currentTarget.src = "/map-default-poster.jpg"; }} /><div className="map-card__poster-shade" /><span>{item.poster_url ? "MISSION POSTER" : "DEFAULT POSTER"}</span></div>
       <div className="map-card__profile">
-        <div className="map-card__title"><div><span className="eyebrow">CUSTOM CAMPAIGN</span><h2>{item.name}</h2><small>{item.source_name || "QQ 闪传"} · {dateTime(item.created_at)}</small></div><StatusBadge status={item.health} /></div>
-        <div className="map-card__size"><HardDrive size={17} aria-hidden /><span><small>处理后的 VPK 大小</small><strong>{bytes(item.total_size)}</strong></span></div>
+        <div className="map-card__identity"><span className="eyebrow">CUSTOM CAMPAIGN</span><h2>{item.name}</h2><small>{item.source_name || "QQ 闪传"} · {dateTime(item.created_at)}</small>
+          <dl className="map-card__metadata">
+            <div><dt>作者：</dt><dd>{item.author || "未提供"}</dd></div>
+            <div><dt>版本：</dt><dd>{item.version || "未提供"}</dd></div>
+            <div><dt>模式：</dt><dd>{modes.length ? modes.map((mode) => mapModeName(mode.name)).join(" / ") : "未声明"}</dd></div>
+            <div className="map-card__metadata-size"><dt>处理后 VPK 大小：</dt><dd>{bytes(item.total_size)}</dd></div>
+          </dl>
+        </div>
+        <section className="map-card__assigned-summary">
+          <div className="map-card__assigned-heading"><span><Link2 size={15} aria-hidden />已分配实例</span><strong>{assigned.length ? `${assigned.length} 个实例` : "尚未分配"}</strong></div>
+          {assigned.length ? <div className="map-assignment-list map-assignment-list--summary">{assigned.map((assignment) => <div key={assignment.instance_id}><Link2 size={13} aria-hidden /><span><strong>{assignment.instance?.name || assignment.instance_id.slice(0, 8)}</strong><small>{assignment.restart_required ? "等待 VPK 刷新" : "已生效"}</small></span></div>)}</div> : <p className="map-muted">点击“分配实例”添加同一节点上的游戏实例。</p>}
+        </section>
+        <StatusBadge status={item.health} />
       </div>
-    </div>
-    <div className="map-card__snapshot">
-      <dl className="map-card__facts">
-        <div><dt>战役</dt><dd>{item.name}</dd></div>
-        <div><dt>作者</dt><dd>{item.author || "未提供"}</dd></div>
-        <div><dt>版本</dt><dd>{item.version || "未提供"}</dd></div>
-        <div><dt>模式</dt><dd>{modes.length ? modes.map((mode) => mapModeName(mode.name)).join(" / ") : "未声明"}</dd></div>
-      </dl>
-      <section className="map-card__assigned-summary">
-        <div className="map-card__assigned-heading"><Link2 size={16} aria-hidden /><span><small>已分配实例</small><strong>{assigned.length ? `${assigned.length} 个实例` : "尚未分配"}</strong></span></div>
-        {assigned.length ? <div className="map-assignment-list map-assignment-list--summary">{assigned.map((assignment) => <div key={assignment.instance_id}><span><strong>{assignment.instance?.name || assignment.instance_id.slice(0, 8)}</strong><small>{assignment.restart_required ? "等待 VPK 刷新" : "已生效"}</small></span></div>)}</div> : <p className="map-muted">可以通过右下角“分配实例”将地图链接到同一节点上的游戏实例。</p>}
-      </section>
     </div>
     {expanded && <div className="map-card__details" id={detailsId}>
         {item.description && <p className="map-card__description">{item.description}</p>}
