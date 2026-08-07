@@ -685,12 +685,17 @@ test("地图管理支持导入、警告、运行中分配、重启与两阶段�
 
   await page.goto("/maps");
   await expect(page.getByRole("heading", { name: "地图管理" })).toBeVisible();
+  await expect(page.getByText("地图占用空间")).toBeVisible();
+  await expect(page.getByText("处理后容量")).toHaveCount(0);
+  const assignedCard = page.locator(".map-card").filter({ hasText: "字典警告地图" });
+  await expect(assignedCard.getByText("处理后的 VPK 大小")).toBeVisible();
+  await expect(assignedCard.getByText("BSP 不包含 stringtable_dictionary.dct")).toHaveCount(0);
+  await assignedCard.getByRole("button", { name: "展开详情" }).click();
   await expect(page.getByText("BSP 不包含 stringtable_dictionary.dct")).toBeVisible();
   await expect(page.getByText("等待重启生效")).toBeVisible();
   await page.getByRole("button", { name: "立即重启" }).click();
   await expect.poll(() => writes.some((item) => item.path.endsWith("/instances/instance-1/actions") && (item.body as { type?: string })?.type === "restart")).toBeTruthy();
 
-  const assignedCard = page.locator(".map-card").filter({ hasText: "字典警告地图" });
   await assignedCard.getByRole("button", { name: "分配实例" }).click();
   const runningAssigned = page.getByRole("dialog", { name: /分配地图/ }).getByRole("checkbox").first();
   await expect(runningAssigned).toBeDisabled();
