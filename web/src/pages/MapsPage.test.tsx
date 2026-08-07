@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { RealtimeProvider } from "../context/RealtimeContext";
 import { ToastProvider } from "../context/ToastContext";
 import { api } from "../lib/api";
-import type { MapRecord } from "../lib/types";
+import type { InstanceRecord, MapRecord } from "../lib/types";
 import { MapsPage } from "./MapsPage";
 
 const map: MapRecord = {
@@ -25,17 +25,30 @@ const map: MapRecord = {
   artifacts: [{ id: "artifact-1", ordinal: 1, size: 188_743_680, sha256: "a".repeat(64) }],
   bsps: [{ virtual_path: "maps/claustrophobia1.bsp", start_name: "claustrophobia1", dictionary_present: true }],
   modes: [{ name: "coop", chapters: [{ ordinal: 1, bsp_name: "claustrophobia1", display_name: "Onyx St. Sewer" }] }],
-  assignments: [],
+  assignments: [{
+    map_id: "12345678-1234-1234-1234-123456789abc",
+    instance_id: "instance-1",
+    restart_required: true,
+    created_at: "2026-08-07T13:46:00Z",
+    updated_at: "2026-08-07T13:46:00Z",
+  }],
   created_at: "2026-08-07T13:46:00Z",
   updated_at: "2026-08-07T13:46:00Z",
 };
+
+const assignedInstance = {
+  id: "instance-1",
+  node_id: map.node_id,
+  name: "专家战役 #1",
+  status: "running",
+} as InstanceRecord;
 
 describe("地图管理卡片", () => {
   it("使用三项总览并默认折叠次要地图信息", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     vi.spyOn(api, "maps").mockResolvedValue({ items: [map] });
     vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
-    vi.spyOn(api, "instances").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "instances").mockResolvedValue({ items: [assignedInstance] });
     vi.spyOn(api, "jobs").mockResolvedValue({ items: [] });
 
     render(
@@ -60,12 +73,17 @@ describe("地图管理卡片", () => {
     expect(screen.getByText("处理后的 VPK 大小")).toBeInTheDocument();
     expect(screen.queryByText("VPK 部件")).not.toBeInTheDocument();
     expect(screen.queryByText("已清理文件")).not.toBeInTheDocument();
-    expect(screen.queryByText("Sean C. Wood")).not.toBeInTheDocument();
+    expect(screen.getByText("Sean C. Wood")).toBeInTheDocument();
+    expect(screen.getByText("1.2")).toBeInTheDocument();
+    expect(screen.getByText("合作")).toBeInTheDocument();
+    expect(screen.getByText("已分配实例")).toBeInTheDocument();
+    expect(screen.getByText("专家战役 #1")).toBeInTheDocument();
+    expect(screen.getByText("等待重启生效")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "立即重启" })).toBeInTheDocument();
 
     const toggle = screen.getByRole("button", { name: "展开详情" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(toggle);
-    expect(screen.getByText("Sean C. Wood")).toBeInTheDocument();
     expect(screen.getAllByText("claustrophobia1.bsp")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "收起详情" })).toHaveAttribute("aria-expanded", "true");
   });

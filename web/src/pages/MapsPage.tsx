@@ -64,18 +64,23 @@ function MapCard({ item, instances, onAssignments }: { item: MapRecord; instance
         <div className="map-card__size"><HardDrive size={17} aria-hidden /><span><small>处理后的 VPK 大小</small><strong>{bytes(item.total_size)}</strong></span></div>
       </div>
     </div>
+    <div className="map-card__snapshot">
+      <dl className="map-card__facts">
+        <div><dt>战役</dt><dd>{item.name}</dd></div>
+        <div><dt>作者</dt><dd>{item.author || "未提供"}</dd></div>
+        <div><dt>版本</dt><dd>{item.version || "未提供"}</dd></div>
+        <div><dt>模式</dt><dd>{modes.length ? modes.map((mode) => mapModeName(mode.name)).join(" / ") : "未声明"}</dd></div>
+      </dl>
+      <section className="map-card__assigned-summary">
+        <div className="map-card__assigned-heading"><Link2 size={16} aria-hidden /><span><small>已分配实例</small><strong>{assigned.length ? `${assigned.length} 个实例` : "尚未分配"}</strong></span></div>
+        {assigned.length ? <div className="map-assignment-list map-assignment-list--summary">{assigned.map((assignment) => <div key={assignment.instance_id}><span><strong>{assignment.instance?.name || assignment.instance_id.slice(0, 8)}</strong><small>{assignment.restart_required ? "等待重启生效" : "已生效"}</small></span>{assignment.restart_required && <Button variant="ghost" disabled={restart.isPending} onClick={() => restart.mutate(assignment.instance_id)}><RotateCw size={13} />立即重启</Button>}</div>)}</div> : <p className="map-muted">可以通过右下角“分配实例”将地图链接到同一节点上的游戏实例。</p>}
+      </section>
+    </div>
     {expanded && <div className="map-card__details" id={detailsId}>
-        <dl className="map-card__facts">
-          <div><dt>战役</dt><dd>{item.name}</dd></div>
-          <div><dt>作者</dt><dd>{item.author || "未提供"}</dd></div>
-          <div><dt>版本</dt><dd>{item.version || "未提供"}</dd></div>
-          <div><dt>模式</dt><dd>{modes.length ? modes.map((mode) => mapModeName(mode.name)).join(" / ") : "未声明"}</dd></div>
-        </dl>
         {item.description && <p className="map-card__description">{item.description}</p>}
         <div className="map-card__campaign"><h3>章节{primaryMode ? ` · ${mapModeName(primaryMode.name)}` : ""}</h3>{primaryMode ? <div className="map-chapter-route">{primaryMode.chapters.map((chapter, index) => <div className="map-chapter" key={`${primaryMode.name}-${chapter.ordinal}`}><span>{chapter.ordinal}</span><div><strong>{chapter.display_name}</strong><code>{asBSPFile(chapter.bsp_name)}</code></div>{index < primaryMode.chapters.length - 1 && <i aria-hidden="true">→</i>}</div>)}</div> : <p className="map-muted">Mission 文件未提供章节顺序</p>}</div>
         <div className="map-card__content">
           <section><h3>全部 BSP 建图代码</h3><div className="map-bsp-list">{(item.bsps || []).map((bsp) => <span key={bsp.virtual_path} className={!bsp.dictionary_present ? "warning" : ""}><code>{asBSPFile(bsp.start_name || bsp.virtual_path.replace(/^maps\//i, ""))}</code>{!bsp.dictionary_present && <small><AlertTriangle size={12} />缺少字典</small>}</span>)}</div></section>
-          <section><h3>实例分配</h3>{assigned.length ? <div className="map-assignment-list">{assigned.map((assignment) => <div key={assignment.instance_id}><span><strong>{assignment.instance?.name || assignment.instance_id.slice(0, 8)}</strong><small>{assignment.restart_required ? "等待重启生效" : "已生效"}</small></span>{assignment.restart_required && <Button variant="ghost" disabled={restart.isPending} onClick={() => restart.mutate(assignment.instance_id)}><RotateCw size={13} />立即重启</Button>}</div>)}</div> : <p className="map-muted">尚未分配给实例</p>}</section>
           {(item.warnings?.length || 0) > 0 && <section className="map-warnings"><h3>处理警告</h3>{item.warnings!.map((warning, index) => <div key={`${warning.code}-${index}`}><AlertTriangle size={14} /><span><strong>{warning.message}</strong>{warning.virtual_path && <code>{warning.virtual_path}</code>}</span></div>)}</section>}
         </div>
         <code className="map-card__checksum" title={item.aggregate_sha256}>SHA-256 · {item.aggregate_sha256.slice(0, 16)}…</code>
