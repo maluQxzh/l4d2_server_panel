@@ -613,10 +613,17 @@ test("安装模组可选择 QQ闪传批量导入", async ({ page }) => {
   await authenticated(page);
   let qqFlashImport: Record<string, unknown> | undefined;
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance }));
-  await page.route("**/api/v1/jobs", (route) => json(route, { items: qqFlashImport ? [{
-    id: "job-qq-flash-import", node_id: node.id, instance_id: instance.id, type: "qq_flash_import",
-    status: "running", progress: 42, message: "downloading QQ flash files", created_at: "2026-08-04T00:00:00Z",
-  }] : [] }));
+  await page.route("**/api/v1/jobs**", (route) => {
+    const background = new URL(route.request().url()).searchParams.get("background");
+    if (background === "only") return json(route, { items: [{
+      id: "job-a2s-probe", node_id: node.id, instance_id: instance.id, type: "a2s.info",
+      status: "succeeded", progress: 100, message: "operation completed", created_at: "2026-08-04T00:01:00Z",
+    }], background_summary: { targets: 1, active: 0, failed: 0, latest_at: "2026-08-04T00:01:00Z" } });
+    return json(route, { items: qqFlashImport ? [{
+      id: "job-qq-flash-import", node_id: node.id, instance_id: instance.id, type: "qq_flash_import",
+      status: "running", progress: 42, message: "downloading QQ flash files", created_at: "2026-08-04T00:00:00Z",
+    }] : [], background_summary: { targets: 1, active: 0, failed: 0, latest_at: "2026-08-04T00:01:00Z" } });
+  });
   await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: [] }));
   await page.route("**/api/v1/instances/instance-1/files**", (route) => json(route, { items: [] }));
   await page.route("**/api/v1/instances/instance-1/packages/qq-flash", async (route) => {
@@ -640,6 +647,9 @@ test("安装模组可选择 QQ闪传批量导入", async ({ page }) => {
   await page.goto("/jobs");
   await expect(page.getByText("QQ闪传下载", { exact: true })).toBeVisible();
   await expect(page.getByText("42%", { exact: true })).toBeVisible();
+  await expect(page.getByText("查询服务器状态", { exact: true })).toHaveCount(0);
+  await page.getByLabel("任务分类").selectOption("background");
+  await expect(page.getByText("查询服务器状态", { exact: true })).toBeVisible();
 
   await page.goto("/instances/instance-1?tab=files");
   await page.getByRole("button", { name: "上传或新建" }).click();

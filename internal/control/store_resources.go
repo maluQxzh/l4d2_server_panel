@@ -217,6 +217,7 @@ func (s *Store) SetNodeOffline(ctx context.Context, id string) error {
 
 func (s *Store) Housekeeping(ctx context.Context) error {
 	now := time.Now().UTC()
+	hourAgo := now.Add(-time.Hour)
 	dayAgo := now.Add(-24 * time.Hour)
 	monthAgo := now.Add(-30 * 24 * time.Hour)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -228,7 +229,12 @@ func (s *Store) Housekeeping(ctx context.Context) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE requested_by IS NULL AND type IN ('a2s.info','a2s.players','rcon.players','list','check_update')
-		AND status IN ('succeeded','failed','canceled') AND COALESCE(json_extract(result,'$._projection_pending'),0)<>1
+		AND status IN ('succeeded','canceled') AND COALESCE(json_extract(result,'$._projection_pending'),0)<>1
+		AND finished_at<?1`, hourAgo); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE requested_by IS NULL AND type IN ('a2s.info','a2s.players','rcon.players','list','check_update')
+		AND status='failed' AND COALESCE(json_extract(result,'$._projection_pending'),0)<>1
 		AND finished_at<?1`, dayAgo); err != nil {
 		return err
 	}
