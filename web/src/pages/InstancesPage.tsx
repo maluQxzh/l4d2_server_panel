@@ -7,7 +7,6 @@ import { useRealtime } from "../context/RealtimeContext";
 import { useToast } from "../context/ToastContext";
 import { api } from "../lib/api";
 import { relativeTime } from "../lib/format";
-import { maintenancePayload } from "../lib/instance-lifecycle";
 import { defaultTickrate, gameDifficulties, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
 import type { InstanceRecord } from "../lib/types";
 
@@ -47,9 +46,8 @@ function InstanceCard({ instance }: { instance: InstanceRecord }) {
   const nodeUnavailable = instance.node_status !== "online";
   const nodeStatusLabel = instance.node_status === "offline" ? "节点离线" : instance.node_status === "revoked" ? "节点已吊销" : "节点待接入";
   const restart = () => {
-    const payload = maintenancePayload(instance.status);
-    if (payload && !window.confirm("确认维护重启？服务器会依次广播 10、5、1 分钟提示。")) return;
-    action.mutate({ type: "restart", payload });
+    if (!window.confirm("确认立即重启？面板会先尝试通过 RCON 优雅停服，然后立即重新启动。")) return;
+    action.mutate({ type: "restart" });
   };
   return <Card className={`instance-card instance-card--${instance.status}`}>
     <div className="instance-card__cover"><div className="instance-card__pattern" aria-hidden /><span className="instance-number">#{instance.id.slice(0, 6).toUpperCase()}</span><div className="instance-card__statuses"><StatusBadge status={instance.status} pulse={instance.status === "running" && !nodeUnavailable} />{nodeUnavailable && <span className={`status status--${instance.node_status}`} title="无法确认节点上实例的实时状态"><span className="status__dot" aria-hidden />{nodeStatusLabel}</span>}</div></div>

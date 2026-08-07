@@ -92,9 +92,3 @@ export function buildStartupArgumentPreview(
   if (config.difficulty) args.push("+z_difficulty", config.difficulty);
   return args.concat(sanitizeStartupExtraArguments(config.extra_args));
 }
-
-export function maintenancePayload(status: InstanceStatus) {
-  return status === "running" || status === "degraded"
-    ? { maintenance: true, warning_seconds: [600, 300, 60] }
-    : undefined;
-}

@@ -163,14 +163,18 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 			return e.restartExternal(ctx, job, record, progress)
 		}
 		was := processStatusActive(e.processes.State(job.InstanceID).Status)
-		if _, err := e.stop(ctx, job, progress); err != nil {
+		if _, err := e.stop(ctx, job, func(value int, message string) {
+			progress(value*55/100, message)
+		}); err != nil {
 			return nil, err
 		}
 		if !was {
 			progress(100, "instance was already stopped")
 			return map[string]any{"status": "stopped"}, nil
 		}
-		return e.start(ctx, job, progress)
+		return e.start(ctx, job, func(value int, message string) {
+			progress(55+value*45/100, message)
+		})
 	case "update":
 		return e.update(ctx, job, false, progress)
 	case "validate":

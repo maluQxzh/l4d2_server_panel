@@ -61,7 +61,7 @@ import {
 } from "../lib/backup-download";
 import { bytes, dateTime, duration, jobLabels } from "../lib/format";
 import { buildInstanceConfigUpdate, type RCONPasswordChange } from "../lib/instance-config";
-import { buildStartupArgumentPreview, canAccessInstance, lifecycleActionAllowed, maintenancePayload } from "../lib/instance-lifecycle";
+import { buildStartupArgumentPreview, canAccessInstance, lifecycleActionAllowed } from "../lib/instance-lifecycle";
 import { defaultTickrate, gameDifficulties, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
 import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, PackageRecord, Player, PlayerBan, ScheduleRecord } from "../lib/types";
 
@@ -124,7 +124,7 @@ function InstanceHero({ instance }: { instance: InstanceRecord }) {
   const nodeStatusLabel = instance.node_status === "offline" ? "节点离线" : instance.node_status === "revoked" ? "节点已吊销" : "节点待接入";
   const disabledReason = !permissions.operate ? "当前角色没有实例操作权限" : "当前实例状态不允许此操作";
   const action = useMutation({
-    mutationFn: (type: string) => api.instanceAction(instance.id, type, type === "restart" ? maintenancePayload(instance.status) : undefined),
+    mutationFn: (type: string) => api.instanceAction(instance.id, type),
     onSuccess: (_result, type) => { setRestartOpen(false); toast.push(`${actionLabel(type)}任务已提交`); void client.invalidateQueries({ queryKey: ["jobs"] }); void client.invalidateQueries({ queryKey: ["instances", instance.id] }); },
     onError: (error) => toast.push(error.message, "error"),
   });
@@ -158,8 +158,8 @@ function InstanceHero({ instance }: { instance: InstanceRecord }) {
         <Button variant="secondary" onClick={() => setRestartOpen(true)} disabled={!canRestart} title={!canRestart ? instance.status === "stopped" ? "服务器启动后才能重启" : disabledReason : undefined} loading={action.isPending}><RefreshCw size={16} />重启</Button>
       </>}
     </div>
-  </header><Modal open={restartOpen} onClose={() => setRestartOpen(false)} title="维护重启实例" description="为了让在线玩家有时间离开，重启会先广播固定倒计时。" footer={<><Button variant="secondary" onClick={() => setRestartOpen(false)}>取消</Button><Button onClick={() => action.mutate("restart")} loading={action.isPending}>确认维护重启</Button></>}>
-    <div className="form-stack"><div className="form-warning"><ShieldAlert size={17} />将依次广播 10、5、1 分钟提示，然后优雅停服并重新启动。</div><div className="form-note"><strong>持久化任务</strong><span>提交参数为维护模式，倒计时固定为 600、300、60 秒；断线后不会重复执行。</span></div></div>
+  </header><Modal open={restartOpen} onClose={() => setRestartOpen(false)} title="立即重启实例" description="实例将先尝试优雅停服，然后立即由 Agent 重新启动。" footer={<><Button variant="secondary" onClick={() => setRestartOpen(false)}>取消</Button><Button onClick={() => action.mutate("restart")} loading={action.isPending}>确认立即重启</Button></>}>
+    <div className="form-stack"><div className="form-warning"><ShieldAlert size={17} />在线玩家会断开连接；需要提前广播 10、5、1 分钟通知时，请创建计划重启。</div><div className="form-note"><strong>持久化任务</strong><span>Agent 会先通过 RCON 请求退出，失败或超时后再终止受管进程树并重新启动。</span></div></div>
   </Modal><Modal open={takeoverOpen} onClose={closeTakeover} title="受控重启并接管" description="现有 RCON 密码仅用于本次优雅停服，不会保存到浏览器状态或审计日志。" footer={<><Button variant="secondary" onClick={closeTakeover}>取消</Button><Button form="external-takeover-form" type="submit" loading={takeover.isPending}>确认重启并接管</Button></>}>
     <form id="external-takeover-form" onSubmit={(event) => { event.preventDefault(); takeover.mutate(); }} className="form-stack">
       <Field label="现有 RCON 密码" hint="请输入外部 srcds 当前使用的密码；接管完成后将改用中心端保存的 RCON 凭据。"><input ref={takeoverPassword} type="password" autoComplete="off" required /></Field>

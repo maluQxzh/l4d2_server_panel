@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RealtimeProvider } from "../context/RealtimeContext";
 import { ToastProvider } from "../context/ToastContext";
 import { api } from "../lib/api";
@@ -36,6 +36,8 @@ const instance: InstanceRecord = {
 };
 
 describe("游戏实例卡片", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("保留离线节点的实例，并同时显示最后实例状态和所属节点", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     vi.spyOn(api, "instances").mockResolvedValue({ items: [instance] });
@@ -55,5 +57,28 @@ describe("游戏实例卡片", () => {
     expect(screen.getByText("运行中", { selector: ".status" })).toBeInTheDocument();
     expect(screen.getByText("节点离线", { selector: ".status" })).toBeInTheDocument();
     expect(screen.getByText("所属节点：广州游戏节点 A")).toBeInTheDocument();
+  });
+
+  it("手动重启立即提交，不携带十分钟维护倒计时", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    vi.spyOn(api, "instances").mockResolvedValue({ items: [instance] });
+    const restart = vi.spyOn(api, "instanceAction").mockResolvedValue({ job_id: "restart-job" });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <RealtimeProvider enabled={false}>
+            <MemoryRouter>
+              <InstancesPage />
+            </MemoryRouter>
+          </RealtimeProvider>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "重启" }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("立即重启"));
+    await waitFor(() => expect(restart).toHaveBeenCalledWith(instance.id, "restart", undefined));
+    expect(restart.mock.calls[0][2]).toBeUndefined();
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildStartupArgumentPreview, canAccessInstance, canAccessNode, lifecycleActionAllowed, maintenancePayload } from "./instance-lifecycle";
+import { buildStartupArgumentPreview, canAccessInstance, canAccessNode, lifecycleActionAllowed } from "./instance-lifecycle";
 import type { InstanceRecord, User } from "./types";
 
 const instance = {
@@ -63,10 +63,5 @@ describe("实例生命周期权限与状态", () => {
     expect(args).toContain("+sv_password [已隐藏且不会传递]");
     expect(args).toContain("+rcon_password [已隐藏且不会传递]");
     expect(args).toContain("+sv_lan");
-  });
-
-  it("仅运行中的维护动作带固定倒计时参数", () => {
-    expect(maintenancePayload("running")).toEqual({ maintenance: true, warning_seconds: [600, 300, 60] });
-    expect(maintenancePayload("stopped")).toBeUndefined();
   });
 });
