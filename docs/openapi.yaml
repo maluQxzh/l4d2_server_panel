@@ -2946,8 +2946,8 @@ components:
         `rcon` 传 command；`broadcast` 传 message；`change_map` 传 map；`backup` 可传 kind、
         retention_daily、retention_weekly；`restore` 推荐传 backup_id，其内部归档定位符会加密持久化，server.cfg 作为普通可移植配置恢复，中心端 RCON 凭据不会写入文件；`toggle_package` 传 package_id 和 enabled；
         `install_package` 传 kind，以及 source、source_id 或 name + content_base64（原始文件最大 8 MiB），
-        VPK 安装、回退及 `toggle_package` 重新启用不会扫描其他 VPK，模组之间的覆盖由 L4D2 挂载顺序决定。Workshop 下载载荷不执行 VPK 内容格式校验，只核对普通文件、SHA-256 和安全写入。第三方原生包另传 acknowledge_native_risk=true；`stop`/`restart`/`update` 可传 maintenance 和
-        warning_seconds；`restart` 只接受 `running`、`degraded` 或 `external` 实例，停止状态返回 409；仅 external 实例的直接 restart 可选传一次性 existing_rcon_password，用于让旧进程优雅退出。
+        VPK 安装、回退及 `toggle_package` 重新启用不会扫描其他 VPK，模组之间的覆盖由 L4D2 挂载顺序决定。Workshop 下载载荷不执行 VPK 内容格式校验，只核对普通文件、SHA-256 和安全写入。第三方原生包另传 acknowledge_native_risk=true；`stop`/`update` 可传 maintenance 和
+        warning_seconds；`restart` 不接受维护广播参数，只接受 `running`、`degraded` 或 `external` 实例，停止状态返回 409；仅 external 实例的直接 restart 可选传一次性 existing_rcon_password，用于让旧进程优雅退出。
         广播使用 Agent 固定安全文案。`create_schedule` 传 name、cron、timezone、action、enabled 和嵌套 payload；
         仅允许 start/stop/restart/update/validate/backup/broadcast。计划 broadcast 的 message 位于外层（为空时使用 name），
         其他计划动作只会从嵌套 payload 复制其动作白名单字段。
@@ -2999,7 +2999,7 @@ components:
       additionalProperties: false
       description: |
         按 action 仅使用对应字段：start 使用 health_timeout_seconds；stop 使用 timeout_seconds、maintenance、
-        warning_seconds；restart/update/validate 可使用前述全部生命周期字段；backup 使用 kind 和保留数量。
+        warning_seconds；restart 仅使用 timeout_seconds 和 health_timeout_seconds；update/validate 可使用全部生命周期字段；backup 使用 kind 和保留数量。
         broadcast 的 message 位于 create_schedule 外层，不使用此对象。
       properties:
         timeout_seconds: { type: integer, minimum: 1, maximum: 300 }

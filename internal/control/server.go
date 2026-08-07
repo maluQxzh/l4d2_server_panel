@@ -147,7 +147,7 @@ func (s *Server) runDueSchedules(ctx context.Context) {
 				continue
 			}
 		}
-		if schedule.Action == "restart" || schedule.Action == "update" {
+		if schedule.Action == "update" {
 			payload["maintenance"] = true
 		}
 		job, _, queueErr := s.store.QueueInstanceJob(ctx, schedule.InstanceID, action, payload, "", key)

@@ -38,6 +38,14 @@ function InstanceCard({ instance }: { instance: InstanceRecord }) {
     onSuccess: (_result, { type }) => { toast.push(type === "start" ? "启动任务已提交" : type === "restart" ? "重启任务已提交" : "停止任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); void client.invalidateQueries({ queryKey: ["instances"] }); },
     onError: (error) => toast.push(error.message, "error"),
   });
+  const restartCheck = useMutation({
+    mutationFn: () => api.instance(instance.id),
+    onSuccess: (current) => {
+      if (current.players > 0 && !window.confirm(`检测到当前有 ${current.players} 名玩家在线。立即重启会断开所有玩家连接，仍要继续吗？`)) return;
+      action.mutate({ type: "restart" });
+    },
+    onError: (error) => toast.push(`无法检测在线玩家：${error.message}`, "error"),
+  });
   const canStart = instance.status === "stopped";
   const canStop = ["running", "degraded"].includes(instance.status);
   const showRestart = ["stopped", "running", "degraded"].includes(instance.status);
@@ -45,15 +53,11 @@ function InstanceCard({ instance }: { instance: InstanceRecord }) {
   const isExternal = instance.status === "external";
   const nodeUnavailable = instance.node_status !== "online";
   const nodeStatusLabel = instance.node_status === "offline" ? "节点离线" : instance.node_status === "revoked" ? "节点已吊销" : "节点待接入";
-  const restart = () => {
-    if (!window.confirm("确认立即重启？面板会先尝试通过 RCON 优雅停服，然后立即重新启动。")) return;
-    action.mutate({ type: "restart" });
-  };
   return <Card className={`instance-card instance-card--${instance.status}`}>
     <div className="instance-card__cover"><div className="instance-card__pattern" aria-hidden /><span className="instance-number">#{instance.id.slice(0, 6).toUpperCase()}</span><div className="instance-card__statuses"><StatusBadge status={instance.status} pulse={instance.status === "running" && !nodeUnavailable} />{nodeUnavailable && <span className={`status status--${instance.node_status}`} title="无法确认节点上实例的实时状态"><span className="status__dot" aria-hidden />{nodeStatusLabel}</span>}</div></div>
     <div className="instance-card__body"><div className="instance-card__heading"><div className="server-glyph"><Gamepad2 /></div><div><Link to={`/instances/${instance.id}`}>{instance.name}</Link><span>{instance.host}:{instance.port}</span><span className="instance-card__node"><Server size={11} aria-hidden />所属节点：{instance.node_name || instance.node_id}</span></div><Link className="icon-button" aria-label={`管理 ${instance.name}`} to={`/instances/${instance.id}`}><MoreHorizontal size={19} /></Link></div>
       <div className="instance-card__facts"><div><Map size={16} /><span>地图</span><strong>{instance.map || instance.config?.start_map || "未载入"}</strong></div><div><Box size={16} /><span>模式</span><strong>{instance.mode || instance.config?.mode || "未知"}</strong></div><div><Users size={16} /><span>玩家</span><strong>{instance.players} / {instance.max_players}</strong></div></div>
-      <div className="instance-card__foot"><span>更新于 {relativeTime(instance.updated_at)}</span><div className="instance-card__foot-actions">{canStart && <Button loading={action.isPending} onClick={() => action.mutate({ type: "start" })}><Play size={15} fill="currentColor" />启动</Button>}{canStop && <Button variant="secondary" loading={action.isPending} onClick={() => action.mutate({ type: "stop" })}><Square size={14} fill="currentColor" />停止</Button>}{showRestart && <Button variant="secondary" loading={action.isPending} disabled={!canRestart} title={!canRestart ? "服务器启动后才能重启" : undefined} onClick={restart}><RefreshCw size={14} />重启</Button>}{isExternal && <Button loading={action.isPending} onClick={() => { if (window.confirm("受控接管会先停止当前外部 srcds 进程，再由 Agent 使用面板配置启动。确认继续吗？")) action.mutate({ type: "restart" }); }}><RefreshCw size={14} />受控接管</Button>}{!canStart && !canStop && !showRestart && !isExternal && <Link className="button button--secondary" to={`/instances/${instance.id}`}>查看进度</Link>}</div></div>
+      <div className="instance-card__foot"><span>更新于 {relativeTime(instance.updated_at)}</span><div className="instance-card__foot-actions">{canStart && <Button loading={action.isPending} onClick={() => action.mutate({ type: "start" })}><Play size={15} fill="currentColor" />启动</Button>}{canStop && <Button variant="secondary" loading={action.isPending} onClick={() => action.mutate({ type: "stop" })}><Square size={14} fill="currentColor" />停止</Button>}{showRestart && <Button variant="secondary" loading={action.isPending || restartCheck.isPending} disabled={!canRestart} title={!canRestart ? "服务器启动后才能重启" : undefined} onClick={() => restartCheck.mutate()}><RefreshCw size={14} />重启</Button>}{isExternal && <Button loading={action.isPending} onClick={() => { if (window.confirm("受控接管会先停止当前外部 srcds 进程，再由 Agent 使用面板配置启动。确认继续吗？")) action.mutate({ type: "restart" }); }}><RefreshCw size={14} />受控接管</Button>}{!canStart && !canStop && !showRestart && !isExternal && <Link className="button button--secondary" to={`/instances/${instance.id}`}>查看进度</Link>}</div></div>
     </div>
   </Card>;
 }

@@ -740,11 +740,13 @@ func canonicalLifecyclePayload(action string, supplied map[string]any, instance 
 		allowed["health_timeout_seconds"] = true
 	case "stop":
 		allowed["timeout_seconds"], allowed["maintenance"], allowed["warning_seconds"] = true, true, true
-	case "restart", "update", "validate", "reinstall":
-		allowed["timeout_seconds"], allowed["maintenance"], allowed["warning_seconds"], allowed["health_timeout_seconds"] = true, true, true, true
-		if action == "restart" && instance.Status == domain.InstanceExternal {
+	case "restart":
+		allowed["timeout_seconds"], allowed["health_timeout_seconds"] = true, true
+		if instance.Status == domain.InstanceExternal {
 			allowed["existing_rcon_password"] = true
 		}
+	case "update", "validate", "reinstall":
+		allowed["timeout_seconds"], allowed["maintenance"], allowed["warning_seconds"], allowed["health_timeout_seconds"] = true, true, true, true
 	default:
 		return nil, errors.New("unsupported lifecycle action")
 	}

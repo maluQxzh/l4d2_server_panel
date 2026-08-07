@@ -59,9 +59,34 @@ describe("游戏实例卡片", () => {
     expect(screen.getByText("所属节点：广州游戏节点 A")).toBeInTheDocument();
   });
 
-  it("手动重启立即提交，不携带十分钟维护倒计时", async () => {
+  it("没有在线玩家时检测后直接重启", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     vi.spyOn(api, "instances").mockResolvedValue({ items: [instance] });
+    vi.spyOn(api, "instance").mockResolvedValue(instance);
+    const restart = vi.spyOn(api, "instanceAction").mockResolvedValue({ job_id: "restart-job" });
+    const confirm = vi.spyOn(window, "confirm");
+    render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <RealtimeProvider enabled={false}>
+            <MemoryRouter>
+              <InstancesPage />
+            </MemoryRouter>
+          </RealtimeProvider>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "重启" }));
+    await waitFor(() => expect(restart).toHaveBeenCalledWith(instance.id, "restart", undefined));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(restart.mock.calls[0][2]).toBeUndefined();
+  });
+
+  it("有在线玩家时警告并允许确认重启", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    vi.spyOn(api, "instances").mockResolvedValue({ items: [instance] });
+    vi.spyOn(api, "instance").mockResolvedValue({ ...instance, players: 3 });
     const restart = vi.spyOn(api, "instanceAction").mockResolvedValue({ job_id: "restart-job" });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(
@@ -77,8 +102,7 @@ describe("游戏实例卡片", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "重启" }));
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("立即重启"));
+    await waitFor(() => expect(confirm).toHaveBeenCalledWith(expect.stringContaining("3 名玩家在线")));
     await waitFor(() => expect(restart).toHaveBeenCalledWith(instance.id, "restart", undefined));
-    expect(restart.mock.calls[0][2]).toBeUndefined();
   });
 });

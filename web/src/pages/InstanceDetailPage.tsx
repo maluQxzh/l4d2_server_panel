@@ -112,6 +112,7 @@ function InstanceHero({ instance }: { instance: InstanceRecord }) {
   const client = useQueryClient();
   const [takeoverOpen, setTakeoverOpen] = useState(false);
   const [restartOpen, setRestartOpen] = useState(false);
+  const [restartPlayers, setRestartPlayers] = useState(0);
   const takeoverPassword = useRef<HTMLInputElement>(null);
   const permissions = {
     operate: canAccessInstance(user, instance, "operate"),
@@ -127,6 +128,18 @@ function InstanceHero({ instance }: { instance: InstanceRecord }) {
     mutationFn: (type: string) => api.instanceAction(instance.id, type),
     onSuccess: (_result, type) => { setRestartOpen(false); toast.push(`${actionLabel(type)}任务已提交`); void client.invalidateQueries({ queryKey: ["jobs"] }); void client.invalidateQueries({ queryKey: ["instances", instance.id] }); },
     onError: (error) => toast.push(error.message, "error"),
+  });
+  const restartCheck = useMutation({
+    mutationFn: () => api.instance(instance.id),
+    onSuccess: (current) => {
+      if (current.players > 0) {
+        setRestartPlayers(current.players);
+        setRestartOpen(true);
+        return;
+      }
+      action.mutate("restart");
+    },
+    onError: (error) => toast.push(`无法检测在线玩家：${error.message}`, "error"),
   });
   const takeover = useMutation({
     mutationFn: () => {
@@ -155,11 +168,11 @@ function InstanceHero({ instance }: { instance: InstanceRecord }) {
     <div className="instance-actions">
       {instance.status === "external" ? <Button onClick={() => setTakeoverOpen(true)} disabled={!canRestart} title={!canRestart ? disabledReason : undefined} loading={takeover.isPending}><RefreshCw size={16} />受控重启并接管</Button> : <>
         {instance.status === "stopped" ? <Button onClick={() => action.mutate("start")} disabled={!canStart} title={!canStart ? disabledReason : undefined} loading={action.isPending}><Play size={16} fill="currentColor" />启动</Button> : <Button variant="secondary" onClick={() => action.mutate("stop")} disabled={!canStop} title={!canStop ? disabledReason : undefined} loading={action.isPending}><Square size={14} fill="currentColor" />停止</Button>}
-        <Button variant="secondary" onClick={() => setRestartOpen(true)} disabled={!canRestart} title={!canRestart ? instance.status === "stopped" ? "服务器启动后才能重启" : disabledReason : undefined} loading={action.isPending}><RefreshCw size={16} />重启</Button>
+        <Button variant="secondary" onClick={() => restartCheck.mutate()} disabled={!canRestart} title={!canRestart ? instance.status === "stopped" ? "服务器启动后才能重启" : disabledReason : undefined} loading={action.isPending || restartCheck.isPending}><RefreshCw size={16} />重启</Button>
       </>}
     </div>
-  </header><Modal open={restartOpen} onClose={() => setRestartOpen(false)} title="立即重启实例" description="实例将先尝试优雅停服，然后立即由 Agent 重新启动。" footer={<><Button variant="secondary" onClick={() => setRestartOpen(false)}>取消</Button><Button onClick={() => action.mutate("restart")} loading={action.isPending}>确认立即重启</Button></>}>
-    <div className="form-stack"><div className="form-warning"><ShieldAlert size={17} />在线玩家会断开连接；需要提前广播 10、5、1 分钟通知时，请创建计划重启。</div><div className="form-note"><strong>持久化任务</strong><span>Agent 会先通过 RCON 请求退出，失败或超时后再终止受管进程树并重新启动。</span></div></div>
+  </header><Modal open={restartOpen} onClose={() => setRestartOpen(false)} title="服务器内仍有玩家" description={`检测到当前有 ${restartPlayers} 名玩家在线。`} footer={<><Button variant="secondary" onClick={() => setRestartOpen(false)}>取消</Button><Button onClick={() => action.mutate("restart")} loading={action.isPending}>仍然重启</Button></>}>
+    <div className="form-stack"><div className="form-warning"><ShieldAlert size={17} />立即重启会断开所有在线玩家的连接，且不会发送游戏内广播。</div><div className="form-note"><strong>确认后立即执行</strong><span>Agent 会先通过 RCON 请求退出，失败或超时后再终止受管进程树并重新启动。</span></div></div>
   </Modal><Modal open={takeoverOpen} onClose={closeTakeover} title="受控重启并接管" description="现有 RCON 密码仅用于本次优雅停服，不会保存到浏览器状态或审计日志。" footer={<><Button variant="secondary" onClick={closeTakeover}>取消</Button><Button form="external-takeover-form" type="submit" loading={takeover.isPending}>确认重启并接管</Button></>}>
     <form id="external-takeover-form" onSubmit={(event) => { event.preventDefault(); takeover.mutate(); }} className="form-stack">
       <Field label="现有 RCON 密码" hint="请输入外部 srcds 当前使用的密码；接管完成后将改用中心端保存的 RCON 凭据。"><input ref={takeoverPassword} type="password" autoComplete="off" required /></Field>
@@ -1305,7 +1318,7 @@ function ScheduleModal({ open, instance, onClose }: { open: boolean; instance: I
   const [name, setName] = useState(""); const [cron, setCron] = useState("0 4 * * *"); const [action, setAction] = useState("backup"); const toast = useToast();
   const client = useQueryClient();
   const create = useMutation({ mutationFn: () => api.instanceAction(instance.id, "create_schedule", { name, cron, action, enabled: true }), onSuccess: () => { toast.push("计划任务已提交"); void client.invalidateQueries({ queryKey: ["instances", instance.id, "schedules"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
-  return <Modal open={open} onClose={onClose} title="新增计划任务" description="计划按中心端时区执行，长操作仍遵循实例写锁。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={() => create.mutate()} loading={create.isPending} disabled={!name || !cron}>创建计划</Button></>}><div className="form-stack"><Field label="计划名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="每日备份" /></Field><div className="form-grid"><Field label="执行动作"><select value={action} onChange={(event) => setAction(event.target.value)}><option value="backup">创建备份</option><option value="restart">重启实例</option><option value="broadcast">聊天广播</option></select></Field><Field label="Cron 表达式" hint="分 时 日 月 周"><input value={cron} onChange={(event) => setCron(event.target.value)} /></Field></div><div className="form-note"><strong>维护广播</strong><span>计划重启会在执行前依次广播 10、5、1 分钟；游戏文件维护只在运行环境中手动触发。</span></div></div></Modal>;
+  return <Modal open={open} onClose={onClose} title="新增计划任务" description="计划按中心端时区执行，长操作仍遵循实例写锁。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={() => create.mutate()} loading={create.isPending} disabled={!name || !cron}>创建计划</Button></>}><div className="form-stack"><Field label="计划名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="每日备份" /></Field><div className="form-grid"><Field label="执行动作"><select value={action} onChange={(event) => setAction(event.target.value)}><option value="backup">创建备份</option><option value="restart">重启实例</option><option value="broadcast">聊天广播</option></select></Field><Field label="Cron 表达式" hint="分 时 日 月 周"><input value={cron} onChange={(event) => setCron(event.target.value)} /></Field></div><div className="form-note"><strong>不会自动广播</strong><span>计划重启到时会直接执行；如需提前通知玩家，请单独创建聊天广播计划。</span></div></div></Modal>;
 }
 
 function AuditTab({ instance }: { instance: InstanceRecord }) {

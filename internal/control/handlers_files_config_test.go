@@ -53,6 +53,18 @@ func TestCanonicalLifecyclePayloadRejectsProcessOverrides(t *testing.T) {
 	}
 }
 
+func TestCanonicalRestartPayloadRejectsBroadcastCountdown(t *testing.T) {
+	instance := domain.Instance{ID: "instance", NodeID: "node", Status: domain.InstanceRunning}
+	for _, field := range []string{"maintenance", "warning_seconds"} {
+		if _, err := canonicalLifecyclePayload("restart", map[string]any{field: true}, instance); err == nil {
+			t.Fatalf("restart payload field %q was accepted", field)
+		}
+		if err := validateScheduledPayload("restart", map[string]any{field: true}); err == nil {
+			t.Fatalf("scheduled restart payload field %q was accepted", field)
+		}
+	}
+}
+
 func TestValidateStructuredConfigRejectsSecretCVars(t *testing.T) {
 	for _, name := range []string{"rcon_password", "SV_PASSWORD"} {
 		if err := validateStructuredConfig(domain.InstanceConfig{CVars: map[string]string{name: "plaintext"}}); err == nil {

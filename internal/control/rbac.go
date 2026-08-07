@@ -104,7 +104,9 @@ func validateScheduledPayload(action string, payload map[string]any) error {
 		allowed["health_timeout_seconds"] = true
 	case "stop":
 		allowed["timeout_seconds"], allowed["maintenance"], allowed["warning_seconds"] = true, true, true
-	case "restart", "update", "validate":
+	case "restart":
+		allowed["timeout_seconds"], allowed["health_timeout_seconds"] = true, true
+	case "update", "validate":
 		allowed["timeout_seconds"], allowed["maintenance"], allowed["warning_seconds"], allowed["health_timeout_seconds"] = true, true, true, true
 	case "backup":
 		allowed["kind"], allowed["retention_daily"], allowed["retention_weekly"] = true, true, true
