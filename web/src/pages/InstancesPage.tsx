@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Box, Filter, Gamepad2, Map, MoreHorizontal, Play, Plus, RefreshCw, Search, Square, Users } from "lucide-react";
+import { Box, Filter, Gamepad2, Map, MoreHorizontal, Play, Plus, RefreshCw, Search, Server, Square, Users } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, StatusBadge } from "../components/ui";
@@ -18,13 +18,14 @@ export function InstancesPage() {
   const realtime = useRealtime();
   const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, refetchInterval: realtime.state === "live" ? false : 15_000 });
   const filtered = useMemo(() => (instances.data?.items || []).filter((item) => {
-    const matchesSearch = `${item.name} ${item.host} ${item.map}`.toLowerCase().includes(search.trim().toLowerCase());
-    return matchesSearch && (status === "all" || item.status === status);
+    const matchesSearch = `${item.name} ${item.node_name} ${item.host} ${item.map}`.toLowerCase().includes(search.trim().toLowerCase());
+    const matchesStatus = status === "all" || (status === "node_offline" ? item.node_status === "offline" : item.status === status);
+    return matchesSearch && matchesStatus;
   }), [instances.data, search, status]);
 
   return <div>
     <PageHeader eyebrow="GAME SERVERS" title="游戏实例" description="部署、运行和维护彼此隔离的 L4D2 专用服务器。" actions={<><Button variant="secondary" onClick={() => void instances.refetch()}><RefreshCw size={16} />刷新</Button><Button onClick={() => setCreateOpen(true)}><Plus size={17} />创建实例</Button></>} />
-    <Card className="toolbar-card"><div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索实例、地址或地图" aria-label="搜索实例" /></div><div className="filter-select"><Filter size={16} /><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="按状态筛选"><option value="all">全部状态</option><option value="running">运行中</option><option value="stopped">已停止</option><option value="degraded">异常</option><option value="installing">安装中</option><option value="updating">更新中</option></select></div><span className="toolbar-count">{filtered.length} 个实例</span></Card>
+    <Card className="toolbar-card"><div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索实例、节点、地址或地图" aria-label="搜索实例" /></div><div className="filter-select"><Filter size={16} /><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="按状态筛选"><option value="all">全部状态</option><option value="running">运行中</option><option value="stopped">已停止</option><option value="degraded">异常</option><option value="installing">安装中</option><option value="updating">更新中</option><option value="node_offline">节点离线</option></select></div><span className="toolbar-count">{filtered.length} 个实例</span></Card>
     {instances.isPending ? <LoadingBlock label="正在获取实例清单…" /> : instances.error ? <ErrorState error={instances.error} retry={() => void instances.refetch()} /> : filtered.length === 0 ? <Card><EmptyState title={instances.data.items.length ? "没有匹配的实例" : "还没有游戏实例"} description={instances.data.items.length ? "尝试调整搜索关键词或状态筛选。" : "先在运行环境中准备或登记游戏目录，再创建实例并手动开服。"} action={!instances.data.items.length && <Button onClick={() => setCreateOpen(true)}><Plus size={16} />创建第一个实例</Button>} /></Card> : <div className="instance-grid">{filtered.map((instance) => <InstanceCard key={instance.id} instance={instance} />)}</div>}
     <CreateInstanceModal open={createOpen} onClose={() => setCreateOpen(false)} />
   </div>;
@@ -43,14 +44,16 @@ function InstanceCard({ instance }: { instance: InstanceRecord }) {
   const showRestart = ["stopped", "running", "degraded"].includes(instance.status);
   const canRestart = ["running", "degraded"].includes(instance.status);
   const isExternal = instance.status === "external";
+  const nodeUnavailable = instance.node_status !== "online";
+  const nodeStatusLabel = instance.node_status === "offline" ? "节点离线" : instance.node_status === "revoked" ? "节点已吊销" : "节点待接入";
   const restart = () => {
     const payload = maintenancePayload(instance.status);
     if (payload && !window.confirm("确认维护重启？服务器会依次广播 10、5、1 分钟提示。")) return;
     action.mutate({ type: "restart", payload });
   };
   return <Card className={`instance-card instance-card--${instance.status}`}>
-    <div className="instance-card__cover"><div className="instance-card__pattern" aria-hidden /><span className="instance-number">#{instance.id.slice(0, 6).toUpperCase()}</span><StatusBadge status={instance.status} pulse={instance.status === "running"} /></div>
-    <div className="instance-card__body"><div className="instance-card__heading"><div className="server-glyph"><Gamepad2 /></div><div><Link to={`/instances/${instance.id}`}>{instance.name}</Link><span>{instance.host}:{instance.port}</span></div><Link className="icon-button" aria-label={`管理 ${instance.name}`} to={`/instances/${instance.id}`}><MoreHorizontal size={19} /></Link></div>
+    <div className="instance-card__cover"><div className="instance-card__pattern" aria-hidden /><span className="instance-number">#{instance.id.slice(0, 6).toUpperCase()}</span><div className="instance-card__statuses"><StatusBadge status={instance.status} pulse={instance.status === "running" && !nodeUnavailable} />{nodeUnavailable && <span className={`status status--${instance.node_status}`} title="无法确认节点上实例的实时状态"><span className="status__dot" aria-hidden />{nodeStatusLabel}</span>}</div></div>
+    <div className="instance-card__body"><div className="instance-card__heading"><div className="server-glyph"><Gamepad2 /></div><div><Link to={`/instances/${instance.id}`}>{instance.name}</Link><span>{instance.host}:{instance.port}</span><span className="instance-card__node"><Server size={11} aria-hidden />所属节点：{instance.node_name || instance.node_id}</span></div><Link className="icon-button" aria-label={`管理 ${instance.name}`} to={`/instances/${instance.id}`}><MoreHorizontal size={19} /></Link></div>
       <div className="instance-card__facts"><div><Map size={16} /><span>地图</span><strong>{instance.map || instance.config?.start_map || "未载入"}</strong></div><div><Box size={16} /><span>模式</span><strong>{instance.mode || instance.config?.mode || "未知"}</strong></div><div><Users size={16} /><span>玩家</span><strong>{instance.players} / {instance.max_players}</strong></div></div>
       <div className="instance-card__foot"><span>更新于 {relativeTime(instance.updated_at)}</span><div className="instance-card__foot-actions">{canStart && <Button loading={action.isPending} onClick={() => action.mutate({ type: "start" })}><Play size={15} fill="currentColor" />启动</Button>}{canStop && <Button variant="secondary" loading={action.isPending} onClick={() => action.mutate({ type: "stop" })}><Square size={14} fill="currentColor" />停止</Button>}{showRestart && <Button variant="secondary" loading={action.isPending} disabled={!canRestart} title={!canRestart ? "服务器启动后才能重启" : undefined} onClick={restart}><RefreshCw size={14} />重启</Button>}{isExternal && <Button loading={action.isPending} onClick={() => { if (window.confirm("受控接管会先停止当前外部 srcds 进程，再由 Agent 使用面板配置启动。确认继续吗？")) action.mutate({ type: "restart" }); }}><RefreshCw size={14} />受控接管</Button>}{!canStart && !canStop && !showRestart && !isExternal && <Link className="button button--secondary" to={`/instances/${instance.id}`}>查看进度</Link>}</div></div>
     </div>

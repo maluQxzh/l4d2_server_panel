@@ -108,6 +108,8 @@ type InstanceConfig struct {
 type Instance struct {
 	ID                string         `json:"id"`
 	NodeID            string         `json:"node_id"`
+	NodeName          string         `json:"node_name"`
+	NodeStatus        NodeStatus     `json:"node_status"`
 	InstallationID    string         `json:"game_installation_id,omitempty"`
 	NodePublicAddress string         `json:"node_public_address,omitempty"`
 	Name              string         `json:"name"`

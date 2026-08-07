@@ -2737,6 +2737,8 @@ components:
         [
           id,
           node_id,
+          node_name,
+          node_status,
           name,
           status,
           host,
@@ -2753,6 +2755,15 @@ components:
       properties:
         id: { type: string, format: uuid }
         node_id: { type: string, format: uuid }
+        node_name:
+          type: string
+          readOnly: true
+          description: 所属节点的当前名称。
+        node_status:
+          type: string
+          enum: [pending, online, offline, revoked]
+          readOnly: true
+          description: 所属节点的当前连接状态；节点离线时实例仍保留在响应中，实例 status 表示最后确认的进程生命周期状态。
         game_installation_id: { type: string, format: uuid, description: 独占绑定的游戏安装 }
         node_public_address:
           type: string

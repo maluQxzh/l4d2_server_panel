@@ -181,9 +181,11 @@ export interface InstanceConfig {
 }
 
 export interface InstanceRecord {
-	id: string;
-	node_id: string;
-	game_installation_id?: string;
+  id: string;
+  node_id: string;
+  node_name: string;
+  node_status: NodeStatus;
+  game_installation_id?: string;
   node_public_address?: string;
   name: string;
   status: InstanceStatus;
