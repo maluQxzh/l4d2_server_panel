@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Database, HardDrive, Link2, Plus, RefreshCw, RotateCw, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp, Database, HardDrive, Link2, Plus, RefreshCw, RotateCw, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, ProgressBar, StatusBadge } from "../components/ui";
 import { useRealtime } from "../context/RealtimeContext";
@@ -18,14 +18,13 @@ export function MapsPage() {
   const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances });
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, refetchInterval: 2_000 });
   const mapJobs = (jobs.data?.items || []).filter((job) => job.type.startsWith("map.") && !["succeeded", "failed", "canceled"].includes(job.status));
-  const totals = useMemo(() => (maps.data?.items || []).reduce((value, item) => ({ size: value.size + item.total_size, removed: value.removed + item.removed_bytes, assignments: value.assignments + (item.assignments?.length || 0) }), { size: 0, removed: 0, assignments: 0 }), [maps.data]);
+  const totals = useMemo(() => (maps.data?.items || []).reduce((value, item) => ({ size: value.size + item.total_size, assignments: value.assignments + (item.assignments?.length || 0) }), { size: 0, assignments: 0 }), [maps.data]);
 
   return <div>
     <PageHeader eyebrow="SHARED MAP LIBRARY" title="地图管理" description="每个节点只保存一份地图对象，通过同卷硬链接安全分配给多个游戏实例。" actions={<><Button variant="secondary" onClick={() => { void maps.refetch(); void jobs.refetch(); }}><RefreshCw size={16} />刷新</Button><Button onClick={() => setImportOpen(true)}><Plus size={17} />QQ 闪传导入</Button></>} />
     <div className="map-summary">
       <Card><Database size={19} /><div><span>逻辑地图</span><strong>{maps.data?.items.length || 0}</strong></div></Card>
-      <Card><HardDrive size={19} /><div><span>处理后容量</span><strong>{bytes(totals.size)}</strong></div></Card>
-      <Card><ShieldCheck size={19} /><div><span>已清理空间</span><strong>{bytes(totals.removed)}</strong></div></Card>
+      <Card><HardDrive size={19} /><div><span>地图占用空间</span><strong>{bytes(totals.size)}</strong></div></Card>
       <Card><Link2 size={19} /><div><span>实例分配</span><strong>{totals.assignments}</strong></div></Card>
     </div>
     <Card className="toolbar-card map-toolbar"><Field label="节点筛选"><select value={nodeFilter} onChange={(event) => setNodeFilter(event.target.value)}><option value="">全部可见节点</option>{(nodes.data?.items || []).map((node) => <option value={node.id} key={node.id}>{node.name}</option>)}</select></Field><span className="toolbar-count">{maps.data?.items.length || 0} 张地图</span></Card>
@@ -37,6 +36,7 @@ export function MapsPage() {
 }
 
 function MapCard({ item, instances, onAssignments }: { item: MapRecord; instances: InstanceRecord[]; onAssignments: () => void }) {
+  const [expanded, setExpanded] = useState(false);
   const toast = useToast();
   const client = useQueryClient();
   const verify = useMutation({ mutationFn: () => api.verifyMap(item.id), onSuccess: () => { toast.push("地图校验任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
@@ -55,11 +55,16 @@ function MapCard({ item, instances, onAssignments }: { item: MapRecord; instance
   const modes = item.modes || [];
   const primaryMode = modes.find((mode) => mode.name === "coop") || modes[0];
   const poster = item.poster_url || "/map-default-poster.jpg";
+  const detailsId = `map-details-${item.id}`;
   return <Card className="map-card">
     <div className="map-card__hero">
       <div className="map-card__poster"><img src={poster} alt={`${item.name} 地图海报`} onError={(event) => { if (!event.currentTarget.src.endsWith("/map-default-poster.jpg")) event.currentTarget.src = "/map-default-poster.jpg"; }} /><div className="map-card__poster-shade" /><span>{item.poster_url ? "MISSION POSTER" : "DEFAULT POSTER"}</span></div>
       <div className="map-card__profile">
         <div className="map-card__title"><div><span className="eyebrow">CUSTOM CAMPAIGN</span><h2>{item.name}</h2><small>{item.source_name || "QQ 闪传"} · {dateTime(item.created_at)}</small></div><StatusBadge status={item.health} /></div>
+        <div className="map-card__size"><HardDrive size={17} aria-hidden /><span><small>处理后的 VPK 大小</small><strong>{bytes(item.total_size)}</strong></span></div>
+      </div>
+    </div>
+    {expanded && <div className="map-card__details" id={detailsId}>
         <dl className="map-card__facts">
           <div><dt>战役</dt><dd>{item.name}</dd></div>
           <div><dt>作者</dt><dd>{item.author || "未提供"}</dd></div>
@@ -68,15 +73,14 @@ function MapCard({ item, instances, onAssignments }: { item: MapRecord; instance
         </dl>
         {item.description && <p className="map-card__description">{item.description}</p>}
         <div className="map-card__campaign"><h3>章节{primaryMode ? ` · ${mapModeName(primaryMode.name)}` : ""}</h3>{primaryMode ? <div className="map-chapter-route">{primaryMode.chapters.map((chapter, index) => <div className="map-chapter" key={`${primaryMode.name}-${chapter.ordinal}`}><span>{chapter.ordinal}</span><div><strong>{chapter.display_name}</strong><code>{asBSPFile(chapter.bsp_name)}</code></div>{index < primaryMode.chapters.length - 1 && <i aria-hidden="true">→</i>}</div>)}</div> : <p className="map-muted">Mission 文件未提供章节顺序</p>}</div>
-      </div>
-    </div>
-    <div className="map-card__metrics"><span><strong>{bytes(item.total_size)}</strong>处理后</span><span><strong>{item.artifacts?.length || 0}</strong>VPK 部件</span><span><strong>{item.bsps?.length || 0}</strong>BSP</span><span><strong>{item.removed_files}</strong>已清理文件</span></div>
-    <div className="map-card__content">
-      <section><h3>全部 BSP 建图代码</h3><div className="map-bsp-list">{(item.bsps || []).map((bsp) => <span key={bsp.virtual_path} className={!bsp.dictionary_present ? "warning" : ""}><code>{asBSPFile(bsp.start_name || bsp.virtual_path.replace(/^maps\//i, ""))}</code>{!bsp.dictionary_present && <small><AlertTriangle size={12} />缺少字典</small>}</span>)}</div></section>
-      <section><h3>实例分配</h3>{assigned.length ? <div className="map-assignment-list">{assigned.map((assignment) => <div key={assignment.instance_id}><span><strong>{assignment.instance?.name || assignment.instance_id.slice(0, 8)}</strong><small>{assignment.restart_required ? "等待重启生效" : "已生效"}</small></span>{assignment.restart_required && <Button variant="ghost" disabled={restart.isPending} onClick={() => restart.mutate(assignment.instance_id)}><RotateCw size={13} />立即重启</Button>}</div>)}</div> : <p className="map-muted">尚未分配给实例</p>}</section>
-      {(item.warnings?.length || 0) > 0 && <section className="map-warnings"><h3>处理警告</h3>{item.warnings!.map((warning, index) => <div key={`${warning.code}-${index}`}><AlertTriangle size={14} /><span><strong>{warning.message}</strong>{warning.virtual_path && <code>{warning.virtual_path}</code>}</span></div>)}</section>}
-    </div>
-    <div className="map-card__footer"><code title={item.aggregate_sha256}>{item.aggregate_sha256.slice(0, 16)}…</code><div><Button variant="secondary" onClick={onAssignments}><Link2 size={14} />分配实例</Button><Button variant="secondary" loading={verify.isPending} onClick={() => verify.mutate()}><ShieldCheck size={14} />校验</Button><Button variant="danger" loading={remove.isPending} disabled={Boolean(item.assignments?.length)} onClick={() => remove.mutate()}><Trash2 size={14} />永久删除</Button></div></div>
+        <div className="map-card__content">
+          <section><h3>全部 BSP 建图代码</h3><div className="map-bsp-list">{(item.bsps || []).map((bsp) => <span key={bsp.virtual_path} className={!bsp.dictionary_present ? "warning" : ""}><code>{asBSPFile(bsp.start_name || bsp.virtual_path.replace(/^maps\//i, ""))}</code>{!bsp.dictionary_present && <small><AlertTriangle size={12} />缺少字典</small>}</span>)}</div></section>
+          <section><h3>实例分配</h3>{assigned.length ? <div className="map-assignment-list">{assigned.map((assignment) => <div key={assignment.instance_id}><span><strong>{assignment.instance?.name || assignment.instance_id.slice(0, 8)}</strong><small>{assignment.restart_required ? "等待重启生效" : "已生效"}</small></span>{assignment.restart_required && <Button variant="ghost" disabled={restart.isPending} onClick={() => restart.mutate(assignment.instance_id)}><RotateCw size={13} />立即重启</Button>}</div>)}</div> : <p className="map-muted">尚未分配给实例</p>}</section>
+          {(item.warnings?.length || 0) > 0 && <section className="map-warnings"><h3>处理警告</h3>{item.warnings!.map((warning, index) => <div key={`${warning.code}-${index}`}><AlertTriangle size={14} /><span><strong>{warning.message}</strong>{warning.virtual_path && <code>{warning.virtual_path}</code>}</span></div>)}</section>}
+        </div>
+        <code className="map-card__checksum" title={item.aggregate_sha256}>SHA-256 · {item.aggregate_sha256.slice(0, 16)}…</code>
+      </div>}
+    <div className="map-card__footer"><Button className="map-card__toggle" variant="ghost" aria-expanded={expanded} aria-controls={detailsId} onClick={() => setExpanded((value) => !value)}>{expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}{expanded ? "收起详情" : "展开详情"}</Button><div><Button variant="secondary" onClick={onAssignments}><Link2 size={14} />分配实例</Button><Button variant="secondary" loading={verify.isPending} onClick={() => verify.mutate()}><ShieldCheck size={14} />校验</Button><Button variant="danger" loading={remove.isPending} disabled={Boolean(item.assignments?.length)} onClick={() => remove.mutate()}><Trash2 size={14} />永久删除</Button></div></div>
   </Card>;
 }
 
