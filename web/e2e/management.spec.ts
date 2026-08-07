@@ -205,7 +205,7 @@ test("外部实例接管只在本次重启发送现有 RCON 密码", async ({ pa
   await expect(page.getByRole("dialog", { name: "受控重启并接管" })).toHaveCount(0);
 });
 
-test("运行中实例重启必须确认并提交固定维护倒计时", async ({ page }) => {
+test("运行中实例有玩家时警告并允许立即重启", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance }));
   let actionBody: Record<string, unknown> | undefined;
@@ -216,10 +216,11 @@ test("运行中实例重启必须确认并提交固定维护倒计时", async ({
 
   await page.goto("/instances/instance-1");
   await page.getByRole("button", { name: "重启", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "维护重启实例" });
-  await expect(dialog.getByText(/10、5、1 分钟/)).toBeVisible();
-  await dialog.getByRole("button", { name: "确认维护重启" }).click();
-  await expect.poll(() => actionBody).toEqual({ type: "restart", payload: { maintenance: true, warning_seconds: [600, 300, 60] } });
+  const dialog = page.getByRole("dialog", { name: "服务器内仍有玩家" });
+  await expect(dialog.getByText(/当前有 1 名玩家在线/)).toBeVisible();
+  await expect(dialog.getByText(/不会发送游戏内广播/)).toBeVisible();
+  await dialog.getByRole("button", { name: "仍然重启" }).click();
+  await expect.poll(() => actionBody).toEqual({ type: "restart" });
 });
 
 test("创建实例从运行节点绑定可用安装并提交难度、RCON 和 Tickrate", async ({ page }) => {
@@ -648,7 +649,7 @@ test("安装模组可选择 QQ闪传批量导入", async ({ page }) => {
   await expect(fileDialog.getByText("QQ闪传", { exact: true })).toHaveCount(0);
 });
 
-test("地图管理支持导入、警告、运行中分配、重启与两阶段删除", async ({ page }) => {
+test("地图管理支持导入、警告、运行中热更新分配与两阶段删除", async ({ page }) => {
   await authenticated(page);
   const stopped = { ...instance, id: "instance-2", name: "停止实例", status: "stopped", port: 27016, pid: 0, started_at: null };
   const assignedMap = {
@@ -658,7 +659,7 @@ test("地图管理支持导入、警告、运行中分配、重启与两阶段�
     bsps: [{ virtual_path: "maps/custom_map.bsp", start_name: "custom_map", dictionary_present: false }],
     warnings: [{ code: "missing_stringtable_dictionary", message: "BSP 不包含 stringtable_dictionary.dct", virtual_path: "maps/custom_map.bsp" }],
     replicas: [{ filesystem_id: "linux:1", health: "healthy" }],
-    assignments: [{ map_id: "11111111-1111-1111-1111-111111111111", instance_id: instance.id, restart_required: true, created_at: "2026-08-05T00:00:00Z", updated_at: "2026-08-05T00:00:00Z" }],
+    assignments: [{ map_id: "11111111-1111-1111-1111-111111111111", instance_id: instance.id, restart_required: false, created_at: "2026-08-05T00:00:00Z", updated_at: "2026-08-05T00:00:00Z" }],
     created_at: "2026-08-05T00:00:00Z", updated_at: "2026-08-05T00:00:00Z",
   };
   const deletableMap = { ...assignedMap, id: "22222222-2222-2222-2222-222222222222", name: "可删除地图", aggregate_sha256: "c".repeat(64), assignments: [], warnings: [] };
@@ -678,11 +679,6 @@ test("地图管理支持导入、警告、运行中分配、重启与两阶段�
     writes.push({ method: route.request().method(), path: new URL(route.request().url()).pathname, body: route.request().postDataJSON() });
     return json(route, { job_id: "job-import-map" }, 202);
   });
-  await page.route("**/api/v1/instances/instance-1/actions", async (route) => {
-    writes.push({ method: route.request().method(), path: new URL(route.request().url()).pathname, body: route.request().postDataJSON() });
-    return json(route, { job_id: "job-restart-map" }, 202);
-  });
-
   await page.goto("/maps");
   await expect(page.getByRole("heading", { name: "地图管理" })).toBeVisible();
   await expect(page.getByText("地图占用空间")).toBeVisible();
@@ -692,9 +688,7 @@ test("地图管理支持导入、警告、运行中分配、重启与两阶段�
   await expect(assignedCard.getByText("BSP 不包含 stringtable_dictionary.dct")).toHaveCount(0);
   await assignedCard.getByRole("button", { name: "展开详情" }).click();
   await expect(page.getByText("BSP 不包含 stringtable_dictionary.dct")).toBeVisible();
-  await expect(page.getByText("等待重启生效")).toBeVisible();
-  await page.getByRole("button", { name: "立即重启" }).click();
-  await expect.poll(() => writes.some((item) => item.path.endsWith("/instances/instance-1/actions") && (item.body as { type?: string })?.type === "restart")).toBeTruthy();
+  await expect(assignedCard.getByText("已生效")).toBeVisible();
 
   await assignedCard.getByRole("button", { name: "分配实例" }).click();
   const runningAssigned = page.getByRole("dialog", { name: /分配地图/ }).getByRole("checkbox").first();

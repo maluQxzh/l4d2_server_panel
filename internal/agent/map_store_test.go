@@ -43,12 +43,8 @@ func TestMapStoreAssignsVerifiedHardLinkAndRequiresUnassignBeforeDelete(t *testi
 		t.Fatal(err)
 	}
 	instance := InstanceRecord{ID: "instance-1"}
-	restartRequired, err := store.assign(mapID, instance, instanceRoot, true)
-	if err != nil {
+	if err := store.assign(mapID, instance, instanceRoot); err != nil {
 		t.Fatal(err)
-	}
-	if !restartRequired {
-		t.Fatal("running assignment did not require restart")
 	}
 	assigned, ok := store.registry.get(mapID)
 	if !ok || len(assigned.Assignments[instance.ID].Targets) != 1 {

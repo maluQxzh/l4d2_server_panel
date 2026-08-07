@@ -238,11 +238,10 @@ func (s *Store) applyMapAssignmentResult(ctx context.Context, job domain.Job) er
 		_, err := s.db.ExecContext(ctx, `DELETE FROM map_assignments WHERE map_id=?1 AND instance_id=?2`, mapID, job.InstanceID)
 		return err
 	}
-	restartRequired, _ := job.Result["restart_required"].(bool)
 	projectedAt := jobProjectionTimestamp(job)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO map_assignments(map_id,instance_id,restart_required,created_at,updated_at)
 		VALUES(?1,?2,?3,?4,?4) ON CONFLICT(map_id,instance_id) DO UPDATE SET
-		restart_required=excluded.restart_required,updated_at=excluded.updated_at`, mapID, job.InstanceID, restartRequired, projectedAt)
+		restart_required=excluded.restart_required,updated_at=excluded.updated_at`, mapID, job.InstanceID, false, projectedAt)
 	return err
 }
 

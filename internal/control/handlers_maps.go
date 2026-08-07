@@ -160,6 +160,10 @@ func (s *Server) handleMapAssignment(w http.ResponseWriter, r *http.Request, act
 		writeError(w, http.StatusConflict, "agent_upgrade_required", "target node Agent does not support the map library")
 		return
 	}
+	if action == "map.assign" && s.agents.Connected(item.NodeID) && !s.agents.Supports(item.NodeID, "map_hot_reload_v1") {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "target node Agent does not support live map refresh")
+		return
+	}
 	requestFingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "map-assignment", mapID, action,
 		map[string]any{"instance_id": instanceID})
 	if err != nil {
