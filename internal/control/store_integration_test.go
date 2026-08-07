@@ -1864,12 +1864,28 @@ func testPublicInstanceProjection(t *testing.T, ctx context.Context, store *Stor
 	if err != nil {
 		t.Fatalf("create public instance: %v", err)
 	}
+	if instance.NodeName != "public-node" || instance.NodeStatus != domain.NodeOnline {
+		t.Fatalf("created instance node projection = %q/%q, want public-node/online", instance.NodeName, instance.NodeStatus)
+	}
 	projected, err := store.GetInstance(ctx, instance.ID)
 	if err != nil {
 		t.Fatalf("read public instance projection: %v", err)
 	}
 	if projected.NodePublicAddress != "game.example.com" {
 		t.Fatalf("instance node_public_address = %q, want game.example.com", projected.NodePublicAddress)
+	}
+	if projected.NodeName != "public-node" || projected.NodeStatus != domain.NodeOnline {
+		t.Fatalf("instance node projection = %q/%q, want public-node/online", projected.NodeName, projected.NodeStatus)
+	}
+	if err := store.SetNodeOffline(ctx, nodeID); err != nil {
+		t.Fatalf("set node offline: %v", err)
+	}
+	instances, err := store.ListInstances(ctx, nodeID)
+	if err != nil || len(instances) != 1 {
+		t.Fatalf("offline node instances = %#v, err=%v", instances, err)
+	}
+	if instances[0].NodeName != "public-node" || instances[0].NodeStatus != domain.NodeOffline {
+		t.Fatalf("offline instance node projection = %q/%q, want public-node/offline", instances[0].NodeName, instances[0].NodeStatus)
 	}
 	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='running',mode='' WHERE id=?1`, instance.ID); err != nil {
 		t.Fatal(err)

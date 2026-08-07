@@ -51,7 +51,11 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
           if (typeof event.id === "number" && event.id > 0) sessionStorage.setItem("l4d2-event-cursor", String(event.id));
           setLastEventAt(event.created_at || new Date().toISOString());
           listeners.current.forEach((listener) => listener(event));
-          if (event.resource_type === "node") void queryClient.invalidateQueries({ queryKey: ["nodes"] });
+          if (event.resource_type === "node") {
+            void queryClient.invalidateQueries({ queryKey: ["nodes"] });
+            // 实例响应投影所属节点的名称与在线状态，节点事件也必须刷新实例卡片。
+            void queryClient.invalidateQueries({ queryKey: ["instances"] });
+          }
           if (event.resource_type === "instance") void queryClient.invalidateQueries({ queryKey: ["instances"] });
           if (event.resource_type === "job" || event.type.startsWith("job")) {
             void queryClient.invalidateQueries({ queryKey: ["jobs"] });

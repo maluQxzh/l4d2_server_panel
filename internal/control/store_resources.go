@@ -355,6 +355,8 @@ func nullableUUID(value string) any {
 
 const instanceColumns = `id,node_id,COALESCE(installation_id,''),name,status,path,host,port,tv_port,pid,map,mode,players,max_players,build_id,
 		version,config,started_at,created_at,updated_at,
+		COALESCE((SELECT name FROM nodes WHERE nodes.id=instances.node_id),''),
+		COALESCE((SELECT status FROM nodes WHERE nodes.id=instances.node_id),'offline'),
 		COALESCE((SELECT public_address FROM nodes WHERE nodes.id=instances.node_id),''),
 		COALESCE((SELECT state.available FROM instance_update_state state WHERE state.instance_id=instances.id),false),
 		COALESCE((SELECT state.available_build FROM instance_update_state state WHERE state.instance_id=instances.id),''),
@@ -365,7 +367,7 @@ func scanInstance(row scanner) (domain.Instance, error) {
 	var raw []byte
 	err := row.Scan(&inst.ID, &inst.NodeID, &inst.InstallationID, &inst.Name, &inst.Status, &inst.Path, &inst.Host, &inst.Port, &inst.TVPort,
 		&inst.PID, &inst.Map, &inst.Mode, &inst.Players, &inst.MaxPlayers, &inst.BuildID, &inst.Version, &raw,
-		&inst.StartedAt, &inst.CreatedAt, &inst.UpdatedAt, &inst.NodePublicAddress, &inst.UpdateAvailable,
+		&inst.StartedAt, &inst.CreatedAt, &inst.UpdatedAt, &inst.NodeName, &inst.NodeStatus, &inst.NodePublicAddress, &inst.UpdateAvailable,
 		&inst.AvailableBuild, &inst.UpdateCheckedAt)
 	if err == nil {
 		err = json.Unmarshal(raw, &inst.Config)
@@ -435,6 +437,16 @@ func (s *Store) CreateInstance(ctx context.Context, input CreateInstanceInput) (
 		return domain.Instance{}, err
 	}
 	defer tx.Rollback()
+	var nodeName string
+	var nodeStatus domain.NodeStatus
+	var nodePublicAddress string
+	if err := tx.QueryRowContext(ctx, `SELECT name,status,COALESCE(public_address,'') FROM nodes WHERE id=?1`, input.NodeID).
+		Scan(&nodeName, &nodeStatus, &nodePublicAddress); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.Instance{}, ErrNotFound
+		}
+		return domain.Instance{}, err
+	}
 	if input.InstallationID != "" {
 		var installationNodeID, installationStatus string
 		var bound bool
@@ -485,7 +497,8 @@ func (s *Store) CreateInstance(ctx context.Context, input CreateInstanceInput) (
 	} else if _, occupied := reserved[input.Port]; occupied {
 		return domain.Instance{}, ErrConflict
 	}
-	inst := domain.Instance{ID: uuid.NewString(), NodeID: input.NodeID, InstallationID: input.InstallationID, Name: strings.TrimSpace(input.Name), Status: domain.InstanceInstalling,
+	inst := domain.Instance{ID: uuid.NewString(), NodeID: input.NodeID, NodeName: nodeName, NodeStatus: nodeStatus, NodePublicAddress: nodePublicAddress,
+		InstallationID: input.InstallationID, Name: strings.TrimSpace(input.Name), Status: domain.InstanceInstalling,
 		Path: input.Path, Host: input.Host, Port: input.Port, TVPort: input.TVPort, MaxPlayers: input.Config.MaxPlayers,
 		Version: 1, Config: input.Config, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	_, err = tx.ExecContext(ctx, `INSERT INTO instances(id,node_id,installation_id,name,status,path,host,port,tv_port,max_players,version,config,created_at,updated_at)

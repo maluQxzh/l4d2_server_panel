@@ -339,12 +339,16 @@ h1, h2, h3, p { margin-top: 0; }
 .instance-card__pattern { position: absolute; inset: 0; opacity: .18; background-image: repeating-linear-gradient(120deg, transparent 0 27px, rgba(255,255,255,.05) 28px 29px); }
 .instance-number { position: relative; z-index: 1; color: rgba(255,255,255,.38); font: 600 9px var(--font-mono); }
 .instance-card__cover .status { position: relative; z-index: 1; padding: 5px 8px; color: var(--text); background: rgba(5,8,7,.62); border-radius: 6px; }
+.instance-card__statuses { position: relative; z-index: 1; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.instance-card__statuses .status--offline, .instance-card__statuses .status--revoked { color: #f0aaa1; }
+.instance-card__statuses .status--offline .status__dot { background: var(--red); }
 .instance-card__body { padding: 0 16px 15px; }
-.instance-card__heading { min-height: 68px; display: grid; grid-template-columns: 35px 1fr 34px; gap: 10px; align-items: center; border-bottom: 1px solid var(--line-soft); }
+.instance-card__heading { min-height: 78px; display: grid; grid-template-columns: 35px 1fr 34px; gap: 10px; align-items: center; border-bottom: 1px solid var(--line-soft); }
 .instance-card__heading .server-glyph { margin-top: -28px; width: 35px; height: 35px; border: 2px solid var(--panel); }
 .instance-card__heading > div:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .instance-card__heading a:first-child { overflow: hidden; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .instance-card__heading span { color: var(--text-faint); font: 500 9px var(--font-mono); }
+.instance-card__heading .instance-card__node { display: flex; align-items: center; gap: 4px; font-family: inherit; }
 .instance-card__facts { padding: 14px 0; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
 .instance-card__facts > div { min-width: 0; display: grid; grid-template-columns: 16px 1fr; column-gap: 6px; }
 .instance-card__facts svg { grid-row: span 2; color: var(--text-faint); }
@@ -437,7 +441,9 @@ h1, h2, h3, p { margin-top: 0; }
 .instance-hero { min-height: 90px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .instance-hero__identity { min-width: 0; display: flex; align-items: center; gap: 14px; }
 .instance-hero__glyph { width: 50px; height: 50px; display: grid; place-items: center; color: var(--green); background: var(--green-soft); border: 1px solid rgba(167,218,60,.12); border-radius: 12px; }
-.instance-hero__title { display: flex; align-items: center; gap: 12px; }
+.instance-hero__title { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.instance-node-status.status--offline, .instance-node-status.status--revoked { color: #f0aaa1; }
+.instance-node-status.status--offline .status__dot { background: var(--red); }
 .instance-rcon-warning { color: #dcb668; font-size: 10px; font-weight: 650; }
 .instance-hero h1 { margin: 0; font: 700 29px var(--font-display); }
 .instance-hero p { margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 7px; color: var(--text-faint); font-size: 10px; }
