@@ -657,12 +657,17 @@ h1, h2, h3, p { margin-top: 0; }
 .audit-event span { color: var(--text-faint); font-size: 8px; }
 .audit-event code { width: fit-content; max-width: 100%; overflow: hidden; padding: 4px 6px; color: var(--text-dim); background: rgba(0,0,0,.18); border-radius: 4px; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 
-.job-summary { margin-bottom: 13px; display: grid; grid-template-columns: repeat(3, minmax(150px, 240px)); gap: 11px; }
+.job-summary { margin-bottom: 13px; display: grid; grid-template-columns: repeat(4, minmax(150px, 240px)); gap: 11px; }
 .job-summary .card { min-height: 70px; padding: 14px 16px; display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 8px; }
 .job-summary svg { color: var(--green); }
 .job-summary .card:nth-child(3) svg { color: var(--red); }
 .job-summary span { color: var(--text-dim); font-size: 10px; }
 .job-summary strong { font: 700 22px var(--font-display); }
+.job-summary .job-background-card { grid-template-columns: 30px minmax(90px, 1fr) auto; }
+.job-background-card span { display: flex; flex-direction: column; gap: 3px; }
+.job-background-card span em { color: var(--text-faint); font: 500 8px var(--font-mono); }
+.job-background-card strong { font-size: 15px; white-space: nowrap; }
+.job-summary .job-background-card--failed svg, .job-background-card--failed strong { color: var(--red); }
 .jobs-card { overflow: hidden; }
 .job-row { border-bottom: 1px solid var(--line-soft); }
 .job-row:last-child { border: 0; }

@@ -1517,6 +1517,18 @@ paths:
             in: query,
             schema: { type: integer, minimum: 1, default: 100, maximum: 500 },
           }
+        - {
+            name: background,
+            in: query,
+            description: 系统自动只读探测任务的筛选方式；默认 include 保持 API 向后兼容，任务中心使用 exclude 或 only 分开显示,
+            schema: { type: string, enum: [include, exclude, only], default: include },
+          }
+        - {
+            name: background_summary,
+            in: query,
+            description: 是否返回调用者有权读取目标的最新后台探测聚合状态,
+            schema: { type: boolean, default: false },
+          }
       responses:
         "200":
           description: 任务列表；对任务目标资源仅有 read 的调用者看不到 payload/result，加密字段和 Agent 内部存储定位符永不返回
@@ -1528,6 +1540,15 @@ paths:
                 properties:
                   items:
                     { type: array, items: { $ref: "#/components/schemas/Job" } }
+                  background_summary:
+                    type: object
+                    description: 最近最多 500 条可见后台探测中，每个实例或节点任务目标的最新状态
+                    required: [targets, active, failed]
+                    properties:
+                      targets: { type: integer, minimum: 0 }
+                      active: { type: integer, minimum: 0 }
+                      failed: { type: integer, minimum: 0 }
+                      latest_at: { type: string, format: date-time }
 
   /jobs/{jobId}:
     get:

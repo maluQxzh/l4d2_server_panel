@@ -22,7 +22,7 @@ Windows 10/11 x64 与 Windows Server 2019+ 使用便携 ZIP，不依赖 Docker/W
 6. Agent 上报进度和最终结果；Control 持久化结果、成功应用资源/失败/取消投影并发布事件后发送 `job_ack`。任一步失败都会中止确认并关闭会话，以便重连重放；Agent 只在收到确认后删除终态日志，确认丢失时同样重放到中心成功确认。
 7. Control 发布过滤并脱敏的浏览器事件；浏览器以每页 500 条、单连接最多 5000 条按事件游标补齐遗漏。单 Control 进程把持久事件的提交与进程内广播串行化；`event_log.id` 使用不会因清理复用的 `AUTOINCREMENT` 游标。持久事件 ID 出现缺口时立即从 SQLite 补齐，另每 2 秒检查丢失尾部；瞬时日志和指标允许对慢客户端丢弃。
 
-任务状态固定为 `queued → dispatched → running → succeeded|failed|canceled`。Control 数据库和 Agent 都限制每个实例同时只有一个写操作，并为每个物理游戏安装增加独立写锁；A2S/玩家、目录列表、文件读取以及日志/备份分块不占实例写锁。SteamCMD 并发由每个 Agent 的 `steamcmd_concurrency`（1–4，默认 1）控制，切换活动 SteamCMD 时还会拒绝与安装维护任务并发。
+任务状态固定为 `queued → dispatched → running → succeeded|failed|canceled`。Control 数据库和 Agent 都限制每个实例同时只有一个写操作，并为每个物理游戏安装增加独立写锁；A2S/玩家、目录列表、文件读取以及日志/备份分块不占实例写锁。SteamCMD 并发由每个 Agent 的 `steamcmd_concurrency`（1–4，默认 1）控制，切换活动 SteamCMD 时还会拒绝与安装维护任务并发。系统发起的 A2S、玩家、目录发现和更新检查属于后台只读任务；任务 API 可在 SQL 应用数量上限前包含、排除或仅查询这些记录，任务中心据此默认展示重要操作并提供独立后台探测视图，不改变后台任务的持久终态、资源投影或 Agent 确认流程。完成投影的成功/取消后台探测保留 1 小时，失败探测保留 24 小时；用户任务和仍带 `_projection_pending` 的终态不受该清理策略影响。
 
 协议按主次版本兼容：主版本必须一致，Control 接受当前次版本和前一个次版本。能力协商用于 `runtime_environment_v1`、`discover_instances`、`purge_quarantine`、`map_library_v1`、`map_hot_reload_v1` 等增量命令，避免把新任务派给旧 Agent；即使节点在任务排队后降级重连，相关任务也会留在队列等待兼容 Agent。`job_ack` 是可忽略的增量消息；不认识它的前一版本 Agent 会保持既有行为而不会断开连接。
 

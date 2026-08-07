@@ -766,6 +766,14 @@ func canonicalLifecyclePayload(action string, supplied map[string]any, instance 
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	principal := principalFromContext(r.Context())
 	nodeID, instanceID := r.URL.Query().Get("node_id"), r.URL.Query().Get("instance_id")
+	background := jobBackgroundFilter(r.URL.Query().Get("background"))
+	if background == "" {
+		background = jobBackgroundInclude
+	}
+	if background != jobBackgroundInclude && background != jobBackgroundExclude && background != jobBackgroundOnly {
+		writeError(w, http.StatusBadRequest, "invalid_job_filter", "background must be include, exclude, or only")
+		return
+	}
 	if nodeID != "" && instanceID == "" && !principal.AllowsNodePermission(nodeID, PermissionRead) {
 		writeTokenScopeDenied(w)
 		return
@@ -789,7 +797,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 			queryLimit = 500
 		}
 	}
-	items, err := s.store.ListJobs(r.Context(), nodeID, instanceID, queryLimit)
+	items, err := s.store.ListJobs(r.Context(), nodeID, instanceID, background, queryLimit)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -803,7 +811,56 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": filtered})
+	response := map[string]any{"items": filtered}
+	if r.URL.Query().Get("background_summary") == "true" {
+		backgroundItems, summaryErr := s.store.ListJobs(r.Context(), nodeID, instanceID, jobBackgroundOnly, 500)
+		if summaryErr != nil {
+			s.fail(w, summaryErr)
+			return
+		}
+		visible := make([]domain.Job, 0, len(backgroundItems))
+		for _, item := range backgroundItems {
+			if principal.AllowsJobPermission(item, PermissionRead) {
+				visible = append(visible, item)
+			}
+		}
+		response["background_summary"] = summarizeBackgroundJobs(visible)
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+type backgroundJobSummary struct {
+	Targets  int        `json:"targets"`
+	Active   int        `json:"active"`
+	Failed   int        `json:"failed"`
+	LatestAt *time.Time `json:"latest_at,omitempty"`
+}
+
+func summarizeBackgroundJobs(items []domain.Job) backgroundJobSummary {
+	summary := backgroundJobSummary{}
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		target := item.InstanceID
+		if target == "" {
+			target = item.NodeID + ":" + item.Type
+		}
+		if _, exists := seen[target]; exists {
+			continue
+		}
+		seen[target] = struct{}{}
+		summary.Targets++
+		if summary.LatestAt == nil || item.CreatedAt.After(*summary.LatestAt) {
+			createdAt := item.CreatedAt
+			summary.LatestAt = &createdAt
+		}
+		if item.Status == domain.JobQueued || item.Status == domain.JobDispatched || item.Status == domain.JobRunning {
+			summary.Active++
+		}
+		if item.Status == domain.JobFailed {
+			summary.Failed++
+		}
+	}
+	return summary
 }
 
 func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {

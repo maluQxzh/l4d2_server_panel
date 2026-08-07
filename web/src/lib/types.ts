@@ -299,6 +299,17 @@ export interface Job {
   finished_at?: string;
 }
 
+export interface JobBackgroundSummary {
+  targets: number;
+  active: number;
+  failed: number;
+  latest_at?: string;
+}
+
+export interface JobListResponse extends ListResponse<Job> {
+  background_summary?: JobBackgroundSummary;
+}
+
 export interface AuditEvent {
   id: string;
   actor_id?: string;

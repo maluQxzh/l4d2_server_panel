@@ -286,12 +286,31 @@ func (s *Store) JobByIdempotencyKeyMatching(ctx context.Context, requestedBy, ke
 	return job, nil
 }
 
-func (s *Store) ListJobs(ctx context.Context, nodeID, instanceID string, limit int) ([]domain.Job, error) {
+type jobBackgroundFilter string
+
+const (
+	jobBackgroundInclude      jobBackgroundFilter = "include"
+	jobBackgroundExclude      jobBackgroundFilter = "exclude"
+	jobBackgroundOnly         jobBackgroundFilter = "only"
+	backgroundJobSQLPredicate                     = `requested_by IS NULL AND type IN ('a2s.info','a2s.players','rcon.players','list','check_update')`
+)
+
+func (s *Store) ListJobs(ctx context.Context, nodeID, instanceID string, background jobBackgroundFilter, limit int) ([]domain.Job, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	backgroundClause := ""
+	switch background {
+	case jobBackgroundExclude:
+		backgroundClause = " AND NOT (" + backgroundJobSQLPredicate + ")"
+	case jobBackgroundOnly:
+		backgroundClause = " AND (" + backgroundJobSQLPredicate + ")"
+	case jobBackgroundInclude:
+	default:
+		return nil, fmt.Errorf("invalid background job filter %q", background)
+	}
 	query := `SELECT ` + jobColumns + ` FROM jobs WHERE (?1='' OR node_id=?1) AND (?2='' OR instance_id=?2)
-		ORDER BY created_at DESC,id DESC LIMIT ?3`
+		` + backgroundClause + ` ORDER BY created_at DESC,id DESC LIMIT ?3`
 	rows, err := s.db.QueryContext(ctx, query, nodeID, instanceID, limit)
 	if err != nil {
 		return nil, err

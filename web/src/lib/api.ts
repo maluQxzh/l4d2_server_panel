@@ -22,6 +22,7 @@ import type {
   LogSearchEntry,
   TransferChunk,
   JobStatus,
+  JobListResponse,
   RoleBinding,
   Role,
   NodeDiscoveryResult,
@@ -297,6 +298,15 @@ export const api = {
   ),
 
   jobs: () => list<Job>("/jobs"),
+  jobList: ({ background = "include", backgroundSummary = false, limit = 100 }: {
+    background?: "include" | "exclude" | "only";
+    backgroundSummary?: boolean;
+    limit?: number;
+  } = {}) => {
+    const query = new URLSearchParams({ background, limit: String(limit) });
+    if (backgroundSummary) query.set("background_summary", "true");
+    return request<JobListResponse>(`/jobs?${query.toString()}`);
+  },
   instanceJobs: (instanceId: string) => list<Job>(`/jobs?instance_id=${encodeURIComponent(instanceId)}`),
   job: (id: string) => request<{ job: Job }>(`/jobs/${encodeURIComponent(id)}`).then((r) => r.job),
   cancelJob: (id: string) => request<void>(`/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
