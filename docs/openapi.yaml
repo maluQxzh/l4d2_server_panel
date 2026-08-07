@@ -2291,18 +2291,37 @@ components:
         csrf_token: { type: string }
         api_token: { type: boolean, default: false }
 
-    Role: { type: string, enum: [owner, admin, operator, viewer] }
+    Role:
+      type: string
+      enum: [owner, admin, operator, viewer]
+      description: 权限预设名称；角色绑定的 permissions 才是最终授权集合。
     PermissionScope: { type: string, enum: [read, operate, manage] }
+    BindingPermission:
+      type: string
+      enum:
+        [nodes.read, nodes.enroll, nodes.update, nodes.credentials.rotate, nodes.discover, nodes.quarantine.read, nodes.quarantine.purge, nodes.delete,
+         environments.read, environments.manage, instances.read, instances.create, instances.configure, instances.delete, instances.start, instances.stop,
+         instances.restart, instances.update, instances.validate, players.read, players.kick, players.ban, players.unban, players.change_map,
+         players.broadcast, rcon.execute, files.list, files.read, files.write, files.delete, files.upload, packages.read, packages.install,
+         packages.toggle, packages.rollback, backups.read, backups.download, backups.create, backups.restore, schedules.read, schedules.manage,
+         logs.read, maps.read, maps.import, maps.assign, maps.verify, maps.delete, jobs.read, jobs.details, jobs.cancel, audit.read,
+         audit.read_global, notifications.read, notifications.manage, metrics.read, root_security]
 
     RoleBindingInput:
       type: object
       required: [role, scope_type]
       properties:
         role: { $ref: "#/components/schemas/Role" }
+        permissions:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/BindingPermission" }
+          description: 具体授权集合；省略时由 role 预设按 scope_type 填充。
         scope_type: { type: string, enum: [global, node, instance] }
         node_id: { type: string, format: uuid }
         instance_id: { type: string, format: uuid }
-      description: global 不带资源 ID；node 只带 node_id；instance 只带 instance_id；owner 仅允许 global。
+      description: global 不带资源 ID；node 只带 node_id；instance 只带 instance_id；owner 仅允许 global 且权限不可自定义。节点/实例写权限要求同时包含对应查看权限。
 
     RoleBinding:
       allOf:

@@ -114,16 +114,13 @@ function InstanceHero({ instance }: { instance: InstanceRecord }) {
   const [restartOpen, setRestartOpen] = useState(false);
   const [restartPlayers, setRestartPlayers] = useState(0);
   const takeoverPassword = useRef<HTMLInputElement>(null);
-  const permissions = {
-    operate: canAccessInstance(user, instance, "operate"),
-    manage: canAccessInstance(user, instance, "manage"),
-  };
-  const canStart = lifecycleActionAllowed("start", instance.status, permissions);
-  const canStop = lifecycleActionAllowed("stop", instance.status, permissions);
-  const canRestart = lifecycleActionAllowed("restart", instance.status, permissions);
+  const allows = (permission: Parameters<typeof canAccessInstance>[2]) => canAccessInstance(user, instance, permission);
+  const canStart = lifecycleActionAllowed("start", instance.status, allows);
+  const canStop = lifecycleActionAllowed("stop", instance.status, allows);
+  const canRestart = lifecycleActionAllowed("restart", instance.status, allows);
   const nodeUnavailable = instance.node_status !== "online";
   const nodeStatusLabel = instance.node_status === "offline" ? "节点离线" : instance.node_status === "revoked" ? "节点已吊销" : "节点待接入";
-  const disabledReason = !permissions.operate ? "当前角色没有实例操作权限" : "当前实例状态不允许此操作";
+  const disabledReason = !canStart && !canStop && !canRestart ? "当前账号没有对应的实例生命周期权限" : "当前实例状态不允许此操作";
   const action = useMutation({
     mutationFn: (type: string) => api.instanceAction(instance.id, type),
     onSuccess: (_result, type) => { setRestartOpen(false); toast.push(`${actionLabel(type)}任务已提交`); void client.invalidateQueries({ queryKey: ["jobs"] }); void client.invalidateQueries({ queryKey: ["instances", instance.id] }); },
@@ -198,7 +195,7 @@ function InstanceBindingCard({ instance }: { instance: InstanceRecord }) {
   const { user } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
-  const canManage = canAccessInstance(user, instance, "manage");
+  const canManage = canAccessInstance(user, instance, "instances.delete");
   const remove = useMutation({
     mutationFn: () => api.deleteInstance(instance.id, "detach"),
     onSuccess: () => { toast.push("实例已提交解除绑定，游戏文件将保留"); navigate("/jobs"); },
@@ -890,14 +887,15 @@ function BackupsTab({ instance }: { instance: InstanceRecord }) {
   const toast = useToast();
   const client = useQueryClient();
   const [uploadOpen, setUploadOpen] = useState(false);
-  const canOperate = canAccessInstance(user, instance, "operate");
+  const canCreate = canAccessInstance(user, instance, "backups.create");
+  const canRestorePermission = canAccessInstance(user, instance, "backups.restore");
   const restoreReady = instance.status === "stopped" || instance.status === "degraded";
-  const canRestore = canOperate && restoreReady;
+  const canRestore = canRestorePermission && restoreReady;
   const action = useMutation({ mutationFn: ({ type, backup }: { type: string; backup?: BackupRecord }) => api.instanceAction(instance.id, type, backup ? { backup_id: backup.id } : undefined), onSuccess: (_data, values) => { toast.push(values.type === "backup" ? "备份任务已提交" : "恢复任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
-  const restoreReason = !canOperate ? "当前角色没有实例操作权限" : "请先停止实例再恢复";
-  const backupButton = <Button onClick={() => action.mutate({ type: "backup" })} loading={action.isPending} disabled={!canOperate} title={!canOperate ? "当前角色没有实例操作权限" : undefined}><Archive size={16} />立即备份</Button>;
-  const alternateBackupButton = (label: string) => <Button onClick={() => action.mutate({ type: "backup" })} loading={action.isPending} disabled={!canOperate}><Archive size={16} />{label}</Button>;
-  return <><Card><div className="card-heading"><div><span className="eyebrow">LOCAL SNAPSHOTS</span><h2>实例备份</h2></div><div className="backup-heading-actions"><Button variant="secondary" onClick={() => setUploadOpen(true)} disabled={!canRestore} title={canRestore ? "上传其他节点下载的 ZIP 备份并恢复" : restoreReason}><Upload size={16} />上传并恢复</Button>{backupButton}</div></div>{!canRestore && <div className="form-warning backup-restore-warning"><ShieldAlert size={17} />{!canOperate ? "当前角色没有实例操作权限；只能查看或下载备份。" : "恢复会替换实例数据，必须先停止服务器；运行中只允许创建或下载备份。"}</div>}{backups.isPending ? <LoadingBlock /> : backups.error ? <OptionalUnavailable error={backups.error} title="备份清单尚不可用" description="当前控制端未开放节点本地备份列表；仍可提交新的备份任务。" action={alternateBackupButton("创建备份")} /> : backups.data.items.length ? <div className="backup-list">{backups.data.items.map((backup) => <div className="backup-row" key={backup.id}><div className="backup-icon"><Archive size={19} /></div><div><strong>{backup.name}</strong><span>{dateTime(backup.created_at)} · {backup.platform || "可移植数据"}</span></div><span>{bytes(backup.size)}</span><code>{backup.checksum ? `${backup.checksum.slice(0, 12)}…` : "校验待完成"}</code><Button variant="secondary" disabled={!canRestore} title={canRestore ? "恢复此备份" : restoreReason} onClick={() => action.mutate({ type: "restore", backup })}><RotateCcw size={15} />恢复</Button><BackupDownloadButton instance={instance} backup={backup} /></div>)}</div> : <EmptyState title="还没有备份" description="备份保存在节点本地，包含配置、封禁、插件与 VPK，不包含游戏本体。" action={alternateBackupButton("创建首个备份")} />}<div className="retention-note"><History size={19} /><span><strong>默认保留策略</strong> 每日 04:00，保留 7 个日备份与 4 个周备份。恢复前会自动创建检查点。</span></div></Card><BackupUploadRestoreModal open={uploadOpen} instance={instance} onClose={() => setUploadOpen(false)} /></>;
+  const restoreReason = !canRestorePermission ? "当前账号没有备份恢复权限" : "请先停止实例再恢复";
+  const backupButton = <Button onClick={() => action.mutate({ type: "backup" })} loading={action.isPending} disabled={!canCreate} title={!canCreate ? "当前账号没有备份创建权限" : undefined}><Archive size={16} />立即备份</Button>;
+  const alternateBackupButton = (label: string) => <Button onClick={() => action.mutate({ type: "backup" })} loading={action.isPending} disabled={!canCreate}><Archive size={16} />{label}</Button>;
+  return <><Card><div className="card-heading"><div><span className="eyebrow">LOCAL SNAPSHOTS</span><h2>实例备份</h2></div><div className="backup-heading-actions"><Button variant="secondary" onClick={() => setUploadOpen(true)} disabled={!canRestore} title={canRestore ? "上传其他节点下载的 ZIP 备份并恢复" : restoreReason}><Upload size={16} />上传并恢复</Button>{backupButton}</div></div>{!canRestore && <div className="form-warning backup-restore-warning"><ShieldAlert size={17} />{!canRestorePermission ? "当前账号没有备份恢复权限。" : "恢复会替换实例数据，必须先停止服务器。"}</div>}{backups.isPending ? <LoadingBlock /> : backups.error ? <OptionalUnavailable error={backups.error} title="备份清单尚不可用" description="当前控制端未开放节点本地备份列表；仍可提交新的备份任务。" action={alternateBackupButton("创建备份")} /> : backups.data.items.length ? <div className="backup-list">{backups.data.items.map((backup) => <div className="backup-row" key={backup.id}><div className="backup-icon"><Archive size={19} /></div><div><strong>{backup.name}</strong><span>{dateTime(backup.created_at)} · {backup.platform || "可移植数据"}</span></div><span>{bytes(backup.size)}</span><code>{backup.checksum ? `${backup.checksum.slice(0, 12)}…` : "校验待完成"}</code><Button variant="secondary" disabled={!canRestore} title={canRestore ? "恢复此备份" : restoreReason} onClick={() => action.mutate({ type: "restore", backup })}><RotateCcw size={15} />恢复</Button><BackupDownloadButton instance={instance} backup={backup} /></div>)}</div> : <EmptyState title="还没有备份" description="备份保存在节点本地，包含配置、封禁、插件与 VPK，不包含游戏本体。" action={alternateBackupButton("创建首个备份")} />}<div className="retention-note"><History size={19} /><span><strong>默认保留策略</strong> 每日 04:00，保留 7 个日备份与 4 个周备份。恢复前会自动创建检查点。</span></div></Card><BackupUploadRestoreModal open={uploadOpen} instance={instance} onClose={() => setUploadOpen(false)} /></>;
 }
 
 type BackupPlatform = PersistedBackupPlatform;

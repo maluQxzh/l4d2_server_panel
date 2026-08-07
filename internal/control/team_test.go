@@ -174,3 +174,35 @@ func TestAuthenticatedPrincipalWithoutBindingsFailsClosed(t *testing.T) {
 		t.Fatal("principal with an explicitly loaded empty binding set retained legacy role authority")
 	}
 }
+
+func TestNormalizeFineGrainedBindings(t *testing.T) {
+	instanceID := "04ca41f2-9760-47b1-91d7-acba7632ded9"
+	bindings, err := normalizeRoleBindings([]domain.RoleBinding{{
+		Role:        domain.RoleAdmin,
+		ScopeType:   "instance",
+		InstanceID:  instanceID,
+		Permissions: []string{string(PermissionInstancesRead), string(PermissionBackupsCreate)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings) != 1 || !equalStringSets(bindings[0].Permissions, []string{string(PermissionBackupsCreate), string(PermissionInstancesRead)}) {
+		t.Fatalf("unexpected normalized permissions: %#v", bindings)
+	}
+	if _, err := normalizeRoleBindings([]domain.RoleBinding{{
+		Role:        domain.RoleOperator,
+		ScopeType:   "instance",
+		InstanceID:  instanceID,
+		Permissions: []string{string(PermissionBackupsCreate)},
+	}}); err == nil || !strings.Contains(err.Error(), "instances.read") {
+		t.Fatalf("instance write permission without instances.read was accepted: %v", err)
+	}
+	if _, err := normalizeRoleBindings([]domain.RoleBinding{{
+		Role:        domain.RoleAdmin,
+		ScopeType:   "instance",
+		InstanceID:  instanceID,
+		Permissions: []string{string(PermissionNodesEnroll)},
+	}}); err == nil {
+		t.Fatal("global permission was accepted on an instance binding")
+	}
+}

@@ -1,4 +1,18 @@
 export type Role = "owner" | "admin" | "operator" | "viewer";
+export type Permission =
+  | "nodes.read" | "nodes.enroll" | "nodes.update" | "nodes.credentials.rotate" | "nodes.discover"
+  | "nodes.quarantine.read" | "nodes.quarantine.purge" | "nodes.delete"
+  | "environments.read" | "environments.manage"
+  | "instances.read" | "instances.create" | "instances.configure" | "instances.delete"
+  | "instances.start" | "instances.stop" | "instances.restart" | "instances.update" | "instances.validate"
+  | "players.read" | "players.kick" | "players.ban" | "players.unban" | "players.change_map" | "players.broadcast"
+  | "rcon.execute" | "files.list" | "files.read" | "files.write" | "files.delete" | "files.upload"
+  | "packages.read" | "packages.install" | "packages.toggle" | "packages.rollback"
+  | "backups.read" | "backups.download" | "backups.create" | "backups.restore"
+  | "schedules.read" | "schedules.manage" | "logs.read"
+  | "maps.read" | "maps.import" | "maps.assign" | "maps.verify" | "maps.delete"
+  | "jobs.read" | "jobs.details" | "jobs.cancel" | "audit.read" | "audit.read_global"
+  | "notifications.read" | "notifications.manage" | "metrics.read" | "root_security";
 export type NodeStatus = "pending" | "online" | "offline" | "revoked";
 export type InstanceStatus =
   | "installing"
@@ -56,6 +70,7 @@ export interface RoleBinding {
   id?: string;
   user_id?: string;
   role: Role;
+  permissions?: Permission[];
   scope_type: "global" | "node" | "instance";
   node_id?: string;
   instance_id?: string;

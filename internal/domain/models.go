@@ -58,14 +58,15 @@ type User struct {
 }
 
 type RoleBinding struct {
-	ID         string    `json:"id"`
-	UserID     string    `json:"user_id"`
-	Role       Role      `json:"role"`
-	ScopeType  string    `json:"scope_type"`
-	NodeID     string    `json:"node_id,omitempty"`
-	InstanceID string    `json:"instance_id,omitempty"`
-	CreatedBy  string    `json:"created_by,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID          string    `json:"id"`
+	UserID      string    `json:"user_id"`
+	Role        Role      `json:"role"`
+	Permissions []string  `json:"permissions,omitempty"`
+	ScopeType   string    `json:"scope_type"`
+	NodeID      string    `json:"node_id,omitempty"`
+	InstanceID  string    `json:"instance_id,omitempty"`
+	CreatedBy   string    `json:"created_by,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type Node struct {

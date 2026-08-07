@@ -26,3 +26,28 @@ func TestRolePermissions(t *testing.T) {
 		}
 	}
 }
+
+func TestExplicitBindingPermissionsOverrideRolePreset(t *testing.T) {
+	binding := domain.RoleBinding{
+		Role:        domain.RoleAdmin,
+		ScopeType:   "instance",
+		Permissions: []string{string(PermissionInstancesRead), string(PermissionBackupsCreate)},
+	}
+	if !bindingAllows(binding, PermissionBackupsCreate) {
+		t.Fatal("explicit backup permission was not granted")
+	}
+	if bindingAllows(binding, PermissionRCONExecute) || bindingAllows(binding, PermissionManage) {
+		t.Fatal("admin preset leaked permissions outside the explicit set")
+	}
+}
+
+func TestGlobalAuditRequiresSeparateManagementPermission(t *testing.T) {
+	viewer := domain.RoleBinding{Role: domain.RoleViewer, ScopeType: "global", Permissions: presetPermissions(domain.RoleViewer)}
+	admin := domain.RoleBinding{Role: domain.RoleAdmin, ScopeType: "global", Permissions: presetPermissions(domain.RoleAdmin)}
+	if !bindingAllows(viewer, PermissionAuditRead) || bindingAllows(viewer, PermissionAuditReadGlobal) {
+		t.Fatal("viewer audit preset crossed the global audit boundary")
+	}
+	if !bindingAllows(admin, PermissionAuditReadGlobal) {
+		t.Fatal("administrator preset did not include global audit")
+	}
+}

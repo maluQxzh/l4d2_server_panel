@@ -148,7 +148,9 @@ func (s *Server) handleInstanceSchedules(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleListNotifications(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListNotifications(r.Context(), parseLimit(r, 100))
+	limit := parseLimit(r, 100)
+	queryLimit := min(500, limit*5)
+	items, err := s.store.ListNotifications(r.Context(), queryLimit)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -161,6 +163,9 @@ func (s *Server) handleListNotifications(w http.ResponseWriter, r *http.Request)
 		}
 		result = append(result, map[string]any{"id": item.ID, "level": item.Severity, "title": item.Title, "message": item.Message,
 			"read": item.ReadAt != nil, "created_at": item.CreatedAt, "resource": item.Resource, "metadata": item.Metadata})
+		if len(result) == limit {
+			break
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": result})
 }
@@ -185,7 +190,7 @@ func (s *Server) handleReadNotification(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) principalAllowsNotification(r *http.Request, principal Principal, item domain.Notification) bool {
-	if principal.GlobalAllows(PermissionRead) {
+	if principal.GlobalAllows(PermissionNotificationsRead) {
 		return true
 	}
 	if item.Resource == "" {
@@ -193,13 +198,13 @@ func (s *Server) principalAllowsNotification(r *http.Request, principal Principa
 	}
 	switch {
 	case strings.HasPrefix(item.Type, "node."):
-		return principal.AllowsNode(item.Resource)
+		return principal.AllowsNodePermission(item.Resource, PermissionNotificationsRead)
 	case strings.HasPrefix(item.Type, "instance."), strings.HasPrefix(item.Type, "monitoring."), strings.HasPrefix(item.Type, "update."):
 		instance, err := s.store.GetInstance(r.Context(), item.Resource)
-		return err == nil && principal.AllowsInstance(instance)
+		return err == nil && principal.AllowsInstancePermission(instance, PermissionNotificationsRead)
 	case strings.HasPrefix(item.Type, "job."):
 		job, err := s.store.GetJob(r.Context(), item.Resource)
-		return err == nil && principal.AllowsJob(job)
+		return err == nil && principal.AllowsJobPermission(job, PermissionNotificationsRead)
 	default:
 		return false
 	}

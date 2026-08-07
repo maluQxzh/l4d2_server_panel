@@ -52,18 +52,22 @@ func normalizeTokenScopes(scopes []string) ([]string, error) {
 }
 
 func tokenScopesAllow(scopes []string, permission Permission) bool {
+	class, ok := permissionClass(permission)
+	if !ok || class == PermissionRootSecurity {
+		return false
+	}
 	for _, scope := range scopes {
 		switch Permission(scope) {
 		case PermissionManage:
-			if permission == PermissionManage || permission == PermissionOperate || permission == PermissionRead {
+			if class == PermissionManage || class == PermissionOperate || class == PermissionRead {
 				return true
 			}
 		case PermissionOperate:
-			if permission == PermissionOperate || permission == PermissionRead {
+			if class == PermissionOperate || class == PermissionRead {
 				return true
 			}
 		case PermissionRead:
-			if permission == PermissionRead {
+			if class == PermissionRead {
 				return true
 			}
 		}

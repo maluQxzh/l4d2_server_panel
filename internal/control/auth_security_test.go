@@ -112,6 +112,34 @@ func TestScopedLiveLogAuthorizationUsesEmbeddedOwnershipAndFailsClosed(t *testin
 	}
 }
 
+func TestGlobalBindingEventsStillRequireConcretePermission(t *testing.T) {
+	t.Parallel()
+	server := &Server{}
+	principal := Principal{BindingsLoaded: true, Bindings: []domain.RoleBinding{{
+		Role:        domain.RoleAdmin,
+		ScopeType:   "global",
+		Permissions: []string{string(PermissionInstancesRead), string(PermissionBackupsCreate)},
+	}}}
+	instance := Event{Type: "instance.updated", ResourceType: "instance", ResourceID: "instance-a", Data: map[string]any{
+		"instance": map[string]any{"id": "instance-a", "node_id": "node-a"},
+	}}
+	if !server.eventAllowed(context.Background(), principal, instance) {
+		t.Fatal("explicit instance read permission did not allow instance event")
+	}
+	logEvent := Event{Type: "instance.log", ResourceType: "instance", ResourceID: "instance-a", Data: map[string]any{
+		"node_id": "node-a", "instance_id": "instance-a", "line": "secret",
+	}}
+	if server.eventAllowed(context.Background(), principal, logEvent) {
+		t.Fatal("global binding received log event without logs.read")
+	}
+	job := Event{Type: "job.updated", ResourceType: "job", ResourceID: "job-a", Data: map[string]any{
+		"job": map[string]any{"id": "job-a", "node_id": "node-a", "instance_id": "instance-a"},
+	}}
+	if server.eventAllowed(context.Background(), principal, job) {
+		t.Fatal("global binding received job event without jobs.read")
+	}
+}
+
 func TestEventMapRedactionUsesJobResourcePermission(t *testing.T) {
 	t.Parallel()
 	principal := Principal{BindingsLoaded: true, Bindings: []domain.RoleBinding{

@@ -41,7 +41,7 @@ func (p Principal) Allows(permission Permission) bool {
 		allowed = RoleAllows(p.User.Role, permission)
 	} else {
 		for _, binding := range p.Bindings {
-			if RoleAllows(binding.Role, permission) {
+			if bindingAllows(binding, permission) {
 				allowed = true
 				break
 			}
@@ -65,7 +65,7 @@ func (p Principal) GlobalAllows(permission Permission) bool {
 		roleAllowed = RoleAllows(p.User.Role, permission)
 	} else {
 		for _, binding := range p.Bindings {
-			if binding.ScopeType == "global" && RoleAllows(binding.Role, permission) {
+			if binding.ScopeType == "global" && bindingAllows(binding, permission) {
 				roleAllowed = true
 				break
 			}
@@ -115,8 +115,7 @@ func (s *Store) BootstrapOwner(ctx context.Context, username, displayName, passw
 	if err != nil {
 		return domain.User{}, false, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO role_bindings(id,user_id,role,scope_type) VALUES(?1,?2,'owner','global')`, uuid.NewString(), user.ID)
-	if err != nil {
+	if err = insertRoleBindings(ctx, tx, user.ID, user.ID, []domain.RoleBinding{{Role: domain.RoleOwner, ScopeType: "global", Permissions: presetPermissions(domain.RoleOwner)}}); err != nil {
 		return domain.User{}, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM bootstrap_setup_key WHERE singleton=1`); err != nil {

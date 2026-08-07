@@ -107,20 +107,20 @@ func TestOperatorCannotSubmitManageInstanceActions(t *testing.T) {
 
 func TestGenericInstanceActionContractIsSeparateFromInternalJobs(t *testing.T) {
 	publicActions := map[string]Permission{
-		"backup":          PermissionOperate,
-		"ban_player":      PermissionOperate,
-		"broadcast":       PermissionOperate,
-		"change_map":      PermissionOperate,
-		"create_schedule": PermissionOperate,
-		"install_package": PermissionManage,
-		"kick_player":     PermissionOperate,
-		"rcon":            PermissionOperate,
-		"restart":         PermissionOperate,
-		"restore":         PermissionOperate,
-		"start":           PermissionOperate,
-		"stop":            PermissionOperate,
-		"toggle_package":  PermissionManage,
-		"unban_player":    PermissionOperate,
+		"backup":          PermissionBackupsCreate,
+		"ban_player":      PermissionPlayersBan,
+		"broadcast":       PermissionPlayersBroadcast,
+		"change_map":      PermissionPlayersChangeMap,
+		"create_schedule": PermissionSchedulesManage,
+		"install_package": PermissionPackagesInstall,
+		"kick_player":     PermissionPlayersKick,
+		"rcon":            PermissionRCONExecute,
+		"restart":         PermissionInstancesRestart,
+		"restore":         PermissionBackupsRestore,
+		"start":           PermissionInstancesStart,
+		"stop":            PermissionInstancesStop,
+		"toggle_package":  PermissionPackagesToggle,
+		"unban_player":    PermissionPlayersUnban,
 	}
 	if len(genericInstanceActionPermissions) != len(publicActions) {
 		t.Fatalf("generic action allowlist has %d entries, want %d", len(genericInstanceActionPermissions), len(publicActions))
@@ -183,7 +183,7 @@ func TestDeleteCannotBeSubmittedOrScheduledThroughGenericActions(t *testing.T) {
 			if genericInstanceActionAllowed(action) {
 				t.Fatalf("%s remained in the generic endpoint allowlist", action)
 			}
-			if permission, allowed := InstanceActionPermission(action); !allowed || permission != PermissionManage {
+			if permission, allowed := InstanceActionPermission(action); !allowed || permission != PermissionInstancesDelete {
 				t.Fatalf("dedicated %s endpoint lost its manage permission", action)
 			}
 			server := &Server{}

@@ -41,10 +41,6 @@ func (s *Server) handleCreateAPIToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if err := validateTokenScopesForRole(principal.User.Role, scopes); err != nil {
-		writeError(w, http.StatusForbidden, "scope_exceeds_role", err.Error())
-		return
-	}
 	if request.ExpiresAt == nil {
 		writeError(w, http.StatusBadRequest, "invalid_api_token", "expires_at is required")
 		return

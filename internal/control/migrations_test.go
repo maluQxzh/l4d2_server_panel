@@ -22,6 +22,7 @@ func TestSQLiteMigrationChecksums(t *testing.T) {
 		"006_remove_config_history.sql":       "468fd664f7f60907388db13edb051ecde268dae82ce6e07fb5e3893ae03c43a5",
 		"007_map_library.sql":                 "8ff1eb6583f458254ef8add0e7928e26523668ae15423e5d1599e77e401fbd5e",
 		"008_map_metadata.sql":                "4bd22eb20d0a97910dd433e8d48b1ac434c89a9b438093f9f686237f378e4996",
+		"009_fine_grained_permissions.sql":    "830a1cc1afb76bda4a6f1fa7d171ad939ac789de02d02bf00de2fd719e367ae4",
 	}
 	root := filepath.Join("..", "..", "migrations", "sqlite")
 	entries, err := os.ReadDir(root)

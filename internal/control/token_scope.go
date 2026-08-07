@@ -96,7 +96,7 @@ func (p Principal) AllowsNodePermission(nodeID string, permission Permission) bo
 	}
 	for _, binding := range p.Bindings {
 		if (binding.ScopeType == "global" || (binding.ScopeType == "node" && binding.NodeID == nodeID)) &&
-			RoleAllows(binding.Role, permission) {
+			bindingAllows(binding, permission) {
 			return true
 		}
 	}
@@ -116,7 +116,7 @@ func (p Principal) AllowsInstancePermission(instance domain.Instance, permission
 	for _, binding := range p.Bindings {
 		matches := binding.ScopeType == "global" || (binding.ScopeType == "node" && binding.NodeID == instance.NodeID) ||
 			(binding.ScopeType == "instance" && binding.InstanceID == instance.ID)
-		if matches && RoleAllows(binding.Role, permission) {
+		if matches && bindingAllows(binding, permission) {
 			return true
 		}
 	}
@@ -142,24 +142,25 @@ func (p Principal) AllowsInstanceAction(action string) bool {
 // node/instance scope to compact events; old or malformed events without enough
 // scope information fail closed for restricted principals.
 func (s *Server) eventAllowed(_ context.Context, principal Principal, event Event) bool {
-	if !principal.HasResourceRestriction() {
-		return true
-	}
 	switch event.ResourceType {
 	case "node":
 		if event.ResourceID == "" {
 			return false
 		}
 		if instanceID := eventMetricInstanceID(event); instanceID != "" {
-			return principal.AllowsInstancePermission(domain.Instance{ID: instanceID, NodeID: event.ResourceID}, PermissionRead)
+			return principal.AllowsInstancePermission(domain.Instance{ID: instanceID, NodeID: event.ResourceID}, PermissionMetricsRead)
 		}
-		return principal.AllowsNodePermission(event.ResourceID, PermissionRead)
+		return principal.AllowsNodePermission(event.ResourceID, PermissionNodesRead)
 	case "instance":
+		permission := PermissionInstancesRead
+		if event.Type == "instance.log" {
+			permission = PermissionLogsRead
+		}
 		if instance, ok := eventInstance(event); ok {
 			if instance.ID == "" || (event.ResourceID != "" && instance.ID != event.ResourceID) {
 				return false
 			}
-			return principal.AllowsInstancePermission(instance, PermissionRead)
+			return principal.AllowsInstancePermission(instance, permission)
 		}
 		instanceID := event.ResourceID
 		if payloadID := eventString(event.Data, "instance_id"); payloadID != "" {
@@ -171,13 +172,13 @@ func (s *Server) eventAllowed(_ context.Context, principal Principal, event Even
 		if instanceID == "" {
 			return false
 		}
-		return principal.AllowsInstancePermission(domain.Instance{ID: instanceID, NodeID: eventString(event.Data, "node_id")}, PermissionRead)
+		return principal.AllowsInstancePermission(domain.Instance{ID: instanceID, NodeID: eventString(event.Data, "node_id")}, permission)
 	case "job":
 		if job, ok := eventJob(event); ok {
 			if job.ID == "" || (event.ResourceID != "" && job.ID != event.ResourceID) || (job.NodeID == "" && job.InstanceID == "") {
 				return false
 			}
-			return principal.AllowsJobPermission(job, PermissionRead)
+			return principal.AllowsJobPermission(job, PermissionJobsRead)
 		}
 		jobID := eventString(event.Data, "job_id")
 		if jobID != "" && event.ResourceID != "" && jobID != event.ResourceID {
@@ -187,7 +188,9 @@ func (s *Server) eventAllowed(_ context.Context, principal Principal, event Even
 		if job.NodeID == "" && job.InstanceID == "" {
 			return false
 		}
-		return principal.AllowsJobPermission(job, PermissionRead)
+		return principal.AllowsJobPermission(job, PermissionJobsRead)
+	case "system_update":
+		return principal.GlobalAllows(PermissionRootSecurity)
 	default:
 		// Global events and newly introduced resource classes are hidden until
 		// their ownership relationship is explicitly defined here.
@@ -244,17 +247,14 @@ func eventString(values map[string]any, key string) string {
 }
 
 func (s *Server) tokenAllowsAuditResource(ctx context.Context, principal Principal, resourceID string) bool {
-	if !principal.HasResourceRestriction() {
-		return true
-	}
 	if _, err := s.store.GetNode(ctx, resourceID); err == nil {
-		return principal.AllowsNodePermission(resourceID, PermissionRead)
+		return principal.AllowsNodePermission(resourceID, PermissionAuditRead)
 	}
 	if instance, err := s.store.GetInstance(ctx, resourceID); err == nil {
-		return principal.AllowsInstancePermission(instance, PermissionRead)
+		return principal.AllowsInstancePermission(instance, PermissionAuditRead)
 	}
 	if job, err := s.store.GetJob(ctx, resourceID); err == nil {
-		return principal.AllowsJobPermission(job, PermissionRead)
+		return principal.AllowsJobPermission(job, PermissionAuditRead)
 	}
 	if _, err := uuid.Parse(resourceID); err != nil {
 		return false
@@ -266,30 +266,27 @@ func (s *Server) tokenAllowsAuditResource(ctx context.Context, principal Princip
 		UNION ALL SELECT b.instance_id,i.node_id FROM backups b JOIN instances i ON i.id=b.instance_id WHERE b.id=?1
 	) scoped LIMIT 1`, resourceID).Scan(&instanceID, &nodeID)
 	if err == nil {
-		return principal.AllowsInstancePermission(domain.Instance{ID: instanceID, NodeID: nodeID}, PermissionRead)
+		return principal.AllowsInstancePermission(domain.Instance{ID: instanceID, NodeID: nodeID}, PermissionAuditRead)
 	}
 	return false
 }
 
 func (s *Server) auditEventAllowed(ctx context.Context, principal Principal, event domain.AuditEvent) bool {
-	if !principal.HasResourceRestriction() {
-		return true
-	}
 	switch event.ResourceType {
 	case "node":
-		return principal.AllowsNodePermission(event.ResourceID, PermissionRead)
+		return principal.AllowsNodePermission(event.ResourceID, PermissionAuditRead)
 	case "instance":
 		if instance, err := s.store.GetInstance(ctx, event.ResourceID); err == nil {
-			return principal.AllowsInstancePermission(instance, PermissionRead)
+			return principal.AllowsInstancePermission(instance, PermissionAuditRead)
 		}
 	case "job":
 		if job, err := s.store.GetJob(ctx, event.ResourceID); err == nil {
-			return principal.AllowsJobPermission(job, PermissionRead)
+			return principal.AllowsJobPermission(job, PermissionAuditRead)
 		}
 	}
 	if instanceID := stringFromAny(event.Metadata["instance_id"]); instanceID != "" {
 		if instance, err := s.store.GetInstance(ctx, instanceID); err == nil {
-			return principal.AllowsInstancePermission(instance, PermissionRead)
+			return principal.AllowsInstancePermission(instance, PermissionAuditRead)
 		}
 	}
 	return s.tokenAllowsAuditResource(ctx, principal, event.ResourceID)

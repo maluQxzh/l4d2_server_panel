@@ -394,9 +394,9 @@ export const api = {
   notifications: () => list<NotificationRecord>("/notifications"),
   markNotificationRead: (id: string) => request<void>(`/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
   users: () => list<User>("/users"),
-  createUser: (payload: { username: string; display_name?: string; password: string; role_bindings: Array<Pick<RoleBinding, "role" | "scope_type" | "node_id" | "instance_id">> }) =>
+  createUser: (payload: { username: string; display_name?: string; password: string; role_bindings: Array<Pick<RoleBinding, "role" | "permissions" | "scope_type" | "node_id" | "instance_id">> }) =>
     request<{ user: User }>("/users", { method: "POST", body: JSON.stringify(payload) }),
-  updateUser: (id: string, payload: { display_name?: string; password?: string; disabled?: boolean; role_bindings?: Array<{ role: Role; scope_type: "global" | "node" | "instance"; node_id?: string; instance_id?: string }> }) =>
+  updateUser: (id: string, payload: { display_name?: string; password?: string; disabled?: boolean; role_bindings?: Array<{ role: Role; permissions?: RoleBinding["permissions"]; scope_type: "global" | "node" | "instance"; node_id?: string; instance_id?: string }> }) =>
     request<{ user: User }>(`/users/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) }),
   userRoleBindings: (id: string) => list<RoleBinding>(`/users/${encodeURIComponent(id)}/role-bindings`),
   systemUpdates: () => request<SystemUpdateOverview>("/system/updates"),
