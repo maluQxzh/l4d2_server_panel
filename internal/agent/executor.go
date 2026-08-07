@@ -25,6 +25,8 @@ import (
 
 type ProgressFunc func(progress int, message string)
 
+type localRCONExecuteFunc func(context.Context, InstanceRecord, operationPayload, string, string, time.Duration) (string, error)
+
 type Executor struct {
 	config                     *Config
 	paths                      *PathGuard
@@ -48,6 +50,7 @@ type Executor struct {
 	telemetry                  map[string]instanceTelemetry
 	maps                       *mapStore
 	mapStoreErr                error
+	mapReloadRCON              localRCONExecuteFunc
 }
 
 type instanceTelemetry struct {
@@ -79,6 +82,7 @@ func NewExecutor(config *Config, paths *PathGuard, registry *Registry, processes
 		config: config, paths: paths, registry: registry, processes: processes,
 		steam: NewSteamCMD(steamPath, config.SteamCMDConcurrency), runtimeEnvironment: runtimeStore, logger: logger, locks: newKeyedLocker(),
 		maps: maps, mapStoreErr: mapStoreErr, downloadLimiter: newDownloadConcurrencyLimiter(safeDownloadMaxConcurrency),
+		mapReloadRCON:           executeLocalRCON,
 		officialPackageResolver: ResolveOfficialPackage, workshopCollectionResolver: ResolveWorkshopCollection,
 		workshopItemTitlesResolver: ResolveWorkshopItemTitles,
 		packageDownloader: func(ctx context.Context, source, destination string, official bool) (string, int64, error) {

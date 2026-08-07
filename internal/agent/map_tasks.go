@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
@@ -31,7 +32,7 @@ func (e *Executor) executeMapTask(ctx context.Context, action string, job domain
 	case "map.import.qq.flash":
 		return e.importQQFlashMap(ctx, job, payload, progress)
 	case "map.assign":
-		return e.assignMap(job, mapID, progress)
+		return e.assignMap(ctx, job, mapID, payload, progress)
 	case "map.unassign":
 		return e.unassignMap(job, mapID, progress)
 	case "map.verify", "map.inventory":
@@ -132,7 +133,9 @@ func (e *Executor) importQQFlashMap(ctx context.Context, job domain.Job, payload
 	return e.maps.importResult(record), nil
 }
 
-func (e *Executor) assignMap(job domain.Job, mapID string, progress ProgressFunc) (map[string]any, error) {
+const mapHotReloadRCONCommand = "sm_update_vpk"
+
+func (e *Executor) assignMap(ctx context.Context, job domain.Job, mapID string, payload operationPayload, progress ProgressFunc) (map[string]any, error) {
 	record, ok := e.registry.Get(job.InstanceID)
 	if !ok {
 		return nil, errors.New("instance is not registered on this Agent")
@@ -142,13 +145,31 @@ func (e *Executor) assignMap(job domain.Job, mapID string, progress ProgressFunc
 		return nil, err
 	}
 	progress(35, "publishing map to the instance filesystem")
-	running := e.processes.HasActiveProcess(job.InstanceID) || record.ExternalPID > 0
-	restartRequired, err := e.maps.assign(mapID, record, instancePath, running)
-	if err != nil {
+	active := e.processes.HasActiveProcess(job.InstanceID) || record.ExternalPID > 0
+	if err := e.maps.assign(mapID, record, instancePath); err != nil {
 		return nil, err
 	}
-	progress(100, "map assigned")
-	return mapAssignmentResult(mapID, job.InstanceID, restartRequired), nil
+	result := mapAssignmentResult(mapID, job.InstanceID)
+	if !active {
+		progress(100, "map assigned; it will load when the instance starts")
+		return result, nil
+	}
+	if payload.RCONPassword == "" {
+		result["hot_reload_skipped"] = "rcon_not_configured"
+		progress(100, "map assigned; in-game !update_vpk is required")
+		return result, nil
+	}
+	progress(75, "refreshing the running server VPK list")
+	executeRCON := e.mapReloadRCON
+	if executeRCON == nil {
+		executeRCON = executeLocalRCON
+	}
+	if _, err := executeRCON(ctx, record, payload, payload.RCONPassword, mapHotReloadRCONCommand, 8*time.Second); err != nil {
+		return nil, fmt.Errorf("refresh running server VPK list: %w", err)
+	}
+	result["hot_reloaded"] = true
+	progress(100, "map assigned and running server VPK list refreshed")
+	return result, nil
 }
 
 func (e *Executor) unassignMap(job domain.Job, mapID string, progress ProgressFunc) (map[string]any, error) {
@@ -168,5 +189,5 @@ func (e *Executor) unassignMap(job domain.Job, mapID string, progress ProgressFu
 		return nil, err
 	}
 	progress(100, "map assignment removed")
-	return mapAssignmentResult(mapID, job.InstanceID, false), nil
+	return mapAssignmentResult(mapID, job.InstanceID), nil
 }

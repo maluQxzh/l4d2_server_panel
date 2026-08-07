@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, ChevronUp, Database, HardDrive, Link2, Plus, RefreshCw, RotateCw, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp, Database, HardDrive, Link2, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, ProgressBar, StatusBadge } from "../components/ui";
 import { useRealtime } from "../context/RealtimeContext";
@@ -50,7 +50,6 @@ function MapCard({ item, instances, onAssignments }: { item: MapRecord; instance
     onSuccess: () => { toast.push("永久删除任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); },
     onError: (error) => { if (error.message !== "已取消删除") toast.push(error.message, "error"); },
   });
-  const restart = useMutation({ mutationFn: (instanceId: string) => api.instanceAction(instanceId, "restart"), onSuccess: () => { toast.push("实例重启任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
   const assigned = (item.assignments || []).map((assignment) => ({ ...assignment, instance: instances.find((value) => value.id === assignment.instance_id) }));
   const modes = item.modes || [];
   const primaryMode = modes.find((mode) => mode.name === "coop") || modes[0];
@@ -64,18 +63,23 @@ function MapCard({ item, instances, onAssignments }: { item: MapRecord; instance
         <div className="map-card__size"><HardDrive size={17} aria-hidden /><span><small>处理后的 VPK 大小</small><strong>{bytes(item.total_size)}</strong></span></div>
       </div>
     </div>
+    <div className="map-card__snapshot">
+      <dl className="map-card__facts">
+        <div><dt>战役</dt><dd>{item.name}</dd></div>
+        <div><dt>作者</dt><dd>{item.author || "未提供"}</dd></div>
+        <div><dt>版本</dt><dd>{item.version || "未提供"}</dd></div>
+        <div><dt>模式</dt><dd>{modes.length ? modes.map((mode) => mapModeName(mode.name)).join(" / ") : "未声明"}</dd></div>
+      </dl>
+      <section className="map-card__assigned-summary">
+        <div className="map-card__assigned-heading"><Link2 size={16} aria-hidden /><span><small>已分配实例</small><strong>{assigned.length ? `${assigned.length} 个实例` : "尚未分配"}</strong></span></div>
+        {assigned.length ? <div className="map-assignment-list map-assignment-list--summary">{assigned.map((assignment) => <div key={assignment.instance_id}><span><strong>{assignment.instance?.name || assignment.instance_id.slice(0, 8)}</strong><small>{assignment.restart_required ? "等待 VPK 刷新" : "已生效"}</small></span></div>)}</div> : <p className="map-muted">可以通过右下角“分配实例”将地图链接到同一节点上的游戏实例。</p>}
+      </section>
+    </div>
     {expanded && <div className="map-card__details" id={detailsId}>
-        <dl className="map-card__facts">
-          <div><dt>战役</dt><dd>{item.name}</dd></div>
-          <div><dt>作者</dt><dd>{item.author || "未提供"}</dd></div>
-          <div><dt>版本</dt><dd>{item.version || "未提供"}</dd></div>
-          <div><dt>模式</dt><dd>{modes.length ? modes.map((mode) => mapModeName(mode.name)).join(" / ") : "未声明"}</dd></div>
-        </dl>
         {item.description && <p className="map-card__description">{item.description}</p>}
         <div className="map-card__campaign"><h3>章节{primaryMode ? ` · ${mapModeName(primaryMode.name)}` : ""}</h3>{primaryMode ? <div className="map-chapter-route">{primaryMode.chapters.map((chapter, index) => <div className="map-chapter" key={`${primaryMode.name}-${chapter.ordinal}`}><span>{chapter.ordinal}</span><div><strong>{chapter.display_name}</strong><code>{asBSPFile(chapter.bsp_name)}</code></div>{index < primaryMode.chapters.length - 1 && <i aria-hidden="true">→</i>}</div>)}</div> : <p className="map-muted">Mission 文件未提供章节顺序</p>}</div>
         <div className="map-card__content">
           <section><h3>全部 BSP 建图代码</h3><div className="map-bsp-list">{(item.bsps || []).map((bsp) => <span key={bsp.virtual_path} className={!bsp.dictionary_present ? "warning" : ""}><code>{asBSPFile(bsp.start_name || bsp.virtual_path.replace(/^maps\//i, ""))}</code>{!bsp.dictionary_present && <small><AlertTriangle size={12} />缺少字典</small>}</span>)}</div></section>
-          <section><h3>实例分配</h3>{assigned.length ? <div className="map-assignment-list">{assigned.map((assignment) => <div key={assignment.instance_id}><span><strong>{assignment.instance?.name || assignment.instance_id.slice(0, 8)}</strong><small>{assignment.restart_required ? "等待重启生效" : "已生效"}</small></span>{assignment.restart_required && <Button variant="ghost" disabled={restart.isPending} onClick={() => restart.mutate(assignment.instance_id)}><RotateCw size={13} />立即重启</Button>}</div>)}</div> : <p className="map-muted">尚未分配给实例</p>}</section>
           {(item.warnings?.length || 0) > 0 && <section className="map-warnings"><h3>处理警告</h3>{item.warnings!.map((warning, index) => <div key={`${warning.code}-${index}`}><AlertTriangle size={14} /><span><strong>{warning.message}</strong>{warning.virtual_path && <code>{warning.virtual_path}</code>}</span></div>)}</section>}
         </div>
         <code className="map-card__checksum" title={item.aggregate_sha256}>SHA-256 · {item.aggregate_sha256.slice(0, 16)}…</code>
@@ -112,17 +116,22 @@ function AssignmentModal({ item, instances, onClose }: { item: MapRecord | null;
   const client = useQueryClient();
   const save = useMutation({
     mutationFn: async () => {
-      if (!item) return;
+      if (!item) return { manualReload: false };
       const add = eligible.filter((instance) => selected.has(instance.id) && !current.has(instance.id));
       const remove = eligible.filter((instance) => !selected.has(instance.id) && current.has(instance.id));
       const runningRemoval = remove.find((instance) => instance.status !== "stopped");
       if (runningRemoval) throw new Error(`实例“${runningRemoval.name}”运行中，无法取消分配`);
+      const manualReload = add.filter((instance) => ["running", "degraded", "external"].includes(instance.status) && !instance.rcon_configured);
+      if (manualReload.length && !window.confirm(`实例“${manualReload.map((instance) => instance.name).join("、")}”未配置 RCON。地图仍会分配，但无法自动执行热更新；请在游戏聊天窗口手动输入 !update_vpk 使其立即生效。仍要继续吗？`)) {
+        throw new Error("已取消分配");
+      }
       await Promise.all([...add.map((instance) => api.assignMap(item.id, instance.id)), ...remove.map((instance) => api.unassignMap(item.id, instance.id))]);
+      return { manualReload: manualReload.length > 0 };
     },
-    onSuccess: () => { toast.push("地图分配任务已提交；运行中的实例可选择稍后重启"); onClose(); void client.invalidateQueries({ queryKey: ["jobs"] }); },
-    onError: (error) => toast.push(error.message, "error"),
+    onSuccess: ({ manualReload }) => { toast.push(manualReload ? "地图分配任务已提交；请在未配置 RCON 的实例内输入 !update_vpk" : "地图分配任务已提交；运行中的实例会自动刷新 VPK"); onClose(); void client.invalidateQueries({ queryKey: ["jobs"] }); },
+    onError: (error) => { if (error.message !== "已取消分配") toast.push(error.message, "error"); },
   });
-  return <Modal open={Boolean(item)} onClose={onClose} title={`分配地图${item ? ` · ${item.name}` : ""}`} description="分配不要求停服；取消分配只允许已停止实例。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button loading={save.isPending} onClick={() => save.mutate()}>提交变更</Button></>}><div className="map-instance-picker">{eligible.length ? eligible.map((instance) => { const assigned = current.has(instance.id); const cannotRemove = assigned && instance.status !== "stopped"; return <label key={instance.id}><input type="checkbox" checked={selected.has(instance.id)} disabled={cannotRemove} onChange={(event) => setSelected((value) => { const next = new Set(value); if (event.target.checked) next.add(instance.id); else next.delete(instance.id); return next; })} /><span><strong>{instance.name}</strong><small>{instance.status === "stopped" ? "已停止" : assigned ? "运行中 · 必须停服后才能取消" : "运行中 · 分配后需要重启"}</small></span></label>; }) : <EmptyState title="没有可分配实例" description="该节点上暂无你可以管理的游戏实例。" />}</div></Modal>;
+  return <Modal open={Boolean(item)} onClose={onClose} title={`分配地图${item ? ` · ${item.name}` : ""}`} description="分配不要求停服；运行中会自动执行 VPK 热更新，取消分配仍只允许已停止实例。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button loading={save.isPending} onClick={() => save.mutate()}>提交变更</Button></>}><div className="map-instance-picker">{eligible.length ? eligible.map((instance) => { const assigned = current.has(instance.id); const cannotRemove = assigned && instance.status !== "stopped"; return <label key={instance.id}><input type="checkbox" checked={selected.has(instance.id)} disabled={cannotRemove} onChange={(event) => setSelected((value) => { const next = new Set(value); if (event.target.checked) next.add(instance.id); else next.delete(instance.id); return next; })} /><span><strong>{instance.name}</strong><small>{instance.status === "stopped" ? "已停止 · 下次启动时加载" : assigned ? "运行中 · 必须停服后才能取消" : instance.rcon_configured ? "运行中 · 分配后自动刷新 VPK" : "运行中 · 需手动输入 !update_vpk"}</small></span></label>; }) : <EmptyState title="没有可分配实例" description="该节点上暂无你可以管理的游戏实例。" />}</div></Modal>;
 }
 
 function mapJobLabel(type: string) {

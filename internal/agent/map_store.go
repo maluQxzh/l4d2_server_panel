@@ -260,22 +260,22 @@ func (s *mapStore) ensureReplica(record *mapLocalRecord, artifactIndex int, dest
 	return nil
 }
 
-func (s *mapStore) assign(mapID string, instance InstanceRecord, instancePath string, running bool) (bool, error) {
+func (s *mapStore) assign(mapID string, instance InstanceRecord, instancePath string) error {
 	record, ok := s.registry.get(mapID)
 	if !ok {
-		return false, errors.New("map does not exist in the node library")
+		return errors.New("map does not exist in the node library")
 	}
 	filesystemID, err := mapFilesystemID(instancePath)
 	if err != nil {
-		return false, err
+		return err
 	}
 	root, ok := s.byFS[filesystemID]
 	if !ok {
-		return false, errors.New("no configured map root is on the instance filesystem")
+		return errors.New("no configured map root is on the instance filesystem")
 	}
 	if existing, exists := record.Assignments[instance.ID]; exists {
 		if existing.FilesystemID != filesystemID || len(existing.Targets) != len(record.Artifacts) {
-			return false, errors.New("existing map assignment metadata is inconsistent")
+			return errors.New("existing map assignment metadata is inconsistent")
 		}
 		for index, target := range existing.Targets {
 			sourceRelative := record.Artifacts[index].Replicas[filesystemID]
@@ -284,15 +284,15 @@ func (s *mapStore) assign(mapID string, instance InstanceRecord, instancePath st
 			targetSHA, targetSize, hashErr := hashRegularFileWithinNoFollow(instancePath, target, maxMapObjectSize)
 			if sourceErr != nil || targetErr != nil || hashErr != nil || sourceID != targetID ||
 				targetSHA != record.Artifacts[index].SHA256 || targetSize != record.Artifacts[index].Size {
-				return false, errors.New("existing map assignment link is missing or inconsistent")
+				return errors.New("existing map assignment link is missing or inconsistent")
 			}
 		}
-		return running, nil
+		return nil
 	}
 
 	for index := range record.Artifacts {
 		if err := s.ensureReplica(&record, index, root); err != nil {
-			return false, err
+			return err
 		}
 	}
 	targets := make([]string, len(record.Artifacts))
@@ -305,7 +305,7 @@ func (s *mapStore) assign(mapID string, instance InstanceRecord, instancePath st
 			for _, createdTarget := range created {
 				_ = deleteManagedFileNoFollow(instancePath, createdTarget)
 			}
-			return false, err
+			return err
 		}
 		if errors.Is(beforeErr, os.ErrNotExist) {
 			created = append(created, target)
@@ -321,7 +321,7 @@ func (s *mapStore) assign(mapID string, instance InstanceRecord, instancePath st
 			for _, createdTarget := range created {
 				_ = deleteManagedFileNoFollow(instancePath, createdTarget)
 			}
-			return false, errors.New("map hard link failed post-creation identity or checksum verification")
+			return errors.New("map hard link failed post-creation identity or checksum verification")
 		}
 	}
 	record.Assignments[instance.ID] = mapLocalAssignment{InstanceID: instance.ID, FilesystemID: filesystemID, Targets: targets}
@@ -329,9 +329,9 @@ func (s *mapStore) assign(mapID string, instance InstanceRecord, instancePath st
 		for _, target := range created {
 			_ = deleteManagedFileNoFollow(instancePath, target)
 		}
-		return false, err
+		return err
 	}
-	return running, nil
+	return nil
 }
 
 func (s *mapStore) unassign(mapID string, instance InstanceRecord, instancePath string) error {
@@ -670,7 +670,7 @@ func (s *mapStore) restoreBackupAssignments(instanceID string, instance Instance
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		if _, err := s.assign(id, instance, instancePath, false); err != nil {
+		if err := s.assign(id, instance, instancePath); err != nil {
 			return nil, err
 		}
 	}
@@ -692,8 +692,8 @@ func mapResultString(value map[string]any, key string) string {
 	return result
 }
 
-func mapAssignmentResult(mapID, instanceID string, restartRequired bool) map[string]any {
-	return map[string]any{"map_id": mapID, "instance_id": instanceID, "restart_required": restartRequired}
+func mapAssignmentResult(mapID, instanceID string) map[string]any {
+	return map[string]any{"map_id": mapID, "instance_id": instanceID, "restart_required": false}
 }
 
 func mapProcessRunning(state ProcessState) bool {

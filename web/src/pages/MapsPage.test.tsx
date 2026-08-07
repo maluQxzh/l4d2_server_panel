@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RealtimeProvider } from "../context/RealtimeContext";
 import { ToastProvider } from "../context/ToastContext";
 import { api } from "../lib/api";
-import type { MapRecord } from "../lib/types";
+import type { InstanceRecord, MapRecord } from "../lib/types";
 import { MapsPage } from "./MapsPage";
 
 const map: MapRecord = {
@@ -25,17 +25,32 @@ const map: MapRecord = {
   artifacts: [{ id: "artifact-1", ordinal: 1, size: 188_743_680, sha256: "a".repeat(64) }],
   bsps: [{ virtual_path: "maps/claustrophobia1.bsp", start_name: "claustrophobia1", dictionary_present: true }],
   modes: [{ name: "coop", chapters: [{ ordinal: 1, bsp_name: "claustrophobia1", display_name: "Onyx St. Sewer" }] }],
-  assignments: [],
+  assignments: [{
+    map_id: "12345678-1234-1234-1234-123456789abc",
+    instance_id: "instance-1",
+    restart_required: false,
+    created_at: "2026-08-07T13:46:00Z",
+    updated_at: "2026-08-07T13:46:00Z",
+  }],
   created_at: "2026-08-07T13:46:00Z",
   updated_at: "2026-08-07T13:46:00Z",
 };
 
+const assignedInstance = {
+  id: "instance-1",
+  node_id: map.node_id,
+  name: "专家战役 #1",
+  status: "running",
+} as InstanceRecord;
+
 describe("地图管理卡片", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("使用三项总览并默认折叠次要地图信息", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     vi.spyOn(api, "maps").mockResolvedValue({ items: [map] });
     vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
-    vi.spyOn(api, "instances").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "instances").mockResolvedValue({ items: [assignedInstance] });
     vi.spyOn(api, "jobs").mockResolvedValue({ items: [] });
 
     render(
@@ -60,13 +75,46 @@ describe("地图管理卡片", () => {
     expect(screen.getByText("处理后的 VPK 大小")).toBeInTheDocument();
     expect(screen.queryByText("VPK 部件")).not.toBeInTheDocument();
     expect(screen.queryByText("已清理文件")).not.toBeInTheDocument();
-    expect(screen.queryByText("Sean C. Wood")).not.toBeInTheDocument();
+    expect(screen.getByText("Sean C. Wood")).toBeInTheDocument();
+    expect(screen.getByText("1.2")).toBeInTheDocument();
+    expect(screen.getByText("合作")).toBeInTheDocument();
+    expect(screen.getByText("已分配实例")).toBeInTheDocument();
+    expect(screen.getByText("专家战役 #1")).toBeInTheDocument();
+    expect(screen.getByText("已生效")).toBeInTheDocument();
 
     const toggle = screen.getByRole("button", { name: "展开详情" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(toggle);
-    expect(screen.getByText("Sean C. Wood")).toBeInTheDocument();
     expect(screen.getAllByText("claustrophobia1.bsp")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "收起详情" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("运行中实例未配置 RCON 时确认后仍继续分配", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    vi.spyOn(api, "maps").mockResolvedValue({ items: [{ ...map, assignments: [] }] });
+    vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "instances").mockResolvedValue({ items: [{ ...assignedInstance, rcon_configured: false }] });
+    vi.spyOn(api, "jobs").mockResolvedValue({ items: [] });
+    const assign = vi.spyOn(api, "assignMap").mockResolvedValue({ job_id: "map-assign" });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <RealtimeProvider enabled={false}>
+            <MemoryRouter>
+              <MapsPage />
+            </MemoryRouter>
+          </RealtimeProvider>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "分配实例" }));
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(screen.getByText("运行中 · 需手动输入 !update_vpk")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "提交变更" }));
+    await waitFor(() => expect(confirm).toHaveBeenCalledWith(expect.stringContaining("!update_vpk")));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(map.id, assignedInstance.id));
   });
 });

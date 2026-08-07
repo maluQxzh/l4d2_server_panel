@@ -551,6 +551,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, qqFlashFileSupported := client.capabilities["qq_flash_file_v1"]
 		_, qqFlashPackageSupported := client.capabilities["qq_flash_package_v1"]
 		_, mapLibrarySupported := client.capabilities["map_library_v1"]
+		_, mapHotReloadSupported := client.capabilities["map_hot_reload_v1"]
 		client.mu.Unlock()
 		if job.Status != domain.JobCanceled && (sent || canceled) {
 			continue
@@ -570,6 +571,9 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 			continue
 		}
 		if strings.HasPrefix(job.Type, "map.") && !mapLibrarySupported {
+			continue
+		}
+		if job.Type == "map.assign" && !mapHotReloadSupported {
 			continue
 		}
 		if job.InstanceID != "" && serverConfigNativeJobTypes[job.Type] && !serverConfigNativeSupported {
@@ -627,7 +631,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		}
 		secretActions := map[string]bool{"create": true, "import": true, "game.import": true, "install": true, "reinstall": true, "configure": true, "start": true, "stop": true, "restart": true, "restore": true,
 			"update": true, "validate": true, "delete": true, "rcon": true, "kick_player": true, "ban_player": true,
-			"unban_player": true, "change_map": true, "rcon.players": true, "install_mod": true, "install_package": true, "rollback_package": true}
+			"unban_player": true, "change_map": true, "rcon.players": true, "map.assign": true, "install_mod": true, "install_package": true, "rollback_package": true}
 		if job.InstanceID != "" && secretActions[job.Type] {
 			if rconCiphertext, _, secretErr := h.store.InstanceSecrets(ctx, job.InstanceID); secretErr == nil {
 				if secret, decryptErr := decryptSecret(h.masterKey, rconCiphertext); decryptErr == nil {

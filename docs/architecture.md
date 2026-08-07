@@ -24,7 +24,7 @@ Windows 10/11 x64 与 Windows Server 2019+ 使用便携 ZIP，不依赖 Docker/W
 
 任务状态固定为 `queued → dispatched → running → succeeded|failed|canceled`。Control 数据库和 Agent 都限制每个实例同时只有一个写操作，并为每个物理游戏安装增加独立写锁；A2S/玩家、目录列表、文件读取以及日志/备份分块不占实例写锁。SteamCMD 并发由每个 Agent 的 `steamcmd_concurrency`（1–4，默认 1）控制，切换活动 SteamCMD 时还会拒绝与安装维护任务并发。
 
-协议按主次版本兼容：主版本必须一致，Control 接受当前次版本和前一个次版本。能力协商用于 `runtime_environment_v1`、`discover_instances`、`purge_quarantine`、`map_library_v1` 等增量命令，避免把新任务派给旧 Agent；即使节点在任务排队后降级重连，相关任务也会留在队列等待兼容 Agent。`job_ack` 是可忽略的增量消息；不认识它的前一版本 Agent 会保持既有行为而不会断开连接。
+协议按主次版本兼容：主版本必须一致，Control 接受当前次版本和前一个次版本。能力协商用于 `runtime_environment_v1`、`discover_instances`、`purge_quarantine`、`map_library_v1`、`map_hot_reload_v1` 等增量命令，避免把新任务派给旧 Agent；即使节点在任务排队后降级重连，相关任务也会留在队列等待兼容 Agent。`job_ack` 是可忽略的增量消息；不认识它的前一版本 Agent 会保持既有行为而不会断开连接。
 
 Control 在持久化或发布前校验所有 Agent 入站消息。心跳最多 256 KiB/512 个实例；指标最多 512 KiB/512 个样本，同一批不得重复实例，数值范围与“已用不超过总量”关系必须成立；日志只接受 `stdout/stderr`，单行 1–16 KiB、消息最多 128 KiB。指标和日志时间戳只接受过去 15 分钟到未来 2 分钟。所有消息中的实例 ID 必须属于当前 WSS 节点；`job_update` 还必须匹配任务节点/实例，结果中任意嵌套 `instance_id` 都不能跨实例。归属校验按 Agent 连接缓存 2 秒且最多 1024 项；同一实例的并发 miss 合并为一次 SQLite 查询，未知/跨节点 ID 不做负缓存，正常实例删除会立即逐连接清除。运行进度消息最多 32 KiB、终态最多 12 MiB，重复进度丢弃、变化进度按每任务最快 250 ms 合并，终态不节流。
 
@@ -63,7 +63,7 @@ Agent 永久清理时只接收 Control 墓碑中的 `root_index + entry_name`，
 
 `map_roots` 的第一项始终是 `<data_dir>/maps`，管理员可为其他文件系统卷配置一个绝对根；同卷重复根在 Agent 启动时拒绝。对象按 SHA-256 保存并在同卷复用，跨卷先从健康副本原子复制和校验；未配置实例所在卷或文件系统不支持硬链接时明确失败。Linux 使用 handle-relative `linkat`，Windows 使用带 `RootDirectory` 的 NT 硬链接操作，目标固定为实例 `left4dead2/addons/l4d2panel-map-<map-id>-<part>.vpk`。普通文件、QQ 模组和包接口不能触碰该前缀。节点注册表原子记录对象、副本、实例链接及预期关系；Linux 幂等服务安装只在注册路径全集与 inode 实际链接计数完全相等时豁免这些文件，未知硬链接仍拒绝，符号链接/Junction 规则不放松。
 
-地图导入、发布、分配、取消、校验和删除共享节点地图锁；分配还取得实例写锁但不要求停服，也不占 SteamCMD 槽。运行中分配返回 `restart_required`，稍后重启状态由 Control 持久化并在成功启动/重启后清除；取消由两端要求真实停止。删除必须无分配并使用一次性五分钟确认令牌；未知链接、校验不一致或部分失败保留逻辑记录为异常以便重试。校验在有健康来源时修复副本，无健康来源时标记 broken 并禁止新分配。支持 `map_library_v1` 的 Agent 每次重连完成能力协商后，Control 会为该节点每张地图补充一个去重的 `map.inventory` 校验任务，以发现本地注册表丢失和离线期间的对象异常。
+地图导入、发布、分配、取消、校验和删除共享节点地图锁；分配还取得实例写锁但不要求停服，也不占 SteamCMD 槽。`map_hot_reload_v1` Agent 在完成并复核硬链接后，若实例正在运行且已配置 RCON，会把游戏聊天命令 `!update_vpk` 固定转换为服务端命令 `sm_update_vpk` 并立即刷新 VPK；命令、可执行文件和参数均不接受调用者输入。未配置 RCON 时分配仍成功，结果记录跳过原因，界面在提交前警告管理员改为在游戏内手动输入 `!update_vpk`；停止实例会在下次启动时加载。新分配不再要求重启。取消由两端要求真实停止。删除必须无分配并使用一次性五分钟确认令牌；未知链接、校验不一致或部分失败保留逻辑记录为异常以便重试。校验在有健康来源时修复副本，无健康来源时标记 broken 并禁止新分配。支持 `map_library_v1` 的 Agent 每次重连完成能力协商后，Control 会为该节点每张地图补充一个去重的 `map.inventory` 校验任务，以发现本地注册表丢失和离线期间的对象异常。
 
 相关格式和上游说明：[Valve VPK](https://developer.valvesoftware.com/wiki/VPK)、[AlliedModders SourceMod 安装](https://wiki.alliedmods.net/Installing_SourceMod)、[SteamDB App 222860](https://steamdb.info/app/222860/config/)。
 
