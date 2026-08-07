@@ -72,13 +72,19 @@ describe("地图管理卡片", () => {
     expect(screen.queryByText("处理后容量")).not.toBeInTheDocument();
     expect(screen.queryByText("已清理空间")).not.toBeInTheDocument();
 
-    expect(screen.getByText("处理后的 VPK 大小")).toBeInTheDocument();
+    expect(screen.getByText("作者：")).toBeInTheDocument();
+    expect(screen.getByText("版本：")).toBeInTheDocument();
+    expect(screen.getByText("模式：")).toBeInTheDocument();
+    expect(screen.getByText("处理后 VPK 大小：")).toBeInTheDocument();
     expect(screen.queryByText("VPK 部件")).not.toBeInTheDocument();
     expect(screen.queryByText("已清理文件")).not.toBeInTheDocument();
     expect(screen.getByText("Sean C. Wood")).toBeInTheDocument();
     expect(screen.getByText("1.2")).toBeInTheDocument();
     expect(screen.getByText("合作")).toBeInTheDocument();
-    expect(screen.getByText("已分配实例")).toBeInTheDocument();
+    const assignedHeading = screen.getByText("已分配实例");
+    expect(assignedHeading).toBeInTheDocument();
+    expect(assignedHeading.closest(".map-card__profile")).not.toBeNull();
+    expect(document.querySelector(".map-card__snapshot")).toBeNull();
     expect(screen.getByText("专家战役 #1")).toBeInTheDocument();
     expect(screen.getByText("已生效")).toBeInTheDocument();
 
