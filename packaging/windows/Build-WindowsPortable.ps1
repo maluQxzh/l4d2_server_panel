@@ -37,7 +37,7 @@ if (-not $SkipWebBuild) {
     if ($LASTEXITCODE -ne 0 -or $nodeMajor -lt 24) { throw 'Node.js 24 or later is required.' }
     Push-Location "$repoRoot\web"
     try {
-        & npm ci
+        & npm ci --prefer-offline --no-audit --no-fund
         if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' }
         & npm run build
         if ($LASTEXITCODE -ne 0) { throw 'Web production build failed.' }

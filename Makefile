@@ -1,4 +1,4 @@
-.PHONY: all build build-control build-agent build-agent-portable build-web test test-go test-web lint clean
+.PHONY: all build build-control build-agent build-agent-portable build-container-offline build-web test test-go test-web lint clean
 
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -7,6 +7,7 @@ LDFLAGS = -s -w -X github.com/l4d2-panel/l4d2panel/internal/version.Version=$(VE
 AGENT_DIST_DIR ?= dist/agents
 AGENT_LINUX_BINARY = l4d2panel-agent-linux-amd64
 AGENT_WINDOWS_BINARY = l4d2panel-agent-windows-amd64.exe
+CONTAINER_PLATFORMS ?= linux/amd64,linux/arm64
 
 all: test build
 
@@ -28,8 +29,12 @@ build-agent-portable:
 	cd "$(AGENT_DIST_DIR)" && sha256sum "$(AGENT_LINUX_BINARY)" >"$(AGENT_LINUX_BINARY).sha256"
 	cd "$(AGENT_DIST_DIR)" && sha256sum "$(AGENT_WINDOWS_BINARY)" >"$(AGENT_WINDOWS_BINARY).sha256"
 
+build-container-offline:
+	VERSION="$(VERSION)" COMMIT="$(COMMIT)" BUILD_DATE="$(BUILD_DATE)" PLATFORMS="$(CONTAINER_PLATFORMS)" \
+		bash packaging/container/build-container-offline.sh
+
 build-web:
-	cd web && npm ci && npm run build
+	cd web && npm ci --prefer-offline --no-audit --no-fund && npm run build
 	rm -rf internal/control/static/assets
 	cp web/dist/index.html internal/control/static/index.html
 	cp -R web/dist/assets internal/control/static/assets

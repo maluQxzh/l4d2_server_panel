@@ -8,6 +8,8 @@ services:
         VERSION: ${PANEL_VERSION:-dev}
         COMMIT: ${PANEL_COMMIT:-unknown}
         BUILD_DATE: ${PANEL_BUILD_DATE:-unknown}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
     image: l4d2panel/control:${PANEL_VERSION:-dev}
     user: "0:0"
     restart: unless-stopped

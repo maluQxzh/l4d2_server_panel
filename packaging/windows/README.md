@@ -10,6 +10,14 @@ Windows 中心端只发布 x64 ZIP，不再构建或分发 MSI/WiX 安装包。�
 
 产物位于 `dist/windows-center/l4d2panel-center-<version>-windows-x64.zip`。ZIP 包含 Control、SQLite migrations、未签名文件哈希清单、SBOM、许可证和便携部署说明。构建会自动运行结构与哈希验证。
 
+需要同时生成 Windows/Linux 容器中心端和 Windows/Linux Agent 时，从仓库根目录运行：
+
+```powershell
+.\packaging\Build-ReleaseArtifacts.ps1 -Version 0.1.0 -WslDistribution l4d2
+```
+
+该入口先构建一次宿主前端，再通过 `-SkipWebBuild` 复用给 Windows ZIP，并在指定 WSL2 发行版中串行生成两个容器架构，避免默认 Buildx builder 的并发导出争用。
+
 在可丢弃的提升权限 Windows VM 上运行真实服务、初始化、同版本升级、数据保留注销与显式清理冒烟：
 
 ```powershell

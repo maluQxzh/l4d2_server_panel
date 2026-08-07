@@ -97,7 +97,7 @@ jobs:
       - name: Validate Windows packaging scripts
         shell: pwsh
         run: |
-          $files = Get-ChildItem packaging/windows -Filter *.ps1 | ForEach-Object FullName
+          $files = Get-ChildItem packaging -Recurse -Filter *.ps1 | ForEach-Object FullName
           foreach ($file in $files) {
             $tokens = $null
             $errors = $null
@@ -149,6 +149,7 @@ jobs:
         env:
           CONTROL_IMAGE: l4d2panel/control:ci
         run: |
+          bash -n packaging/container/build-container-offline.sh
           docker compose config --quiet
           docker compose --file deploy/docker-compose.image.yml config --quiet
       - name: Build production image
@@ -158,6 +159,8 @@ jobs:
           push: false
           tags: l4d2panel/control:ci
           platforms: linux/amd64,linux/arm64
+          cache-from: type=gha,scope=control-image
+          cache-to: type=gha,mode=max,scope=control-image
       - name: Start, restart, and verify SQLite persistence
         run: |
           docker compose up -d --build app

@@ -3,8 +3,12 @@
 .env
 bin
 data
+dist
 tmp
 coverage
+packaging
+deploy
+configs
 web/node_modules
 web/dist
 web/playwright-report

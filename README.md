@@ -229,6 +229,32 @@ make build-agent-portable \
 
 输出目录固定为 `dist/agents/`。正式 GitHub Release 使用相同的无 CGO 构建参数、文件名和配置示例；`dist` 是本地构建输出，不进入源码提交。
 
+Windows 开发机可用一个命令构建 Windows 中心端、两个容器中心端和两个便携 Agent。脚本只执行一次宿主前端构建，容器架构按顺序导出，避免同一 Docker builder 上的并发 exporter 争用：
+
+```powershell
+.\packaging\Build-ReleaseArtifacts.ps1 `
+  -Version 0.1.0 `
+  -WslDistribution l4d2
+```
+
+Linux/macOS 只构建两个离线容器包时使用：
+
+```bash
+VERSION=0.1.0 make build-container-offline
+```
+
+Dockerfile 使用持久的 npm、Go 模块和 Go 编译 BuildKit 缓存；`dist` 不进入构建上下文，版本或构建日期变化也不会重新安装最终 Alpine 依赖。首次构建仍需下载基础镜像和依赖，后续构建会复用缓存。如果部署者所在网络无法稳定访问默认官方源，可在确认并信任镜像运营方后显式覆盖构建源；Go 模块仍受 `go.sum` 校验，Alpine 包仍受仓库签名校验：
+
+```powershell
+.\packaging\Build-ReleaseArtifacts.ps1 `
+  -Version 0.1.0 `
+  -WslDistribution l4d2 `
+  -GoProxy 'https://goproxy.cn,direct' `
+  -AlpineMirror 'https://mirrors.aliyun.com/alpine'
+```
+
+也可以为 `build-container-offline.sh` 设置 `GOPROXY`、`ALPINE_MIRROR`、`PLATFORMS`、`OUTPUT_DIR` 和 `GZIP_LEVEL`。生产发布应优先使用受控缓存代理；切换下载源只解决可用性，不提供发布者签名。
+
 ```bash
 go test ./...
 go test -race ./...
