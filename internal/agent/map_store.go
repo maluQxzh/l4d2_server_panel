@@ -297,20 +297,62 @@ func (s *mapStore) assign(mapID string, instance InstanceRecord, instancePath st
 	}
 	targets := make([]string, len(record.Artifacts))
 	created := make([]string, 0, len(record.Artifacts))
-	for index, artifact := range record.Artifacts {
-		target := filepath.ToSlash(filepath.Join("left4dead2", "addons", fmt.Sprintf("l4d2panel-map-%s-%02d.vpk", mapID, index)))
-		targets[index] = target
-		_, _, beforeErr := managedHardLinkIdentity(instancePath, target)
-		if err := createManagedHardLink(root.Path, artifact.Replicas[filesystemID], instancePath, target); err != nil {
-			for _, createdTarget := range created {
-				_ = deleteManagedFileNoFollow(instancePath, createdTarget)
+	type replacedStandaloneTarget struct {
+		target         string
+		sourceRelative string
+		sha256         string
+		size           int64
+	}
+	replacedStandalone := make([]replacedStandaloneTarget, 0)
+	rollback := func() error {
+		var rollbackErr error
+		for _, createdTarget := range created {
+			if err := deleteManagedFileNoFollow(instancePath, createdTarget); err != nil && !errors.Is(err, os.ErrNotExist) {
+				rollbackErr = errors.Join(rollbackErr, err)
 			}
-			return err
+		}
+		for _, replaced := range replacedStandalone {
+			sourcePath, err := ResolveWithin(root.Path, filepath.FromSlash(replaced.sourceRelative))
+			if err == nil {
+				err = copyRegularFileToRootNoFollow(sourcePath, instancePath, replaced.target, secureWriteOptions{
+					Mode: 0o440, ExpectedSize: replaced.size, ExpectedSHA256: replaced.sha256, Replace: false, RejectExistingLink: true,
+				})
+			}
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+		return rollbackErr
+	}
+	for index, artifact := range record.Artifacts {
+		target := mapTargetRelative(mapID, index)
+		targets[index] = target
+		sourceRelative := artifact.Replicas[filesystemID]
+		sourceID, _, sourceErr := managedHardLinkIdentity(root.Path, sourceRelative)
+		if sourceErr != nil {
+			return errors.Join(sourceErr, rollback())
+		}
+		targetID, _, beforeErr := managedHardLinkIdentity(instancePath, target)
+		if beforeErr == nil && targetID != sourceID {
+			targetSHA, targetSize, hashErr := hashRegularFileWithinNoFollow(instancePath, target, maxMapObjectSize)
+			if hashErr != nil || targetSHA != artifact.SHA256 || targetSize != artifact.Size {
+				return errors.Join(errors.New("map assignment target already exists with different content"), rollback())
+			}
+			if err := deleteManagedFileNoFollow(instancePath, target); err != nil {
+				return errors.Join(err, rollback())
+			}
+			replacedStandalone = append(replacedStandalone, replacedStandaloneTarget{
+				target: target, sourceRelative: sourceRelative, sha256: artifact.SHA256, size: artifact.Size,
+			})
+			beforeErr = os.ErrNotExist
+		} else if beforeErr != nil && !errors.Is(beforeErr, os.ErrNotExist) {
+			return errors.Join(beforeErr, rollback())
+		}
+		if err := createManagedHardLink(root.Path, artifact.Replicas[filesystemID], instancePath, target); err != nil {
+			return errors.Join(err, rollback())
 		}
 		if errors.Is(beforeErr, os.ErrNotExist) {
 			created = append(created, target)
 		}
-		sourceID, _, sourceErr := managedHardLinkIdentity(root.Path, artifact.Replicas[filesystemID])
+		sourceID, _, sourceErr = managedHardLinkIdentity(root.Path, artifact.Replicas[filesystemID])
 		targetID, _, targetErr := managedHardLinkIdentity(instancePath, target)
 		targetSHA, targetSize, hashErr := hashRegularFileWithinNoFollow(instancePath, target, maxMapObjectSize)
 		sourceFilesystemID, sourceFSErr := mapFilesystemID(root.Path)
@@ -318,18 +360,12 @@ func (s *mapStore) assign(mapID string, instance InstanceRecord, instancePath st
 		if sourceErr != nil || targetErr != nil || hashErr != nil || sourceFSErr != nil || targetFSErr != nil ||
 			sourceID != targetID || sourceFilesystemID != filesystemID || targetFilesystemID != filesystemID ||
 			targetSHA != artifact.SHA256 || targetSize != artifact.Size {
-			for _, createdTarget := range created {
-				_ = deleteManagedFileNoFollow(instancePath, createdTarget)
-			}
-			return errors.New("map hard link failed post-creation identity or checksum verification")
+			return errors.Join(errors.New("map hard link failed post-creation identity or checksum verification"), rollback())
 		}
 	}
 	record.Assignments[instance.ID] = mapLocalAssignment{InstanceID: instance.ID, FilesystemID: filesystemID, Targets: targets}
 	if err := s.registry.put(record); err != nil {
-		for _, target := range created {
-			_ = deleteManagedFileNoFollow(instancePath, target)
-		}
-		return err
+		return errors.Join(err, rollback())
 	}
 	return nil
 }
@@ -594,26 +630,25 @@ func (s *mapStore) importResult(record mapLocalRecord) map[string]any {
 	return result
 }
 
-func (s *mapStore) backupReferences(instanceID, instancePath string) ([]BackupMapReference, map[string]bool, error) {
+func (s *mapStore) backupReferences(instanceID, instancePath string) ([]BackupMapReference, error) {
 	references := make([]BackupMapReference, 0)
-	excluded := make(map[string]bool)
 	for _, record := range s.registry.list() {
 		assignment, assigned := record.Assignments[instanceID]
 		if !assigned {
 			continue
 		}
 		if len(assignment.Targets) != len(record.Artifacts) {
-			return nil, nil, errors.New("map assignment metadata is inconsistent")
+			return nil, errors.New("map assignment metadata is inconsistent")
 		}
 		root, ok := s.byFS[assignment.FilesystemID]
 		if !ok {
-			return nil, nil, errors.New("map assignment references an unconfigured filesystem")
+			return nil, errors.New("map assignment references an unconfigured filesystem")
 		}
 		for index, target := range assignment.Targets {
 			sourceID, _, sourceErr := managedHardLinkIdentity(root.Path, record.Artifacts[index].Replicas[assignment.FilesystemID])
 			targetID, _, targetErr := managedHardLinkIdentity(instancePath, target)
 			if sourceErr != nil || targetErr != nil || sourceID != targetID {
-				return nil, nil, errors.New("map assignment link failed verification before backup")
+				return nil, errors.New("map assignment link failed verification before backup")
 			}
 		}
 		bsps := make([]string, len(record.BSPs))
@@ -622,12 +657,9 @@ func (s *mapStore) backupReferences(instanceID, instancePath string) ([]BackupMa
 		}
 		sort.Strings(bsps)
 		references = append(references, BackupMapReference{ID: record.ID, AggregateSHA256: record.AggregateSHA256, Name: record.Name, BSPs: bsps})
-		for _, target := range assignment.Targets {
-			excluded[strings.ToLower(filepath.ToSlash(target))] = true
-		}
 	}
 	sort.Slice(references, func(i, j int) bool { return references[i].ID < references[j].ID })
-	return references, excluded, nil
+	return references, nil
 }
 
 func (s *mapStore) findForBackupReference(reference BackupMapReference) (mapLocalRecord, bool) {

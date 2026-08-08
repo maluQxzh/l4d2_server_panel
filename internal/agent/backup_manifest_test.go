@@ -111,15 +111,19 @@ func TestBackupManifestV1RemainsReadableAndRestorable(t *testing.T) {
 	}
 }
 
-func TestBackupV3StoresMapReferencesWithoutMapVPKBytes(t *testing.T) {
+func TestBackupV3StoresMapReferencesAndMapVPKBytes(t *testing.T) {
 	t.Parallel()
 	instancePath := t.TempDir()
-	mapRelative := "left4dead2/addons/l4d2panel-map-11111111-1111-1111-1111-111111111111-00.vpk"
+	mapRelative := "left4dead2/addons/workshop/l4d2panel-map-11111111-1111-1111-1111-111111111111-00.vpk"
 	mapPath := filepath.Join(instancePath, filepath.FromSlash(mapRelative))
 	if err := os.MkdirAll(filepath.Dir(mapPath), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(mapPath, []byte("must not be copied into backup"), 0o440); err != nil {
+	mapObject := filepath.Join(t.TempDir(), "map-object.vpk")
+	if err := os.WriteFile(mapObject, []byte("map backup content"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(mapObject, mapPath); err != nil {
 		t.Fatal(err)
 	}
 	launch := BackupLaunchConfig{Mode: "coop", StartMap: "custom_map", MaxPlayers: 8}
@@ -128,8 +132,7 @@ func TestBackupV3StoresMapReferencesWithoutMapVPKBytes(t *testing.T) {
 		BSPs: []string{"maps/custom_map.bsp"},
 	}
 	archive := filepath.Join(t.TempDir(), "portable-v3.zip")
-	created, err := CreateBackupWithMaps("source-instance", instancePath, archive, launch, []BackupMapReference{reference},
-		map[string]bool{strings.ToLower(mapRelative): true})
+	created, err := CreateBackupWithMaps("source-instance", instancePath, archive, launch, []BackupMapReference{reference})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,8 +143,29 @@ func TestBackupV3StoresMapReferencesWithoutMapVPKBytes(t *testing.T) {
 	if created.Version != backupFormatVersion || manifest.Version != backupFormatVersion || !reflect.DeepEqual(manifest.Maps, []BackupMapReference{reference}) {
 		t.Fatalf("unexpected v3 map references: created=%#v manifest=%#v", created.Maps, manifest.Maps)
 	}
-	if _, included := manifest.Files[mapRelative]; included {
-		t.Fatal("assigned map VPK bytes were included in backup")
+	if _, included := manifest.Files[mapRelative]; !included {
+		t.Fatal("assigned map VPK bytes were not included in backup")
+	}
+	beforeIdentity, _, err := managedHardLinkIdentity(instancePath, mapRelative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := RestoreBackup(instancePath, archive, filepath.Join(t.TempDir(), "restore-existing-map-link")); err != nil {
+		t.Fatal(err)
+	}
+	afterIdentity, _, err := managedHardLinkIdentity(instancePath, mapRelative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterIdentity != beforeIdentity {
+		t.Fatal("restore replaced an existing matching map hard link")
+	}
+	restoredPath := t.TempDir()
+	if _, _, err := RestoreBackup(restoredPath, archive, filepath.Join(t.TempDir(), "restore-map-vpk")); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(restoredPath, filepath.FromSlash(mapRelative))); err != nil || string(raw) != "map backup content" {
+		t.Fatalf("restored map VPK = %q, %v", raw, err)
 	}
 }
 

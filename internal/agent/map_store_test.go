@@ -51,6 +51,10 @@ func TestMapStoreAssignsVerifiedHardLinkAndRequiresUnassignBeforeDelete(t *testi
 		t.Fatalf("assignment was not persisted: %+v", assigned.Assignments)
 	}
 	target := assigned.Assignments[instance.ID].Targets[0]
+	expectedTarget := filepath.ToSlash(filepath.Join("left4dead2", "addons", "workshop", "l4d2panel-map-"+mapID+"-00.vpk"))
+	if target != expectedTarget {
+		t.Fatalf("assignment target = %q, want %q", target, expectedTarget)
+	}
 	sourceID, sourceLinks, err := managedHardLinkIdentity(store.defaultRoot().Path, record.Artifacts[0].Replicas[store.defaultRoot().FilesystemID])
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +68,22 @@ func TestMapStoreAssignsVerifiedHardLinkAndRequiresUnassignBeforeDelete(t *testi
 	}
 	if err := store.delete(mapID); err == nil {
 		t.Fatal("assigned map was deleted")
+	}
+	if err := store.unassign(mapID, instance, instanceRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(instanceRoot, filepath.FromSlash(target)), []byte("deterministic-map-object"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.assign(mapID, instance, instanceRoot); err != nil {
+		t.Fatalf("adopt restored Workshop VPK: %v", err)
+	}
+	restoredTargetID, _, err := managedHardLinkIdentity(instanceRoot, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restoredTargetID != sourceID {
+		t.Fatal("restored Workshop VPK was not replaced with the registered hard link")
 	}
 	if err := store.unassign(mapID, instance, instanceRoot); err != nil {
 		t.Fatal(err)
@@ -90,6 +110,20 @@ func TestMapStoreAssignsVerifiedHardLinkAndRequiresUnassignBeforeDelete(t *testi
 	}
 	if _, ok := store.registry.get(mapID); ok {
 		t.Fatal("deleted map remains in registry")
+	}
+}
+
+func TestMapTargetValidationOnlyAcceptsWorkshopDirectory(t *testing.T) {
+	mapID := uuid.NewString()
+	if !validMapTargetRelative(mapID, mapTargetRelative(mapID, 0)) {
+		t.Fatal("Workshop map target was rejected")
+	}
+	legacy := filepath.ToSlash(filepath.Join("left4dead2", "addons", "l4d2panel-map-"+mapID+"-00.vpk"))
+	if validMapTargetRelative(mapID, legacy) || isReservedMapAddonPath(legacy) {
+		t.Fatal("legacy addons-root map target was accepted")
+	}
+	if !isReservedMapAddonPath(mapTargetRelative(mapID, 0)) {
+		t.Fatal("Workshop map target was not reserved")
 	}
 }
 

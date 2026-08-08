@@ -1138,14 +1138,13 @@ func (e *Executor) backup(_ context.Context, job domain.Job, progress ProgressFu
 	}
 	progress(20, "creating portable backup")
 	var mapReferences []BackupMapReference
-	var excludedMapFiles map[string]bool
 	if e.maps != nil {
-		mapReferences, excludedMapFiles, err = e.maps.backupReferences(job.InstanceID, path)
+		mapReferences, err = e.maps.backupReferences(job.InstanceID, path)
 		if err != nil {
 			return nil, fmt.Errorf("capture map assignments: %w", err)
 		}
 	}
-	manifest, err := CreateBackupWithMaps(job.InstanceID, path, destination, launch, mapReferences, excludedMapFiles)
+	manifest, err := CreateBackupWithMaps(job.InstanceID, path, destination, launch, mapReferences)
 	if err != nil {
 		return nil, err
 	}

@@ -14,7 +14,10 @@ import (
 	"github.com/google/uuid"
 )
 
-const mapRegistryVersion = 1
+const (
+	mapRegistryVersion = 1
+	mapAddonDirectory  = "left4dead2/addons/workshop"
+)
 
 type mapLocalArtifact struct {
 	Ordinal  int               `json:"ordinal"`
@@ -190,10 +193,16 @@ func validMapTargetRelative(mapID, relative string) bool {
 	if err != nil || cleaned != filepath.ToSlash(relative) {
 		return false
 	}
-	dir := filepath.ToSlash(filepath.Join("left4dead2", "addons")) + "/"
+	dir := filepath.ToSlash(filepath.Dir(filepath.FromSlash(cleaned)))
+	if dir != mapAddonDirectory {
+		return false
+	}
 	base := filepath.Base(filepath.FromSlash(cleaned))
-	return strings.HasPrefix(strings.ToLower(cleaned), strings.ToLower(dir)) && filepath.ToSlash(filepath.Dir(filepath.FromSlash(cleaned))) == strings.TrimSuffix(dir, "/") &&
-		strings.HasPrefix(strings.ToLower(base), "l4d2panel-map-"+strings.ToLower(mapID)+"-") && strings.HasSuffix(strings.ToLower(base), ".vpk")
+	return strings.HasPrefix(strings.ToLower(base), "l4d2panel-map-"+strings.ToLower(mapID)+"-") && strings.HasSuffix(strings.ToLower(base), ".vpk")
+}
+
+func mapTargetRelative(mapID string, index int) string {
+	return filepath.ToSlash(filepath.Join(mapAddonDirectory, fmt.Sprintf("l4d2panel-map-%s-%02d.vpk", mapID, index)))
 }
 
 func isReservedMapAddonBase(base string) bool {
@@ -202,7 +211,8 @@ func isReservedMapAddonBase(base string) bool {
 
 func isReservedMapAddonPath(relative string) bool {
 	cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))
-	return filepath.ToSlash(filepath.Dir(filepath.FromSlash(cleaned))) == "left4dead2/addons" && isReservedMapAddonBase(filepath.Base(filepath.FromSlash(cleaned)))
+	dir := filepath.ToSlash(filepath.Dir(filepath.FromSlash(cleaned)))
+	return dir == mapAddonDirectory && isReservedMapAddonBase(filepath.Base(filepath.FromSlash(cleaned)))
 }
 
 func (r *mapRegistry) get(id string) (mapLocalRecord, bool) {
