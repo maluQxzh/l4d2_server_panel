@@ -307,7 +307,7 @@ func scrubJobMap(values map[string]any) {
 	for key, value := range values {
 		lower := strings.ToLower(key)
 		switch lower {
-		case "rcon_password", "existing_rcon_password", "server_password", "storage_path", "snapshot_path", "consumed_snapshot", "pruned_snapshots", "pruned_paths", terminalOutcomeFingerprintField, jobProjectionPendingField:
+		case "rcon_password", "existing_rcon_password", "server_password", "storage_path", "snapshot_path", "snapshot_paths", "consumed_snapshot", "pruned_snapshots", "pruned_paths", terminalOutcomeFingerprintField, jobProjectionPendingField:
 			delete(values, key)
 			continue
 		}

@@ -177,7 +177,7 @@ func (s *Server) handleImportQQFlashFile(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid_qq_flash_share_url", err.Error())
 		return
 	}
-	payload := map[string]any{"source": shareURL}
+	payload := map[string]any{"source": shareURL, "mode": "managed_vpk_v2"}
 	requestFingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "instance-package", instanceID, "qq_flash", payload)
 	if err != nil {
 		s.fail(w, err)
@@ -202,8 +202,8 @@ func (s *Server) handleImportQQFlashFile(w http.ResponseWriter, r *http.Request)
 		s.fail(w, err)
 		return
 	}
-	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "qq_flash_package_v1") {
-		writeError(w, http.StatusConflict, "qq_flash_not_supported", "target node Agent does not support QQ flash file imports")
+	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "qq_flash_vpk_packages_v2") {
+		writeError(w, http.StatusConflict, "qq_flash_not_supported", "target node Agent does not support managed QQ flash VPK imports")
 		return
 	}
 	if err := sealJobPayloadSecrets(s.config.MasterKey, "qq_flash_import", payload); err != nil {

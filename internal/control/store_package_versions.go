@@ -71,6 +71,81 @@ func (s *Store) PackageVersionForRollback(ctx context.Context, instanceID, packa
 	return item, version, err
 }
 
+func (s *Store) PackageForDelete(ctx context.Context, instanceID, packageID string) (domain.AddonPackage, string, []string, error) {
+	pkg, path, err := s.PackageForToggle(ctx, instanceID, packageID)
+	if err != nil {
+		return domain.AddonPackage{}, "", nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT storage_path FROM addon_package_versions
+		WHERE instance_id=?1 AND package_id=?2 ORDER BY created_at,id`, instanceID, packageID)
+	if err != nil {
+		return domain.AddonPackage{}, "", nil, err
+	}
+	defer rows.Close()
+	paths := make([]string, 0)
+	for rows.Next() {
+		var storagePath string
+		if err := rows.Scan(&storagePath); err != nil {
+			return domain.AddonPackage{}, "", nil, err
+		}
+		paths = append(paths, storagePath)
+	}
+	return pkg, path, paths, rows.Err()
+}
+
+func (s *Store) applyQQFlashPackageResult(ctx context.Context, job domain.Job) error {
+	if stringFromAny(job.Result["kind"]) != "qq_flash_vpk" {
+		return errors.New("QQ flash package import returned an invalid result kind")
+	}
+	rawPackages, ok := job.Result["packages"].([]any)
+	if !ok || len(rawPackages) == 0 || len(rawPackages) > 1000 {
+		return errors.New("QQ flash package import returned an invalid package list")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	seen := make(map[string]bool, len(rawPackages))
+	for _, raw := range rawPackages {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			return errors.New("QQ flash package import returned invalid package metadata")
+		}
+		path := filepath.ToSlash(filepath.Clean(filepath.FromSlash(stringFromAny(item["path"]))))
+		if err := validateVersionedPackageResultPath("vpk", path); err != nil {
+			return err
+		}
+		if seen[strings.ToLower(path)] {
+			return errors.New("QQ flash package import returned duplicate package paths")
+		}
+		seen[strings.ToLower(path)] = true
+		sha := strings.ToLower(stringFromAny(item["sha256"]))
+		if !validPackageSHA(sha) {
+			return errors.New("QQ flash package import returned an invalid package SHA-256")
+		}
+		name := strings.TrimSpace(stringFromAny(item["name"]))
+		if name == "" {
+			name = filepath.Base(filepath.FromSlash(path))
+		}
+		if name != filepath.Base(filepath.FromSlash(name)) || !strings.HasSuffix(strings.ToLower(name), ".vpk") || len(name) > 255 {
+			return errors.New("QQ flash package import returned an invalid package name")
+		}
+		versionNumber := intFromAny(item["vpk_version"])
+		if versionNumber != 1 && versionNumber != 2 {
+			return errors.New("QQ flash package import returned an invalid VPK version")
+		}
+		packageID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(job.ID+":"+path)).String()
+		_, err = tx.ExecContext(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,installed_by,last_job_id)
+			VALUES(?1,?2,?3,'vpk',?4,'qq_flash','',?5,?6,true,'normal',?7,?8) ON CONFLICT(id) DO NOTHING`,
+			packageID, job.InstanceID, name, fmt.Sprintf("v%d", versionNumber), sha, path, nullableUUID(job.RequestedBy), job.ID)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error {
 	if files, ok := job.Result["files"].([]any); stringFromAny(job.Result["kind"]) == "workshop" && ok && len(files) > 0 {
 		for _, raw := range files {

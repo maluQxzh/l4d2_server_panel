@@ -522,6 +522,11 @@ test("实例控制台、玩家、配置、模组、备份与计划任务", async
     packageRollback = true;
     return json(route, { job_id: "job-package-rollback" }, 202);
   });
+  let packageDelete = false;
+  await page.route("**/api/v1/instances/instance-1/packages/package-1", (route) => {
+    packageDelete = route.request().method() === "DELETE";
+    return json(route, { job_id: "job-package-delete" }, 202);
+  });
   const scheduleWrites: Array<{ method: string; body?: Record<string, unknown> }> = [];
   await page.route("**/api/v1/instances/instance-1/schedules/schedule-1", async (route) => {
     const method = route.request().method();
@@ -578,6 +583,9 @@ test("实例控制台、玩家、配置、模组、备份与计划任务", async
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "回退", exact: true }).click();
   await expect.poll(() => packageRollback).toBeTruthy();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "删除 campaign.vpk" }).click();
+  await expect.poll(() => packageDelete).toBeTruthy();
   await page.getByRole("button", { name: "安装模组" }).click();
   await page.getByLabel("项目或合集 ID").fill("123456789");
   await page.getByRole("button", { name: "提交安装" }).click();
@@ -637,15 +645,16 @@ test("安装模组可选择 QQ闪传批量导入", async ({ page }) => {
   await expect(page.getByLabel("固定目标目录")).toHaveValue("left4dead2/addons");
   await expect(page.getByLabel("固定目标目录")).toHaveAttribute("readonly", "");
   await page.getByLabel("QQ闪传分享链接").fill("链接：https://qfile.qq.com/q/Example123");
-  await expect(page.getByText(/不限制分享内文件数量和文件大小/)).toBeVisible();
-  await page.getByRole("button", { name: "提交下载" }).click();
+  await expect(page.getByText(/仅接收经过校验的 VPK/)).toBeVisible();
+  await expect(page.getByText(/ZIP、7Z、RAR/)).toBeVisible();
+  await page.getByRole("button", { name: "导入 VPK" }).click();
 
   await expect.poll(() => qqFlashImport).toEqual({
     share_url: "链接：https://qfile.qq.com/q/Example123",
   });
 
   await page.goto("/jobs");
-  await expect(page.getByText("QQ闪传下载", { exact: true })).toBeVisible();
+  await expect(page.getByText("QQ闪传 VPK 导入", { exact: true })).toBeVisible();
   await expect(page.getByText("42%", { exact: true })).toBeVisible();
   await expect(page.getByText("查询服务器状态", { exact: true })).toHaveCount(0);
   await page.getByLabel("任务分类").selectOption("background");
@@ -694,7 +703,7 @@ test("地图管理支持导入、警告、运行中热更新分配与两阶段�
   await expect(page.getByText("地图占用空间")).toBeVisible();
   await expect(page.getByText("处理后容量")).toHaveCount(0);
   const assignedCard = page.locator(".map-card").filter({ hasText: "字典警告地图" });
-  await expect(assignedCard.getByText("处理后的 VPK 大小")).toBeVisible();
+  await expect(assignedCard.getByText("处理后 VPK 大小：")).toBeVisible();
   await expect(assignedCard.getByText("BSP 不包含 stringtable_dictionary.dct")).toHaveCount(0);
   await assignedCard.getByRole("button", { name: "展开详情" }).click();
   await expect(page.getByText("BSP 不包含 stringtable_dictionary.dct")).toBeVisible();

@@ -87,7 +87,7 @@ export const jobLabels: Record<string, string> = {
   rcon: "执行 RCON",
   install_package: "安装模组",
   install_mod: "安装模组",
-  qq_flash_import: "QQ闪传下载",
+  qq_flash_import: "QQ闪传 VPK 导入",
   toggle_package: "启停模组",
   rollback_package: "回退模组版本",
   import: "导入实例",

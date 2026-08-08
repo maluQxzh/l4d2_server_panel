@@ -50,6 +50,7 @@ const (
 	PermissionPackagesRead           Permission = "packages.read"
 	PermissionPackagesInstall        Permission = "packages.install"
 	PermissionPackagesToggle         Permission = "packages.toggle"
+	PermissionPackagesDelete         Permission = "packages.delete"
 	PermissionPackagesRollback       Permission = "packages.rollback"
 	PermissionBackupsRead            Permission = "backups.read"
 	PermissionBackupsDownload        Permission = "backups.download"
@@ -122,6 +123,7 @@ var permissionDefinitions = map[Permission]permissionDefinition{
 	PermissionPackagesRead:           {PermissionRead, permissionScopeInstance},
 	PermissionPackagesInstall:        {PermissionManage, permissionScopeInstance},
 	PermissionPackagesToggle:         {PermissionManage, permissionScopeInstance},
+	PermissionPackagesDelete:         {PermissionManage, permissionScopeInstance},
 	PermissionPackagesRollback:       {PermissionManage, permissionScopeInstance},
 	PermissionBackupsRead:            {PermissionRead, permissionScopeInstance},
 	PermissionBackupsDownload:        {PermissionOperate, permissionScopeInstance},
@@ -234,7 +236,7 @@ var instanceJobPermissions = map[string]Permission{
 	"import":              PermissionInstancesCreate,
 	"install":             PermissionEnvironmentsManage,
 	"install_mod":         PermissionPackagesInstall,
-	"qq_flash_import":     PermissionFilesUpload,
+	"qq_flash_import":     PermissionPackagesInstall,
 	"kick_player":         PermissionPlayersKick,
 	"list":                PermissionFilesList,
 	"map.assign":          PermissionMapsAssign,
@@ -250,6 +252,7 @@ var instanceJobPermissions = map[string]Permission{
 	"start":               PermissionInstancesStart,
 	"stop":                PermissionInstancesStop,
 	"toggle_package":      PermissionPackagesToggle,
+	"delete_package":      PermissionPackagesDelete,
 	"unban_player":        PermissionPlayersUnban,
 	"update":              PermissionInstancesUpdate,
 	"validate":            PermissionInstancesValidate,

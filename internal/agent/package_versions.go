@@ -285,6 +285,26 @@ func (e *Executor) resolvePackageSnapshot(instanceID, targetRelative, storageRel
 	return resolved, nil
 }
 
+func (e *Executor) resolvePackageSnapshotForDelete(instanceID, storageRelative string) (string, error) {
+	storageRelative = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(storageRelative))))
+	segments := strings.Split(storageRelative, "/")
+	if len(segments) != 4 || segments[0] != "package-versions" || segments[1] != packageVersionKey(instanceID) ||
+		len(segments[2]) != 64 || len(segments[3]) != 68 || !strings.HasSuffix(segments[3], ".bin") {
+		return "", errors.New("saved package version is outside the instance version directory")
+	}
+	if _, err := hex.DecodeString(segments[2]); err != nil {
+		return "", errors.New("saved package version target key is invalid")
+	}
+	if _, err := hex.DecodeString(strings.TrimSuffix(segments[3], ".bin")); err != nil {
+		return "", errors.New("saved package version name is invalid")
+	}
+	resolved, err := resolveBelow(e.config.DataDir, filepath.FromSlash(storageRelative))
+	if err != nil {
+		return "", errors.New("saved package version escapes the Agent data directory")
+	}
+	return resolved, nil
+}
+
 func (e *Executor) prunePackageSnapshots(instanceID, targetRelative string) ([]string, error) {
 	root, err := ensureDataSubdirectory(e.config.DataDir, "package-versions")
 	if err != nil {

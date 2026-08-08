@@ -549,7 +549,9 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, absoluteGamePathsSupported := client.capabilities["absolute_game_paths"]
 		_, serverConfigNativeSupported := client.capabilities["server_cfg_native"]
 		_, qqFlashFileSupported := client.capabilities["qq_flash_file_v1"]
-		_, qqFlashPackageSupported := client.capabilities["qq_flash_package_v1"]
+		_, legacyQQFlashPackageSupported := client.capabilities["qq_flash_package_v1"]
+		_, qqFlashPackageSupported := client.capabilities["qq_flash_vpk_packages_v2"]
+		_, packageDeleteSupported := client.capabilities["package_delete_v1"]
 		_, mapLibrarySupported := client.capabilities["map_library_v1"]
 		_, mapHotReloadSupported := client.capabilities["map_hot_reload_v1"]
 		client.mu.Unlock()
@@ -565,9 +567,13 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 			// Preserve queued imports created by the previous minor protocol.
 			continue
 		}
-		if job.Type == "qq_flash_import" && !qqFlashPackageSupported {
+		managedQQFlashImport := strings.EqualFold(stringFromAny(job.Payload["mode"]), "managed_vpk_v2")
+		if job.Type == "qq_flash_import" && ((managedQQFlashImport && !qqFlashPackageSupported) || (!managedQQFlashImport && !legacyQQFlashPackageSupported)) {
 			// A queued import may outlive a temporary Agent rollback. Keep the
 			// expiring share intent durable until a compatible Agent reconnects.
+			continue
+		}
+		if job.Type == "delete_package" && !packageDeleteSupported {
 			continue
 		}
 		if strings.HasPrefix(job.Type, "map.") && !mapLibrarySupported {
@@ -715,7 +721,7 @@ func isTerminalJobStatus(status domain.JobStatus) bool {
 
 func jobChangesInstance(jobType string) bool {
 	switch jobType {
-	case "start", "stop", "restart", "install", "reinstall", "import", "restore", "configure", "update", "validate", "a2s.info", "delete", "detach", "install_mod", "toggle_package", "rollback_package":
+	case "start", "stop", "restart", "install", "reinstall", "import", "restore", "configure", "update", "validate", "a2s.info", "delete", "detach", "install_mod", "toggle_package", "rollback_package", "delete_package", "qq_flash_import":
 		return true
 	default:
 		return false

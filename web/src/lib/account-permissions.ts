@@ -51,6 +51,7 @@ export const permissionCatalog: PermissionDefinition[] = [
   { id: "packages.read", label: "查看插件与模组", group: "插件与模组", class: "read", scope: "instance" },
   { id: "packages.install", label: "安装插件与模组", group: "插件与模组", class: "manage", scope: "instance" },
   { id: "packages.toggle", label: "启用或停用插件", group: "插件与模组", class: "manage", scope: "instance" },
+  { id: "packages.delete", label: "删除插件与模组", group: "插件与模组", class: "manage", scope: "instance" },
   { id: "packages.rollback", label: "回退插件版本", group: "插件与模组", class: "manage", scope: "instance" },
 
   { id: "backups.read", label: "查看备份", group: "备份与计划", class: "read", scope: "instance" },

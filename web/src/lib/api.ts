@@ -323,6 +323,10 @@ export const api = {
     `/instances/${encodeURIComponent(instanceId)}/packages/${encodeURIComponent(packageId)}/versions/${encodeURIComponent(versionId)}/rollback`,
     { method: "POST" },
   ),
+  deletePackage: (instanceId: string, packageId: string) => request<{ job_id: string }>(
+    `/instances/${encodeURIComponent(instanceId)}/packages/${encodeURIComponent(packageId)}`,
+    { method: "DELETE" },
+  ),
   backups: (instanceId: string) => list<BackupRecord>(`/instances/${encodeURIComponent(instanceId)}/backups`),
   createBackupUpload: (
     instanceId: string,
