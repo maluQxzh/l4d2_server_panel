@@ -19,7 +19,7 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  if (!auth.loading && auth.authenticated) return <Navigate to="/" replace />;
+  if (!auth.loading && auth.authenticated) return <Navigate to={auth.activationRequired ? "/activate" : "/"} replace />;
   if (!auth.loading && auth.bootstrapRequired) return <Navigate to="/setup" replace />;
 
   const submit = async (event: FormEvent) => {
@@ -27,7 +27,11 @@ export function LoginPage() {
     setSubmitting(true);
     setError("");
     try {
-      await auth.login({ username: username.trim(), password, totp_code: useRecovery ? undefined : totp || undefined, recovery_code: useRecovery ? recovery || undefined : undefined });
+      const result = await auth.login({ username: username.trim(), password, totp_code: useRecovery ? undefined : totp || undefined, recovery_code: useRecovery ? recovery || undefined : undefined });
+      if (result.password_change_required || result.user.account_state === "pending_activation") {
+        navigate("/activate", { replace: true });
+        return;
+      }
       const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname || "/";
       navigate(from, { replace: true });
     } catch (cause) {
@@ -65,7 +69,7 @@ export function LoginPage() {
           </Field>
           {showTotp && <div className="second-factor"><Field label={useRecovery ? "一次性恢复码" : "双重验证码"} hint={useRecovery ? "输入启用 TOTP 时保存的恢复码，使用后立即失效" : "输入认证器中的 6 位动态验证码"}><div className="input-with-icon"><KeyRound size={17} />{useRecovery ? <input autoComplete="one-time-code" value={recovery} onChange={(event) => setRecovery(event.target.value.toUpperCase().replace(/[^A-Z2-9-]/g, ""))} placeholder="ABCD-EFGH-JKLM-NPQR" required /> : <input inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" value={totp} onChange={(event) => setTotp(event.target.value.replace(/\D/g, ""))} placeholder="000000" required />}</div></Field><button type="button" className="factor-switch" onClick={() => setUseRecovery((value) => !value)}>{useRecovery ? "改用认证器动态码" : "无法使用认证器？改用恢复码"}</button></div>}
           <Button className="login-submit" type="submit" loading={submitting}>安全登录 <span>→</span></Button>
-          <p className="login-help">无法登录？请联系面板所有者重置账号或恢复码。</p>
+          <p className="login-help">首次登录可在密码栏输入所有者提供的一次性密码。</p>
         </form>
       </section>
     </main>

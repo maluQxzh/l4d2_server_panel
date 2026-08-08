@@ -97,7 +97,8 @@ paths:
     post:
       tags: [Auth]
       security: []
-      summary: 创建浏览器会话
+      summary: 创建普通或首次激活浏览器会话
+      description: 待激活账号在 password 中提交仅显示一次的密码；成功后该密码立即失效，并只签发最长 10 分钟的受限激活会话。
       requestBody:
         required: true
         content:
@@ -112,6 +113,29 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth/activate:
+    post:
+      tags: [Auth]
+      summary: 首次登录设置正式密码
+      description: 仅待激活账号的交互式激活会话可用；原子设置 Argon2id 密码、销毁激活状态并轮换为普通会话。激活会话不能访问其他业务 API。
+      x-interactive-session: true
+      parameters: [{ $ref: "#/components/parameters/CSRF" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CompleteActivationRequest" }
+      responses:
+        "200":
+          description: 激活完成并写入新的普通 HttpOnly 会话 Cookie
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /auth/me:
     get:
@@ -1811,7 +1835,7 @@ paths:
     post:
       tags: [Users]
       summary: 创建团队成员
-      description: 仅交互式全局所有者会话（root_security）；`role` 创建一个全局绑定，也可用 role_bindings。所有者 API Token 也不能调用。
+      description: 仅交互式全局所有者会话（root_security）；`role` 创建一个全局绑定，也可用 role_bindings。账号以待激活状态创建，响应中的一次性密码仅返回一次。所有者 API Token 也不能调用。
       x-interactive-session: true
       parameters: [{ $ref: "#/components/parameters/CSRF" }]
       requestBody:
@@ -1821,14 +1845,17 @@ paths:
             schema: { $ref: "#/components/schemas/CreateUserRequest" }
       responses:
         "201":
-          description: 用户已创建
+          description: 用户已创建，一次性密码仅在此响应返回
           content:
             application/json:
               schema:
                 type: object
-                required: [user]
+                required: [user, one_time_password, expires_at]
                 properties:
                   user: { $ref: "#/components/schemas/User" }
+                  one_time_password:
+                    { type: string, pattern: "^l4d2p_once_[A-Za-z0-9_-]{32}$", writeOnly: true }
+                  expires_at: { type: string, format: date-time }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -1839,7 +1866,7 @@ paths:
       summary: 修改成员、重置密码、禁用或替换全部绑定
       description: |
         仅交互式全局所有者会话（root_security），所有者 API Token 也不能调用。`role` 和 `role_bindings`
-        互斥；密码、禁用或绑定变化会撤销目标用户所有会话和 API Token；当前账号不能禁用自己。
+        互斥；密码、禁用或绑定变化会撤销目标用户所有会话和 API Token；当前账号不能禁用自己。待激活账号不能由管理员直接设置正式密码，应改用一次性密码重新签发端点。
       x-interactive-session: true
       parameters:
         - { $ref: "#/components/parameters/UserID" }
@@ -1885,6 +1912,25 @@ paths:
                       items: { $ref: "#/components/schemas/RoleBinding" },
                     }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /users/{userId}/activation:
+    post:
+      tags: [Users]
+      summary: 为待激活账号重新生成一次性密码
+      description: 仅交互式全局所有者会话（root_security）；旧密码和已有激活会话立即失效，明文只在本次响应返回。正常账号不能重新签发。
+      x-interactive-session: true
+      parameters:
+        - { $ref: "#/components/parameters/UserID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      responses:
+        "201":
+          description: 新的一次性密码已签发
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserActivationCredential" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /audit:
     get:
@@ -2325,6 +2371,12 @@ components:
           writeOnly: true
           description: 与 totp_code 互斥；连字符和空格会被忽略，每个码只能使用一次。
 
+    CompleteActivationRequest:
+      type: object
+      required: [new_password]
+      properties:
+        new_password: { type: string, minLength: 12, maxLength: 1024, writeOnly: true }
+
     AuthResponse:
       type: object
       required: [user, csrf_token]
@@ -2332,6 +2384,10 @@ components:
         user: { $ref: "#/components/schemas/User" }
         csrf_token: { type: string }
         api_token: { type: boolean, default: false }
+        password_change_required:
+          type: boolean
+          default: false
+          description: true 表示当前是受限激活会话，客户端必须立即引导设置新密码。
 
     Role:
       type: string
@@ -2379,7 +2435,7 @@ components:
     User:
       type: object
       required:
-        [id, username, display_name, role, totp_enabled, disabled, created_at]
+        [id, username, display_name, role, totp_enabled, disabled, account_state, created_at]
       properties:
         id: { type: string, format: uuid }
         username: { type: string }
@@ -2388,6 +2444,7 @@ components:
         totp_enabled: { type: boolean }
         disabled: { type: boolean }
         bootstrap_owner: { type: boolean, readOnly: true }
+        account_state: { type: string, enum: [pending_activation, active], readOnly: true }
         role_bindings:
           { type: array, items: { $ref: "#/components/schemas/RoleBinding" } }
         created_at: { type: string, format: date-time }
@@ -2395,12 +2452,10 @@ components:
 
     CreateUserRequest:
       type: object
-      required: [username, password]
+      required: [username]
       properties:
         username: { type: string, minLength: 1, maxLength: 128 }
         display_name: { type: string, maxLength: 128 }
-        password:
-          { type: string, minLength: 12, maxLength: 1024, writeOnly: true }
         role: { $ref: "#/components/schemas/Role" }
         role_bindings:
           {
@@ -2410,6 +2465,14 @@ components:
             items: { $ref: "#/components/schemas/RoleBindingInput" },
           }
       description: role 或 role_bindings 至少提供一个；同时提供时 role_bindings 优先。
+
+    UserActivationCredential:
+      type: object
+      required: [one_time_password, expires_at]
+      properties:
+        one_time_password:
+          { type: string, pattern: "^l4d2p_once_[A-Za-z0-9_-]{32}$", writeOnly: true }
+        expires_at: { type: string, format: date-time }
 
     UpdateUserRequest:
       type: object

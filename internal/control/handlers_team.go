@@ -94,7 +94,6 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Username     string               `json:"username"`
 		DisplayName  string               `json:"display_name,omitempty"`
-		Password     string               `json:"password"`
 		Role         domain.Role          `json:"role,omitempty"`
 		RoleBindings []roleBindingRequest `json:"role_bindings,omitempty"`
 	}
@@ -110,13 +109,8 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "owner_permission_required", "only an owner can create another owner")
 		return
 	}
-	passwordHash, err := HashPassword(request.Password)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_password", err.Error())
-		return
-	}
-	user, err := s.store.CreateTeamUser(r.Context(), principal.User.ID, CreateTeamUserInput{Username: request.Username,
-		DisplayName: request.DisplayName, PasswordHash: passwordHash, Bindings: bindings})
+	user, credential, err := s.store.CreateTeamUser(r.Context(), principal.User.ID, CreateTeamUserInput{Username: request.Username,
+		DisplayName: request.DisplayName, Bindings: bindings})
 	if err != nil {
 		if errors.Is(err, errRootSecurityRequired) {
 			writeError(w, http.StatusForbidden, "owner_permission_required", "only an owner can manage accounts")
@@ -130,7 +124,35 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r, "user.created", "user", user.ID, map[string]any{"username": user.Username, "role_bindings": user.RoleBindings})
-	writeJSON(w, http.StatusCreated, map[string]any{"user": user})
+	writeJSON(w, http.StatusCreated, map[string]any{"user": user, "one_time_password": credential.OneTimePassword, "expires_at": credential.ExpiresAt})
+}
+
+func (s *Server) handleReissueUserActivation(w http.ResponseWriter, r *http.Request) {
+	principal, allowed := requireAccountSecurity(w, r)
+	if !allowed {
+		return
+	}
+	userID := chi.URLParam(r, "userID")
+	credential, err := s.store.ReissueUserActivation(r.Context(), principal.User.ID, userID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "user_not_found", "user was not found")
+			return
+		}
+		if errors.Is(err, ErrConflict) {
+			writeError(w, http.StatusConflict, "account_already_active", "only a pending account can receive a new one-time password")
+			return
+		}
+		if errors.Is(err, errRootSecurityRequired) {
+			writeError(w, http.StatusForbidden, "owner_permission_required", "only an owner can manage accounts")
+			return
+		}
+		s.fail(w, err)
+		return
+	}
+	s.events.InvalidateAuthorization()
+	s.audit(r, "user.activation_reissued", "user", userID, map[string]any{"expires_at": credential.ExpiresAt})
+	writeJSON(w, http.StatusCreated, credential)
 }
 
 func (s *Server) handleUserRoleBindings(w http.ResponseWriter, r *http.Request) {
@@ -172,6 +194,10 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	current, err := s.store.TeamUser(r.Context(), userID)
 	if err != nil {
 		s.fail(w, err)
+		return
+	}
+	if request.Password != nil && current.AccountState == domain.AccountPendingActivation {
+		writeError(w, http.StatusConflict, "activation_pending", "reissue the one-time password for a pending account instead of setting its password")
 		return
 	}
 	if userHasOwnerBinding(current) && !principal.GlobalAllows(PermissionRootSecurity) {

@@ -166,15 +166,15 @@ func TestSQLiteMigrationsAndCredentialLifecycle(t *testing.T) {
 		t.Fatalf("owner session was not restored with bindings: %#v err=%v", principal, err)
 	}
 
-	adminUser, err := store.CreateTeamUser(ctx, owner.ID, CreateTeamUserInput{
-		Username: "integration-admin", DisplayName: "Integration Admin", PasswordHash: passwordHash,
+	adminUser, _, err := store.CreateTeamUser(ctx, owner.ID, CreateTeamUserInput{
+		Username: "integration-admin", DisplayName: "Integration Admin",
 		Bindings: []domain.RoleBinding{{Role: domain.RoleAdmin, ScopeType: "global"}},
 	})
 	if err != nil {
 		t.Fatalf("owner could not create administrator: %v", err)
 	}
-	if _, err := store.CreateTeamUser(ctx, adminUser.ID, CreateTeamUserInput{
-		Username: "viewer", DisplayName: "Viewer", PasswordHash: passwordHash,
+	if _, _, err := store.CreateTeamUser(ctx, adminUser.ID, CreateTeamUserInput{
+		Username: "viewer", DisplayName: "Viewer",
 		Bindings: []domain.RoleBinding{{Role: domain.RoleViewer, ScopeType: "global"}},
 	}); !errors.Is(err, errRootSecurityRequired) {
 		t.Fatalf("administrator bypassed account creation boundary: %v", err)

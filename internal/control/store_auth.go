@@ -25,6 +25,7 @@ type Principal struct {
 	SessionID       string
 	CSRFHash        []byte
 	ExpiresAt       time.Time
+	SessionKind     string
 	APITokenID      string
 	TokenScopes     []string
 	TokenNodeID     string
@@ -103,7 +104,8 @@ func (s *Store) BootstrapOwner(ctx context.Context, username, displayName, passw
 	if count > 0 {
 		return domain.User{}, false, tx.Commit()
 	}
-	user := domain.User{ID: uuid.NewString(), Username: strings.TrimSpace(username), DisplayName: strings.TrimSpace(displayName), Role: domain.RoleOwner, CreatedAt: time.Now().UTC()}
+	user := domain.User{ID: uuid.NewString(), Username: strings.TrimSpace(username), DisplayName: strings.TrimSpace(displayName), Role: domain.RoleOwner,
+		AccountState: domain.AccountActive, CreatedAt: time.Now().UTC()}
 	if user.Username == "" {
 		user.Username = "admin"
 	}
@@ -127,14 +129,14 @@ func (s *Store) BootstrapOwner(ctx context.Context, username, displayName, passw
 func scanAuthUser(row scanner) (userAuthRecord, error) {
 	var r userAuthRecord
 	err := row.Scan(&r.User.ID, &r.User.Username, &r.User.DisplayName, &r.User.Role, &r.User.TOTPEnabled,
-		&r.User.CreatedAt, &r.User.LastLoginAt, &r.PasswordHash, &r.TOTPSecret, &r.Disabled, &r.User.BootstrapOwner)
+		&r.User.CreatedAt, &r.User.LastLoginAt, &r.PasswordHash, &r.TOTPSecret, &r.Disabled, &r.User.BootstrapOwner, &r.User.AccountState)
 	r.User.Disabled = r.Disabled
 	return r, err
 }
 
 func (s *Store) UserForLogin(ctx context.Context, username string) (userAuthRecord, error) {
 	r, err := scanAuthUser(s.db.QueryRowContext(ctx, `SELECT id,username,display_name,role,totp_enabled,created_at,last_login_at,
-		password_hash,COALESCE(totp_secret,''),disabled,is_bootstrap_owner FROM users WHERE username_normalized=?1`, normalizeUsername(username)))
+		password_hash,COALESCE(totp_secret,''),disabled,is_bootstrap_owner,account_state FROM users WHERE username_normalized=?1`, normalizeUsername(username)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return userAuthRecord{}, ErrNotFound
 	}
@@ -142,24 +144,30 @@ func (s *Store) UserForLogin(ctx context.Context, username string) (userAuthReco
 }
 
 func (s *Store) CreateSession(ctx context.Context, userID string, tokenDigest, csrfDigest []byte, remoteIP, userAgent string, expiresAt time.Time) (string, error) {
+	return s.CreateSessionWithKind(ctx, userID, tokenDigest, csrfDigest, remoteIP, userAgent, expiresAt, "standard")
+}
+
+func (s *Store) CreateSessionWithKind(ctx context.Context, userID string, tokenDigest, csrfDigest []byte, remoteIP, userAgent string, expiresAt time.Time, kind string) (string, error) {
 	id := uuid.NewString()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions(id,user_id,token_hash,csrf_hash,remote_ip,user_agent,expires_at)
-		VALUES(?1,?2,?3,?4,?5,?6,?7)`, id, userID, tokenDigest, csrfDigest, remoteIP, userAgent, expiresAt)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions(id,user_id,token_hash,csrf_hash,remote_ip,user_agent,expires_at,kind)
+		VALUES(?1,?2,?3,?4,?5,?6,?7,?8)`, id, userID, tokenDigest, csrfDigest, remoteIP, userAgent, expiresAt, kind)
 	if err != nil {
 		return "", err
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE users SET last_login_at=unixepoch('subsec')*1000000 WHERE id=?1`, userID)
+	if kind == "standard" {
+		_, _ = s.db.ExecContext(ctx, `UPDATE users SET last_login_at=unixepoch('subsec')*1000000 WHERE id=?1`, userID)
+	}
 	return id, nil
 }
 
 func (s *Store) Session(ctx context.Context, tokenDigest []byte) (Principal, error) {
 	var p Principal
 	now := time.Now().UTC()
-	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.role,u.totp_enabled,u.created_at,u.last_login_at,u.is_bootstrap_owner,
-		s.id,s.csrf_hash,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.role,u.totp_enabled,u.created_at,u.last_login_at,u.is_bootstrap_owner,u.account_state,
+		s.id,s.csrf_hash,s.expires_at,s.kind FROM sessions s JOIN users u ON u.id=s.user_id
 		WHERE s.token_hash=?1 AND s.expires_at>?2 AND NOT u.disabled`, tokenDigest, now).Scan(
 		&p.User.ID, &p.User.Username, &p.User.DisplayName, &p.User.Role, &p.User.TOTPEnabled,
-		&p.User.CreatedAt, &p.User.LastLoginAt, &p.User.BootstrapOwner, &p.SessionID, &p.CSRFHash, &p.ExpiresAt)
+		&p.User.CreatedAt, &p.User.LastLoginAt, &p.User.BootstrapOwner, &p.User.AccountState, &p.SessionID, &p.CSRFHash, &p.ExpiresAt, &p.SessionKind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Principal{}, ErrUnauthorized
 	}
@@ -174,11 +182,11 @@ func (s *Store) Session(ctx context.Context, tokenDigest []byte) (Principal, err
 
 func (s *Store) ActiveSessionByID(ctx context.Context, sessionID string) (Principal, error) {
 	var p Principal
-	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.role,u.totp_enabled,u.created_at,u.last_login_at,u.is_bootstrap_owner,
-		s.id,s.csrf_hash,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.role,u.totp_enabled,u.created_at,u.last_login_at,u.is_bootstrap_owner,u.account_state,
+		s.id,s.csrf_hash,s.expires_at,s.kind FROM sessions s JOIN users u ON u.id=s.user_id
 		WHERE s.id=?1 AND s.expires_at>?2 AND NOT u.disabled`, sessionID, time.Now().UTC()).Scan(
 		&p.User.ID, &p.User.Username, &p.User.DisplayName, &p.User.Role, &p.User.TOTPEnabled,
-		&p.User.CreatedAt, &p.User.LastLoginAt, &p.User.BootstrapOwner, &p.SessionID, &p.CSRFHash, &p.ExpiresAt)
+		&p.User.CreatedAt, &p.User.LastLoginAt, &p.User.BootstrapOwner, &p.User.AccountState, &p.SessionID, &p.CSRFHash, &p.ExpiresAt, &p.SessionKind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Principal{}, ErrUnauthorized
 	}

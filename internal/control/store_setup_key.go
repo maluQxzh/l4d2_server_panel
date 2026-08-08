@@ -124,7 +124,8 @@ func (s *Store) BootstrapOwnerWithSetupKey(ctx context.Context, raw, passwordHas
 	if len(stored) != len(provided) || subtle.ConstantTimeCompare(stored, provided) != 1 {
 		return domain.User{}, ErrInvalidSetupKey
 	}
-	user := domain.User{ID: uuid.NewString(), Username: "admin", DisplayName: "系统管理员", Role: domain.RoleOwner, CreatedAt: time.Now().UTC()}
+	user := domain.User{ID: uuid.NewString(), Username: "admin", DisplayName: "系统管理员", Role: domain.RoleOwner,
+		AccountState: domain.AccountActive, CreatedAt: time.Now().UTC()}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO users(id,username,username_normalized,display_name,password_hash,role,is_bootstrap_owner,created_at)
 		VALUES(?1,?2,?3,?4,?5,?6,true,?7)`, user.ID, user.Username, normalizeUsername(user.Username), user.DisplayName,
 		passwordHash, user.Role, user.CreatedAt); err != nil {

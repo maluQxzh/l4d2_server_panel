@@ -186,9 +186,11 @@ func (s *Server) routes() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.authenticate)
 			r.Use(s.verifyCSRF)
+			r.Use(s.enforceActivatedAccount)
 			r.Use(s.enforceTokenResourceScope)
 			r.Get("/auth/me", s.handleMe)
 			r.With(s.requireInteractiveSession).Post("/auth/logout", s.handleLogout)
+			r.With(s.requireInteractiveSession).Post("/auth/activate", s.handleCompleteActivation)
 			r.With(s.requireInteractiveSession).Post("/auth/totp/setup", s.handleTOTPSetup)
 			r.With(s.requireInteractiveSession).Post("/auth/totp/confirm", s.handleTOTPConfirm)
 			r.With(s.requireInteractiveSession).Get("/api-tokens", s.handleListAPITokens)
@@ -275,6 +277,7 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Post("/users", s.handleCreateUser)
 			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Get("/users/{userID}/role-bindings", s.handleUserRoleBindings)
 			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Patch("/users/{userID}", s.handleUpdateUser)
+			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Post("/users/{userID}/activation", s.handleReissueUserActivation)
 			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Get("/system/updates", s.handleListSystemUpdates)
 			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Post("/system/updates", s.handleCreateSystemUpdate)
 			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Get("/system/updates/{jobID}", s.handleGetSystemUpdate)
@@ -396,6 +399,22 @@ func (s *Server) verifyCSRF(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) enforceActivatedAccount(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal := principalFromContext(r.Context())
+		if principal.User.AccountState != domain.AccountPendingActivation {
+			next.ServeHTTP(w, r)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v1/auth/me", "/api/v1/auth/logout", "/api/v1/auth/activate":
+			next.ServeHTTP(w, r)
+		default:
+			writeError(w, http.StatusForbidden, "account_activation_required", "set a new password before using this account")
+		}
 	})
 }
 

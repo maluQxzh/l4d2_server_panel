@@ -86,6 +86,28 @@ describe("API 客户端", () => {
     expect(JSON.parse(String(init?.body))).not.toHaveProperty("totp_code");
   });
 
+  it("首次改密和重新签发使用受限激活端点", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        user: { id: "user-1", username: "viewer", display_name: "Viewer", role: "viewer", totp_enabled: false, disabled: false, account_state: "active", created_at: "2026-08-08T00:00:00Z" },
+        csrf_token: "activated-csrf",
+        password_change_required: false,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ one_time_password: "l4d2p_once_example", expires_at: "2026-08-09T00:00:00Z" }), { status: 201, headers: { "Content-Type": "application/json" } }));
+
+    await api.completeActivation("new-user-password-123");
+    await api.reissueUserActivation("user/one");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/auth/activate");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ new_password: "new-user-password-123" });
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/users/user%2Fone/activation");
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init?.method).toBe("POST");
+      expect(new Headers(init?.headers).get("X-CSRF-Token")).toBeTruthy();
+      expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
+    }
+  });
+
   it("文件写入携带版本摘要并正确编码相对路径", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ job_id: "job-file" }), { status: 202, headers: { "Content-Type": "application/json" } }));
 

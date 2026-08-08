@@ -223,12 +223,12 @@ func (s *Store) apiTokenPrincipal(ctx context.Context, predicate string, argumen
 	var principal Principal
 	var scopeMask int64
 	now := time.Now().UTC()
-	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.role,u.totp_enabled,u.created_at,u.last_login_at,u.is_bootstrap_owner,
+	err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.display_name,u.role,u.totp_enabled,u.created_at,u.last_login_at,u.is_bootstrap_owner,u.account_state,
 		t.id,t.scope_mask,COALESCE(t.node_id,''),COALESCE(t.instance_id,''),t.expires_at
 		FROM api_tokens t JOIN users u ON u.id=t.user_id WHERE `+predicate+`
-		AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>?2) AND NOT u.disabled`, argument, now).Scan(
+		AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at>?2) AND NOT u.disabled AND u.account_state='active'`, argument, now).Scan(
 		&principal.User.ID, &principal.User.Username, &principal.User.DisplayName, &principal.User.Role,
-		&principal.User.TOTPEnabled, &principal.User.CreatedAt, &principal.User.LastLoginAt, &principal.User.BootstrapOwner, &principal.APITokenID,
+		&principal.User.TOTPEnabled, &principal.User.CreatedAt, &principal.User.LastLoginAt, &principal.User.BootstrapOwner, &principal.User.AccountState, &principal.APITokenID,
 		&scopeMask, &principal.TokenNodeID, &principal.TokenInstanceID, &principal.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Principal{}, ErrUnauthorized
