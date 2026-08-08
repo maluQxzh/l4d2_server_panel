@@ -12,6 +12,7 @@ import (
 
 const (
 	createSuspended                   = 0x00000004
+	createNewConsole                  = 0x00000010
 	createNewProcessGroup             = 0x00000200
 	processTerminate                  = 0x0001
 	processSetQuota                   = 0x0100
@@ -67,7 +68,18 @@ type jobObjectExtendedLimit struct {
 func preparePlatformCommand(cmd *exec.Cmd) {
 	// Starting suspended closes the gap in which srcds (or one of its native
 	// extensions) could create a child before the process belongs to our Job.
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNewProcessGroup | createSuspended, HideWindow: true}
+	//
+	// SRCDS' Win32 text console calls GetNumberOfConsoleInputEvents even when
+	// the Agent never sends interactive input. os/exec normally replaces a nil
+	// stdin with NUL, which is not a console input-buffer handle and makes SRCDS
+	// display an Engine Error dialog. Give each managed server a hidden console
+	// and pass a NULL standard-input handle; Windows then initializes stdin from
+	// that new console while preserving our redirected stdout and stderr handles.
+	// See the STARTF_USESTDHANDLES rules documented for CREATE_NEW_CONSOLE.
+	if cmd.Stdin == nil {
+		cmd.Stdin = os.NewFile(0, "automatic-console-input")
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNewConsole | createNewProcessGroup | createSuspended, HideWindow: true}
 }
 
 func attachPlatformProcess(cmd *exec.Cmd) (attached *platformProcess, resultErr error) {
