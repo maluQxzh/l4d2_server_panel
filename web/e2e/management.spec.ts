@@ -454,7 +454,8 @@ test("RCON 玩家查询失败时显示节点返回的诊断", async ({ page }) =
   await expect(page.getByRole("alert")).toContainText("RCON 查询失败：RCON authentication failed");
 });
 
-test("实例控制台、玩家、配置、模组、备份与计划任务", async ({ page }) => {
+test("实例控制台、玩家、配置、模组、插件、备份与计划任务", async ({ page }) => {
+  test.setTimeout(45_000);
   await authenticated(page);
   const configWrites: Record<string, unknown>[] = [];
   let currentInstance = instance;
@@ -477,12 +478,17 @@ test("实例控制台、玩家、配置、模组、备份与计划任务", async
     id: "package-1", name: "campaign.vpk", kind: "vpk", version: "v2", enabled: true,
     sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     path: "left4dead2/addons/campaign.vpk", installed_at: "2026-07-31T01:00:00Z",
+  }, {
+    id: "package-2", name: "admin-tools.smx", kind: "plugin", version: "1.0.0", enabled: true,
+    sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    path: "left4dead2/addons/sourcemod/plugins/admin-tools.smx", installed_at: "2026-07-31T01:05:00Z",
   }] }));
   await page.route("**/api/v1/instances/instance-1/packages/package-1/versions", (route) => json(route, { items: [{
     id: "package-version-1", package_id: "package-1", instance_id: "instance-1", version: "v2",
     sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", size: 1024,
     target_path: "left4dead2/addons/campaign.vpk", created_at: "2026-07-30T01:00:00Z",
   }] }));
+  await page.route("**/api/v1/instances/instance-1/packages/package-2/versions", (route) => json(route, { items: [] }));
   await page.route("**/api/v1/instances/instance-1/backups", (route) => json(route, { items: [] }));
   await page.route("**/api/v1/instances/instance-1/schedules", (route) => json(route, { items: [{
     id: "schedule-1", name: "每周维护", cron: "0 4 * * 1", action: "restart", enabled: true,
@@ -580,6 +586,7 @@ test("实例控制台、玩家、配置、模组、备份与计划任务", async
 
   await page.getByRole("button", { name: "模组" }).click();
   await expect(page.getByLabel("campaign.vpk 可回退版本")).toBeVisible();
+  await expect(page.getByText("admin-tools.smx", { exact: true })).toHaveCount(0);
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "回退", exact: true }).click();
   await expect.poll(() => packageRollback).toBeTruthy();
@@ -587,9 +594,24 @@ test("实例控制台、玩家、配置、模组、备份与计划任务", async
   await page.getByRole("button", { name: "删除 campaign.vpk" }).click();
   await expect.poll(() => packageDelete).toBeTruthy();
   await page.getByRole("button", { name: "安装模组" }).click();
+  await expect(page.getByLabel("类型").locator("option")).toHaveText([
+    "Workshop 项目 / 合集 ID", "VPK 文件", "QQ闪传（玩家上传 VPK）",
+  ]);
   await page.getByLabel("项目或合集 ID").fill("123456789");
   await page.getByRole("button", { name: "提交安装" }).click();
   await expect.poll(() => actions.some((item) => item.type === "install_package")).toBeTruthy();
+
+  await page.getByRole("button", { name: "插件", exact: true }).click();
+  await expect(page.getByText("admin-tools.smx", { exact: true })).toBeVisible();
+  await expect(page.getByText("campaign.vpk", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "安装插件" }).click();
+  await expect(page.getByLabel("类型").locator("option")).toHaveText([
+    "SourceMod 插件文件", "官方 SourceMod 稳定版", "官方 Metamod:Source 稳定版",
+    "第三方 SourceMod 整包", "第三方 Metamod 整包", "第三方原生扩展",
+  ]);
+  await page.getByLabel("HTTPS 来源").fill("https://example.org/admin-tools.smx");
+  await page.getByRole("button", { name: "提交安装" }).click();
+  await expect.poll(() => actions.some((item) => item.type === "install_package" && item.payload?.kind === "plugin")).toBeTruthy();
 
   await page.getByRole("button", { name: "文件", exact: true }).click();
   await expect(page.getByRole("button", { name: "cfg", exact: true })).toHaveCount(0);
