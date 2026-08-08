@@ -75,6 +75,18 @@ Do not weaken or remove pinned security versions merely to make an older local t
 - Portable upgrades must preserve beside-binary `agent.yaml` and `data`, validate the staged binary and checksum before stopping the old process, keep one previous binary for rollback, and replace only the platform binary. Never require a new enrollment token for an already enrolled node.
 - `dist` remains ignored build output. Do not add portable Agent binaries or generated checksums to source commits.
 
+## Build efficiency
+
+- During iteration, build and test only the affected component or package. Do not run `make all`, the full release build, `go test ./...`, race tests, Playwright, vulnerability scanning, or multi-architecture container builds after every small edit when a narrower check provides useful feedback.
+- For Go changes, start with the closest package and focused test, for example `go test ./internal/agent -run TestName` or `go test ./internal/control -run TestName`. Expand to dependent packages and then to the validation gates required below before handoff.
+- Preserve the Go build and module caches. Do not routinely run `go clean`, disable caching with `-count=1`, or use rebuild flags such as `-a`; use uncached tests only where this file explicitly requires them or when investigating cache-sensitive behavior.
+- In `web`, run `npm ci` once after checkout and again only when `package-lock.json` changes, `node_modules` is missing, or dependency integrity is in doubt. For ordinary source-only iterations, reuse the installed dependencies and run the narrow Vitest target, `npm run typecheck`, or `npm run build` directly instead of invoking `make build-web`, which intentionally repeats `npm ci` for a clean canonical build.
+- Keep Vite/TypeScript and test caches available between iterations. Do not use `make clean` or delete `web/node_modules`, `web/dist`, Go caches, or TypeScript build metadata merely to obtain a fresh build; clean only when diagnosing stale output or preparing a specifically required clean-room check.
+- Build only the binary that changed: `go build ./cmd/control` for Control-only work and `go build ./cmd/agent` for Agent-only work. Run the canonical dual-platform portable Agent target only for Agent delivery validation, and preserve its required output layout and metadata.
+- For container work, use the native host platform for fast local iteration when that is sufficient to diagnose the change. Before handoff, still run the required production builds for both `linux/amd64` and `linux/arm64`; never present a single-platform iterative build as the multi-platform release gate.
+- Independent Go and web checks may run in parallel when machine CPU and memory allow it. Avoid launching multiple heavy race, Playwright, Docker, or cross-architecture builds concurrently when resource contention would make the overall validation slower or less reliable.
+- Do not trade away reproducibility or security for speed: keep pinned Go/Node versions, `web/package-lock.json`, `CGO_ENABLED=0`, `-trimpath`, version metadata, checksums, archive validation, and all change-specific release gates intact.
+
 ## Current project status (2026-08-07)
 
 - The main Go Control/Agent, React web application, SQLite persistence, Docker deployment, and Windows/Linux Agent packaging are present. Treat the project as under active development rather than production-complete.
