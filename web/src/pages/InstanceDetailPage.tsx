@@ -71,6 +71,7 @@ const tabs = [
   { id: "players", label: "玩家", icon: Users },
   { id: "config", label: "配置", icon: Settings2 },
   { id: "mods", label: "模组", icon: PackageOpen },
+  { id: "plugins", label: "插件", icon: Code2 },
   { id: "files", label: "文件", icon: Folder },
   { id: "backups", label: "备份", icon: Archive },
   { id: "schedules", label: "计划任务", icon: CalendarClock },
@@ -98,6 +99,7 @@ export function InstanceDetailPage() {
       {active === "players" && <PlayersTab instance={item} />}
       {active === "config" && <ConfigTab instance={item} />}
       {active === "mods" && <ModsTab instance={item} />}
+      {active === "plugins" && <PluginsTab instance={item} />}
       {active === "files" && <FilesTab instance={item} />}
       {active === "backups" && <BackupsTab instance={item} />}
       {active === "schedules" && <SchedulesTab instance={item} />}
@@ -624,9 +626,23 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
 }
 
 function ModsTab({ instance }: { instance: InstanceRecord }) {
+  return <PackagesTab instance={instance} section="mods" />;
+}
+
+function PluginsTab({ instance }: { instance: InstanceRecord }) {
+  return <PackagesTab instance={instance} section="plugins" />;
+}
+
+type PackageSection = "mods" | "plugins";
+
+function PackagesTab({ instance, section }: { instance: InstanceRecord; section: PackageSection }) {
   const [open, setOpen] = useState(false);
   const packages = useQuery({ queryKey: ["instances", instance.id, "packages"], queryFn: () => api.packages(instance.id), refetchInterval: 15_000 });
-  return <Card><div className="card-heading"><div><span className="eyebrow">ADD-ONS</span><h2>模组与组件</h2></div><Button onClick={() => setOpen(true)}><Plus size={16} />安装模组</Button></div>{packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title="模组清单尚不可用" description="当前控制端未开放组件清单接口；安装任务仍可通过面板提交。" action={<Button onClick={() => setOpen(true)}><Plus size={16} />提交安装任务</Button>} /> : packages.data.items.length ? <div className="package-grid">{packages.data.items.map((item) => <PackageCard key={item.id} item={item} instanceId={instance.id} />)}</div> : <EmptyState title="还没有安装模组" description="支持 VPK、SourceMod 插件、Workshop 项目与合集。" action={<Button onClick={() => setOpen(true)}><Plus size={16} />安装第一个模组</Button>} />}<InstallPackageModal open={open} instance={instance} onClose={() => setOpen(false)} /></Card>;
+  const pluginSection = section === "plugins";
+  const items = packages.data?.items.filter((item) => pluginSection ? item.kind !== "vpk" && item.kind !== "workshop" : item.kind === "vpk" || item.kind === "workshop") || [];
+  const noun = pluginSection ? "插件" : "模组";
+  const description = pluginSection ? "支持 SourceMod 插件、SourceMod/Metamod 整包与第三方原生扩展。" : "支持 VPK、Workshop 项目与合集，以及 QQ闪传 VPK 批量导入。";
+  return <Card><div className="card-heading"><div><span className="eyebrow">{pluginSection ? "SERVER PLUGINS" : "ADD-ONS"}</span><h2>{pluginSection ? "插件与服务端组件" : "模组"}</h2></div><Button onClick={() => setOpen(true)}><Plus size={16} />安装{noun}</Button></div>{packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title={`${noun}清单尚不可用`} description={`当前控制端未开放${noun}清单接口；安装任务仍可通过面板提交。`} action={<Button onClick={() => setOpen(true)}><Plus size={16} />提交安装任务</Button>} /> : items.length ? <div className="package-grid">{items.map((item) => <PackageCard key={item.id} item={item} instanceId={instance.id} />)}</div> : <EmptyState title={`还没有安装${noun}`} description={description} action={<Button onClick={() => setOpen(true)}><Plus size={16} />安装第一个{noun}</Button>} />}<InstallPackageModal open={open} instance={instance} section={section} onClose={() => setOpen(false)} /></Card>;
 }
 
 function PackageCard({ item, instanceId }: { item: PackageRecord; instanceId: string }) {
@@ -689,8 +705,9 @@ function PackageCard({ item, instanceId }: { item: PackageRecord; instanceId: st
   </div>;
 }
 
-function InstallPackageModal({ open, instance, onClose }: { open: boolean; instance: InstanceRecord; onClose: () => void }) {
-  const [kind, setKind] = useState("workshop");
+function InstallPackageModal({ open, instance, section, onClose }: { open: boolean; instance: InstanceRecord; section: PackageSection; onClose: () => void }) {
+  const pluginSection = section === "plugins";
+  const [kind, setKind] = useState(pluginSection ? "plugin" : "workshop");
   const [source, setSource] = useState("");
   const [upload, setUpload] = useState<{ name: string; size: number; contentBase64: string } | null>(null);
   const [risk, setRisk] = useState(false);
@@ -736,16 +753,16 @@ function InstallPackageModal({ open, instance, onClose }: { open: boolean; insta
         acknowledge_native_risk: risk,
       }),
     onSuccess: () => {
-      toast.push(qqFlash ? "QQ闪传 VPK 导入任务已提交" : "模组安装任务已提交");
+      toast.push(qqFlash ? "QQ闪传 VPK 导入任务已提交" : `${pluginSection ? "插件" : "模组"}安装任务已提交`);
       void client.invalidateQueries({ queryKey: ["jobs"] });
       void client.invalidateQueries({ queryKey: ["instances", instance.id, "packages"] });
       resetAndClose();
     },
     onError: (error) => toast.push(error.message, "error"),
   });
-  return <Modal open={open} onClose={resetAndClose} title="安装模组或组件" description={qqFlash ? "供玩家通过 QQ闪传提交 VPK；节点暂存并检查完整分享，安全解压后再安装，不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose}>取消</Button><Button onClick={() => install.mutate()} loading={install.isPending} disabled={(!official && !hasSource) || (needsRisk && !risk)}>{qqFlash ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlash ? "导入 VPK" : "提交安装"}</Button></>}>
+  return <Modal open={open} onClose={resetAndClose} title={pluginSection ? "安装插件或服务端组件" : "安装模组"} description={qqFlash ? "供玩家通过 QQ闪传提交 VPK；节点暂存并检查完整分享，安全解压后再安装，不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose}>取消</Button><Button onClick={() => install.mutate()} loading={install.isPending} disabled={(!official && !hasSource) || (needsRisk && !risk)}>{qqFlash ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlash ? "导入 VPK" : "提交安装"}</Button></>}>
     <div className="form-stack">
-      <Field label="类型"><select value={kind} onChange={(event) => { setKind(event.target.value); setSource(""); setUpload(null); setRisk(false); }}><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="plugin">SourceMod 插件文件</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option><option value="native">第三方原生扩展</option><option value="qq_flash">QQ闪传（玩家上传 VPK）</option></select></Field>
+      <Field label="类型"><select value={kind} onChange={(event) => { setKind(event.target.value); setSource(""); setUpload(null); setRisk(false); }}>{pluginSection ? <><option value="plugin">SourceMod 插件文件</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option><option value="native">第三方原生扩展</option></> : <><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="qq_flash">QQ闪传（玩家上传 VPK）</option></>}</select></Field>
       {qqFlash ? <>
         <Field label="固定目标目录"><input value="left4dead2/addons" readOnly /></Field>
         <Field label="QQ闪传分享链接" hint="可直接粘贴 QQ 分享文本；支持直接 VPK，以及最多嵌套 3 层的 ZIP、7Z、RAR 压缩包。"><textarea rows={4} value={source} onChange={(event) => setSource(event.target.value)} placeholder="链接：https://qfile.qq.com/q/Example123" spellCheck={false} /></Field>
