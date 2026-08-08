@@ -11,6 +11,13 @@ const (
 	RoleViewer   Role = "viewer"
 )
 
+type AccountState string
+
+const (
+	AccountPendingActivation AccountState = "pending_activation"
+	AccountActive            AccountState = "active"
+)
+
 type NodeStatus string
 
 const (
@@ -54,6 +61,7 @@ type User struct {
 	LastLoginAt    *time.Time    `json:"last_login_at,omitempty"`
 	Disabled       bool          `json:"disabled"`
 	BootstrapOwner bool          `json:"bootstrap_owner,omitempty"`
+	AccountState   AccountState  `json:"account_state"`
 	RoleBindings   []RoleBinding `json:"role_bindings,omitempty"`
 }
 

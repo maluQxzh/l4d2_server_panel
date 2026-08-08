@@ -10,7 +10,7 @@ test.beforeEach(async ({ page }) => {
 
 const owner = {
   id: "user-1", username: "admin", display_name: "系统管理员", role: "owner",
-  totp_enabled: true, created_at: "2026-07-31T00:00:00Z",
+  totp_enabled: true, account_state: "active", created_at: "2026-07-31T00:00:00Z",
 };
 
 const node = {
@@ -361,8 +361,8 @@ test("创建团队用户并绑定单个节点角色", async ({ page }) => {
     createBody = route.request().postDataJSON() as Record<string, unknown>;
     return json(route, { user: {
       id: "user-operator", username: "operator", display_name: "值班操作员", role: "operator",
-      totp_enabled: false, created_at: "2026-08-01T00:00:00Z", role_bindings: [{ role: "operator", scope_type: "node", node_id: node.id }],
-    } }, 201);
+      totp_enabled: false, account_state: "pending_activation", created_at: "2026-08-01T00:00:00Z", role_bindings: [{ role: "operator", scope_type: "node", node_id: node.id }],
+    }, one_time_password: "l4d2p_once_0123456789abcdefghijklmnopqrstuv", expires_at: "2026-08-09T00:00:00Z" }, 201);
   });
 
   await page.goto("/settings");
@@ -370,16 +370,18 @@ test("创建团队用户并绑定单个节点角色", async ({ page }) => {
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("用户名").fill("operator");
   await dialog.getByLabel("显示名称").fill("值班操作员");
-  await dialog.getByLabel("初始密码").fill("correct-operator-password");
   await dialog.getByLabel("角色").selectOption("operator");
   await dialog.getByLabel("范围").selectOption("node");
   await dialog.getByText("节点", { exact: true }).locator("..").locator("select").selectOption(node.id);
-  await dialog.getByRole("button", { name: "创建账号" }).click();
+  await dialog.getByRole("button", { name: "创建账号并生成密码" }).click();
+
+  await expect(dialog.getByText("l4d2p_once_0123456789abcdefghijklmnopqrstuv")).toBeVisible();
 
   await expect.poll(() => createBody).toMatchObject({
     username: "operator", display_name: "值班操作员",
     role_bindings: [{ role: "operator", scope_type: "node", node_id: node.id }],
   });
+  expect(createBody).not.toHaveProperty("password");
 });
 
 test("站内通知可标记已读且失败投递可手动重试", async ({ page }) => {

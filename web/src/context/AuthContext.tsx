@@ -7,11 +7,13 @@ interface AuthValue {
   user: User | null;
   loading: boolean;
   authenticated: boolean;
+  activationRequired: boolean;
   bootstrapRequired: boolean;
   bootstrapKeyConfigured: boolean;
   bootstrapOwner: typeof api.bootstrapOwner;
   refreshBootstrap: () => Promise<boolean>;
   login: typeof api.login;
+  completeActivation: typeof api.completeActivation;
   logout: () => Promise<void>;
 }
 
@@ -36,6 +38,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user: session.data?.user || null,
     loading: session.isPending || bootstrapStatus.isPending,
     authenticated: Boolean(session.data?.user),
+    activationRequired: session.data?.user?.account_state === "pending_activation",
     bootstrapRequired: Boolean(bootstrapStatus.data?.required),
     bootstrapKeyConfigured: Boolean(bootstrapStatus.data?.key_configured),
     bootstrapOwner: async (payload) => {
@@ -50,10 +53,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       queryClient.setQueryData(["session"], result);
       return result;
     },
+    completeActivation: async (newPassword) => {
+      try {
+        const result = await api.completeActivation(newPassword);
+        queryClient.setQueryData(["session"], result);
+        return result;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 401) queryClient.setQueryData(["session"], null);
+        throw error;
+      }
+    },
     logout: async () => {
-      await api.logout();
-      queryClient.setQueryData(["session"], null);
-      queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "session" });
+      try {
+        await api.logout();
+      } finally {
+        queryClient.setQueryData(["session"], null);
+        queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "session" });
+      }
     },
   }), [bootstrapStatus, queryClient, session.data, session.isPending]);
 

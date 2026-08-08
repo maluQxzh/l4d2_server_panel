@@ -138,12 +138,24 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	record, err := s.store.UserForLogin(r.Context(), request.Username)
-	if err != nil || record.Disabled || !VerifyPassword(record.PasswordHash, request.Password) {
+	credentialValid := false
+	if err == nil && !record.Disabled {
+		if record.User.AccountState == domain.AccountPendingActivation {
+			credentialValid = true
+		} else {
+			credentialValid = VerifyPassword(record.PasswordHash, request.Password)
+		}
+	}
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		s.fail(w, err)
+		return
+	}
+	if err != nil || record.Disabled || !credentialValid {
 		s.limiter.failure(ipAddress, request.Username)
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "username or password is invalid")
 		return
 	}
-	if record.User.TOTPEnabled {
+	if record.User.AccountState == domain.AccountActive && record.User.TOTPEnabled {
 		totpCode := strings.TrimSpace(request.TOTPCode)
 		recoveryCode := normalizeRecoveryCode(request.RecoveryCode)
 		if totpCode == "" && recoveryCode == "" {
@@ -177,17 +189,38 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	csrfToken := deriveCSRFToken(s.config.MasterKey, sessionToken)
-	expires := time.Now().UTC().Add(s.config.SessionTTL)
-	if _, err := s.store.CreateSession(r.Context(), record.User.ID, tokenHash(sessionToken), tokenHash(csrfToken), remoteIP(r), r.UserAgent(), expires); err != nil {
+	sessionTTL := s.config.SessionTTL
+	if record.User.AccountState == domain.AccountPendingActivation {
+		if sessionTTL <= 0 || sessionTTL > activationSessionTTL {
+			sessionTTL = activationSessionTTL
+		}
+	}
+	expires := time.Now().UTC().Add(sessionTTL)
+	if record.User.AccountState == domain.AccountPendingActivation {
+		valid, activationErr := s.store.BeginUserActivation(r.Context(), BeginUserActivationInput{
+			UserID: record.User.ID, OneTimePassword: request.Password, SessionTokenHash: tokenHash(sessionToken),
+			CSRFTokenHash: tokenHash(csrfToken), RemoteIP: remoteIP(r), UserAgent: r.UserAgent(), SessionExpiresAt: expires,
+		})
+		if activationErr != nil {
+			s.fail(w, activationErr)
+			return
+		}
+		if !valid {
+			s.limiter.failure(ipAddress, request.Username)
+			writeError(w, http.StatusUnauthorized, "invalid_credentials", "username or password is invalid")
+			return
+		}
+	} else if _, err := s.store.CreateSession(r.Context(), record.User.ID, tokenHash(sessionToken), tokenHash(csrfToken), remoteIP(r), r.UserAgent(), expires); err != nil {
 		s.fail(w, err)
 		return
 	}
 	s.limiter.success(ipAddress, request.Username)
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: sessionToken, Path: "/", HttpOnly: true,
-		Secure: s.config.CookieSecure, SameSite: http.SameSiteStrictMode, Expires: expires, MaxAge: int(s.config.SessionTTL.Seconds())})
+		Secure: s.config.CookieSecure, SameSite: http.SameSiteStrictMode, Expires: expires, MaxAge: int(sessionTTL.Seconds())})
 	_ = s.store.WriteAudit(r.Context(), domain.AuditEvent{ActorID: record.User.ID, ActorName: record.User.Username,
 		Action: "auth.login", ResourceType: "session", RemoteIP: remoteIP(r)})
-	writeJSON(w, http.StatusOK, map[string]any{"user": record.User, "csrf_token": csrfToken})
+	writeJSON(w, http.StatusOK, map[string]any{"user": record.User, "csrf_token": csrfToken,
+		"password_change_required": record.User.AccountState == domain.AccountPendingActivation})
 }
 
 func validateLoginRequest(request loginRequest) error {
@@ -233,7 +266,59 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 	cookie, _ := r.Cookie(sessionCookieName)
 	csrf := deriveCSRFToken(s.config.MasterKey, cookie.Value)
-	writeJSON(w, http.StatusOK, map[string]any{"user": principal.User, "csrf_token": csrf})
+	writeJSON(w, http.StatusOK, map[string]any{"user": principal.User, "csrf_token": csrf,
+		"password_change_required": principal.User.AccountState == domain.AccountPendingActivation})
+}
+
+func (s *Server) handleCompleteActivation(w http.ResponseWriter, r *http.Request) {
+	principal := principalFromContext(r.Context())
+	if principal.IsAPIToken() || principal.SessionKind != activationSessionKind || principal.User.AccountState != domain.AccountPendingActivation {
+		writeError(w, http.StatusConflict, "activation_not_pending", "this account does not have a pending activation")
+		return
+	}
+	var request struct {
+		NewPassword string `json:"new_password"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	passwordHash, err := HashPassword(request.NewPassword)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_password", err.Error())
+		return
+	}
+	sessionToken, err := randomToken(32)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	csrfToken := deriveCSRFToken(s.config.MasterKey, sessionToken)
+	expires := time.Now().UTC().Add(s.config.SessionTTL)
+	err = s.store.CompleteUserActivation(r.Context(), CompleteUserActivationInput{
+		UserID: principal.User.ID, ActivationSession: principal.SessionID, PasswordHash: passwordHash,
+		SessionTokenHash: tokenHash(sessionToken), CSRFTokenHash: tokenHash(csrfToken), RemoteIP: remoteIP(r),
+		UserAgent: r.UserAgent(), SessionExpiresAt: expires,
+	})
+	if err != nil {
+		if errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrActivationRequired) {
+			writeError(w, http.StatusUnauthorized, "activation_expired", "the activation session or one-time password has expired")
+			return
+		}
+		s.fail(w, err)
+		return
+	}
+	user := principal.User
+	user.AccountState = domain.AccountActive
+	// LastLoginAt is refreshed by the activation transaction. Avoid a second
+	// database dependency after the old session has already been consumed.
+	now := time.Now().UTC()
+	user.LastLoginAt = &now
+	s.events.InvalidateAuthorization()
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: sessionToken, Path: "/", HttpOnly: true,
+		Secure: s.config.CookieSecure, SameSite: http.SameSiteStrictMode, Expires: expires, MaxAge: int(s.config.SessionTTL.Seconds())})
+	_ = s.store.WriteAudit(r.Context(), domain.AuditEvent{ActorID: user.ID, ActorName: user.Username,
+		Action: "user.activated", ResourceType: "user", ResourceID: user.ID, RemoteIP: remoteIP(r)})
+	writeJSON(w, http.StatusOK, map[string]any{"user": user, "csrf_token": csrfToken, "password_change_required": false})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

@@ -63,6 +63,7 @@ export interface User {
   last_login_at?: string;
   disabled?: boolean;
   bootstrap_owner?: boolean;
+  account_state: "pending_activation" | "active";
   role_bindings?: RoleBinding[];
 }
 

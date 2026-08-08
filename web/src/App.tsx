@@ -15,6 +15,7 @@ const InstancesPage = lazyNamed(() => import("./pages/InstancesPage"), "Instance
 const JobsPage = lazyNamed(() => import("./pages/JobsPage"), "JobsPage");
 const MapsPage = lazyNamed(() => import("./pages/MapsPage"), "MapsPage");
 const LoginPage = lazyNamed(() => import("./pages/LoginPage"), "LoginPage");
+const ActivationPage = lazyNamed(() => import("./pages/ActivationPage"), "ActivationPage");
 const NodesPage = lazyNamed(() => import("./pages/NodesPage"), "NodesPage");
 const RuntimeEnvironmentsPage = lazyNamed(() => import("./pages/RuntimeEnvironmentsPage"), "RuntimeEnvironmentsPage");
 const NotificationsPage = lazyNamed(() => import("./pages/NotificationsPage"), "NotificationsPage");
@@ -28,6 +29,7 @@ function ProtectedLayout() {
   if (auth.loading) return <div className="app-loading"><div className="brand-mark">L4</div><LoadingBlock label="正在建立安全会话…" /></div>;
   if (auth.bootstrapRequired) return <Navigate to="/setup" replace />;
   if (!auth.authenticated) return <Navigate to="/login" replace state={{ from: location }} />;
+  if (auth.activationRequired) return <Navigate to="/activate" replace />;
   return <RealtimeProvider><AppShell><Outlet /></AppShell></RealtimeProvider>;
 }
 
@@ -41,6 +43,7 @@ export function App() {
       <Routes>
         <Route path="/setup" element={<SetupPage />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/activate" element={<ActivationPage />} />
         <Route path="/status" element={<PublicStatusPage />} />
         <Route element={<ProtectedLayout />}>
           <Route index element={<DashboardPage />} />

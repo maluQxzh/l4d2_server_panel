@@ -22,7 +22,7 @@ func requireRootSecurityActor(ctx context.Context, tx *sql.Tx, actorID string) e
 	var allowed bool
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS(
 		SELECT 1 FROM users u JOIN role_bindings rb ON rb.user_id=u.id
-		WHERE u.id=?1 AND NOT u.disabled AND rb.scope_type='global' AND rb.role='owner'
+		WHERE u.id=?1 AND NOT u.disabled AND u.account_state='active' AND rb.scope_type='global' AND rb.role='owner'
 	)`, actorID).Scan(&allowed)
 	if err != nil {
 		return err
@@ -292,58 +292,65 @@ func equalStringSets(left, right []string) bool {
 }
 
 type CreateTeamUserInput struct {
-	Username     string
-	DisplayName  string
-	PasswordHash string
-	Bindings     []domain.RoleBinding
+	Username    string
+	DisplayName string
+	Bindings    []domain.RoleBinding
 }
 
-func (s *Store) CreateTeamUser(ctx context.Context, actorID string, input CreateTeamUserInput) (domain.User, error) {
+func (s *Store) CreateTeamUser(ctx context.Context, actorID string, input CreateTeamUserInput) (domain.User, UserActivationCredential, error) {
 	bindings, err := normalizeRoleBindings(input.Bindings)
 	if err != nil {
-		return domain.User{}, err
+		return domain.User{}, UserActivationCredential{}, err
 	}
 	input.Username = strings.TrimSpace(input.Username)
 	input.DisplayName = strings.TrimSpace(input.DisplayName)
 	if input.Username == "" || len(input.Username) > 128 {
-		return domain.User{}, errors.New("username must be between 1 and 128 bytes")
+		return domain.User{}, UserActivationCredential{}, errors.New("username must be between 1 and 128 bytes")
 	}
 	if input.DisplayName == "" {
 		input.DisplayName = input.Username
 	}
 	if len(input.DisplayName) > 128 {
-		return domain.User{}, errors.New("display_name must not exceed 128 bytes")
+		return domain.User{}, UserActivationCredential{}, errors.New("display_name must not exceed 128 bytes")
+	}
+	credential, err := newUserActivationCredential()
+	if err != nil {
+		return domain.User{}, UserActivationCredential{}, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.User{}, err
+		return domain.User{}, UserActivationCredential{}, err
 	}
 	defer tx.Rollback()
 	if err := requireRootSecurityActor(ctx, tx, actorID); err != nil {
-		return domain.User{}, err
+		return domain.User{}, UserActivationCredential{}, err
 	}
 	if err := validateBindingResources(ctx, tx, bindings); err != nil {
-		return domain.User{}, err
+		return domain.User{}, UserActivationCredential{}, err
 	}
 	user := domain.User{ID: uuid.NewString(), Username: input.Username, DisplayName: input.DisplayName,
-		Role: highestBindingRole(bindings), RoleBindings: bindings, CreatedAt: time.Now().UTC()}
-	_, err = tx.ExecContext(ctx, `INSERT INTO users(id,username,username_normalized,display_name,password_hash,role,created_at)
-		VALUES(?1,?2,?3,?4,?5,?6,?7)`, user.ID, user.Username, normalizeUsername(user.Username), user.DisplayName,
-		input.PasswordHash, user.Role, user.CreatedAt)
+		Role: highestBindingRole(bindings), AccountState: domain.AccountPendingActivation, RoleBindings: bindings, CreatedAt: time.Now().UTC()}
+	_, err = tx.ExecContext(ctx, `INSERT INTO users(id,username,username_normalized,display_name,password_hash,role,account_state,created_at)
+		VALUES(?1,?2,?3,?4,?5,?6,?7,?8)`, user.ID, user.Username, normalizeUsername(user.Username), user.DisplayName,
+		pendingActivationPasswordHash, user.Role, user.AccountState, user.CreatedAt)
 	if err != nil {
 		if isSQLiteConstraint(err) {
-			return domain.User{}, fmt.Errorf("username already exists: %w", ErrConflict)
+			return domain.User{}, UserActivationCredential{}, fmt.Errorf("username already exists: %w", ErrConflict)
 		}
-		return domain.User{}, err
+		return domain.User{}, UserActivationCredential{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO user_activation_tokens(user_id,token_hash,created_by,expires_at,created_at)
+		VALUES(?1,?2,?3,?4,?5)`, user.ID, tokenHash(credential.OneTimePassword), actorID, credential.ExpiresAt, user.CreatedAt); err != nil {
+		return domain.User{}, UserActivationCredential{}, err
 	}
 	if err := insertRoleBindings(ctx, tx, user.ID, actorID, bindings); err != nil {
-		return domain.User{}, err
+		return domain.User{}, UserActivationCredential{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return domain.User{}, err
+		return domain.User{}, UserActivationCredential{}, err
 	}
 	stored, err := s.TeamUser(ctx, user.ID)
-	return stored, err
+	return stored, credential, err
 }
 
 type UpdateTeamUserInput struct {
@@ -364,13 +371,17 @@ func (s *Store) UpdateTeamUser(ctx context.Context, actorID, userID string, inpu
 	}
 	var bootstrap, disabled bool
 	var currentRole domain.Role
-	err = tx.QueryRowContext(ctx, `SELECT is_bootstrap_owner,disabled,role FROM users WHERE id=?1`, userID).
-		Scan(&bootstrap, &disabled, &currentRole)
+	var accountState domain.AccountState
+	err = tx.QueryRowContext(ctx, `SELECT is_bootstrap_owner,disabled,role,account_state FROM users WHERE id=?1`, userID).
+		Scan(&bootstrap, &disabled, &currentRole, &accountState)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.User{}, ErrNotFound
 	}
 	if err != nil {
 		return domain.User{}, err
+	}
+	if input.PasswordHash != nil && accountState == domain.AccountPendingActivation {
+		return domain.User{}, ErrActivationRequired
 	}
 	bindingsChanged := input.Bindings != nil
 	var bindings []domain.RoleBinding
@@ -400,7 +411,7 @@ func (s *Store) UpdateTeamUser(ctx context.Context, actorID, userID string, inpu
 	if (currentRole == domain.RoleOwner && (newRole != domain.RoleOwner || newDisabled)) || (input.Bindings != nil && !containsGlobalOwner(bindings)) {
 		var otherOwners int
 		if err := tx.QueryRowContext(ctx, `SELECT count(DISTINCT u.id) FROM users u JOIN role_bindings rb ON rb.user_id=u.id
-			WHERE u.id<>?1 AND NOT u.disabled AND rb.scope_type='global' AND rb.role='owner'`, userID).Scan(&otherOwners); err != nil {
+			WHERE u.id<>?1 AND NOT u.disabled AND u.account_state='active' AND rb.scope_type='global' AND rb.role='owner'`, userID).Scan(&otherOwners); err != nil {
 			return domain.User{}, err
 		}
 		if otherOwners == 0 && currentRole == domain.RoleOwner {
@@ -462,9 +473,9 @@ func containsGlobalOwner(bindings []domain.RoleBinding) bool {
 
 func (s *Store) TeamUser(ctx context.Context, userID string) (domain.User, error) {
 	var user domain.User
-	err := s.db.QueryRowContext(ctx, `SELECT id,username,display_name,role,totp_enabled,created_at,last_login_at,disabled,is_bootstrap_owner
+	err := s.db.QueryRowContext(ctx, `SELECT id,username,display_name,role,totp_enabled,created_at,last_login_at,disabled,is_bootstrap_owner,account_state
 		FROM users WHERE id=?1`, userID).Scan(&user.ID, &user.Username, &user.DisplayName, &user.Role, &user.TOTPEnabled,
-		&user.CreatedAt, &user.LastLoginAt, &user.Disabled, &user.BootstrapOwner)
+		&user.CreatedAt, &user.LastLoginAt, &user.Disabled, &user.BootstrapOwner, &user.AccountState)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.User{}, ErrNotFound
 	}
@@ -476,7 +487,7 @@ func (s *Store) TeamUser(ctx context.Context, userID string) (domain.User, error
 }
 
 func (s *Store) ListTeamUsers(ctx context.Context) ([]domain.User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,username,display_name,role,totp_enabled,created_at,last_login_at,disabled,is_bootstrap_owner
+	rows, err := s.db.QueryContext(ctx, `SELECT id,username,display_name,role,totp_enabled,created_at,last_login_at,disabled,is_bootstrap_owner,account_state
 		FROM users ORDER BY created_at,id`)
 	if err != nil {
 		return nil, err
@@ -486,7 +497,7 @@ func (s *Store) ListTeamUsers(ctx context.Context) ([]domain.User, error) {
 	for rows.Next() {
 		var item domain.User
 		if err := rows.Scan(&item.ID, &item.Username, &item.DisplayName, &item.Role, &item.TOTPEnabled,
-			&item.CreatedAt, &item.LastLoginAt, &item.Disabled, &item.BootstrapOwner); err != nil {
+			&item.CreatedAt, &item.LastLoginAt, &item.Disabled, &item.BootstrapOwner, &item.AccountState); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

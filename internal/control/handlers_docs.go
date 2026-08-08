@@ -14,6 +14,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
 		"paths": map[string]any{
 			"/api/v1/auth/bootstrap":            map[string]any{"get": map[string]any{"summary": "Check first-run setup status"}, "post": map[string]any{"summary": "Create the first owner"}},
 			"/api/v1/auth/login":                map[string]any{"post": map[string]any{"summary": "Create a browser session"}},
+			"/api/v1/auth/activate":             map[string]any{"post": map[string]any{"summary": "Complete first-login account activation"}},
 			"/api/v1/system/updates":            map[string]any{"get": map[string]any{"summary": "List center updates"}, "post": map[string]any{"summary": "Upload and start a center update"}},
 			"/api/v1/system/updates/{jobID}":    map[string]any{"get": map[string]any{"summary": "Get a center update"}},
 			"/api/v1/nodes":                     map[string]any{"get": map[string]any{"summary": "List nodes"}},
@@ -30,6 +31,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
 			"/api/v1/users":                                                       map[string]any{"get": map[string]any{"summary": "List administrator team"}, "post": map[string]any{"summary": "Create a team member"}},
 			"/api/v1/users/{userID}":                                              map[string]any{"patch": map[string]any{"summary": "Update, disable, or replace role bindings"}},
 			"/api/v1/users/{userID}/role-bindings":                                map[string]any{"get": map[string]any{"summary": "List role bindings"}},
+			"/api/v1/users/{userID}/activation":                                   map[string]any{"post": map[string]any{"summary": "Reissue a pending user's one-time password"}},
 			"/api/v1/notification-channels":                                       map[string]any{"get": map[string]any{"summary": "List notification channels"}, "post": map[string]any{"summary": "Create a notification channel"}},
 			"/api/v1/notification-deliveries":                                     map[string]any{"get": map[string]any{"summary": "List notification deliveries"}},
 			"/api/v1/instances/{instanceID}/logs/search":                          map[string]any{"post": map[string]any{"summary": "Queue a bounded instance log search"}},

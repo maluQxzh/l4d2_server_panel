@@ -39,6 +39,18 @@ const baseURL = (import.meta.env.VITE_API_BASE || "/api/v1").replace(/\/$/, "");
 let csrfToken = "";
 let bootstrapCsrfToken = "";
 
+export interface AuthSession {
+  user: User;
+  csrf_token?: string;
+  password_change_required?: boolean;
+}
+
+export interface UserActivationResult {
+  user?: User;
+  one_time_password: string;
+  expires_at: string;
+}
+
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -162,7 +174,7 @@ export const api = {
     return result;
   },
   login: async (credentials: { username: string; password: string; totp_code?: string; recovery_code?: string }) => {
-    const result = await request<{ user: User; csrf_token: string }>("/auth/login", {
+    const result = await request<AuthSession>("/auth/login", {
       method: "POST",
       body: JSON.stringify(credentials),
     });
@@ -170,11 +182,16 @@ export const api = {
     return result;
   },
   me: async () => {
-    const result = await request<{ user: User; csrf_token?: string }>("/auth/me");
+    const result = await request<AuthSession>("/auth/me");
     setCsrfToken(result.csrf_token);
     return result;
   },
   logout: () => request<void>("/auth/logout", { method: "POST" }).finally(() => setCsrfToken()),
+  completeActivation: async (newPassword: string) => {
+    const result = await request<AuthSession>("/auth/activate", { method: "POST", body: JSON.stringify({ new_password: newPassword }) });
+    setCsrfToken(result.csrf_token);
+    return result;
+  },
   setupTotp: () => request<{ secret: string; otpauth_url: string }>("/auth/totp/setup", { method: "POST" }),
   confirmTotp: (code: string) => request<{ enabled: boolean; recovery_codes: string[] }>("/auth/totp/confirm", {
     method: "POST",
@@ -408,8 +425,9 @@ export const api = {
   notifications: () => list<NotificationRecord>("/notifications"),
   markNotificationRead: (id: string) => request<void>(`/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
   users: () => list<User>("/users"),
-  createUser: (payload: { username: string; display_name?: string; password: string; role_bindings: Array<Pick<RoleBinding, "role" | "permissions" | "scope_type" | "node_id" | "instance_id">> }) =>
-    request<{ user: User }>("/users", { method: "POST", body: JSON.stringify(payload) }),
+  createUser: (payload: { username: string; display_name?: string; role_bindings: Array<Pick<RoleBinding, "role" | "permissions" | "scope_type" | "node_id" | "instance_id">> }) =>
+    request<UserActivationResult>("/users", { method: "POST", body: JSON.stringify(payload) }),
+  reissueUserActivation: (id: string) => request<UserActivationResult>(`/users/${encodeURIComponent(id)}/activation`, { method: "POST" }),
   updateUser: (id: string, payload: { display_name?: string; password?: string; disabled?: boolean; role_bindings?: Array<{ role: Role; permissions?: RoleBinding["permissions"]; scope_type: "global" | "node" | "instance"; node_id?: string; instance_id?: string }> }) =>
     request<{ user: User }>(`/users/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) }),
   userRoleBindings: (id: string) => list<RoleBinding>(`/users/${encodeURIComponent(id)}/role-bindings`),

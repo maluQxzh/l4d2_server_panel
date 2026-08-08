@@ -151,8 +151,8 @@ h1, h2, h3, p { margin-top: 0; }
 .status__dot { width: 6px; height: 6px; border-radius: 50%; background: #6a756f; }
 .status--online, .status--running, .status--succeeded, .status--owner, .status--healthy { color: var(--green); }
 .status--online .status__dot, .status--running .status__dot, .status--succeeded .status__dot, .status--healthy .status__dot, .health-dot--online { background: var(--green); }
-.status--pending, .status--installing, .status--starting, .status--stopping, .status--updating, .status--queued, .status--dispatched, .status--running:not(.instance-hero *) { color: var(--orange); }
-.status--pending .status__dot, .status--installing .status__dot, .status--starting .status__dot, .status--stopping .status__dot, .status--updating .status__dot, .status--queued .status__dot, .status--dispatched .status__dot { background: var(--orange); }
+.status--pending, .status--pending_activation, .status--installing, .status--starting, .status--stopping, .status--updating, .status--queued, .status--dispatched, .status--running:not(.instance-hero *) { color: var(--orange); }
+.status--pending .status__dot, .status--pending_activation .status__dot, .status--installing .status__dot, .status--starting .status__dot, .status--stopping .status__dot, .status--updating .status__dot, .status--queued .status__dot, .status--dispatched .status__dot { background: var(--orange); }
 .status--offline, .status--stopped, .status--canceled, .status--viewer, .status--disabled { color: #88938e; }
 .status--degraded, .status--failed, .status--revoked, .status--broken { color: var(--red); }
 .status--degraded .status__dot, .status--failed .status__dot, .status--revoked .status__dot, .status--broken .status__dot, .health-dot--offline { background: var(--red); }
@@ -741,6 +741,10 @@ h1, h2, h3, p { margin-top: 0; }
 .user-row strong { font-size: 10px; }
 .user-row span, .user-row time { color: var(--text-faint); font-size: 8px; }
 .user-row > span { display: flex; align-items: center; gap: 4px; }
+.activation-credential { display: grid; gap: 12px; }
+.activation-credential > div { display: grid; gap: 6px; }
+.activation-credential span, .activation-credential small { color: var(--text-faint); font-size: 9px; line-height: 1.6; }
+.activation-credential code { padding: 12px; overflow-wrap: anywhere; color: var(--green); background: rgba(0,0,0,.28); border: 1px solid var(--line); border-radius: 7px; font-size: 11px; user-select: all; }
 .settings-list { padding: 6px 14px 13px; }
 .settings-list button { width: 100%; min-height: 57px; padding: 0; display: flex; align-items: center; justify-content: space-between; color: var(--text); background: transparent; border: 0; border-bottom: 1px solid var(--line-soft); cursor: pointer; text-align: left; }
 .settings-list button:last-child { border: 0; }
@@ -869,6 +873,8 @@ h1, h2, h3, p { margin-top: 0; }
 .login-help { margin: 17px 0 0; color: var(--text-faint); font-size: 9px; text-align: center; }
 .second-factor .field { margin-bottom: 6px; }
 .factor-switch { margin: 0 0 12px; padding: 0; color: var(--green); background: transparent; border: 0; font-size: 9px; cursor: pointer; }
+.activation-logout { width: 100%; margin-top: 14px; padding: 5px; color: var(--text-faint); background: transparent; border: 0; font-size: 9px; cursor: pointer; }
+.activation-logout:hover { color: var(--text); }
 
 .status-page { min-height: 100vh; padding: 0 clamp(20px, 6vw, 90px); background: radial-gradient(circle at 50% -20%, rgba(167,218,60,.1), transparent 36%), var(--bg); }
 .status-header { height: 74px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line-soft); }

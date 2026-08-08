@@ -50,6 +50,7 @@ export const statusLabels: Record<string, string> = {
   online: "在线",
   offline: "离线",
   pending: "待接入",
+  pending_activation: "待激活",
   revoked: "已吊销",
   running: "运行中",
   stopped: "已停止",
