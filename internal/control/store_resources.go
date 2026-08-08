@@ -52,13 +52,17 @@ func (s *Store) CreateEnrollmentToken(ctx context.Context, label, createdBy stri
 	if ttl < time.Minute || ttl > 7*24*time.Hour {
 		return "", time.Time{}, errors.New("enrollment token TTL must be between one minute and seven days")
 	}
+	label = strings.TrimSpace(label)
+	if len(label) > 128 {
+		return "", time.Time{}, errors.New("node name must be at most 128 characters")
+	}
 	raw, err := randomToken(32)
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	expires := time.Now().UTC().Add(ttl)
 	_, err = s.db.ExecContext(ctx, `INSERT INTO enrollment_tokens(id,token_hash,label,created_by,expires_at)
-		VALUES(?1,?2,?3,?4,?5)`, uuid.NewString(), tokenHash(raw), strings.TrimSpace(label), nullableUUID(createdBy), expires)
+		VALUES(?1,?2,?3,?4,?5)`, uuid.NewString(), tokenHash(raw), label, nullableUUID(createdBy), expires)
 	return raw, expires, err
 }
 
@@ -72,28 +76,35 @@ type EnrollRequest struct {
 }
 
 func (s *Store) ConsumeEnrollmentToken(ctx context.Context, req EnrollRequest, remoteAddress string) (domain.Node, string, error) {
-	if strings.TrimSpace(req.Token) == "" || strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.InstanceRoot) == "" {
-		return domain.Node{}, "", errors.New("token, name, and instance_root are required")
+	if strings.TrimSpace(req.Token) == "" || strings.TrimSpace(req.InstanceRoot) == "" {
+		return domain.Node{}, "", errors.New("token and instance_root are required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.Node{}, "", err
 	}
 	defer tx.Rollback()
-	var tokenID string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM enrollment_tokens WHERE token_hash=?1 AND consumed_at IS NULL AND expires_at>?2`, tokenHash(req.Token), time.Now().UTC()).Scan(&tokenID)
+	var tokenID, tokenLabel string
+	err = tx.QueryRowContext(ctx, `SELECT id,label FROM enrollment_tokens WHERE token_hash=?1 AND consumed_at IS NULL AND expires_at>?2`, tokenHash(req.Token), time.Now().UTC()).Scan(&tokenID, &tokenLabel)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Node{}, "", ErrUnauthorized
 	}
 	if err != nil {
 		return domain.Node{}, "", err
 	}
+	nodeName := strings.TrimSpace(tokenLabel)
+	if nodeName == "" {
+		nodeName = strings.TrimSpace(req.Name)
+	}
+	if nodeName == "" || len(nodeName) > 128 {
+		return domain.Node{}, "", errors.New("node name must be between 1 and 128 characters")
+	}
 	credential, err := randomToken(48)
 	if err != nil {
 		return domain.Node{}, "", err
 	}
 	node := domain.Node{
-		ID: uuid.NewString(), Name: strings.TrimSpace(req.Name), Status: domain.NodeOffline,
+		ID: uuid.NewString(), Name: nodeName, Status: domain.NodeOffline,
 		OS: strings.ToLower(strings.TrimSpace(req.OS)), Arch: strings.ToLower(strings.TrimSpace(req.Arch)),
 		AgentVersion: strings.TrimSpace(req.AgentVersion), Address: remoteAddress,
 		InstanceRoot: strings.TrimSpace(req.InstanceRoot), CreatedAt: time.Now().UTC(),
@@ -181,12 +192,48 @@ func (s *Store) UpdateNode(ctx context.Context, id, name string, publicAddress *
 	return s.GetNode(ctx, id)
 }
 
-func (s *Store) RevokeNode(ctx context.Context, id string) error {
-	tag, err := s.db.ExecContext(ctx, `UPDATE nodes SET status='revoked',agent_credential_hash=NULL WHERE id=?1`, id)
-	if err == nil && resultRowsAffected(tag) == 0 {
+func (s *Store) DeleteNode(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM nodes WHERE id=?1)`, id).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
 		return ErrNotFound
 	}
-	return err
+	// Notifications are intentionally not foreign-keyed because their resource
+	// can be a node, instance, job, or another domain object. Remove every
+	// notification whose direct resource or routing metadata belongs to this
+	// node before deleting the referenced rows. Audit and event history remain
+	// immutable/retained according to their existing policies.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM notifications
+		WHERE resource=?1
+			OR resource IN (SELECT id FROM instances WHERE node_id=?1)
+			OR resource IN (SELECT id FROM jobs WHERE node_id=?1)
+			OR json_extract(metadata,'$.node_id')=?1
+			OR json_extract(metadata,'$.instance_id') IN (SELECT id FROM instances WHERE node_id=?1)
+			OR json_extract(metadata,'$.job_id') IN (SELECT id FROM jobs WHERE node_id=?1)`, id); err != nil {
+		return err
+	}
+	// These tables deliberately RESTRICT deletion because their normal lifecycle
+	// is task-driven. Administrative node deletion is the one bounded path that
+	// removes the complete Control-plane projection in dependency order.
+	for _, statement := range []string{
+		`DELETE FROM quarantine_entries WHERE node_id=?1`,
+		`DELETE FROM maps WHERE node_id=?1`,
+		`DELETE FROM instances WHERE node_id=?1`,
+		`DELETE FROM jobs WHERE node_id=?1`,
+		`DELETE FROM nodes WHERE id=?1`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RotateNodeCredential(ctx context.Context, id string) (string, error) {

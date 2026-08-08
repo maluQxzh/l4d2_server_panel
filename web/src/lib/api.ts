@@ -249,7 +249,7 @@ export const api = {
     }
     throw new ApiError("节点安装扫描等待超时", 408, "discovery_timeout");
   },
-  revokeNode: (id: string) => request<void>(`/nodes/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  deleteNode: (id: string) => request<void>(`/nodes/${encodeURIComponent(id)}`, { method: "DELETE" }),
   quarantineEntries: (nodeId: string) => list<QuarantineEntry>(`/nodes/${encodeURIComponent(nodeId)}/quarantine`),
   createQuarantinePurgeConfirmation: (nodeId: string, entryId: string) => request<{ confirmation_token: string; expires_at: string }>(
     `/nodes/${encodeURIComponent(nodeId)}/quarantine/${encodeURIComponent(entryId)}/purge-confirmations`,

@@ -97,15 +97,24 @@ function NodeManageModal({ node, onClose }: { node: NodeRecord | null; onClose: 
     },
     onError: (error) => toast.push(error.message, "error"),
   });
-  const revoke = useMutation({
-    mutationFn: () => api.revokeNode(node!.id),
-    onSuccess: () => { toast.push("节点凭据已吊销"); void client.invalidateQueries({ queryKey: ["nodes"] }); close(); },
+  const remove = useMutation({
+    mutationFn: () => api.deleteNode(node!.id),
+    onSuccess: () => {
+      toast.push("节点及中心端关联数据已删除");
+      for (const key of [["nodes"], ["instances"], ["environments"], ["maps"], ["jobs"], ["notifications"]]) {
+        void client.invalidateQueries({ queryKey: key });
+      }
+      close();
+    },
     onError: (error) => toast.push(error.message, "error"),
   });
   const rotateCredential = () => {
     if (window.confirm("轮换会立即断开 Agent。确认已准备好更新 agent.json 并重启 Agent 吗？")) rotate.mutate();
   };
-  return <Modal open={Boolean(node)} onClose={close} title={node?.name || "节点管理"} description="管理节点地址和凭据；SteamCMD 与游戏路径请在运行环境中手动登记。" footer={<><Button variant="secondary" onClick={close}>关闭</Button><Button variant="danger" loading={revoke.isPending} disabled={!canDelete} title={!canDelete ? "当前账号没有吊销节点权限" : undefined} onClick={() => revoke.mutate()}><ShieldAlert size={16} />吊销节点凭据</Button></>}>
+  const deleteNode = () => {
+    if (window.confirm(`确认删除节点“${node?.name}”？中心端的实例、运行环境、地图、任务和相关记录会一并删除；Agent 主机上的文件不会被删除。`)) remove.mutate();
+  };
+  return <Modal open={Boolean(node)} onClose={close} title={node?.name || "节点管理"} description="管理节点地址和凭据；SteamCMD 与游戏路径请在运行环境中手动登记。" footer={<><Button variant="secondary" onClick={close}>关闭</Button><Button variant="danger" loading={remove.isPending} disabled={!canDelete} title={!canDelete ? "当前账号没有删除节点权限" : undefined} onClick={deleteNode}><Trash2 size={16} />删除节点</Button></>}>
     {node && <div className="manage-node form-stack">
       <div className="detail-pairs"><div><span>实例根目录</span><code>{node.instance_root || "未上报"}</code></div><div><span>Agent 版本</span><strong>{node.agent_version || "未知"}</strong></div><div><span>主机地址</span><strong>{node.address || "未上报"}</strong></div><div><span>公开连接地址</span><strong>{publicAddress || "未设置"}</strong></div><div><span>运行架构</span><strong>{node.os} / {node.arch}</strong></div></div>
       <section className="node-public-address">
@@ -120,6 +129,7 @@ function NodeManageModal({ node, onClose }: { node: NodeRecord | null; onClose: 
         <div className="danger-note"><ShieldAlert size={20} /><div><strong>节点凭据属于高风险设置</strong><span>轮换会立即断开 Agent。新凭据只在这里返回一次，必须写入该节点的 agent.json 后重启 Agent。</span></div></div>
         {newCredential ? <div className="credential-result"><strong>新节点凭据</strong><code>{newCredential}</code><span>请现在更新 agent.json 的 credential 字段并重启 Agent；关闭窗口后无法再次查看。</span></div> : <Button variant="danger" loading={rotate.isPending} disabled={!canRotate} onClick={rotateCredential}><RotateCw size={15} />轮换节点凭据</Button>}
       </section>
+      <div className="danger-note"><Trash2 size={20} /><div><strong>删除会清理中心端关联数据</strong><span>请先停止该节点上的游戏进程。删除不会移除 Agent 主机上的游戏文件，重新接入需要新注册令牌。</span></div></div>
     </div>}
   </Modal>;
 }

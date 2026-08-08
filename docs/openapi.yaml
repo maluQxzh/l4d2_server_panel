@@ -337,7 +337,7 @@ paths:
     post:
       tags: [Nodes]
       summary: 创建一次性节点注册令牌
-      description: 需要全局 manage；明文令牌只返回一次。
+      description: 需要全局 manage；明文令牌只返回一次。填写的 label 会成为节点注册后的显示名称。
       parameters: [{ $ref: "#/components/parameters/CSRF" }]
       requestBody:
         required: true
@@ -346,7 +346,7 @@ paths:
             schema:
               type: object
               properties:
-                label: { type: string }
+                label: { type: string, minLength: 1, maxLength: 128, description: 节点注册后的显示名称 }
                 name:
                   {
                     type: string,
@@ -414,10 +414,11 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
     delete:
       tags: [Nodes]
-      summary: 吊销节点并断开 Agent
+      summary: 删除节点并断开 Agent
+      description: 删除节点及中心端保存的实例、运行环境、游戏安装、地图、任务、指标、通知和资源权限绑定；审计与事件历史按既有保留策略保留，不删除 Agent 主机上的文件或进程。
       parameters: [{ $ref: "#/components/parameters/CSRF" }]
       responses:
-        "204": { description: 节点状态已设为 revoked，实例和历史数据未删除 }
+        "204": { description: 节点及中心端关联资源已删除，Agent 已断开 }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /nodes/{nodeId}/credential/rotate:
@@ -2539,7 +2540,7 @@ components:
       required: [token, name, instance_root]
       properties:
         token: { type: string, writeOnly: true }
-        name: { type: string }
+        name: { type: string, description: Agent 报告的兼容回退名称；仅当注册令牌未保存显示名称时使用 }
         os: { type: string }
         arch: { type: string }
         agent_version: { type: string }

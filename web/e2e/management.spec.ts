@@ -118,6 +118,26 @@ test("轮换节点凭据后一次性显示明文和重启提示", async ({ page 
   await expect(page.getByText(/更新 agent\.json 的 credential 字段并重启 Agent/)).toBeVisible();
 });
 
+test("删除节点后清理卡片并说明主机文件不会删除", async ({ page }) => {
+  await authenticated(page);
+  let items = [node];
+  await page.route("**/api/v1/nodes", (route) => json(route, { items }));
+  await page.route("**/api/v1/nodes/node-1", async (route) => {
+    if (route.request().method() !== "DELETE") return route.fallback();
+    items = [];
+    return route.fulfill({ status: 204 });
+  });
+  page.on("dialog", (dialog) => dialog.accept());
+
+  await page.goto("/nodes");
+  await page.getByRole("button", { name: "管理 香港-01" }).click();
+  await expect(page.getByText(/不会移除 Agent 主机上的游戏文件/)).toBeVisible();
+  await page.getByRole("button", { name: "删除节点" }).click();
+
+  await expect(page.getByText("还没有节点")).toBeVisible();
+  await expect(page.getByText("节点及中心端关联数据已删除")).toBeVisible();
+});
+
 test("节点可维护公开状态页连接地址", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/nodes", (route) => json(route, { items: [node] }));

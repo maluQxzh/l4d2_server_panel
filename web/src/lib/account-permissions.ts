@@ -20,7 +20,7 @@ export const permissionCatalog: PermissionDefinition[] = [
   { id: "nodes.discover", label: "执行节点发现", group: "节点与运行环境", class: "manage", scope: "node" },
   { id: "nodes.quarantine.read", label: "查看隔离目录", group: "节点与运行环境", class: "manage", scope: "node" },
   { id: "nodes.quarantine.purge", label: "永久清理隔离目录", group: "节点与运行环境", class: "manage", scope: "node", description: "不可恢复的高风险操作" },
-  { id: "nodes.delete", label: "吊销节点", group: "节点与运行环境", class: "manage", scope: "node" },
+  { id: "nodes.delete", label: "删除节点", group: "节点与运行环境", class: "manage", scope: "node" },
   { id: "environments.read", label: "查看运行环境", group: "节点与运行环境", class: "read", scope: "node" },
   { id: "environments.manage", label: "管理 SteamCMD 与游戏安装", group: "节点与运行环境", class: "manage", scope: "node" },
 

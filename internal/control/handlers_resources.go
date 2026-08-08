@@ -122,13 +122,16 @@ func (s *Server) handlePatchNode(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "nodeID")
-	if err := s.store.RevokeNode(r.Context(), id); err != nil {
+	if err := s.store.DeleteNode(r.Context(), id); err != nil {
 		s.fail(w, err)
 		return
 	}
 	s.agents.Disconnect(id)
-	s.audit(r, "node.revoked", "node", id, nil)
-	_, _ = s.events.Publish(r.Context(), Event{Type: "node.revoked", ResourceType: "node", ResourceID: id, Data: map[string]any{"node_id": id}}, true)
+	// Node- and instance-scoped role bindings were removed by the cascade, so
+	// live browser streams must revalidate before another frame is delivered.
+	s.events.InvalidateAuthorization()
+	s.audit(r, "node.deleted", "node", id, nil)
+	_, _ = s.events.Publish(r.Context(), Event{Type: "node.deleted", ResourceType: "node", ResourceID: id, Data: map[string]any{"node_id": id}}, true)
 	w.WriteHeader(http.StatusNoContent)
 }
 
