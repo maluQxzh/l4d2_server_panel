@@ -12,7 +12,7 @@ const config: InstanceConfig = {
   auto_restart: true,
 };
 
-describe("实例 RCON 密码三态", () => {
+describe("实例配置更新载荷", () => {
   it("未编辑时不发送密码", () => {
     const payload = buildInstanceConfigUpdate(3, config, { kind: "unchanged" });
     expect(payload).not.toHaveProperty("rcon_password");
@@ -35,5 +35,12 @@ describe("实例 RCON 密码三态", () => {
     const payload = buildInstanceConfigUpdate(3, legacy, { kind: "unchanged" });
     expect(payload.config).not.toHaveProperty("server_password");
     expect(payload.config).not.toHaveProperty("region");
+  });
+
+  it("仅在游戏端口发生变化时附带新端口", () => {
+    const unchanged = buildInstanceConfigUpdate(3, config, { kind: "unchanged" });
+    const changed = buildInstanceConfigUpdate(3, config, { kind: "unchanged" }, 27016);
+    expect(unchanged).not.toHaveProperty("port");
+    expect(changed.port).toBe(27016);
   });
 });

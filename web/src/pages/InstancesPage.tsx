@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Box, Filter, Gamepad2, Map, MoreHorizontal, Network, Play, Plus, RefreshCw, Search, Server, Square, Users } from "lucide-react";
+import { Box, Filter, Gamepad2, Map, MoreHorizontal, Play, Plus, RefreshCw, Search, Server, Square, Users } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, StatusBadge } from "../components/ui";
@@ -38,7 +38,6 @@ function InstanceCard({ instance }: { instance: InstanceRecord }) {
   const { user } = useAuth();
   const toast = useToast();
   const client = useQueryClient();
-  const [portOpen, setPortOpen] = useState(false);
   const action = useMutation({
     mutationFn: ({ type, payload }: { type: string; payload?: Record<string, unknown> }) => api.instanceAction(instance.id, type, payload),
     onSuccess: (_result, { type }) => { toast.push(type === "start" ? "启动任务已提交" : type === "restart" ? "重启任务已提交" : "停止任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); void client.invalidateQueries({ queryKey: ["instances"] }); },
@@ -57,37 +56,15 @@ function InstanceCard({ instance }: { instance: InstanceRecord }) {
   const showRestart = ["stopped", "running", "degraded"].includes(instance.status) && hasInstancePermission(user, instance, "instances.restart");
   const canRestart = ["running", "degraded"].includes(instance.status);
   const isExternal = instance.status === "external" && hasInstancePermission(user, instance, "instances.restart");
-  const canConfigure = hasInstancePermission(user, instance, "instances.configure");
-  const canChangePort = instance.status === "stopped";
   const nodeUnavailable = instance.node_status !== "online";
   const nodeStatusLabel = instance.node_status === "offline" ? "节点离线" : instance.node_status === "revoked" ? "节点已吊销" : "节点待接入";
-  return <><Card className={`instance-card instance-card--${instance.status}`}>
+  return <Card className={`instance-card instance-card--${instance.status}`}>
     <div className="instance-card__cover"><div className="instance-card__pattern" aria-hidden /><span className="instance-number">#{instance.id.slice(0, 6).toUpperCase()}</span><div className="instance-card__statuses"><StatusBadge status={instance.status} pulse={instance.status === "running" && !nodeUnavailable} />{nodeUnavailable && <span className={`status status--${instance.node_status}`} title="无法确认节点上实例的实时状态"><span className="status__dot" aria-hidden />{nodeStatusLabel}</span>}</div></div>
     <div className="instance-card__body"><div className="instance-card__heading"><div className="server-glyph"><Gamepad2 /></div><div><Link to={`/instances/${instance.id}`}>{instance.name}</Link><span>{instance.host}:{instance.port}</span><span className="instance-card__node"><Server size={11} aria-hidden />所属节点：{instance.node_name || instance.node_id}</span></div><Link className="icon-button" aria-label={`管理 ${instance.name}`} to={`/instances/${instance.id}`}><MoreHorizontal size={19} /></Link></div>
       <div className="instance-card__facts"><div><Map size={16} /><span>地图</span><strong>{instance.map || instance.config?.start_map || "未载入"}</strong></div><div><Box size={16} /><span>模式</span><strong>{instance.mode || instance.config?.mode || "未知"}</strong></div><div><Users size={16} /><span>玩家</span><strong>{instance.players} / {instance.max_players}</strong></div></div>
-      <div className="instance-card__foot"><span>更新于 {relativeTime(instance.updated_at)}</span><div className="instance-card__foot-actions">{canConfigure && <Button variant="secondary" disabled={!canChangePort} title={!canChangePort ? "服务器停止后才能修改端口" : undefined} onClick={() => setPortOpen(true)}><Network size={14} />修改端口</Button>}{canStart && <Button loading={action.isPending} onClick={() => action.mutate({ type: "start" })}><Play size={15} fill="currentColor" />启动</Button>}{canStop && <Button variant="secondary" loading={action.isPending} onClick={() => action.mutate({ type: "stop" })}><Square size={14} fill="currentColor" />停止</Button>}{showRestart && <Button variant="secondary" loading={action.isPending || restartCheck.isPending} disabled={!canRestart} title={!canRestart ? "服务器启动后才能重启" : undefined} onClick={() => restartCheck.mutate()}><RefreshCw size={14} />重启</Button>}{isExternal && <Button loading={action.isPending} onClick={() => { if (window.confirm("受控接管会先停止当前外部 srcds 进程，再由 Agent 使用面板配置启动。确认继续吗？")) action.mutate({ type: "restart" }); }}><RefreshCw size={14} />受控接管</Button>}{!canStart && !canStop && !showRestart && !isExternal && <Link className="button button--secondary" to={`/instances/${instance.id}`}>查看进度</Link>}</div></div>
+      <div className="instance-card__foot"><span>更新于 {relativeTime(instance.updated_at)}</span><div className="instance-card__foot-actions">{canStart && <Button loading={action.isPending} onClick={() => action.mutate({ type: "start" })}><Play size={15} fill="currentColor" />启动</Button>}{canStop && <Button variant="secondary" loading={action.isPending} onClick={() => action.mutate({ type: "stop" })}><Square size={14} fill="currentColor" />停止</Button>}{showRestart && <Button variant="secondary" loading={action.isPending || restartCheck.isPending} disabled={!canRestart} title={!canRestart ? "服务器启动后才能重启" : undefined} onClick={() => restartCheck.mutate()}><RefreshCw size={14} />重启</Button>}{isExternal && <Button loading={action.isPending} onClick={() => { if (window.confirm("受控接管会先停止当前外部 srcds 进程，再由 Agent 使用面板配置启动。确认继续吗？")) action.mutate({ type: "restart" }); }}><RefreshCw size={14} />受控接管</Button>}{!canStart && !canStop && !showRestart && !isExternal && <Link className="button button--secondary" to={`/instances/${instance.id}`}>查看进度</Link>}</div></div>
     </div>
-  </Card>{portOpen && <ChangePortModal instance={instance} onClose={() => setPortOpen(false)} />}</>;
-}
-
-function ChangePortModal({ instance, onClose }: { instance: InstanceRecord; onClose: () => void }) {
-  const [port, setPort] = useState(instance.port);
-  const toast = useToast();
-  const client = useQueryClient();
-  const update = useMutation({
-    mutationFn: () => api.updateInstance(instance.id, { port, version: instance.version }),
-    onSuccess: () => {
-      toast.push("端口修改任务已提交");
-      void client.invalidateQueries({ queryKey: ["instances"] });
-      void client.invalidateQueries({ queryKey: ["jobs"] });
-      onClose();
-    },
-    onError: (error) => toast.push(error.message, "error"),
-  });
-  const submit = (event: FormEvent) => { event.preventDefault(); update.mutate(); };
-  return <Modal open onClose={onClose} title="修改游戏端口" description="只有已停止的实例可以修改；新端口会先在所属节点上预留，Agent 更新成功后再正式切换。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button type="submit" form={`change-port-${instance.id}`} loading={update.isPending} disabled={!Number.isInteger(port) || port < 1 || port > 65535 || port === instance.port}>提交修改</Button></>}>
-    <form id={`change-port-${instance.id}`} className="form-stack" onSubmit={submit}><Field label="游戏端口" hint={`当前端口：${instance.port}`}><input type="number" min={1} max={65535} step={1} value={port} onChange={(event) => setPort(Number(event.target.value))} required autoFocus /></Field></form>
-  </Modal>;
+  </Card>;
 }
 
 function CreateInstanceModal({ open, onClose }: { open: boolean; onClose: () => void }) {

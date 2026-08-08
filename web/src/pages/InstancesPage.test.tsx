@@ -62,30 +62,7 @@ describe("游戏实例卡片", () => {
     expect(screen.getByText("运行中", { selector: ".status" })).toBeInTheDocument();
     expect(screen.getByText("节点离线", { selector: ".status" })).toBeInTheDocument();
     expect(screen.getByText("所属节点：广州游戏节点 A")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "修改端口" })).toBeDisabled();
-  });
-
-  it("停止后可以从实例卡片提交新端口", async () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-    const stopped = { ...instance, status: "stopped" as const, node_status: "online" as const };
-    vi.spyOn(api, "instances").mockResolvedValue({ items: [stopped] });
-    const update = vi.spyOn(api, "updateInstance").mockResolvedValue({ instance: { ...stopped, port: 27016, version: 2 } });
-    render(
-      <QueryClientProvider client={client}>
-        <ToastProvider>
-          <RealtimeProvider enabled={false}>
-            <MemoryRouter>
-              <InstancesPage />
-            </MemoryRouter>
-          </RealtimeProvider>
-        </ToastProvider>
-      </QueryClientProvider>,
-    );
-
-    fireEvent.click(await screen.findByRole("button", { name: "修改端口" }));
-    fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "27016" } });
-    fireEvent.click(screen.getByRole("button", { name: "提交修改" }));
-    await waitFor(() => expect(update).toHaveBeenCalledWith(instance.id, { port: 27016, version: 1 }));
+    expect(screen.queryByRole("button", { name: "修改端口" })).not.toBeInTheDocument();
   });
 
   it("创建实例时不再要求单独填写服务器显示名称", async () => {

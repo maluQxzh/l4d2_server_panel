@@ -8,6 +8,7 @@ export type RCONPasswordChange =
 export interface InstanceConfigUpdate {
   version: number;
   config: InstanceConfig;
+  port?: number;
   rcon_password?: string;
 }
 
@@ -20,11 +21,13 @@ export function buildInstanceConfigUpdate(
   version: number,
   config: InstanceConfig,
   password: RCONPasswordChange,
+  port?: number,
 ): InstanceConfigUpdate {
   // Do not preserve legacy connection-password or region fields when a modern
   // client writes the current configuration.
   const { server_password: _legacyPassword, region: _legacyRegion, ...safeConfig } = config as InstanceConfig & { server_password?: string };
   const update: InstanceConfigUpdate = { version, config: safeConfig };
+  if (port !== undefined) update.port = port;
   if (password.kind === "set") update.rcon_password = password.value;
   if (password.kind === "clear") update.rcon_password = "";
   return update;

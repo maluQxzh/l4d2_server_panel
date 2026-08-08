@@ -327,6 +327,7 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
     cvars: { ...instance.config.cvars },
     extra_args: [...(instance.config.extra_args || [])],
   }));
+  const [port, setPort] = useState(instance.port);
   const [advanced, setAdvanced] = useState(false);
   const [extraArgs, setExtraArgs] = useState(
     (instance.config.extra_args || []).join(" "),
@@ -343,6 +344,10 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
   const client = useQueryClient();
   const publicAddress = instance.node_public_address?.trim() || "";
   const publicStatusBlocked = config.public_status && !publicAddress;
+  const portChanged = port !== instance.port;
+  const portEditable = instance.status === "stopped";
+  const portInvalid = !Number.isInteger(port) || port < 1 || port > 65535;
+  const portChangeBlocked = portChanged && !portEditable;
   const save = useMutation({
     mutationFn: () => {
       if (publicStatusBlocked)
@@ -351,6 +356,10 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
           400,
           "public_address_required",
         );
+      if (portInvalid)
+        throw new ApiError("游戏端口必须是 1–65535 的整数", 400, "invalid_config");
+      if (portChangeBlocked)
+        throw new ApiError("实例运行中不能修改游戏端口", 409, "conflict");
       return api.updateInstance(
         instance.id,
         buildInstanceConfigUpdate(
@@ -361,6 +370,7 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
             cvars: parseCVars(cvars),
           },
           passwordChange,
+          portChanged ? port : undefined,
         ),
       );
     },
@@ -398,6 +408,7 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
       extra_args: [...(instance.config.extra_args || [])],
     });
     setExtraArgs((instance.config.extra_args || []).join(" "));
+    setPort(instance.port);
     setCvars(
       Object.entries(instance.config.cvars || {})
         .map(([key, value]) => `${key} ${value}`)
@@ -431,44 +442,61 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
                 required
               />
             </Field>
-            <div className="secret-config-field">
-              <Field label="RCON 密码" hint={passwordHint}>
-                <input
-                  type="password"
-                  value={passwordValue}
-                  disabled={passwordChange.kind === "clear"}
-                  placeholder={
-                    passwordChange.kind === "unchanged"
-                      ? instance.rcon_configured ? "已保存（输入新密码可替换）" : "尚未设置"
-                      : ""
-                  }
-                  onChange={(event) =>
-                    setPasswordChange(
-                      event.target.value
-                        ? { kind: "set", value: event.target.value }
-                        : { kind: "unchanged" },
-                    )
-                  }
-                  autoComplete="new-password"
-                />
-              </Field>
-              <div className="secret-config-actions">
+            <Field
+              label="游戏端口"
+              hint={portEditable
+                ? "仅停止状态可修改；范围 1–65535，不能与 SourceTV 或同节点其他实例端口冲突。"
+                : "实例运行中不能修改游戏端口；停止实例后可编辑。"}
+            >
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                step={1}
+                value={port}
+                disabled={!portEditable}
+                onChange={(event) => setPort(Number(event.target.value))}
+                required
+              />
+            </Field>
+          </div>
+          <div className="secret-config-field">
+            <Field label="RCON 密码" hint={passwordHint}>
+              <input
+                type="password"
+                value={passwordValue}
+                disabled={passwordChange.kind === "clear"}
+                placeholder={
+                  passwordChange.kind === "unchanged"
+                    ? instance.rcon_configured ? "已保存（输入新密码可替换）" : "尚未设置"
+                    : ""
+                }
+                onChange={(event) =>
+                  setPasswordChange(
+                    event.target.value
+                      ? { kind: "set", value: event.target.value }
+                      : { kind: "unchanged" },
+                  )
+                }
+                autoComplete="new-password"
+              />
+            </Field>
+            <div className="secret-config-actions">
+              <button
+                type="button"
+                aria-pressed={passwordChange.kind === "clear"}
+                onClick={() => setPasswordChange({ kind: "clear" })}
+              >
+                清除 RCON 密码
+              </button>
+              {passwordChange.kind !== "unchanged" && (
                 <button
                   type="button"
-                  aria-pressed={passwordChange.kind === "clear"}
-                  onClick={() => setPasswordChange({ kind: "clear" })}
+                  onClick={() => setPasswordChange({ kind: "unchanged" })}
                 >
-                  清除 RCON 密码
+                  保持现有 RCON 密码
                 </button>
-                {passwordChange.kind !== "unchanged" && (
-                  <button
-                    type="button"
-                    onClick={() => setPasswordChange({ kind: "unchanged" })}
-                  >
-                    保持现有 RCON 密码
-                  </button>
-                )}
-              </div>
+              )}
             </div>
           </div>
           <div className="form-grid form-grid--three">
@@ -544,7 +572,7 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
               label="公开状态页"
               description={
                 publicAddress
-                  ? `玩家连接地址：${publicAddress}:${instance.port}`
+                  ? `玩家连接地址：${publicAddress}:${port}`
                   : "需要先为所属节点设置公开连接地址"
               }
             />
@@ -601,7 +629,7 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
             <Button
               type="submit"
               loading={save.isPending}
-              disabled={publicStatusBlocked}
+              disabled={publicStatusBlocked || portInvalid || portChangeBlocked}
             >
               <Save size={16} />
               保存配置
