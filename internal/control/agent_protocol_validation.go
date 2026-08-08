@@ -23,7 +23,7 @@ const (
 	maxAgentLogLineBytes         = 16 << 10
 	maxAgentProgressPayload      = 32 << 10
 	maxAgentTerminalJobPayload   = 12 << 20
-	maxAgentJobMessageBytes      = 2 << 10
+	maxAgentJobMessageBytes      = protocol.MaxJobUpdateMessageBytes
 	maxAgentMetricCPUPercent     = 10_000
 	maxAgentMetricPlayers        = 256
 	agentObservationPastWindow   = 15 * time.Minute

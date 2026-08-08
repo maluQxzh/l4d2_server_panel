@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
+	"github.com/l4d2-panel/l4d2panel/internal/protocol"
 )
 
 var ErrJobIDConflict = errors.New("job id was already used for different work")
@@ -51,10 +52,19 @@ func OpenJournal(dataDir string) (*Journal, error) {
 	}
 	changed := false
 	for id, entry := range j.entries {
+		entryChanged := false
 		if entry.Status == domain.JobRunning || entry.Status == domain.JobDispatched {
 			entry.Status = domain.JobFailed
 			entry.Message = "agent restarted while the operation was running"
 			entry.UpdatedAt = time.Now().UTC()
+			entryChanged = true
+		}
+		normalizedMessage := protocol.TruncateJobUpdateMessage(entry.Message)
+		if normalizedMessage != entry.Message {
+			entry.Message = normalizedMessage
+			entryChanged = true
+		}
+		if entryChanged {
 			j.entries[id] = entry
 			changed = true
 		}
@@ -121,6 +131,7 @@ func (j *Journal) Update(jobID string, status domain.JobStatus, progress int, me
 	if progress > 100 {
 		progress = 100
 	}
+	message = protocol.TruncateJobUpdateMessage(message)
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	entry, ok := j.entries[jobID]

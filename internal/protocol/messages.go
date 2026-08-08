@@ -2,7 +2,9 @@ package protocol
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
@@ -30,6 +32,26 @@ const (
 	TypeLog       = "log"
 	TypeInventory = "inventory"
 )
+
+const MaxJobUpdateMessageBytes = 2 << 10
+
+// TruncateJobUpdateMessage keeps Agent messages within the wire limit without
+// splitting a UTF-8 sequence. Invalid input is normalized before truncation so
+// JSON replacement characters cannot expand a nominally bounded message past
+// the limit during encoding.
+func TruncateJobUpdateMessage(value string) string {
+	if !utf8.ValidString(value) {
+		value = strings.ToValidUTF8(value, "\uFFFD")
+	}
+	if len(value) <= MaxJobUpdateMessageBytes {
+		return value
+	}
+	end := MaxJobUpdateMessageBytes
+	for end > 0 && !utf8.RuneStart(value[end]) {
+		end--
+	}
+	return value[:end]
+}
 
 type Envelope struct {
 	Version   string          `json:"version"`

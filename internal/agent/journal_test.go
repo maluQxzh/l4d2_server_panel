@@ -2,12 +2,17 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 	"github.com/l4d2-panel/l4d2panel/internal/protocol"
@@ -55,6 +60,66 @@ func TestJournalMarksInterruptedWorkFailed(t *testing.T) {
 	entry, ok := reopened.Get(job.ID)
 	if !ok || entry.Status != domain.JobFailed {
 		t.Fatalf("entry after restart = %#v, %t", entry, ok)
+	}
+}
+
+func TestJournalNormalizesLegacyOversizedMessageOnOpen(t *testing.T) {
+	dir := t.TempDir()
+	journalDir := filepath.Join(dir, "journal")
+	if err := os.MkdirAll(journalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacyMessage := strings.Repeat("x", protocol.MaxJobUpdateMessageBytes-1) + "界"
+	entries := map[string]JournalEntry{"legacy-job": {
+		JobID: "legacy-job", Status: domain.JobFailed, Progress: 5, Message: legacyMessage, UpdatedAt: time.Now().UTC(),
+	}}
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(journalDir, "jobs.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	journal, err := OpenJournal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := journal.Get("legacy-job")
+	if !ok {
+		t.Fatal("legacy journal entry disappeared")
+	}
+	if len(entry.Message) > protocol.MaxJobUpdateMessageBytes || !utf8.ValidString(entry.Message) {
+		t.Fatalf("normalized message is %d bytes, valid UTF-8=%t", len(entry.Message), utf8.ValidString(entry.Message))
+	}
+
+	reopened, err := OpenJournal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, ok := reopened.Get("legacy-job")
+	if !ok || persisted.Message != entry.Message {
+		t.Fatalf("normalized message was not persisted: %#v", persisted)
+	}
+}
+
+func TestJournalUpdateTruncatesMessageAtUTF8Boundary(t *testing.T) {
+	journal, err := OpenJournal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := domain.Job{ID: "bounded-message", Type: "test"}
+	if _, err := journal.Begin(job); err != nil {
+		t.Fatal(err)
+	}
+	message := strings.Repeat("x", protocol.MaxJobUpdateMessageBytes-1) + "界"
+	if err := journal.Update(job.ID, domain.JobFailed, 5, message, nil); err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := journal.Get(job.ID)
+	if !ok || len(entry.Message) > protocol.MaxJobUpdateMessageBytes || !utf8.ValidString(entry.Message) {
+		t.Fatalf("journal stored an invalid bounded message: %#v", entry)
 	}
 }
 

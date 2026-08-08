@@ -312,7 +312,7 @@ func (a *Agent) replayTerminalJournal(ctx context.Context, sender chan<- protoco
 				continue
 			}
 			envelope, err := protocol.NewEnvelope(protocol.TypeJobUpdate, a.config.NodeID, entry.JobID,
-				protocol.JobUpdate{Status: entry.Status, Progress: entry.Progress, Message: entry.Message, Result: entry.Result})
+				protocol.JobUpdate{Status: entry.Status, Progress: entry.Progress, Message: protocol.TruncateJobUpdateMessage(entry.Message), Result: entry.Result})
 			if err != nil {
 				a.logger.Printf("encode terminal journal replay for %s: %v", entry.JobID, err)
 				continue
@@ -540,6 +540,7 @@ func (a *Agent) cancelJob(jobID string) {
 }
 
 func (a *Agent) sendJobUpdate(jobID string, status domain.JobStatus, progress int, message string, result map[string]any) {
+	message = protocol.TruncateJobUpdateMessage(message)
 	if isFinalJobStatus(status) {
 		if entry, ok := a.journal.Get(jobID); ok && isFinalJobStatus(entry.Status) {
 			// Terminal outcomes are sent only by the reliable journal replay
@@ -644,9 +645,5 @@ func (p *journalProgress) Update(value int, message string) {
 func (p *journalProgress) Value() int { p.mu.Lock(); defer p.mu.Unlock(); return p.value }
 
 func sanitizeJobError(err error) string {
-	value := redactEmbeddedURLSecrets(err.Error())
-	if len(value) > 2048 {
-		value = value[:2048]
-	}
-	return value
+	return protocol.TruncateJobUpdateMessage(redactEmbeddedURLSecrets(err.Error()))
 }

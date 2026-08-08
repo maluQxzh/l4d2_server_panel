@@ -2,7 +2,9 @@ package protocol
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
@@ -34,6 +36,34 @@ func TestCompatibleVersionWindow(t *testing.T) {
 	for _, value := range []string{"", "0.8", "1.1", "2.0"} {
 		if CompatibleVersion(value) {
 			t.Fatalf("expected %q to be rejected", value)
+		}
+	}
+}
+
+func TestTruncateJobUpdateMessagePreservesWireLimitAndUTF8(t *testing.T) {
+	tests := []string{
+		strings.Repeat("x", MaxJobUpdateMessageBytes+1),
+		strings.Repeat("x", MaxJobUpdateMessageBytes-1) + "界",
+		strings.Repeat("x", MaxJobUpdateMessageBytes-1) + string([]byte{0xff}),
+	}
+	for _, input := range tests {
+		got := TruncateJobUpdateMessage(input)
+		if len(got) > MaxJobUpdateMessageBytes {
+			t.Fatalf("truncated message has %d bytes", len(got))
+		}
+		if !utf8.ValidString(got) {
+			t.Fatal("truncated message is not valid UTF-8")
+		}
+		raw, err := json.Marshal(JobUpdate{Message: got})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var update JobUpdate
+		if err := json.Unmarshal(raw, &update); err != nil {
+			t.Fatal(err)
+		}
+		if len(update.Message) > MaxJobUpdateMessageBytes {
+			t.Fatalf("JSON round trip expanded message to %d bytes", len(update.Message))
 		}
 	}
 }
