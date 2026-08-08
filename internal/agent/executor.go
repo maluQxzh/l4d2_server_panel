@@ -227,6 +227,8 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 		return e.installMod(ctx, job, progress)
 	case "toggle_package":
 		return e.togglePackage(ctx, job, progress)
+	case "delete_package":
+		return e.deletePackage(ctx, job, progress)
 	case "rollback_package":
 		return e.rollbackPackage(ctx, job, progress)
 	default:
@@ -286,6 +288,8 @@ func normalizeJobType(value string) string {
 		return "install_package"
 	case "package.toggle", "toggle.addon", "toggle.package":
 		return "toggle_package"
+	case "package.delete", "delete.addon", "delete.package":
+		return "delete_package"
 	case "package.rollback", "rollback.package":
 		return "rollback_package"
 	case "player.kick", "kick", "kick.player":
@@ -348,6 +352,7 @@ type operationPayload struct {
 	SourceID             string            `json:"source_id,omitempty"`
 	PackagePath          string            `json:"package_path,omitempty"`
 	SnapshotPath         string            `json:"snapshot_path,omitempty"`
+	SnapshotPaths        []string          `json:"snapshot_paths,omitempty"`
 	RestoreVersion       string            `json:"restore_version,omitempty"`
 	Enabled              bool              `json:"enabled,omitempty"`
 	RiskConfirmed        bool              `json:"risk_confirmed,omitempty"`
@@ -1456,6 +1461,12 @@ func (e *Executor) importQQFlashPackage(ctx context.Context, job domain.Job, pro
 	if err != nil {
 		return nil, err
 	}
+	if payload.Mode == "managed_vpk_v2" {
+		return importQQFlashPackages(ctx, instancePath, e.config.DataDir, payload.Source, job.ID, progress, e.safeDownloadLimiter())
+	}
+	// Previous-minor Control versions used the same job type for their raw,
+	// fixed-destination import. Keep that wire contract until the compatibility
+	// window closes; new Control versions always send managed_vpk_v2.
 	return importQQFlashFiles(ctx, instancePath, payload.Source, progress, e.safeDownloadLimiter())
 }
 

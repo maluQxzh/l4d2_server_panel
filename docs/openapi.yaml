@@ -888,6 +888,28 @@ paths:
                         { $ref: "#/components/schemas/AddonPackageVersion" },
                     }
 
+  /instances/{instanceId}/packages/{packageId}:
+    delete:
+      tags: [Packages]
+      summary: 删除一个受管单文件模组
+      description: |
+        需要 packages.delete。仅支持面板登记且路径位于标准目录的 VPK 或 SourceMod SMX。
+        Agent 删除前复核记录的 SHA-256，成功后移除包记录及版本历史；运行中的服务器可能仍需重启才能完全卸载。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/PackageID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "202":
+          description: 删除任务已排队
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /instances/{instanceId}/packages/{packageId}/versions/{versionId}/rollback:
     post:
       tags: [Instances]
@@ -1329,13 +1351,12 @@ paths:
   /instances/{instanceId}/packages/qq-flash:
     post:
       tags: [Packages]
-      summary: 由 Agent 从 QQ 闪传分享链接导入模组文件
+      summary: 由 Agent 从 QQ 闪传分享链接导入受管 VPK
       description: >
-        需要实例 manage。只接受 qfile.qq.com 的 HTTPS 分享链接；Agent 分页读取分享中的全部文件和目录，
-        从固定腾讯主机逐文件换取短期下载地址并直接流式写入固定的 left4dead2/addons，Control 不转发文件正文。
-        面板不限制分享内文件数量或文件大小，分享链接在任务中加密保存。当前不鉴定文件内容并允许 VPK，
-        但仍拒绝其他危险扩展名，并对每个文件执行路径边界、无链接和精确大小检查。返回的 job_id 可在任务中心
-        持续查看 queued/dispatched/running/terminal 状态、下载进度和消息。
+        需要 packages.install。只接受 qfile.qq.com 的 HTTPS 分享链接；Agent 从固定腾讯主机下载到节点暂存区，
+        Control 不转发文件正文。直接 VPK 及最多三层 ZIP、7Z、RAR 会在路径、数量、下载/展开大小、压缩比、
+        VPK 结构和 CRC 全部通过后提交；加密包、链接和任意非 VPK 普通文件会拒绝整次导入。
+        每个成功 VPK 都建立可启停、可删除的独立包记录。
       parameters:
         - { $ref: "#/components/parameters/InstanceID" }
         - { $ref: "#/components/parameters/CSRF" }
@@ -1347,7 +1368,7 @@ paths:
             schema: { $ref: "#/components/schemas/QQFlashFileImportRequest" }
       responses:
         "202":
-          description: 节点直连下载任务已排队
+          description: 节点直连 VPK 导入任务已排队
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JobReference" }
@@ -2324,7 +2345,7 @@ components:
          environments.read, environments.manage, instances.read, instances.create, instances.configure, instances.delete, instances.start, instances.stop,
          instances.restart, instances.update, instances.validate, players.read, players.kick, players.ban, players.unban, players.change_map,
          players.broadcast, rcon.execute, files.list, files.read, files.write, files.delete, files.upload, packages.read, packages.install,
-         packages.toggle, packages.rollback, backups.read, backups.download, backups.create, backups.restore, schedules.read, schedules.manage,
+         packages.toggle, packages.delete, packages.rollback, backups.read, backups.download, backups.create, backups.restore, schedules.read, schedules.manage,
          logs.read, maps.read, maps.import, maps.assign, maps.verify, maps.delete, jobs.read, jobs.details, jobs.cancel, audit.read,
          audit.read_global, notifications.read, notifications.manage, metrics.read, root_security]
 

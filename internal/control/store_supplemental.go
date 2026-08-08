@@ -585,6 +585,11 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		return tx.Commit()
 	case "install_mod":
 		return s.applyInstallModResult(ctx, job)
+	case "qq_flash_import":
+		if stringFromAny(job.Payload["mode"]) == "managed_vpk_v2" {
+			return s.applyQQFlashPackageResult(ctx, job)
+		}
+		return nil
 	case "rollback_package":
 		return s.applyPackageRollbackResult(ctx, job)
 	case "toggle_package":
@@ -593,6 +598,17 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		path := stringFromAny(job.Result["path"])
 		_, err := s.db.ExecContext(ctx, `UPDATE addon_packages SET enabled=?3,path=COALESCE(NULLIF(?4,''),path)
 			WHERE id=?1 AND instance_id=?2`, packageID, job.InstanceID, enabled, path)
+		return err
+	case "delete_package":
+		packageID := stringFromAny(job.Payload["package_id"])
+		if packageID == "" || stringFromAny(job.Result["path"]) != stringFromAny(job.Payload["package_path"]) ||
+			!strings.EqualFold(stringFromAny(job.Result["sha256"]), stringFromAny(job.Payload["expected_sha256"])) {
+			return errors.New("package deletion result does not match the requested package")
+		}
+		result, err := s.db.ExecContext(ctx, `DELETE FROM addon_packages WHERE id=?1 AND instance_id=?2`, packageID, job.InstanceID)
+		if err == nil && resultRowsAffected(result) == 0 {
+			return ErrNotFound
+		}
 		return err
 	case "ban_player":
 		steamID := stringFromAny(job.Payload["steam_id"])

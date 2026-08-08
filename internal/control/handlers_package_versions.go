@@ -3,6 +3,7 @@ package control
 import (
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -15,6 +16,101 @@ func (s *Server) handlePackageVersions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleDeletePackage(w http.ResponseWriter, r *http.Request) {
+	instanceID := chi.URLParam(r, "instanceID")
+	packageID := chi.URLParam(r, "packageID")
+	principal := principalFromContext(r.Context())
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+	requestFingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "package", instanceID, "delete_package", map[string]any{
+		"package_id": packageID,
+	})
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if idempotencyKey != "" {
+		existing, lookupErr := s.store.JobByIdempotencyKeyMatching(r.Context(), principal.User.ID, idempotencyKey, requestFingerprint)
+		if lookupErr == nil {
+			s.dispatchSoon(existing.NodeID)
+			writeJSON(w, http.StatusAccepted, map[string]any{"job_id": existing.ID, "idempotent_replay": true})
+			return
+		}
+		if !errors.Is(lookupErr, ErrNotFound) {
+			s.fail(w, lookupErr)
+			return
+		}
+	}
+	pkg, path, snapshots, err := s.store.PackageForDelete(r.Context(), instanceID, packageID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !validPackageSHA(pkg.SHA256) {
+		writeError(w, http.StatusConflict, "package_hash_missing", "the package has no verified SHA-256 and cannot be deleted safely")
+		return
+	}
+	if err := validateDeletablePackagePath(pkg.Kind, path); err != nil {
+		writeError(w, http.StatusBadRequest, "unsupported_package_delete", err.Error())
+		return
+	}
+	instance, err := s.store.GetInstance(r.Context(), instanceID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "package_delete_v1") {
+		writeError(w, http.StatusConflict, "package_delete_not_supported", "target node Agent does not support managed package deletion")
+		return
+	}
+	payload := map[string]any{
+		"package_id": packageID, "kind": pkg.Kind, "package_path": path,
+		"expected_sha256": strings.ToLower(pkg.SHA256), "snapshot_paths": snapshots,
+	}
+	job, reused, err := s.store.QueueInstanceJobWithFingerprint(r.Context(), instanceID, "delete_package", payload,
+		principal.User.ID, idempotencyKey, requestFingerprint)
+	if err != nil {
+		if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
+			s.fail(w, err)
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid_package_delete", err.Error())
+		}
+		return
+	}
+	s.audit(r, "package.delete.requested", "package", packageID, map[string]any{"instance_id": instanceID, "job_id": job.ID})
+	_, _ = s.events.Publish(r.Context(), Event{Type: "job.queued", ResourceType: "job", ResourceID: job.ID, Data: map[string]any{"job": job}}, true)
+	s.dispatchSoon(job.NodeID)
+	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "idempotent_replay": reused})
+}
+
+func validateDeletablePackagePath(kind, path string) error {
+	cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(path))))
+	base := filepath.Base(filepath.FromSlash(cleaned))
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	switch kind {
+	case "vpk", "workshop":
+		if !strings.HasSuffix(strings.ToLower(base), ".vpk") || strings.HasPrefix(strings.ToLower(base), "l4d2panel-map-") {
+			return errors.New("only VPK package files can be deleted")
+		}
+		enabled := filepath.ToSlash(filepath.Join("left4dead2", "addons", base))
+		disabled := filepath.ToSlash(filepath.Join("left4dead2", "addons", "panel-disabled", base))
+		if cleaned != enabled && cleaned != disabled {
+			return errors.New("VPK package path is outside the approved package directories")
+		}
+	case "plugin", "smx", "sourcemod":
+		if !strings.HasSuffix(strings.ToLower(base), ".smx") {
+			return errors.New("only SourceMod SMX package files can be deleted")
+		}
+		enabled := filepath.ToSlash(filepath.Join("left4dead2", "addons", "sourcemod", "plugins", base))
+		disabled := filepath.ToSlash(filepath.Join("left4dead2", "addons", "sourcemod", "plugins", "disabled", base))
+		if cleaned != enabled && cleaned != disabled {
+			return errors.New("SourceMod package path is outside the approved package directories")
+		}
+	default:
+		return errors.New("package deletion supports VPK and SourceMod SMX packages")
+	}
+	return nil
 }
 
 func (s *Server) handleRollbackPackageVersion(w http.ResponseWriter, r *http.Request) {

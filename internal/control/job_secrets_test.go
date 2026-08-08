@@ -148,7 +148,8 @@ func TestQQFlashShareURLIsEncryptedAtRest(t *testing.T) {
 
 func TestJobRedactionRecursivelyHidesSecretLocators(t *testing.T) {
 	payload := map[string]any{
-		"snapshot_path": "package-versions/private.bin",
+		"snapshot_path":  "package-versions/private.bin",
+		"snapshot_paths": []any{"package-versions/private-a.bin", "package-versions/private-b.bin"},
 		"nested": map[string]any{
 			"storage_path": "package-versions/also-private.bin",
 			"sha256":       strings.Repeat("a", 64),
@@ -165,6 +166,9 @@ func TestJobRedactionRecursivelyHidesSecretLocators(t *testing.T) {
 	stripEncryptedJobFields(payload, result)
 	if _, ok := payload["snapshot_path"]; ok {
 		t.Fatal("snapshot locator was exposed in payload")
+	}
+	if _, ok := payload["snapshot_paths"]; ok {
+		t.Fatal("snapshot locator list was exposed in payload")
 	}
 	nested := payload["nested"].(map[string]any)
 	if _, ok := nested["storage_path"]; ok || nested["sha256"] == nil {

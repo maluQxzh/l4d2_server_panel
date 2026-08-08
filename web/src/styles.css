@@ -586,6 +586,10 @@ h1, h2, h3, p { margin-top: 0; }
 .package-card span, .package-card code { overflow: hidden; color: var(--text-faint); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .package-card .package-installed { color: var(--green); }
 .package-card__controls { min-width: 0; display: flex; align-items: flex-end; flex-direction: column; gap: 7px; }
+.package-card__actions { display: flex; align-items: center; gap: 7px; }
+.package-delete-button { width: 27px; height: 27px; padding: 0; display: grid; place-items: center; color: #d58d84; background: var(--red-soft); border: 1px solid rgba(230,100,85,.18); border-radius: 6px; cursor: pointer; }
+.package-delete-button:hover:not(:disabled) { color: #f4b2a9; border-color: rgba(230,100,85,.45); }
+.package-delete-button:disabled, .switch:disabled { opacity: .45; cursor: not-allowed; }
 .package-version-rollback { display: flex; align-items: center; gap: 5px; }
 .package-version-rollback select { width: 132px; height: 27px; padding: 0 6px; color: var(--text-dim); background: #111714; border: 1px solid var(--line); border-radius: 5px; font: 500 8px var(--font-mono); }
 .package-version-rollback select:disabled { opacity: .5; }

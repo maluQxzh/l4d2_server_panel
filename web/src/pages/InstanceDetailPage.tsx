@@ -635,6 +635,16 @@ function PackageCard({ item, instanceId }: { item: PackageRecord; instanceId: st
   const [selectedVersion, setSelectedVersion] = useState("");
   const toggle = useMutation({ mutationFn: () => api.instanceAction(instanceId, "toggle_package", { package_id: item.id, enabled: !item.enabled }), onSuccess: () => { toast.push(item.enabled ? "组件停用任务已提交" : "组件启用任务已提交"); void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages"] }); }, onError: (error) => toast.push(error.message, "error") });
   const toggleable = /\.(?:vpk|smx)$/i.test(item.path || "");
+  const deletable = toggleable && Boolean(item.sha256);
+  const remove = useMutation({
+    mutationFn: () => api.deletePackage(instanceId, item.id),
+    onSuccess: () => {
+      toast.push("组件删除任务已提交");
+      void client.invalidateQueries({ queryKey: ["jobs"] });
+      void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages"] });
+    },
+    onError: (error) => toast.push(error.message, "error"),
+  });
   const versions = useQuery({
     queryKey: ["instances", instanceId, "packages", item.id, "versions"],
     queryFn: () => api.packageVersions(instanceId, item.id),
@@ -661,7 +671,12 @@ function PackageCard({ item, instanceId }: { item: PackageRecord; instanceId: st
     <div className={`package-icon package-icon--${item.kind}`}><PackageOpen size={20} /></div>
     <div className="package-card__identity"><strong>{item.name}</strong><span>{item.kind.toUpperCase()} · {item.version || "版本未知"}</span>{item.sha256 && <code>{item.sha256.slice(0, 16)}…</code>}</div>
     <div className="package-card__controls">
-      {toggleable ? <button className={`switch ${item.enabled ? "switch--on" : ""}`} onClick={() => toggle.mutate()} aria-label={`${item.enabled ? "停用" : "启用"} ${item.name}`}><span /></button> : <span className="package-installed">已安装</span>}
+      <div className="package-card__actions">
+        {toggleable ? <button className={`switch ${item.enabled ? "switch--on" : ""}`} disabled={toggle.isPending || remove.isPending} onClick={() => toggle.mutate()} aria-label={`${item.enabled ? "停用" : "启用"} ${item.name}`}><span /></button> : <span className="package-installed">已安装</span>}
+        {deletable && <button className="package-delete-button" disabled={remove.isPending || toggle.isPending} aria-label={`删除 ${item.name}`} title="删除组件" onClick={() => {
+          if (window.confirm(`确认永久删除 ${item.name}？文件及面板中的版本历史会一并移除；运行中的服务器可能需要重启后才能完全卸载。`)) remove.mutate();
+        }}><Trash2 size={14} /></button>}
+      </div>
       {toggleable && versions.data?.items.length ? <div className="package-version-rollback">
         <select value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)} aria-label={`${item.name} 可回退版本`} disabled={!item.enabled || rollback.isPending}>
           {versions.data.items.map((version) => <option value={version.id} key={version.id}>{version.version || "未标记"} · {version.sha256.slice(0, 10)} · {dateTime(version.created_at)}</option>)}
@@ -721,20 +736,20 @@ function InstallPackageModal({ open, instance, onClose }: { open: boolean; insta
         acknowledge_native_risk: risk,
       }),
     onSuccess: () => {
-      toast.push(qqFlash ? "QQ闪传下载任务已提交" : "模组安装任务已提交");
+      toast.push(qqFlash ? "QQ闪传 VPK 导入任务已提交" : "模组安装任务已提交");
       void client.invalidateQueries({ queryKey: ["jobs"] });
       void client.invalidateQueries({ queryKey: ["instances", instance.id, "packages"] });
       resetAndClose();
     },
     onError: (error) => toast.push(error.message, "error"),
   });
-  return <Modal open={open} onClose={resetAndClose} title="安装模组或组件" description={qqFlash ? "节点直接下载 QQ闪传分享中的全部文件到 left4dead2/addons，不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose}>取消</Button><Button onClick={() => install.mutate()} loading={install.isPending} disabled={(!official && !hasSource) || (needsRisk && !risk)}>{qqFlash ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlash ? "提交下载" : "提交安装"}</Button></>}>
+  return <Modal open={open} onClose={resetAndClose} title="安装模组或组件" description={qqFlash ? "供玩家通过 QQ闪传提交 VPK；节点暂存并检查完整分享，安全解压后再安装，不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose}>取消</Button><Button onClick={() => install.mutate()} loading={install.isPending} disabled={(!official && !hasSource) || (needsRisk && !risk)}>{qqFlash ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlash ? "导入 VPK" : "提交安装"}</Button></>}>
     <div className="form-stack">
-      <Field label="类型"><select value={kind} onChange={(event) => { setKind(event.target.value); setSource(""); setUpload(null); setRisk(false); }}><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="plugin">SourceMod 插件文件</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option><option value="native">第三方原生扩展</option><option value="qq_flash">QQ闪传</option></select></Field>
+      <Field label="类型"><select value={kind} onChange={(event) => { setKind(event.target.value); setSource(""); setUpload(null); setRisk(false); }}><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="plugin">SourceMod 插件文件</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option><option value="native">第三方原生扩展</option><option value="qq_flash">QQ闪传（玩家上传 VPK）</option></select></Field>
       {qqFlash ? <>
         <Field label="固定目标目录"><input value="left4dead2/addons" readOnly /></Field>
-        <Field label="QQ闪传分享链接" hint="可直接粘贴 QQ 分享文本；节点会导入分享中的全部文件并保留目录结构。"><textarea rows={4} value={source} onChange={(event) => setSource(event.target.value)} placeholder="链接：https://qfile.qq.com/q/Example123" spellCheck={false} /></Field>
-        <div className="form-note"><CloudDownload size={18} /><span><strong>节点直连下载</strong><small>不限制分享内文件数量和文件大小，暂不鉴定文件内容；允许 VPK，仍拒绝其他危险扩展名与特殊路径，并逐文件原子写入。</small></span></div>
+        <Field label="QQ闪传分享链接" hint="可直接粘贴 QQ 分享文本；支持直接 VPK，以及最多嵌套 3 层的 ZIP、7Z、RAR 压缩包。"><textarea rows={4} value={source} onChange={(event) => setSource(event.target.value)} placeholder="链接：https://qfile.qq.com/q/Example123" spellCheck={false} /></Field>
+        <div className="form-note"><CloudDownload size={18} /><span><strong>仅接收经过校验的 VPK</strong><small>节点会先完整暂存分享，限制下载与解压总量，拒绝加密包、危险路径和任何非 VPK 文件。成功后每个 VPK 会单独出现在本页，可启停和删除。</small></span></div>
       </> : <>
         {official ? <div className="form-note"><ShieldCheck size={18} /><span><strong>自动解析官方稳定版</strong><small>Agent 只接受 AlliedModders 官方白名单地址，并按节点系统选择压缩包。</small></span></div> : <Field label={kind === "workshop" ? "项目或合集 ID" : "HTTPS 来源"} hint={canUpload ? "填写 URL，或在下方从本机选择一个文件" : undefined}><input value={source} onChange={(event) => { setSource(event.target.value); setUpload(null); }} placeholder={kind === "workshop" ? "例如：123456789" : "https://example.org/plugin.zip"} /></Field>}
         {canUpload && <Field label="从本机上传" hint="单个文件上限 8 MiB；载荷会加密保存，并只发送给目标节点"><input type="file" accept={accept} onChange={(event) => { void chooseUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} /></Field>}

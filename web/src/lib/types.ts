@@ -7,7 +7,7 @@ export type Permission =
   | "instances.start" | "instances.stop" | "instances.restart" | "instances.update" | "instances.validate"
   | "players.read" | "players.kick" | "players.ban" | "players.unban" | "players.change_map" | "players.broadcast"
   | "rcon.execute" | "files.list" | "files.read" | "files.write" | "files.delete" | "files.upload"
-  | "packages.read" | "packages.install" | "packages.toggle" | "packages.rollback"
+  | "packages.read" | "packages.install" | "packages.toggle" | "packages.delete" | "packages.rollback"
   | "backups.read" | "backups.download" | "backups.create" | "backups.restore"
   | "schedules.read" | "schedules.manage" | "logs.read"
   | "maps.read" | "maps.import" | "maps.assign" | "maps.verify" | "maps.delete"

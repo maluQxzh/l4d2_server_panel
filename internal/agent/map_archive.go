@@ -33,10 +33,15 @@ const (
 )
 
 type mapArchiveState struct {
-	Entries  int
-	Expanded int64
-	Ignored  int
-	Root     string
+	Entries         int
+	Expanded        int64
+	Ignored         int
+	Root            string
+	MaxEntries      int
+	MaxEntrySize    int64
+	MaxExpanded     int64
+	DiskFreeReserve uint64
+	Subject         string
 }
 
 type mapVPKInput struct {
@@ -287,7 +292,7 @@ func extractMap7Z(ctx context.Context, archivePath, destination string, state *m
 	}
 	var declared int64
 	for _, entry := range reader.File {
-		if entry.UncompressedSize > uint64(maxMapArchiveEntrySize) || declared > maxMapExpandedBytes-int64(entry.UncompressedSize) {
+		if entry.UncompressedSize > uint64(state.maxEntrySize()) || declared > state.maxExpandedBytes()-int64(entry.UncompressedSize) {
 			return nil, errors.New("7Z archive exceeds the expanded size limit")
 		}
 		declared += int64(entry.UncompressedSize)
@@ -409,7 +414,7 @@ func rememberMapArchivePath(seen map[string]bool, relative string) bool {
 }
 
 func validateMapArchivePath(name string) (string, error) {
-	if name == "" || strings.ContainsRune(name, '\x00') || strings.Contains(name, "\\") || strings.HasPrefix(name, "/") {
+	if name == "" || len(name) > 4096 || strings.ContainsRune(name, '\x00') || strings.Contains(name, "\\") || strings.HasPrefix(name, "/") {
 		return "", errors.New("archive contains an unsafe path")
 	}
 	cleaned := pathpkg.Clean(name)
@@ -426,41 +431,74 @@ func validateMapArchivePath(name string) (string, error) {
 
 func (s *mapArchiveState) countEntry() error {
 	s.Entries++
-	if s.Entries > maxMapArchiveEntries {
-		return errors.New("map archive entry count exceeds limit")
+	limit := s.MaxEntries
+	if limit <= 0 {
+		limit = maxMapArchiveEntries
+	}
+	if s.Entries > limit {
+		return fmt.Errorf("%s archive entry count exceeds limit", s.subject())
 	}
 	return nil
 }
 
 func (s *mapArchiveState) reserveEntry(path string, expanded, compressed int64) error {
-	if expanded < 0 || expanded > maxMapArchiveEntrySize || s.Expanded > maxMapExpandedBytes-expanded {
-		return errors.New("map archive expanded size exceeds limit")
+	if expanded < 0 || expanded > s.maxEntrySize() || s.Expanded > s.maxExpandedBytes()-expanded {
+		return fmt.Errorf("%s archive expanded size exceeds limit", s.subject())
 	}
 	if expanded > 0 && compressed == 0 {
-		return errors.New("map archive entry exceeds the compression ratio limit")
+		return fmt.Errorf("%s archive entry exceeds the compression ratio limit", s.subject())
 	}
 	if compressed > 0 && expanded > compressed*maxMapCompressionRatio {
-		return errors.New("map archive entry exceeds the compression ratio limit")
+		return fmt.Errorf("%s archive entry exceeds the compression ratio limit", s.subject())
 	}
-	if err := ensureMapDiskReserve(path, expanded); err != nil {
+	reserve := s.DiskFreeReserve
+	if reserve == 0 {
+		reserve = mapDiskFreeReserve
+	}
+	if err := ensureArchiveDiskReserve(path, expanded, reserve, s.subject()); err != nil {
 		return err
 	}
 	s.Expanded += expanded
 	return nil
 }
 
-func ensureMapDiskReserve(path string, additional int64) error {
+func (s *mapArchiveState) maxEntrySize() int64 {
+	if s.MaxEntrySize > 0 {
+		return s.MaxEntrySize
+	}
+	return maxMapArchiveEntrySize
+}
+
+func (s *mapArchiveState) maxExpandedBytes() int64 {
+	if s.MaxExpanded > 0 {
+		return s.MaxExpanded
+	}
+	return maxMapExpandedBytes
+}
+
+func (s *mapArchiveState) subject() string {
+	if strings.TrimSpace(s.Subject) != "" {
+		return strings.TrimSpace(s.Subject)
+	}
+	return "map"
+}
+
+func ensureArchiveDiskReserve(path string, additional int64, reserve uint64, subject string) error {
 	if additional < 0 {
-		return errors.New("map processing requested an invalid disk reservation")
+		return fmt.Errorf("%s processing requested an invalid disk reservation", subject)
 	}
 	usage, err := disk.Usage(path)
 	if err != nil {
-		return fmt.Errorf("read map staging free space: %w", err)
+		return fmt.Errorf("read %s staging free space: %w", subject, err)
 	}
-	if uint64(additional) > usage.Free || usage.Free-uint64(additional) < mapDiskFreeReserve {
-		return errors.New("map processing would consume the reserved free disk space")
+	if uint64(additional) > usage.Free || usage.Free-uint64(additional) < reserve {
+		return fmt.Errorf("%s processing would consume the reserved free disk space", subject)
 	}
 	return nil
+}
+
+func ensureMapDiskReserve(path string, additional int64) error {
+	return ensureArchiveDiskReserve(path, additional, mapDiskFreeReserve, "map")
 }
 
 func writeMapArchiveFile(ctx context.Context, destination, relative string, source io.Reader, size int64) error {
