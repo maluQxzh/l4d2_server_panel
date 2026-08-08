@@ -21,6 +21,8 @@ import (
 
 const maxSteamCMDArchiveExpanded = int64(256 << 20)
 
+const steamCMDProbeTimeout = 10 * time.Minute
+
 const runtimeEnvironmentStateFilename = "runtime-environment.json"
 
 type runtimeEnvironmentState struct {
@@ -201,7 +203,7 @@ func validateSteamCMDPath(ctx context.Context, path string, roots []string) (str
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		return "", errors.New("SteamCMD launcher is not executable by the Agent account")
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, steamCMDProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(probeCtx, path, "+quit")
 	cmd.Dir = filepath.Dir(path)
@@ -215,6 +217,32 @@ func validateSteamCMDPath(ctx context.Context, path string, roots []string) (str
 		return "", fmt.Errorf("SteamCMD self-test failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return "available", nil
+}
+
+type steamCMDPathValidator func(context.Context, string, []string) (string, error)
+
+func validateManagedSteamCMDPath(ctx context.Context, path string, roots []string) (string, error) {
+	return validateManagedSteamCMDPathWith(ctx, path, roots, validateSteamCMDPath)
+}
+
+func validateManagedSteamCMDPathWith(ctx context.Context, path string, roots []string, validate steamCMDPathValidator) (string, error) {
+	version, err := validate(ctx, path, roots)
+	if err == nil || !isWindowsSteamCMDBootstrapRestart(err) {
+		return version, err
+	}
+	// Valve's current Windows bootstrapper installs and launches the updated
+	// SteamCMD successfully, but the outer process still exits with code 7.
+	// Re-run the now-updated launcher before deciding that the installation
+	// failed. Other exit codes remain hard failures.
+	return validate(ctx, path, roots)
+}
+
+func isWindowsSteamCMDBootstrapRestart(err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 7
 }
 
 func rejectLinkedPath(path string) error {
@@ -325,7 +353,7 @@ func installManagedSteamCMD(ctx context.Context, config *Config, roots []string)
 			return "", "", err
 		}
 	}
-	if _, err := validateSteamCMDPath(ctx, stagedLauncher, roots); err != nil {
+	if _, err := validateManagedSteamCMDPath(ctx, stagedLauncher, roots); err != nil {
 		return "", "", err
 	}
 	destination := filepath.Join(config.DataDir, "steamcmd")
