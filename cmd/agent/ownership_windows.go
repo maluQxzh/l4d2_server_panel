@@ -13,7 +13,10 @@ import (
 
 // prepareServiceConfigOwnership restricts the credential-bearing config to
 // administrators, LocalSystem and this service's virtual account. Runtime
-// roots receive inheritable Modify rights while the executable remains RX.
+// roots give inheritable Full control to LocalSystem/Administrators and
+// inheritable Modify rights to the service while files keep non-inheritable
+// rights. Making every trusted directory ACE inheritable is important because
+// the service creates logs, journals and other descendants after installation.
 func prepareServiceConfigOwnership(path string) error {
 	cfg, err := agent.LoadConfig(path)
 	if err != nil {
@@ -52,27 +55,46 @@ func prepareServiceConfigOwnership(path string) error {
 		if err := os.MkdirAll(cleaned, 0o700); err != nil {
 			return err
 		}
-		if err := restrictedACL(cleaned, `(OI)(CI)M`); err != nil {
+		if err := restrictedDirectoryACL(cleaned, `(OI)(CI)M`); err != nil {
 			return err
 		}
 	}
-	if err := restrictedACL(path, `(M)`); err != nil {
+	if err := restrictedFileACL(path, `(M)`); err != nil {
 		return err
 	}
 	executable, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	return restrictedACL(executable, `(RX)`)
+	return restrictedFileACL(executable, `(RX)`)
 }
 
-func restrictedACL(path, serviceRights string) error {
-	args := []string{
+func restrictedDirectoryACL(path, serviceRights string) error {
+	return applyRestrictedACL(path, restrictedDirectoryACLArguments(path, serviceRights))
+}
+
+func restrictedFileACL(path, serviceRights string) error {
+	return applyRestrictedACL(path, restrictedFileACLArguments(path, serviceRights))
+}
+
+func restrictedDirectoryACLArguments(path, serviceRights string) []string {
+	return restrictedACLArguments(path, `(OI)(CI)F`, serviceRights)
+}
+
+func restrictedFileACLArguments(path, serviceRights string) []string {
+	return restrictedACLArguments(path, `(F)`, serviceRights)
+}
+
+func restrictedACLArguments(path, trustedRights, serviceRights string) []string {
+	return []string{
 		path, "/inheritance:r", "/grant:r",
-		`*S-1-5-18:(F)`,     // LocalSystem
-		`*S-1-5-32-544:(F)`, // Built-in Administrators
+		`*S-1-5-18:` + trustedRights,     // LocalSystem
+		`*S-1-5-32-544:` + trustedRights, // Built-in Administrators
 		`NT SERVICE\l4d2panel-agent:` + serviceRights,
 	}
+}
+
+func applyRestrictedACL(path string, args []string) error {
 	output, err := exec.Command("icacls.exe", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("restrict ACL for %s: %w (%s)", path, err, output)

@@ -94,7 +94,9 @@ Windows Service 常驻模式使用：
 .\l4d2panel-agent-windows-amd64.exe install --config .\agent.yaml
 ```
 
-程序会自动请求 UAC，注册延迟自动启动的 `l4d2panel-agent` 服务，使用 `NT SERVICE\l4d2panel-agent` 虚拟服务账号，并把配置、数据目录、地图对象根、实例根和二进制 ACL 限制到服务 SID、Administrators 与 SYSTEM。
+程序会自动请求 UAC，注册延迟自动启动的 `l4d2panel-agent` 服务，使用 `NT SERVICE\l4d2panel-agent` 虚拟服务账号，并把配置、数据目录、地图对象根、实例根和二进制 ACL 限制到服务 SID、Administrators 与 SYSTEM。目录 ACL 会把 SYSTEM/Administrators 的完全控制和服务 SID 的修改权限继承到之后创建的日志、journal、地图及其他子目录；配置文件和二进制保持非继承的文件权限。
+
+升级曾由旧版安装的节点后，以管理员身份幂等地重新执行同一条 `install --config .\agent.yaml` 命令即可重新同步现有部署根 ACL，不需要新注册令牌，也不会重建或清空 `data`。
 
 前台启动和服务安装都会在需要时自动注册。成功后 Agent 原子地把 `node_id` 和长期节点凭据写回 `agent.yaml`，并删除一次性令牌。未显式配置时，运行数据和实例目录分别为同目录的 `data` 与 `data/instances`。后续启动不再需要令牌：
 

@@ -164,6 +164,8 @@ Copy-Item .\agent.yaml.example .\agent.yaml
 .\l4d2panel-agent-windows-amd64.exe install --config .\agent.yaml
 ```
 
+安装器会让 SYSTEM、Administrators 和固定服务账号的权限继承到服务随后创建的日志、journal、地图及其他运行目录。升级曾由旧版安装的节点后，可幂等地重新执行同一条 `install --config` 命令以修复现有目录权限，不需要重新注册节点。
+
 前台启动和 `install` 都会在尚未注册时自动注册，把一次性令牌从 `agent.yaml` 中移除并原子写入节点 ID 和长期凭据。未显式配置的数据、实例及地图目录默认为同目录的 `data`、`data/instances` 与 `data/maps`。实例若位于其他文件系统卷，需在 `map_roots` 中为该卷增加一个绝对地图根；同一卷只允许一个根，不支持符号链接或 Junction。服务模式可用 `start/stop/restart/status/uninstall --config ./agent.yaml` 显式管理；这些命令在需要时同样请求提权。首次前台启动也可以不预建文件，使用参数创建同目录的 `agent.yaml`：
 
 ```bash
