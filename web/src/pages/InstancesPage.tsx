@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Box, Filter, Gamepad2, Map, MoreHorizontal, Play, Plus, RefreshCw, Search, Server, Square, Users } from "lucide-react";
+import { Box, Filter, Gamepad2, Map, MoreHorizontal, Network, Play, Plus, RefreshCw, Search, Server, Square, Users } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, StatusBadge } from "../components/ui";
@@ -38,6 +38,7 @@ function InstanceCard({ instance }: { instance: InstanceRecord }) {
   const { user } = useAuth();
   const toast = useToast();
   const client = useQueryClient();
+  const [portOpen, setPortOpen] = useState(false);
   const action = useMutation({
     mutationFn: ({ type, payload }: { type: string; payload?: Record<string, unknown> }) => api.instanceAction(instance.id, type, payload),
     onSuccess: (_result, { type }) => { toast.push(type === "start" ? "启动任务已提交" : type === "restart" ? "重启任务已提交" : "停止任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); void client.invalidateQueries({ queryKey: ["instances"] }); },
@@ -56,15 +57,37 @@ function InstanceCard({ instance }: { instance: InstanceRecord }) {
   const showRestart = ["stopped", "running", "degraded"].includes(instance.status) && hasInstancePermission(user, instance, "instances.restart");
   const canRestart = ["running", "degraded"].includes(instance.status);
   const isExternal = instance.status === "external" && hasInstancePermission(user, instance, "instances.restart");
+  const canConfigure = hasInstancePermission(user, instance, "instances.configure");
+  const canChangePort = instance.status === "stopped";
   const nodeUnavailable = instance.node_status !== "online";
   const nodeStatusLabel = instance.node_status === "offline" ? "节点离线" : instance.node_status === "revoked" ? "节点已吊销" : "节点待接入";
-  return <Card className={`instance-card instance-card--${instance.status}`}>
+  return <><Card className={`instance-card instance-card--${instance.status}`}>
     <div className="instance-card__cover"><div className="instance-card__pattern" aria-hidden /><span className="instance-number">#{instance.id.slice(0, 6).toUpperCase()}</span><div className="instance-card__statuses"><StatusBadge status={instance.status} pulse={instance.status === "running" && !nodeUnavailable} />{nodeUnavailable && <span className={`status status--${instance.node_status}`} title="无法确认节点上实例的实时状态"><span className="status__dot" aria-hidden />{nodeStatusLabel}</span>}</div></div>
     <div className="instance-card__body"><div className="instance-card__heading"><div className="server-glyph"><Gamepad2 /></div><div><Link to={`/instances/${instance.id}`}>{instance.name}</Link><span>{instance.host}:{instance.port}</span><span className="instance-card__node"><Server size={11} aria-hidden />所属节点：{instance.node_name || instance.node_id}</span></div><Link className="icon-button" aria-label={`管理 ${instance.name}`} to={`/instances/${instance.id}`}><MoreHorizontal size={19} /></Link></div>
       <div className="instance-card__facts"><div><Map size={16} /><span>地图</span><strong>{instance.map || instance.config?.start_map || "未载入"}</strong></div><div><Box size={16} /><span>模式</span><strong>{instance.mode || instance.config?.mode || "未知"}</strong></div><div><Users size={16} /><span>玩家</span><strong>{instance.players} / {instance.max_players}</strong></div></div>
-      <div className="instance-card__foot"><span>更新于 {relativeTime(instance.updated_at)}</span><div className="instance-card__foot-actions">{canStart && <Button loading={action.isPending} onClick={() => action.mutate({ type: "start" })}><Play size={15} fill="currentColor" />启动</Button>}{canStop && <Button variant="secondary" loading={action.isPending} onClick={() => action.mutate({ type: "stop" })}><Square size={14} fill="currentColor" />停止</Button>}{showRestart && <Button variant="secondary" loading={action.isPending || restartCheck.isPending} disabled={!canRestart} title={!canRestart ? "服务器启动后才能重启" : undefined} onClick={() => restartCheck.mutate()}><RefreshCw size={14} />重启</Button>}{isExternal && <Button loading={action.isPending} onClick={() => { if (window.confirm("受控接管会先停止当前外部 srcds 进程，再由 Agent 使用面板配置启动。确认继续吗？")) action.mutate({ type: "restart" }); }}><RefreshCw size={14} />受控接管</Button>}{!canStart && !canStop && !showRestart && !isExternal && <Link className="button button--secondary" to={`/instances/${instance.id}`}>查看进度</Link>}</div></div>
+      <div className="instance-card__foot"><span>更新于 {relativeTime(instance.updated_at)}</span><div className="instance-card__foot-actions">{canConfigure && <Button variant="secondary" disabled={!canChangePort} title={!canChangePort ? "服务器停止后才能修改端口" : undefined} onClick={() => setPortOpen(true)}><Network size={14} />修改端口</Button>}{canStart && <Button loading={action.isPending} onClick={() => action.mutate({ type: "start" })}><Play size={15} fill="currentColor" />启动</Button>}{canStop && <Button variant="secondary" loading={action.isPending} onClick={() => action.mutate({ type: "stop" })}><Square size={14} fill="currentColor" />停止</Button>}{showRestart && <Button variant="secondary" loading={action.isPending || restartCheck.isPending} disabled={!canRestart} title={!canRestart ? "服务器启动后才能重启" : undefined} onClick={() => restartCheck.mutate()}><RefreshCw size={14} />重启</Button>}{isExternal && <Button loading={action.isPending} onClick={() => { if (window.confirm("受控接管会先停止当前外部 srcds 进程，再由 Agent 使用面板配置启动。确认继续吗？")) action.mutate({ type: "restart" }); }}><RefreshCw size={14} />受控接管</Button>}{!canStart && !canStop && !showRestart && !isExternal && <Link className="button button--secondary" to={`/instances/${instance.id}`}>查看进度</Link>}</div></div>
     </div>
-  </Card>;
+  </Card>{portOpen && <ChangePortModal instance={instance} onClose={() => setPortOpen(false)} />}</>;
+}
+
+function ChangePortModal({ instance, onClose }: { instance: InstanceRecord; onClose: () => void }) {
+  const [port, setPort] = useState(instance.port);
+  const toast = useToast();
+  const client = useQueryClient();
+  const update = useMutation({
+    mutationFn: () => api.updateInstance(instance.id, { port, version: instance.version }),
+    onSuccess: () => {
+      toast.push("端口修改任务已提交");
+      void client.invalidateQueries({ queryKey: ["instances"] });
+      void client.invalidateQueries({ queryKey: ["jobs"] });
+      onClose();
+    },
+    onError: (error) => toast.push(error.message, "error"),
+  });
+  const submit = (event: FormEvent) => { event.preventDefault(); update.mutate(); };
+  return <Modal open onClose={onClose} title="修改游戏端口" description="只有已停止的实例可以修改；新端口会先在所属节点上预留，Agent 更新成功后再正式切换。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button type="submit" form={`change-port-${instance.id}`} loading={update.isPending} disabled={!Number.isInteger(port) || port < 1 || port > 65535 || port === instance.port}>提交修改</Button></>}>
+    <form id={`change-port-${instance.id}`} className="form-stack" onSubmit={submit}><Field label="游戏端口" hint={`当前端口：${instance.port}`}><input type="number" min={1} max={65535} step={1} value={port} onChange={(event) => setPort(Number(event.target.value))} required autoFocus /></Field></form>
+  </Modal>;
 }
 
 function CreateInstanceModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -72,7 +95,6 @@ function CreateInstanceModal({ open, onClose }: { open: boolean; onClose: () => 
   const [name, setName] = useState("");
   const [environmentId, setEnvironmentId] = useState("");
   const [installationId, setInstallationId] = useState("");
-  const [hostname, setHostname] = useState("");
   const [mode, setMode] = useState("coop");
   const [difficulty, setDifficulty] = useState("normal");
   const [rconPassword, setRCONPassword] = useState("");
@@ -95,7 +117,7 @@ function CreateInstanceModal({ open, onClose }: { open: boolean; onClose: () => 
         name: name.trim(),
         port: port || undefined,
         rcon_password: rconPassword,
-        config: { hostname: hostname.trim() || name.trim(), mode, difficulty, max_players: maxPlayers, start_map: startMap, public_status: false, auto_restart: true, extra_args: tickrate ? ["-tickrate", String(tickrateValue)] : [] },
+        config: { hostname: name.trim(), mode, difficulty, max_players: maxPlayers, start_map: startMap, public_status: false, auto_restart: true, extra_args: tickrate ? ["-tickrate", String(tickrateValue)] : [] },
       });
     },
     onSuccess: (result) => {
@@ -112,7 +134,6 @@ function CreateInstanceModal({ open, onClose }: { open: boolean; onClose: () => 
     <form id="create-instance" onSubmit={submit} className="form-stack">
       <div className="form-grid"><Field label="实例名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：专家战役 #1" required /></Field><Field label="运行节点"><select value={environmentId} onChange={(event) => { setEnvironmentId(event.target.value); setInstallationId(""); }} required><option value="">选择在线运行节点</option>{onlineEnvironments.map((item) => <option value={item.id} key={item.id}>{item.node_name || item.node_id}</option>)}</select></Field></div>
       <Field label="可用游戏安装" hint="仅显示所选节点上已安装且尚未绑定实例的目录。"><select value={installationId} onChange={(event) => setInstallationId(event.target.value)} required disabled={!environmentId}><option value="">{environmentId ? "选择可用游戏安装" : "请先选择运行节点"}</option>{readyInstallations.map((item) => <option value={item.id} key={item.id}>{item.path} · 构建 {item.build_id || "未知"}</option>)}</select></Field>
-      <Field label="服务器显示名称"><input value={hostname} onChange={(event) => setHostname(event.target.value)} placeholder={name || "显示在服务器浏览器中的名称"} /></Field>
       <div className="form-grid form-grid--three"><Field label="游戏模式"><select value={mode} onChange={(event) => setMode(event.target.value)}>{gameModes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></Field><Field label="难度"><select value={difficulty} onChange={(event) => setDifficulty(event.target.value)}>{gameDifficulties.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></Field><Field label="最大玩家"><input type="number" min={1} max={32} value={maxPlayers} onChange={(event) => setMaxPlayers(Number(event.target.value))} /></Field></div>
       <div className="form-grid"><Field label="RCON 密码（可留空）" hint="仅作为面板连接凭据保存；需与 server.cfg 中的 rcon_password 一致。"><input type="password" value={rconPassword} onChange={(event) => setRCONPassword(event.target.value)} maxLength={256} autoComplete="new-password" /></Field><Field label="游戏端口" hint="0 表示自动"><input type="number" min={0} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} /></Field></div>
       <Field label="初始地图"><select value={startMap} onChange={(event) => setStartMap(event.target.value)} required>{officialMapGroups.map((group) => <optgroup label={group.campaign} key={group.campaign}>{group.maps.map(([value, label]) => <option value={value} key={value}>{label} · {value}</option>)}</optgroup>)}</select></Field>

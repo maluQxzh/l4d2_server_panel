@@ -139,6 +139,17 @@ func TestConfigureSteamCMDFailureKeepsActivePath(t *testing.T) {
 	}
 }
 
+func TestApplyConfigurationRejectsPortChangeWhileProcessIsActive(t *testing.T) {
+	executor := &Executor{processes: &ProcessManager{items: map[string]*managedProcess{
+		"instance-one": {launching: true},
+	}}}
+	record := InstanceRecord{ID: "instance-one", RCONPort: 27015}
+	_, _, err := executor.applyConfiguration(record, operationPayload{Instance: domain.Instance{Port: 27016}})
+	if err == nil || err.Error() != "game port can only be changed while the instance is stopped" {
+		t.Fatalf("active instance port change error = %v", err)
+	}
+}
+
 func TestGameMaintenanceRejectsUnregisteredInstallation(t *testing.T) {
 	data, gameRoot := t.TempDir(), t.TempDir()
 	store, err := newRuntimeEnvironmentStore(&Config{DataDir: data})

@@ -481,6 +481,9 @@ func (s *Store) CreateInstance(ctx context.Context, input CreateInstanceInput) (
 	if input.Config.MaxPlayers == 0 {
 		input.Config.MaxPlayers = 8
 	}
+	if strings.TrimSpace(input.Config.Hostname) == "" {
+		input.Config.Hostname = strings.TrimSpace(input.Name)
+	}
 	config, err := json.Marshal(input.Config)
 	if err != nil {
 		return domain.Instance{}, err
@@ -516,7 +519,8 @@ func (s *Store) CreateInstance(ctx context.Context, input CreateInstanceInput) (
 		}
 	}
 	reserved := make(map[int]struct{})
-	rows, err := tx.QueryContext(ctx, `SELECT port FROM instance_port_reservations WHERE node_id=?1 ORDER BY port`, input.NodeID)
+	rows, err := tx.QueryContext(ctx, `SELECT port FROM instance_port_reservations WHERE node_id=?1
+		UNION SELECT port FROM pending_instance_port_changes WHERE node_id=?1 ORDER BY port`, input.NodeID)
 	if err != nil {
 		return domain.Instance{}, err
 	}
@@ -626,9 +630,9 @@ func (s *Store) UpdateInstance(ctx context.Context, id, name string, config *dom
 	return current, tx.Commit()
 }
 
-func (s *Store) UpdateInstanceAndQueue(ctx context.Context, id, name string, config *domain.InstanceConfig, expectedVersion int,
+func (s *Store) UpdateInstanceAndQueue(ctx context.Context, id, name string, config *domain.InstanceConfig, port *int, expectedVersion int,
 	userID, idempotencyKey string, rconPasswordCiphertext, serverPasswordCiphertext *string) (domain.Instance, domain.Job, bool, error) {
-	request := map[string]any{"name": name, "config": config, "version": expectedVersion}
+	request := map[string]any{"name": name, "config": config, "port": port, "version": expectedVersion}
 	if serverPasswordCiphertext != nil {
 		// This compatibility path cannot recover the plaintext after encryption.
 		// HTTP handlers use UpdateInstanceAndQueueWithFingerprint and hash the
@@ -643,11 +647,11 @@ func (s *Store) UpdateInstanceAndQueue(ctx context.Context, id, name string, con
 	if err != nil {
 		return domain.Instance{}, domain.Job{}, false, err
 	}
-	return s.UpdateInstanceAndQueueWithFingerprint(ctx, id, name, config, expectedVersion, userID, idempotencyKey,
+	return s.UpdateInstanceAndQueueWithFingerprint(ctx, id, name, config, port, expectedVersion, userID, idempotencyKey,
 		rconPasswordCiphertext, serverPasswordCiphertext, requestFingerprint)
 }
 
-func (s *Store) UpdateInstanceAndQueueWithFingerprint(ctx context.Context, id, name string, config *domain.InstanceConfig, expectedVersion int,
+func (s *Store) UpdateInstanceAndQueueWithFingerprint(ctx context.Context, id, name string, config *domain.InstanceConfig, port *int, expectedVersion int,
 	userID, idempotencyKey string, rconPasswordCiphertext, serverPasswordCiphertext *string, requestFingerprint string) (domain.Instance, domain.Job, bool, error) {
 	if len(idempotencyKey) > 200 {
 		return domain.Instance{}, domain.Job{}, false, errors.New("idempotency key is too long")
@@ -701,6 +705,21 @@ func (s *Store) UpdateInstanceAndQueueWithFingerprint(ctx context.Context, id, n
 	if expectedVersion > 0 && current.Version != expectedVersion {
 		return domain.Instance{}, domain.Job{}, false, ErrConflict
 	}
+	desiredPort := current.Port
+	portChanged := false
+	if port != nil {
+		desiredPort = *port
+		if desiredPort <= 0 || desiredPort > 65535 {
+			return domain.Instance{}, domain.Job{}, false, errors.New("game port must be between 1 and 65535")
+		}
+		if desiredPort == current.TVPort {
+			return domain.Instance{}, domain.Job{}, false, fmt.Errorf("game port conflicts with the SourceTV port: %w", ErrConflict)
+		}
+		portChanged = desiredPort != current.Port
+		if portChanged && current.Status != domain.InstanceStopped {
+			return domain.Instance{}, domain.Job{}, false, fmt.Errorf("game port can only be changed while the instance is stopped: %w", ErrConflict)
+		}
+	}
 	if strings.TrimSpace(name) != "" {
 		current.Name = strings.TrimSpace(name)
 	}
@@ -734,7 +753,9 @@ func (s *Store) UpdateInstanceAndQueueWithFingerprint(ctx context.Context, id, n
 		id, current.Name, string(rawConfig), current.MaxPlayers, current.Version, current.UpdatedAt); err != nil {
 		return domain.Instance{}, domain.Job{}, false, err
 	}
-	payload := map[string]any{"instance": current}
+	desired := current
+	desired.Port = desiredPort
+	payload := map[string]any{"instance": desired}
 	rawPayload, _ := json.Marshal(payload)
 	job := domain.Job{ID: uuid.NewString(), NodeID: current.NodeID, InstanceID: current.ID, Type: "configure", Status: domain.JobQueued,
 		Payload: payload, IdempotencyKey: idempotencyKey, RequestedBy: userID, CreatedAt: time.Now().UTC()}
@@ -745,6 +766,15 @@ func (s *Store) UpdateInstanceAndQueueWithFingerprint(ctx context.Context, id, n
 			return domain.Instance{}, domain.Job{}, false, ErrConflict
 		}
 		return domain.Instance{}, domain.Job{}, false, err
+	}
+	if portChanged {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO pending_instance_port_changes(job_id,instance_id,node_id,port)
+			VALUES(?1,?2,?3,?4)`, job.ID, current.ID, current.NodeID, desiredPort); err != nil {
+			if isSQLiteConstraint(err) {
+				return domain.Instance{}, domain.Job{}, false, ErrConflict
+			}
+			return domain.Instance{}, domain.Job{}, false, err
+		}
 	}
 	return current, job, false, tx.Commit()
 }

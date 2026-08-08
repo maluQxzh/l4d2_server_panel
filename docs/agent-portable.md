@@ -94,6 +94,8 @@ Windows Service 常驻模式使用：
 .\l4d2panel-agent-windows-amd64.exe install --config .\agent.yaml
 ```
 
+生产节点应使用 Windows Service 模式。前台模式属于调试入口，Agent 与游戏进程都位于当前交互桌面；Agent 会请求隐藏 SRCDS 的专用控制台，但控制台宿主或异常对话框仍可能出现在当前用户会话。Windows Service 位于非交互服务会话，游戏进程不会在管理员桌面显示前台窗口，同时仍保留 SRCDS 所需的控制台输入缓冲区。
+
 程序会自动请求 UAC，注册延迟自动启动的 `l4d2panel-agent` 服务，使用 `NT SERVICE\l4d2panel-agent` 虚拟服务账号，并把配置、数据目录、地图对象根、实例根和二进制 ACL 限制到服务 SID、Administrators 与 SYSTEM。目录 ACL 会把 SYSTEM/Administrators 的完全控制和服务 SID 的修改权限继承到之后创建的日志、journal、地图及其他子目录；配置文件和二进制保持非继承的文件权限。
 
 升级曾由旧版安装的节点后，以管理员身份幂等地重新执行同一条 `install --config .\agent.yaml` 命令即可重新同步现有部署根 ACL，不需要新注册令牌，也不会重建或清空 `data`。

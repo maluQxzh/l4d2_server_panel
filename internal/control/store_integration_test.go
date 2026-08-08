@@ -205,7 +205,7 @@ func TestSQLiteMigrationsAndCredentialLifecycle(t *testing.T) {
 	}
 
 	testReadAndWriteJobLocks(t, ctx, store, owner.ID)
-	testInstancePortReservations(t, ctx, store)
+	testInstancePortReservations(t, ctx, store, owner.ID)
 	testPublicInstanceProjection(t, ctx, store)
 	testBackupUploadLifecycle(t, ctx, store, owner.ID)
 	testBackupUploadAbort(t, ctx, store, owner.ID)
@@ -1499,7 +1499,7 @@ func testIdempotencyRequestEquivalence(t *testing.T, ctx context.Context, store 
 	}
 	firstCiphertext := "random-ciphertext-one"
 	firstRCONCiphertext := "rcon-ciphertext-one"
-	updated, configureJob, reused, err := store.UpdateInstanceAndQueueWithFingerprint(ctx, instanceB.ID, instanceB.Name, &config,
+	updated, configureJob, reused, err := store.UpdateInstanceAndQueueWithFingerprint(ctx, instanceB.ID, instanceB.Name, &config, nil,
 		instanceB.Version, ownerID, "equivalent-config", &firstRCONCiphertext, &firstCiphertext, configFingerprint)
 	if err != nil || reused {
 		t.Fatalf("queue configure job: reused=%v err=%v", reused, err)
@@ -1507,7 +1507,7 @@ func testIdempotencyRequestEquivalence(t *testing.T, ctx context.Context, store 
 	secondCiphertext := "random-ciphertext-two"
 	secondRCONCiphertext := "rcon-ciphertext-two"
 	replayedInstance, replayedConfigure, reused, err := store.UpdateInstanceAndQueueWithFingerprint(ctx, instanceB.ID, instanceB.Name,
-		&config, instanceB.Version, ownerID, "equivalent-config", &secondRCONCiphertext, &secondCiphertext, configFingerprint)
+		&config, nil, instanceB.Version, ownerID, "equivalent-config", &secondRCONCiphertext, &secondCiphertext, configFingerprint)
 	if err != nil || !reused || replayedConfigure.ID != configureJob.ID || replayedInstance.Version != updated.Version {
 		t.Fatalf("configure replay: instance=%#v job=%#v reused=%v err=%v", replayedInstance, replayedConfigure, reused, err)
 	}
@@ -1521,7 +1521,7 @@ func testIdempotencyRequestEquivalence(t *testing.T, ctx context.Context, store 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := store.UpdateInstanceAndQueueWithFingerprint(ctx, instanceB.ID, instanceB.Name, &config, instanceB.Version,
+	if _, _, _, err := store.UpdateInstanceAndQueueWithFingerprint(ctx, instanceB.ID, instanceB.Name, &config, nil, instanceB.Version,
 		ownerID, "equivalent-config", nil, &secondCiphertext, changedConfigFingerprint); !errors.Is(err, ErrConflict) {
 		t.Fatalf("changed config secret reused original key: %v", err)
 	}
@@ -1942,7 +1942,7 @@ func testReadAndWriteJobLocks(t *testing.T, ctx context.Context, store *Store, o
 	}
 }
 
-func testInstancePortReservations(t *testing.T, ctx context.Context, store *Store) {
+func testInstancePortReservations(t *testing.T, ctx context.Context, store *Store, ownerID string) {
 	t.Helper()
 	nodeID := uuid.NewString()
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'port-node','online')`, nodeID); err != nil {
@@ -1955,6 +1955,9 @@ func testInstancePortReservations(t *testing.T, ctx context.Context, store *Stor
 	})
 	if err != nil {
 		t.Fatalf("create first instance: %v", err)
+	}
+	if first.Config.Hostname != first.Name {
+		t.Fatalf("default server hostname = %q, want instance name %q", first.Config.Hostname, first.Name)
 	}
 	if _, err := store.CreateInstance(ctx, CreateInstanceInput{
 		NodeID: nodeID, Name: "game-on-tv", Port: 27020,
@@ -1980,6 +1983,72 @@ func testInstancePortReservations(t *testing.T, ctx context.Context, store *Stor
 		t.Fatalf("automatic port = %d, want 27017 (27015 SourceTV and 27016 game are occupied)", automatic.Port)
 	}
 
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	newPort := 27030
+	updated, portJob, reused, err := store.UpdateInstanceAndQueue(ctx, first.ID, "", nil, &newPort, first.Version,
+		ownerID, "change-instance-port", nil, nil)
+	if err != nil || reused {
+		t.Fatalf("queue port change: instance=%#v reused=%v err=%v", updated, reused, err)
+	}
+	if updated.Port != first.Port {
+		t.Fatalf("pending port change was projected before Agent success: %d", updated.Port)
+	}
+	desired, ok := portJob.Payload["instance"].(domain.Instance)
+	if !ok || desired.Port != newPort {
+		t.Fatalf("configure payload port = %#v", portJob.Payload["instance"])
+	}
+	if _, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: nodeID, Name: "pending-conflict", Port: newPort,
+		Config: domain.InstanceConfig{MaxPlayers: 8}}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("pending port was not reserved: %v", err)
+	}
+	portJob, err = store.UpdateJob(ctx, portJob.ID, domain.JobSucceeded, 100, "port configured", map[string]any{"instance_id": first.ID})
+	if err != nil {
+		t.Fatalf("complete port change job: %v", err)
+	}
+	if portJob, reused, err = store.ApplyPendingJobProjection(ctx, portJob.ID); err != nil || !reused {
+		t.Fatalf("project port change: applied=%v err=%v", reused, err)
+	}
+	changed, err := store.GetInstance(ctx, first.ID)
+	if err != nil || changed.Port != newPort {
+		t.Fatalf("changed instance port = %d, %v", changed.Port, err)
+	}
+	var reservedPort int
+	if err := store.db.QueryRowContext(ctx, `SELECT port FROM instance_port_reservations WHERE instance_id=?1 AND kind='game'`, first.ID).Scan(&reservedPort); err != nil || reservedPort != newPort {
+		t.Fatalf("changed reservation port = %d, %v", reservedPort, err)
+	}
+	failurePort := 27031
+	_, failedPortJob, reused, err := store.UpdateInstanceAndQueue(ctx, first.ID, "", nil, &failurePort, changed.Version,
+		ownerID, "failed-instance-port", nil, nil)
+	if err != nil || reused {
+		t.Fatalf("queue failing port change: reused=%v err=%v", reused, err)
+	}
+	failedPortJob, err = store.UpdateJob(ctx, failedPortJob.ID, domain.JobFailed, 10, "configuration failed", map[string]any{})
+	if err != nil {
+		t.Fatalf("fail port change job: %v", err)
+	}
+	if failedPortJob, reused, err = store.ApplyPendingJobProjection(ctx, failedPortJob.ID); err != nil || !reused {
+		t.Fatalf("release failed port change: applied=%v err=%v", reused, err)
+	}
+	var pending int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM pending_instance_port_changes WHERE instance_id=?1`, first.ID).Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("failed port change retained %d pending rows: %v", pending, err)
+	}
+	failedProjection, err := store.GetInstance(ctx, first.ID)
+	if err != nil || failedProjection.Port != newPort {
+		t.Fatalf("failed port change altered active port: %d, %v", failedProjection.Port, err)
+	}
+
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='running' WHERE id=?1`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	runningPort := 27032
+	if _, _, _, err := store.UpdateInstanceAndQueue(ctx, first.ID, "", nil, &runningPort, failedProjection.Version,
+		ownerID, "running-port-change", nil, nil); !errors.Is(err, ErrConflict) {
+		t.Fatalf("running instance accepted port change: %v", err)
+	}
+
 	const concurrentCreates = 8
 	type createResult struct {
 		instance domain.Instance
@@ -1995,7 +2064,7 @@ func testInstancePortReservations(t *testing.T, ctx context.Context, store *Stor
 			results <- createResult{instance: instance, err: createErr}
 		}(index)
 	}
-	ports := map[int]bool{first.Port: true, first.TVPort: true, automatic.Port: true, automatic.TVPort: true}
+	ports := map[int]bool{changed.Port: true, first.TVPort: true, automatic.Port: true, automatic.TVPort: true}
 	for range concurrentCreates {
 		result := <-results
 		if result.err != nil {

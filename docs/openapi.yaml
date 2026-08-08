@@ -769,12 +769,14 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
     patch:
       tags: [Instances]
-      summary: 更新名称或结构化配置并排队 configure
+      summary: 更新名称、结构化配置或停止实例的游戏端口并排队 configure
       description: |
         乐观并发版本位于 JSON 正文的 `version` 字段，不使用 `If-Match`。顶层 `rcon_password`
         只写入加密秘密存储，返回的配置不含明文，仅通过 `rcon_configured` 表示是否已设置；空字符串清除中心端凭据。
         客户端应始终提交当前非零修订号。更新只保留当前配置，不生成可查询或可回滚的历史版本。
         结构化配置不满足 InstanceConfig 的边界、安全 CVar 或启动参数规则时返回 `400 invalid_config`。
+        `port` 仅能在实例状态为 `stopped` 时修改；Control 在任务期间同时保留旧端口并预留新端口，
+        Agent 成功更新本地启动记录后才原子切换正式预留，失败或取消会释放待变更端口。
       parameters:
         - { $ref: "#/components/parameters/CSRF" }
         - { $ref: "#/components/parameters/IdempotencyKey" }
@@ -3031,6 +3033,13 @@ components:
       properties:
         name: { type: string, maxLength: 128 }
         config: { $ref: "#/components/schemas/InstanceConfig" }
+        port:
+          {
+            type: integer,
+            minimum: 1,
+            maximum: 65535,
+            description: 仅停止实例可修改；必须与 SourceTV 端口不同并且未被同节点其他实例或待变更任务预留。,
+          }
         rcon_password:
           {
             type: string,

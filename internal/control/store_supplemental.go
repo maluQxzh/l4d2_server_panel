@@ -410,6 +410,8 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 			steamcmd_status='unconfigured',steamcmd_version='',last_error='',last_inspected_at=?2,updated_at=?2 WHERE node_id=?1`,
 			job.NodeID, jobProjectionTimestamp(job))
 		return err
+	case "configure":
+		return s.applyInstanceConfigureResult(ctx, job)
 	case "game.install", "game.import", "game.validate", "game.update", "game.reinstall":
 		_, err := s.db.ExecContext(ctx, `UPDATE game_installations SET status='ready',build_id=COALESCE(NULLIF(?2,''),build_id),
 			last_error='',last_checked_at=?3,updated_at=?3 WHERE id=?1`, job.InstallationID,
@@ -665,8 +667,22 @@ func (s *Store) ApplyJobFailure(ctx context.Context, job domain.Job) error {
 	if job.Status != domain.JobFailed {
 		return nil
 	}
+	if job.Type == "configure" {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err := releasePendingInstancePortChangeTx(ctx, tx, job.ID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE instances SET status='degraded',updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
 	if job.Type == "start" || job.Type == "stop" || job.Type == "restart" || job.Type == "install" ||
-		job.Type == "reinstall" || job.Type == "import" || job.Type == "configure" || job.Type == "update" || job.Type == "validate" {
+		job.Type == "reinstall" || job.Type == "import" || job.Type == "update" || job.Type == "validate" {
 		_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='degraded',updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID)
 		if err == nil && job.InstallationID != "" && (job.Type == "import" || job.Type == "install" || job.Type == "reinstall" || job.Type == "update" || job.Type == "validate") {
 			_, err = s.db.ExecContext(ctx, `UPDATE game_installations SET status='degraded',last_error=?2,last_checked_at=?3,updated_at=?3 WHERE id=?1`,
@@ -792,7 +808,16 @@ func applyJobCancellationTx(ctx context.Context, tx *sql.Tx, job domain.Job) err
 		_, err := tx.ExecContext(ctx, `UPDATE game_installations SET status='degraded',last_error='operation canceled',updated_at=?2 WHERE id=?1`,
 			job.InstallationID, jobProjectionTimestamp(job))
 		return err
-	case "start", "stop", "restart", "install", "reinstall", "import", "configure", "update", "validate":
+	case "configure":
+		if job.InstanceID == "" {
+			return nil
+		}
+		if err := releasePendingInstancePortChangeTx(ctx, tx, job.ID); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE instances SET status='degraded',updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID)
+		return err
+	case "start", "stop", "restart", "install", "reinstall", "import", "update", "validate":
 		if job.InstanceID == "" {
 			return nil
 		}
@@ -802,6 +827,50 @@ func applyJobCancellationTx(ctx context.Context, tx *sql.Tx, job domain.Job) err
 	default:
 	}
 	return nil
+}
+
+func (s *Store) applyInstanceConfigureResult(ctx context.Context, job domain.Job) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var port int
+	if err := tx.QueryRowContext(ctx, `SELECT port FROM pending_instance_port_changes WHERE job_id=?1 AND instance_id=?2`, job.ID, job.InstanceID).Scan(&port); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return tx.Commit()
+		}
+		return err
+	}
+	desiredPort := 0
+	switch snapshot := job.Payload["instance"].(type) {
+	case map[string]any:
+		desiredPort = intFromAny(snapshot["port"])
+	case domain.Instance:
+		desiredPort = snapshot.Port
+	}
+	if desiredPort != port || stringFromAny(job.Result["instance_id"]) != job.InstanceID {
+		return errors.New("Agent returned invalid instance port configuration result")
+	}
+	if err := releasePendingInstancePortChangeTx(ctx, tx, job.ID); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE instance_port_reservations SET port=?2 WHERE instance_id=?1 AND kind='game'`, job.InstanceID, port)
+	if err != nil {
+		return err
+	}
+	if resultRowsAffected(result) != 1 {
+		return errors.New("instance game port reservation is missing")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE instances SET port=?2,updated_at=?3 WHERE id=?1`, job.InstanceID, port, jobProjectionTimestamp(job)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func releasePendingInstancePortChangeTx(ctx context.Context, tx *sql.Tx, jobID string) error {
+	_, err := tx.ExecContext(ctx, `DELETE FROM pending_instance_port_changes WHERE job_id=?1`, jobID)
+	return err
 }
 
 func intFromAny(value any) int {

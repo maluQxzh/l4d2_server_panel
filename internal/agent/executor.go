@@ -436,6 +436,9 @@ func (e *Executor) configure(_ context.Context, job domain.Job, progress Progres
 
 func (e *Executor) applyConfiguration(record InstanceRecord, payload operationPayload) (InstanceRecord, string, error) {
 	config := payload.Instance.Config
+	if payload.Instance.Port != 0 && payload.Instance.Port != record.RCONPort && e.processes != nil && e.processes.HasActiveProcess(record.ID) {
+		return record, "", errors.New("game port can only be changed while the instance is stopped")
+	}
 	instancePath, err := e.instancePath(record)
 	if err != nil {
 		return record, "", err

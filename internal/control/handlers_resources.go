@@ -226,6 +226,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		request.Operation = "import"
 	}
 	discardRetiredInstanceConfigFields(&request.Config)
+	if strings.TrimSpace(request.Config.Hostname) == "" {
+		request.Config.Hostname = strings.TrimSpace(request.Name)
+	}
 	if err := validateStructuredConfig(request.Config); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_config", err.Error())
 		return
@@ -376,6 +379,7 @@ func (s *Server) handlePatchInstance(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Name         string                 `json:"name"`
 		Config       *domain.InstanceConfig `json:"config,omitempty"`
+		Port         *int                   `json:"port,omitempty"`
 		RCONPassword *string                `json:"rcon_password,omitempty"`
 		Version      int                    `json:"version"`
 	}
@@ -402,6 +406,10 @@ func (s *Server) handlePatchInstance(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if request.Port != nil && (*request.Port < 1 || *request.Port > 65535) {
+		writeError(w, http.StatusBadRequest, "invalid_config", "game port must be between 1 and 65535")
+		return
+	}
 	var encryptedRCONPassword *string
 	if request.RCONPassword != nil {
 		encrypted, encryptErr := encryptSecret(s.config.MasterKey, *request.RCONPassword)
@@ -411,7 +419,7 @@ func (s *Server) handlePatchInstance(w http.ResponseWriter, r *http.Request) {
 		}
 		encryptedRCONPassword = &encrypted
 	}
-	instance, job, reused, err := s.store.UpdateInstanceAndQueueWithFingerprint(r.Context(), instanceID, request.Name, request.Config,
+	instance, job, reused, err := s.store.UpdateInstanceAndQueueWithFingerprint(r.Context(), instanceID, request.Name, request.Config, request.Port,
 		request.Version, principal.User.ID, r.Header.Get("Idempotency-Key"), encryptedRCONPassword, nil, requestFingerprint)
 	if err != nil {
 		s.fail(w, err)
