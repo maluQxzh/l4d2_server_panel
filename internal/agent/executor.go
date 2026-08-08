@@ -147,6 +147,8 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 			return e.importInstance(ctx, job, progress)
 		}
 		return e.gameInstallationAction(ctx, job, action, progress)
+	case "game.delete":
+		return e.deleteGameInstallation(job, progress)
 	case "create":
 		return e.create(ctx, job, progress)
 	case "configure":

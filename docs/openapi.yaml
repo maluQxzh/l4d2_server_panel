@@ -681,6 +681,29 @@ paths:
         "202": { description: 维护任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /environments/{environmentId}/game-installations/{installationId}:
+    delete:
+      tags: [Environments]
+      summary: 删除未绑定的游戏安装
+      description: 需要交互式浏览器会话和 `environments.manage` 权限。`record` 只移除 Control 与 Agent 的登记，保留节点文件；`files` 还会永久删除登记的整个绝对路径目录。两种模式都拒绝仍绑定实例的安装，并需要 Agent 声明 `game_installation_delete_v1` 能力。
+      parameters:
+        - { name: environmentId, in: path, required: true, schema: { type: string } }
+        - { name: installationId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode: { type: string, enum: [record, files] }
+      responses:
+        "202": { description: 删除任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /instances:
     get:
       tags: [Instances]

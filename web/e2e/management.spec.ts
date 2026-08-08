@@ -27,8 +27,8 @@ const environment = {
 };
 
 const gameInstallation = {
-  id: "installation-1", environment_id: environment.id, node_id: node.id, root_index: 0,
-  path: "existing/server-a", app_id: 222860, status: "ready", build_id: "123456",
+  id: "installation-1", environment_id: environment.id, node_id: node.id,
+  path: "/srv/l4d2/server-a", app_id: 222860, status: "ready", build_id: "123456",
   created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z",
 };
 
@@ -102,6 +102,31 @@ test("运行环境可配置自定义 SteamCMD 并手动登记游戏目录", asyn
   await page.getByLabel("节点绝对路径").fill("/srv/l4d2/server-b");
   await page.getByRole("button", { name: "提交任务" }).click();
   await expect.poll(() => gameBody).toEqual({ path: "/srv/l4d2/server-b", operation: "import" });
+});
+
+test("删除游戏安装时选择仅删记录或永久删除全部文件", async ({ page }) => {
+  await authenticated(page);
+  await page.route("**/api/v1/environments", (route) => json(route, { items: [environment] }));
+  await page.route("**/api/v1/environments/environment-1/game-installations", (route) => json(route, { items: [gameInstallation] }));
+  const deletionBodies: Array<Record<string, unknown>> = [];
+  await page.route("**/api/v1/environments/environment-1/game-installations/installation-1", async (route) => {
+    deletionBodies.push(route.request().postDataJSON() as Record<string, unknown>);
+    return json(route, { job_id: `job-delete-${deletionBodies.length}` }, 202);
+  });
+
+  await page.goto("/environments");
+  await page.getByRole("button", { name: "删除", exact: true }).click();
+  const deletionDialog = page.getByRole("dialog", { name: "删除游戏安装" });
+  await expect(deletionDialog.getByText("仅删除记录", { exact: true })).toBeVisible();
+  await expect(deletionDialog.locator("strong").filter({ hasText: "删除记录和全部文件" })).toBeVisible();
+  await expect(deletionDialog.getByText(gameInstallation.path, { exact: true })).toBeVisible();
+  await deletionDialog.getByRole("button", { name: "删除记录", exact: true }).click();
+  await expect.poll(() => deletionBodies).toEqual([{ mode: "record" }]);
+
+  await page.getByRole("button", { name: "删除", exact: true }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("dialog", { name: "删除游戏安装" }).getByRole("button", { name: "删除记录和全部文件", exact: true }).click();
+  await expect.poll(() => deletionBodies).toEqual([{ mode: "record" }, { mode: "files" }]);
 });
 
 test("轮换节点凭据后一次性显示明文和重启提示", async ({ page }) => {

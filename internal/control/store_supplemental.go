@@ -421,6 +421,21 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 			status=CASE WHEN status IN ('installing','updating','degraded') THEN 'stopped' ELSE status END,
 			updated_at=?3 WHERE installation_id=?1`, job.InstallationID, stringFromAny(job.Result["build_id"]), jobProjectionTimestamp(job))
 		return err
+	case "game.delete":
+		installationID := stringFromAny(job.Payload["installation_id"])
+		mode := stringFromAny(job.Payload["mode"])
+		filesDeleted, _ := job.Result["files_deleted"].(bool)
+		if installationID == "" || stringFromAny(job.Result["installation_id"]) != installationID ||
+			stringFromAny(job.Result["path"]) != stringFromAny(job.Payload["path"]) ||
+			(mode != "record" && mode != "files") || filesDeleted != (mode == "files") {
+			return errors.New("game installation deletion result does not match the request")
+		}
+		result, err := s.db.ExecContext(ctx, `DELETE FROM game_installations WHERE id=?1 AND node_id=?2
+			AND NOT EXISTS(SELECT 1 FROM instances WHERE installation_id=game_installations.id)`, installationID, job.NodeID)
+		if err == nil && resultRowsAffected(result) == 0 {
+			return ErrNotFound
+		}
+		return err
 	case "start", "restart":
 		if stringFromAny(job.Result["status"]) == "stopped" {
 			_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,started_at=NULL,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID)

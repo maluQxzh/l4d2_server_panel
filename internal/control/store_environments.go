@@ -249,7 +249,7 @@ func (s *Store) RemovePendingGameInstallation(ctx context.Context, id string) er
 var environmentJobTypes = map[string]bool{
 	"environment.inspect": true, "steamcmd.configure": true, "steamcmd.clear": true, "steamcmd.install": true,
 	"steamcmd.repair": true, "game.install": true, "game.import": true, "game.validate": true,
-	"game.update": true, "game.reinstall": true,
+	"game.update": true, "game.reinstall": true, "game.delete": true,
 }
 
 func (s *Store) QueueEnvironmentJob(ctx context.Context, environmentID, installationID, action string, payload map[string]any,
@@ -315,6 +315,9 @@ func (s *Store) QueueEnvironmentJob(ctx context.Context, environmentID, installa
 		}
 		if installationNodeID != nodeID {
 			return domain.Job{}, false, ErrConflict
+		}
+		if boundInstanceID != "" && action == "game.delete" {
+			return domain.Job{}, false, fmt.Errorf("bound game installation cannot be deleted: %w", ErrConflict)
 		}
 		if boundInstanceID != "" && action == "game.install" {
 			return domain.Job{}, false, fmt.Errorf("bound game installation cannot be installed again: %w", ErrConflict)

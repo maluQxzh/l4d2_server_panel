@@ -273,6 +273,10 @@ export const api = {
   gameInstallationAction: (environmentId: string, installationId: string, action: "install" | "import" | "validate" | "update" | "reinstall", location?: { path: string }) => request<{ job_id: string }>(
     `/environments/${encodeURIComponent(environmentId)}/game-installations/${encodeURIComponent(installationId)}/actions`, { method: "POST", body: JSON.stringify({ action, ...location }) },
   ),
+  deleteGameInstallation: (environmentId: string, installationId: string, mode: "record" | "files") => request<{ job_id: string }>(
+    `/environments/${encodeURIComponent(environmentId)}/game-installations/${encodeURIComponent(installationId)}`,
+    { method: "DELETE", body: JSON.stringify({ mode }) },
+  ),
   instances: () => list<InstanceRecord>("/instances"),
   instance: (id: string) => request<{ instance: InstanceRecord }>(`/instances/${encodeURIComponent(id)}`).then((r) => r.instance),
   createInstance: (payload: Record<string, unknown>) => request<{ instance?: InstanceRecord; job_id: string }>("/instances", {

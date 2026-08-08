@@ -308,3 +308,54 @@ func (s *Server) handleGameInstallationAction(w http.ResponseWriter, r *http.Req
 	}
 	s.queueEnvironmentRequestWithFingerprint(w, r, item, installation.ID, action, payload, fingerprint)
 }
+
+func (s *Server) handleDeleteGameInstallation(w http.ResponseWriter, r *http.Request) {
+	item, ok := s.environmentForRequest(w, r, PermissionEnvironmentsManage)
+	if !ok || !s.requireEnvironmentAgent(w, item) {
+		return
+	}
+	if !s.agents.Supports(item.NodeID, "game_installation_delete_v1") {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "connected Agent does not support game installation deletion")
+		return
+	}
+	var request struct {
+		Mode string `json:"mode"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	request.Mode = strings.ToLower(strings.TrimSpace(request.Mode))
+	if request.Mode != "record" && request.Mode != "files" {
+		writeError(w, http.StatusBadRequest, "invalid_deletion_mode", "mode must be record or files")
+		return
+	}
+	installationID := chi.URLParam(r, "installationID")
+	fingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "game-installation-delete", installationID, request.Mode, request)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	principal := principalFromContext(r.Context())
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+	if existing, lookupErr := s.store.JobByIdempotencyKeyMatching(r.Context(), principal.User.ID, idempotencyKey, fingerprint); lookupErr == nil {
+		if existing.NodeID != item.NodeID || existing.Type != "game.delete" || stringFromAny(existing.Payload["installation_id"]) != installationID {
+			s.fail(w, ErrConflict)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"job_id": existing.ID, "idempotent_replay": true})
+		return
+	} else if !errors.Is(lookupErr, ErrNotFound) {
+		s.fail(w, lookupErr)
+		return
+	}
+	installation, ok := s.installationForRequest(w, r, item)
+	if !ok {
+		return
+	}
+	payload := map[string]any{
+		"installation_id": installation.ID,
+		"path":            installation.Path,
+		"mode":            request.Mode,
+	}
+	s.queueEnvironmentRequestWithFingerprint(w, r, item, installation.ID, "game.delete", payload, fingerprint)
+}

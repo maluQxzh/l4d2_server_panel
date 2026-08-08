@@ -46,4 +46,23 @@ describe("实时节点事件", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["nodes"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["instances"] });
   });
+
+  it("任务更新时刷新运行环境投影", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    render(
+      <QueryClientProvider client={client}>
+        <RealtimeProvider><span>ready</span></RealtimeProvider>
+      </QueryClientProvider>,
+    );
+
+    act(() => {
+      FakeWebSocket.instances[0].onmessage?.({
+        data: JSON.stringify({ id: 2, type: "job.updated", resource_type: "job", resource_id: "job-a", created_at: "2026-08-09T00:00:00Z" }),
+      } as MessageEvent);
+    });
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["environments"] });
+  });
 });

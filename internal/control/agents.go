@@ -547,6 +547,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, canceled := client.canceled[job.ID]
 		_, runtimeEnvironmentSupported := client.capabilities["runtime_environment_v1"]
 		_, absoluteGamePathsSupported := client.capabilities["absolute_game_paths"]
+		_, gameInstallationDeleteSupported := client.capabilities["game_installation_delete_v1"]
 		_, serverConfigNativeSupported := client.capabilities["server_cfg_native"]
 		_, qqFlashFileSupported := client.capabilities["qq_flash_file_v1"]
 		_, legacyQQFlashPackageSupported := client.capabilities["qq_flash_package_v1"]
@@ -561,6 +562,9 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		if environmentJobTypes[job.Type] && !runtimeEnvironmentSupported {
 			// A node may reconnect with an older Agent after a job was queued.
 			// Leave the durable intent queued until a compatible Agent returns.
+			continue
+		}
+		if job.Type == "game.delete" && !gameInstallationDeleteSupported {
 			continue
 		}
 		if job.Type == "file" && strings.EqualFold(stringFromAny(job.Payload["operation"]), "qq_flash") && !qqFlashFileSupported {

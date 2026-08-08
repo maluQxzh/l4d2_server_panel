@@ -171,6 +171,23 @@ func TestRuntimeEnvironmentResourcesAndExclusiveBinding(t *testing.T) {
 	if _, err := store.CreateGameInstallation(ctx, environment.ID, `d:/gameservers/ABSOLUTE-ONE`); !errors.Is(err, ErrConflict) {
 		t.Fatalf("case-variant absolute Windows path was accepted: %v", err)
 	}
+	deletePayload := map[string]any{"installation_id": absoluteInstallation.ID, "path": absoluteInstallation.Path, "mode": "record"}
+	deleteJob, _, err := store.QueueEnvironmentJob(ctx, environment.ID, absoluteInstallation.ID, "game.delete", deletePayload, "", "", "")
+	if err != nil {
+		t.Fatalf("queue game installation deletion: %v", err)
+	}
+	if _, _, err := store.QueueEnvironmentJob(ctx, environment.ID, absoluteInstallation.ID, "game.import",
+		map[string]any{"path": absoluteInstallation.Path}, "", "", ""); !errors.Is(err, ErrConflict) {
+		t.Fatalf("game installation deletion overlapped another write: %v", err)
+	}
+	deleteJob.Status = domain.JobSucceeded
+	deleteJob.Result = map[string]any{"installation_id": absoluteInstallation.ID, "path": absoluteInstallation.Path, "files_deleted": false}
+	if err := store.ApplyJobResult(ctx, deleteJob); err != nil {
+		t.Fatalf("project game installation deletion: %v", err)
+	}
+	if _, err := store.GetGameInstallation(ctx, absoluteInstallation.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted game installation record still exists: %v", err)
+	}
 	if _, _, err := store.QueueEnvironmentJob(ctx, environment.ID, installation.ID, "game.install",
 		map[string]any{"path": "D:/GameServers/one"}, "", "", ""); !errors.Is(err, ErrConflict) {
 		t.Fatalf("game install without ready SteamCMD was accepted: %v", err)
@@ -205,6 +222,10 @@ func TestRuntimeEnvironmentResourcesAndExclusiveBinding(t *testing.T) {
 	}
 	if _, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: nodeID, InstallationID: installation.ID, Name: "two", Config: config}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("game installation was bound twice: %v", err)
+	}
+	if _, _, err := store.QueueEnvironmentJob(ctx, environment.ID, installation.ID, "game.delete",
+		map[string]any{"installation_id": installation.ID, "path": installation.Path, "mode": "record"}, "", "", ""); !errors.Is(err, ErrConflict) {
+		t.Fatalf("bound game installation deletion was accepted: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
 		t.Fatal(err)

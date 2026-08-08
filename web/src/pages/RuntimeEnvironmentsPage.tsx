@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, FolderInput, HardDrive, Plus, RefreshCw, Settings2, ShieldAlert, Wrench } from "lucide-react";
+import { Download, FolderInput, HardDrive, Plus, RefreshCw, Settings2, ShieldAlert, Trash2, Wrench } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, StatusBadge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
@@ -13,15 +13,17 @@ export function RuntimeEnvironmentsPage() {
   const query = useQuery({ queryKey: ["environments"], queryFn: api.environments });
   const [steamTarget, setSteamTarget] = useState<RuntimeEnvironmentRecord | null>(null);
   const [gameTarget, setGameTarget] = useState<RuntimeEnvironmentRecord | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ environment: RuntimeEnvironmentRecord; installation: GameInstallationRecord } | null>(null);
   return <div>
     <PageHeader eyebrow="RUNTIME ENVIRONMENTS" title="运行环境" description="集中准备 SteamCMD 和独占的 L4D2 游戏安装；Agent 不会扫描磁盘或在安装时自动下载游戏。" actions={<Button variant="secondary" onClick={() => void query.refetch()}><RefreshCw size={16} />刷新列表</Button>} />
-    {query.isPending ? <LoadingBlock label="正在读取节点运行环境…" /> : query.error ? <ErrorState error={query.error} retry={() => void query.refetch()} /> : !query.data.items.length ? <Card><EmptyState title="还没有节点运行环境" description="注册节点后会自动生成对应的运行环境。" /></Card> : <div className="environment-grid">{query.data.items.map((environment) => <EnvironmentCard key={environment.id} environment={environment} configureSteam={() => setSteamTarget(environment)} addGame={() => setGameTarget(environment)} />)}</div>}
+    {query.isPending ? <LoadingBlock label="正在读取节点运行环境…" /> : query.error ? <ErrorState error={query.error} retry={() => void query.refetch()} /> : !query.data.items.length ? <Card><EmptyState title="还没有节点运行环境" description="注册节点后会自动生成对应的运行环境。" /></Card> : <div className="environment-grid">{query.data.items.map((environment) => <EnvironmentCard key={environment.id} environment={environment} configureSteam={() => setSteamTarget(environment)} addGame={() => setGameTarget(environment)} deleteGame={(installation) => setDeleteTarget({ environment, installation })} />)}</div>}
     <SteamCMDModal environment={steamTarget} onClose={() => setSteamTarget(null)} />
     <GameInstallationModal environment={gameTarget} onClose={() => setGameTarget(null)} />
+    <DeleteGameInstallationModal target={deleteTarget} onClose={() => setDeleteTarget(null)} />
   </div>;
 }
 
-function EnvironmentCard({ environment, configureSteam, addGame }: { environment: RuntimeEnvironmentRecord; configureSteam: () => void; addGame: () => void }) {
+function EnvironmentCard({ environment, configureSteam, addGame, deleteGame }: { environment: RuntimeEnvironmentRecord; configureSteam: () => void; addGame: () => void; deleteGame: (installation: GameInstallationRecord) => void }) {
   const { user } = useAuth();
   const toast = useToast();
   const client = useQueryClient();
@@ -38,8 +40,20 @@ function EnvironmentCard({ environment, configureSteam, addGame }: { environment
     <div className="environment-summary"><div><Wrench size={18} /><span>系统依赖</span><strong>{String(environment.system_dependencies.status || "未检测")}</strong></div><div><Settings2 size={18} /><span>SteamCMD</span><strong>{environment.steamcmd_status === "ready" ? "可用" : environment.steamcmd_status === "error" ? "异常" : "未配置"}</strong></div><div><HardDrive size={18} /><span>游戏安装</span><strong>{items.length}</strong></div></div>
     <div className="environment-path"><span>活动 SteamCMD</span><code>{environment.steamcmd_path || "未配置"}</code>{environment.last_error && <small>{environment.last_error}</small>}</div>
     <div className="environment-actions"><Button variant="secondary" disabled={!canRunTasks} loading={inspect.isPending} onClick={() => inspect.mutate()}><RefreshCw size={15} />手动检测</Button><Button variant="secondary" disabled={!canRunTasks} onClick={configureSteam}><Settings2 size={15} />配置 SteamCMD</Button><Button disabled={!canRunTasks} onClick={addGame}><Plus size={15} />添加游戏安装</Button></div>
-    <div className="installation-list">{installations.isPending ? <LoadingBlock /> : items.length ? items.map((item) => <div className="installation-row" key={item.id}><div><strong>{item.path}</strong><small>节点绝对路径 · App {item.app_id} · 构建 {item.build_id || "待检测"}{item.last_checked_at ? ` · ${dateTime(item.last_checked_at)}` : ""}</small>{item.last_error && <small className="text-danger">{item.last_error}</small>}</div><StatusBadge status={item.status} /><div className="installation-row__actions"><Button variant="ghost" disabled={!canRunTasks || action.isPending} onClick={() => action.mutate({ item, type: "import" })}>检测 srcds</Button><Button variant="ghost" disabled={!canRunTasks || action.isPending} onClick={() => { const nextPath = window.prompt("节点主机上的游戏安装绝对路径", item.path); if (nextPath?.trim()) action.mutate({ item, type: "import", location: { path: nextPath.trim() } }); }}>修改路径</Button><Button variant="ghost" disabled={!canRunTasks || action.isPending} onClick={() => action.mutate({ item, type: "validate" })}>Steam 校验</Button><Button variant="ghost" disabled={!canRunTasks || action.isPending} onClick={() => action.mutate({ item, type: "update" })}>更新</Button><Button variant="ghost" disabled={!canRunTasks || action.isPending} onClick={() => action.mutate({ item, type: "reinstall" })}>重装</Button></div></div>) : <EmptyState title="没有游戏安装" description="可以安装新的 App 222860，或登记并检测手动准备好的绝对目录。" />}</div>
+    <div className="installation-list">{installations.isPending ? <LoadingBlock /> : items.length ? items.map((item) => <div className="installation-row" key={item.id}><div><strong>{item.path}</strong><small>节点绝对路径 · App {item.app_id} · 构建 {item.build_id || "待检测"}{item.last_checked_at ? ` · ${dateTime(item.last_checked_at)}` : ""}</small>{item.last_error && <small className="text-danger">{item.last_error}</small>}</div><StatusBadge status={item.status} /><div className="installation-row__actions"><Button variant="ghost" disabled={!canRunTasks || action.isPending} onClick={() => action.mutate({ item, type: "import" })}>检测 srcds</Button><Button variant="ghost" disabled={!canRunTasks || action.isPending} onClick={() => { const nextPath = window.prompt("节点主机上的游戏安装绝对路径", item.path); if (nextPath?.trim()) action.mutate({ item, type: "import", location: { path: nextPath.trim() } }); }}>修改路径</Button><Button variant="ghost" disabled={!canRunTasks || action.isPending} onClick={() => action.mutate({ item, type: "validate" })}>Steam 校验</Button><Button variant="ghost" disabled={!canRunTasks || action.isPending} onClick={() => action.mutate({ item, type: "update" })}>更新</Button><Button variant="ghost" disabled={!canRunTasks || action.isPending} onClick={() => action.mutate({ item, type: "reinstall" })}>重装</Button><Button variant="danger" disabled={!canRunTasks || action.isPending || Boolean(item.bound_instance_id)} title={item.bound_instance_id ? "请先删除绑定的游戏实例" : undefined} onClick={() => deleteGame(item)}><Trash2 size={14} />删除</Button></div></div>) : <EmptyState title="没有游戏安装" description="可以安装新的 App 222860，或登记并检测手动准备好的绝对目录。" />}</div>
   </Card>;
+}
+
+function DeleteGameInstallationModal({ target, onClose }: { target: { environment: RuntimeEnvironmentRecord; installation: GameInstallationRecord } | null; onClose: () => void }) {
+  const toast = useToast();
+  const client = useQueryClient();
+  const remove = useMutation({ mutationFn: ({ environmentId, installationId, mode }: { environmentId: string; installationId: string; mode: "record" | "files" }) => api.deleteGameInstallation(environmentId, installationId, mode), onSuccess: (_result, values) => { toast.push(values.mode === "files" ? "游戏安装和全部文件删除任务已提交" : "游戏安装记录删除任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); void client.invalidateQueries({ queryKey: ["environments", values.environmentId, "game-installations"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
+  const deleteWithMode = (mode: "record" | "files") => {
+    if (target) remove.mutate({ environmentId: target.environment.id, installationId: target.installation.id, mode });
+  };
+  return <Modal open={Boolean(target)} onClose={onClose} title="删除游戏安装" description="请选择只移除面板记录，还是同时永久删除节点上的整个安装目录。" footer={<Button variant="secondary" onClick={onClose} disabled={remove.isPending}>取消</Button>}>
+    <div className="form-stack"><div className="form-note"><strong>安装路径</strong><code>{target?.installation.path}</code></div><div className="form-note"><strong>仅删除记录</strong><span>从面板和 Agent 登记中移除该安装，节点上的游戏文件全部保留。</span><Button variant="secondary" loading={remove.isPending} disabled={remove.isPending} onClick={() => deleteWithMode("record")}>删除记录</Button></div><div className="form-warning"><ShieldAlert size={17} /><span><strong>删除记录和全部文件</strong><small>永久删除上方安装目录及其中所有文件，无法通过面板恢复。</small></span></div><Button variant="danger" loading={remove.isPending} disabled={remove.isPending} onClick={() => { if (window.confirm(`永久删除“${target?.installation.path}”中的全部文件？此操作无法撤销。`)) deleteWithMode("files"); }}><Trash2 size={15} />删除记录和全部文件</Button></div>
+  </Modal>;
 }
 
 function SteamCMDModal({ environment, onClose }: { environment: RuntimeEnvironmentRecord | null; onClose: () => void }) {
