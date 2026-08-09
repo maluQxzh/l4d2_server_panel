@@ -461,14 +461,15 @@ func (s *Store) GetInstance(ctx context.Context, id string) (domain.Instance, er
 }
 
 type CreateInstanceInput struct {
-	NodeID         string
-	InstallationID string
-	Name           string
-	Path           string
-	Host           string
-	Port           int
-	TVPort         int
-	Config         domain.InstanceConfig
+	NodeID                    string
+	InstallationID            string
+	ProvisionalInstallationID string
+	Name                      string
+	Path                      string
+	Host                      string
+	Port                      int
+	TVPort                    int
+	Config                    domain.InstanceConfig
 }
 
 func (s *Store) CreateInstance(ctx context.Context, input CreateInstanceInput) (domain.Instance, error) {
@@ -514,7 +515,9 @@ func (s *Store) CreateInstance(ctx context.Context, input CreateInstanceInput) (
 			}
 			return domain.Instance{}, err
 		}
-		if installationNodeID != input.NodeID || installationStatus != "ready" || bound {
+		provisionalImport := installationStatus == "pending" && input.ProvisionalInstallationID != "" &&
+			input.ProvisionalInstallationID == input.InstallationID
+		if installationNodeID != input.NodeID || (installationStatus != "ready" && !provisionalImport) || bound {
 			return domain.Instance{}, ErrConflict
 		}
 	}

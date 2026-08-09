@@ -300,7 +300,8 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		provisionalInstallationID = installation.ID
 	}
 	instance, err := s.store.CreateInstance(r.Context(), CreateInstanceInput{NodeID: request.NodeID, Name: request.Name,
-		InstallationID: request.InstallationID, Path: request.Path, Host: request.Host, Port: request.Port, TVPort: request.TVPort, Config: request.Config})
+		InstallationID: request.InstallationID, ProvisionalInstallationID: provisionalInstallationID,
+		Path: request.Path, Host: request.Host, Port: request.Port, TVPort: request.TVPort, Config: request.Config})
 	if err != nil {
 		removeProvisionalInstallation()
 		if errors.Is(err, ErrConflict) {

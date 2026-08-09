@@ -254,3 +254,37 @@ func TestRuntimeEnvironmentResourcesAndExclusiveBinding(t *testing.T) {
 		t.Fatalf("bound import did not acquire the instance write lock: %#v %v", retry, err)
 	}
 }
+
+func TestCreateInstanceOnlyBindsPendingInstallationForItsProvisionalImport(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "control.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	nodeID := uuid.NewString()
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status,os,arch,agent_version,address,instance_root,agent_credential_hash,created_at)
+		VALUES(?1,'node','online','linux','amd64','test','','/srv/l4d2',X'00',?2)`, nodeID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	installation, err := store.CreateGameInstallation(ctx, "environment-"+nodeID, "/srv/l4d2/import")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := CreateInstanceInput{NodeID: nodeID, InstallationID: installation.ID, Name: "import", Config: domain.InstanceConfig{MaxPlayers: 4}}
+	if _, err := store.CreateInstance(ctx, input); !errors.Is(err, ErrConflict) {
+		t.Fatalf("ordinary pending installation binding error=%v, want conflict", err)
+	}
+	input.ProvisionalInstallationID = uuid.NewString()
+	if _, err := store.CreateInstance(ctx, input); !errors.Is(err, ErrConflict) {
+		t.Fatalf("mismatched provisional installation binding error=%v, want conflict", err)
+	}
+	input.ProvisionalInstallationID = installation.ID
+	instance, err := store.CreateInstance(ctx, input)
+	if err != nil || instance.InstallationID != installation.ID {
+		t.Fatalf("bind matching provisional installation: instance=%#v err=%v", instance, err)
+	}
+}

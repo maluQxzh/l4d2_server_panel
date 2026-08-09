@@ -728,8 +728,8 @@ paths:
                     }
     post:
       tags: [Instances]
-      summary: 将已验证游戏安装绑定为实例
-      description: "提交所选运行节点上已就绪且未绑定的 `game_installation_id`。Agent 直接建立独占绑定并保存启动资料，不生成或注入 l4d2panel.cfg，不重复校验或安装游戏，也不会启动服务器。可选 RCON 密码只作为中心端加密连接凭据保存，必须与 server.cfg 一致。"
+      summary: 绑定或导入游戏安装并创建实例
+      description: "提交所选运行节点上已就绪且未绑定的 `game_installation_id`，或提交 `operation=import` 和节点绝对路径。路径导入会创建仅限本次请求绑定的临时安装记录，再由 Agent 检测 srcds 并完成登记；不能借此绑定其他 pending 安装。两种方式都不生成或注入 l4d2panel.cfg，也不会启动服务器。可选 RCON 密码只作为中心端加密连接凭据保存，必须与 server.cfg 一致。"
       parameters:
         - { $ref: "#/components/parameters/CSRF" }
         - { $ref: "#/components/parameters/IdempotencyKey" }
@@ -3036,11 +3036,17 @@ components:
 
     CreateInstanceRequest:
       type: object
-      required: [node_id, game_installation_id, name, config]
+      required: [node_id, name, config]
+      oneOf:
+        - required: [game_installation_id]
+        - required: [operation, path]
       properties:
         node_id: { type: string, format: uuid }
         name: { type: string, minLength: 1, maxLength: 128 }
         game_installation_id: { type: string, format: uuid, description: 所选节点上已就绪且未绑定的游戏安装 }
+        operation: { type: string, const: import, description: 提交 path 时显式选择节点现有目录导入。 }
+        path: { type: string, minLength: 1, maxLength: 1024, description: 待导入的节点 Windows 盘符绝对路径或 Linux 绝对路径。 }
+        executable: { type: string, enum: [srcds.exe, srcds_run, srcds_linux], description: 可选的平台固定服务端文件名。 }
         host: { type: string, default: 0.0.0.0 }
         port:
           {
