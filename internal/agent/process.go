@@ -213,38 +213,59 @@ func (m *ProcessManager) wait(p *managedProcess, cmd *exec.Cmd, platform *platfo
 	m.mu.Unlock()
 	if restart {
 		m.logger.Printf("instance %s exited unexpectedly (%v); restarting", p.spec.InstanceID, err)
-		time.AfterFunc(5*time.Second, func() {
-			m.mu.Lock()
-			if p.stopRequested || p.cmd != nil || m.items[p.spec.InstanceID] != p {
-				m.mu.Unlock()
-				return
-			}
-			p.done = make(chan struct{})
-			p.launching = true
-			p.state.Status = "starting"
-			m.mu.Unlock()
-			if launchErr := m.launch(p); launchErr != nil {
-				m.mu.Lock()
-				p.launching = false
-				p.state.Status = "crash_loop"
-				p.state.ExitError = launchErr.Error()
-				close(p.done)
-				m.mu.Unlock()
-			}
-		})
+		time.AfterFunc(5*time.Second, func() { m.restartAfterCrash(p) })
+	}
+}
+
+func (m *ProcessManager) restartAfterCrash(p *managedProcess) {
+	m.mu.Lock()
+	if p.stopRequested || p.cmd != nil || m.items[p.spec.InstanceID] != p {
+		m.mu.Unlock()
+		return
+	}
+	p.done = make(chan struct{})
+	p.launching = true
+	p.state.Status = "starting"
+	m.mu.Unlock()
+	if launchErr := m.launch(p); launchErr != nil {
+		m.mu.Lock()
+		p.launching = false
+		p.state.Status = "crash_loop"
+		p.state.ExitError = launchErr.Error()
+		close(p.done)
+		m.mu.Unlock()
+	}
+}
+
+// RequestStop records the operator's stop intent before a graceful RCON quit is
+// sent. It also cancels a delayed automatic restart after an earlier crash.
+func (m *ProcessManager) RequestStop(instanceID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p := m.items[instanceID]
+	if p == nil {
+		return
+	}
+	p.stopRequested = true
+	if p.cmd != nil || p.launching {
+		p.state.Status = "stopping"
 	}
 }
 
 func (m *ProcessManager) Stop(instanceID string, timeout time.Duration) error {
 	m.mu.Lock()
 	p := m.items[instanceID]
-	if p == nil || (p.cmd == nil && !p.launching) {
+	if p == nil {
 		m.mu.Unlock()
 		return nil
 	}
 	p.stopRequested = true
+	if p.cmd == nil && !p.launching {
+		m.mu.Unlock()
+		return nil
+	}
 	cmd, platform, done := p.cmd, p.platform, p.done
-	if cmd != nil {
+	if cmd != nil || p.launching {
 		p.state.Status = "stopping"
 	}
 	m.mu.Unlock()

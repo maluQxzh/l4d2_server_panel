@@ -729,6 +729,7 @@ func (e *Executor) stop(ctx context.Context, job domain.Job, progress ProgressFu
 	}
 	state := e.processes.State(job.InstanceID)
 	if state.Status != "running" && state.Status != "starting" && state.Status != "stopping" && state.Status != "degraded" && state.Status != "crash_loop" {
+		e.processes.RequestStop(job.InstanceID)
 		progress(100, "server is already stopped")
 		return map[string]any{"status": "stopped"}, nil
 	}
@@ -745,6 +746,10 @@ func (e *Executor) stop(ctx context.Context, job domain.Job, progress ProgressFu
 			return nil, err
 		}
 	}
+	// Mark this as an operator-requested stop before RCON can make the process
+	// exit. Otherwise the process waiter can mistake a fast graceful quit for a
+	// crash and schedule an automatic restart.
+	e.processes.RequestStop(job.InstanceID)
 	if password != "" {
 		progress(15, "requesting graceful RCON shutdown")
 		_, rconErr := executeLocalRCON(ctx, record, payload, password, "quit", minDuration(grace/2, 8*time.Second))
