@@ -91,6 +91,20 @@ describe("设置页全局审计权限", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it("添加账号时可在单实例范围选择全部地图权限", async () => {
+    const target: User = { id: "existing-user", username: "existing", display_name: "已有用户", role: "viewer", totp_enabled: false, account_state: "active", role_bindings: [{ role: "viewer", scope_type: "global", permissions: ["nodes.read"] }], created_at: "2026-08-09T00:00:00Z" };
+    mockOwnerSettings(target);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "添加用户" }));
+    fireEvent.change(screen.getByLabelText("范围"), { target: { value: "instance" } });
+
+    for (const label of ["查看地图库", "导入地图", "分配或取消地图", "校验地图", "删除地图"]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
+    expect(screen.getByText("单实例范围只能删除当前账号导入的地图")).toBeInTheDocument();
+  });
+
   it("零权限账号仍可查看并撤销已有 API Token", async () => {
     authState.user = { id: "empty-user", username: "empty", display_name: "零权限", role: "viewer", role_bindings: [] };
     vi.spyOn(api, "apiTokens").mockResolvedValue({ items: [{

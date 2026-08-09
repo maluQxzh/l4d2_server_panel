@@ -1460,7 +1460,7 @@ paths:
     get:
       tags: [Maps]
       summary: 列出可见地图
-      description: 需要地图所属节点 read 权限；可用 node_id 查询参数筛选。响应包含 BSP、持久警告、卷副本健康和实例分配，不包含节点绝对路径或 QQ 链接。
+      description: 需要地图所属节点或该节点内已绑定实例的 `maps.read`；可用 node_id 查询参数筛选。响应包含 BSP、持久警告、卷副本健康和实例分配，不包含节点绝对路径或 QQ 链接。
       parameters:
         - name: node_id
           in: query
@@ -1494,7 +1494,7 @@ paths:
     delete:
       tags: [Maps]
       summary: 永久删除未分配地图
-      description: 需要节点 manage 权限、交互式会话及五分钟有效的一次性确认令牌。Agent 发现未知硬链接或不一致时保留记录并允许重试。
+      description: 需要节点/全局 `maps.delete`，或同节点实例范围的 `maps.delete` 且地图由当前账号导入；另需交互式会话及五分钟有效的一次性确认令牌。Agent 发现未知硬链接或不一致时保留记录并允许重试。
       parameters:
         - { $ref: "#/components/parameters/MapID" }
         - { $ref: "#/components/parameters/CSRF" }
@@ -1515,7 +1515,7 @@ paths:
     get:
       tags: [Maps]
       summary: 获取地图海报
-      description: 需要地图所属节点 read 权限。仅返回 Agent 在导入时从 mission/VMT/VTF 受限转换并由 Control 持久化的 JPEG；没有可用海报时返回 404，由网页使用内置默认海报。
+      description: 需要地图所属节点或该节点内已绑定实例的 `maps.read`。仅返回 Agent 在导入时从 mission/VMT/VTF 受限转换并由 Control 持久化的 JPEG；没有可用海报时返回 404，由网页使用内置默认海报。
       parameters: [{ $ref: "#/components/parameters/MapID" }]
       responses:
         "200":
@@ -1529,7 +1529,7 @@ paths:
     post:
       tags: [Maps]
       summary: 从 QQ 闪传导入一张逻辑地图
-      description: 需要节点 manage 权限和 map_library_v1 Agent。分享链接加密进入任务且不回显；节点完整枚举后下载，递归处理最多三层 ZIP/7Z/RAR，最终只保留确定性服务端 VPK。
+      description: 需要节点/全局 `maps.import`，或该节点内已绑定实例的 `maps.import`，以及 map_library_v1 Agent。分享链接加密进入任务且不回显；节点完整枚举后下载，递归处理最多三层 ZIP/7Z/RAR，最终只保留确定性服务端 VPK。
       parameters:
         - { $ref: "#/components/parameters/NodeID" }
         - { $ref: "#/components/parameters/CSRF" }
@@ -1550,7 +1550,7 @@ paths:
     put:
       tags: [Maps]
       summary: 分配地图给同节点实例
-      description: 需要地图所属节点的 `maps.read` 和目标实例的 `maps.assign`。运行中也可分配；已配置 RCON 时 Agent 会在硬链接提交后执行固定的 sm_update_vpk，无需重启。未配置 RCON 时仍完成分配，但管理员需要在游戏内手动输入 !update_vpk。使用节点地图锁和实例写锁，不占用 SteamCMD 槽。
+      description: 需要通过节点绑定或同节点实例绑定获得地图所属节点的 `maps.read`，并具备目标实例的 `maps.assign`。运行中也可分配；已配置 RCON 时 Agent 会在硬链接提交后执行固定的 sm_update_vpk，无需重启。未配置 RCON 时仍完成分配，但管理员需要在游戏内手动输入 !update_vpk。使用节点地图锁和实例写锁，不占用 SteamCMD 槽。
       parameters:
         - { $ref: "#/components/parameters/MapID" }
         - { $ref: "#/components/parameters/InstanceID" }
@@ -1562,7 +1562,7 @@ paths:
     delete:
       tags: [Maps]
       summary: 取消地图分配
-      description: 需要地图所属节点的 `maps.read` 和目标实例的 `maps.assign`。Control 与 Agent 都要求实例真实停止；重复取消按幂等成功处理。
+      description: 需要通过节点绑定或同节点实例绑定获得地图所属节点的 `maps.read`，并具备目标实例的 `maps.assign`。Control 与 Agent 都要求实例真实停止；重复取消按幂等成功处理。
       parameters:
         - { $ref: "#/components/parameters/MapID" }
         - { $ref: "#/components/parameters/InstanceID" }
@@ -1576,6 +1576,7 @@ paths:
     post:
       tags: [Maps]
       summary: 校验并尽可能修复地图副本
+      description: 需要节点/全局 `maps.verify`，或该节点内已绑定实例的 `maps.verify`。
       parameters:
         - { $ref: "#/components/parameters/MapID" }
         - { $ref: "#/components/parameters/CSRF" }
@@ -2486,7 +2487,7 @@ components:
       description: |
         global 不带资源 ID；node 只带 node_id；instance 只带 instance_id；owner 仅允许 global 且权限不可自定义。
         节点/实例非查看权限分别要求同一绑定包含 `nodes.read`/`instances.read`；其他读取与操作权限保持可独立授予。
-        `players.broadcast` 与 `rcon.execute` 独立。创建计划另需计划动作权限；地图分配另需地图节点的 `maps.read`。
+        `players.broadcast` 与 `rcon.execute` 独立。创建计划另需计划动作权限。实例绑定可获得所在节点的共享地图 read/import/verify/delete 权限，其中 delete 仅限当前账号导入的地图；地图分配另需目标实例的 `maps.assign`。
 
     RoleBinding:
       allOf:

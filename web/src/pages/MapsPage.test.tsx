@@ -7,7 +7,7 @@ import { ToastProvider } from "../context/ToastContext";
 import { api } from "../lib/api";
 import type { InstanceRecord, MapRecord } from "../lib/types";
 
-const authState = vi.hoisted(() => ({ user: { role: "owner" } as { role: string; role_bindings?: unknown } }));
+const authState = vi.hoisted(() => ({ user: { role: "owner" } as { id?: string; role: string; role_bindings?: unknown } }));
 
 vi.mock("../context/AuthContext", () => ({ useAuth: () => authState }));
 
@@ -153,5 +153,36 @@ describe("地图管理卡片", () => {
     expect(screen.queryByRole("button", { name: "校验" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "永久删除" })).not.toBeInTheDocument();
     expect(instances).not.toHaveBeenCalled();
+  });
+
+  it("实例范围可管理所在节点地图但只能删除自己导入的地图", async () => {
+    authState.user = {
+      id: "map-user",
+      role: "admin",
+      role_bindings: [{
+        role: "admin",
+        scope_type: "instance",
+        instance_id: assignedInstance.id,
+        permissions: ["instances.read", "maps.read", "maps.import", "maps.assign", "maps.verify", "maps.delete"],
+      }],
+    };
+    const ownMap = { ...map, assignments: [], created_by: "map-user" };
+    const otherMap = { ...map, id: "22345678-1234-1234-1234-123456789abc", name: "Other map", assignments: [], created_by: "other-user" };
+    const scopedInstance = { ...assignedInstance, node_name: "共享地图节点", node_status: "online" as const };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    vi.spyOn(api, "maps").mockResolvedValue({ items: [ownMap, otherMap] });
+    const nodes = vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "instances").mockResolvedValue({ items: [scopedInstance] });
+
+    render(<QueryClientProvider client={client}><ToastProvider><RealtimeProvider enabled={false}><MemoryRouter><MapsPage /></MemoryRouter></RealtimeProvider></ToastProvider></QueryClientProvider>);
+
+    expect(await screen.findByRole("heading", { name: "Other map" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "分配实例" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "校验" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "永久删除" })).toHaveLength(1);
+    expect(nodes).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /QQ 闪传导入/ }));
+    expect(await screen.findByRole("option", { name: "共享地图节点" })).toBeInTheDocument();
   });
 });

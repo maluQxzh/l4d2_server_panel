@@ -5,7 +5,7 @@ import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageH
 import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
 import { useToast } from "../context/ToastContext";
-import { hasAnyPermission, hasInstancePermission, hasNodePermission } from "../lib/account-permissions";
+import { hasAnyPermission, hasInstancePermission, hasMapNodePermission, hasNodePermission } from "../lib/account-permissions";
 import { api } from "../lib/api";
 import { bytes, dateTime } from "../lib/format";
 import type { InstanceRecord, MapRecord, User } from "../lib/types";
@@ -40,7 +40,7 @@ export function MapsPage() {
     </>}
     {mapJobs.length > 0 && <Card className="map-processing"><div className="card-heading"><div><span className="eyebrow">PROCESSING</span><h2>正在处理</h2></div></div>{mapJobs.map((job) => <div className="map-job" key={job.id}><div><strong>{mapJobLabel(job.type)}</strong><span>{job.message || "等待节点接收任务"}</span></div><ProgressBar value={job.progress} /><code>{job.id.slice(0, 8)}</code></div>)}</Card>}
     {!canReadMaps ? <Card><EmptyState title="地图库清单已隐藏" description="当前账号没有查看地图库的权限，但仍可向已授权节点执行单独授予的导入操作。" action={canImport ? <Button onClick={() => setImportOpen(true)}><Plus size={16} />QQ 闪传导入</Button> : undefined} /></Card> : maps.isPending ? <LoadingBlock label="正在读取地图对象库…" /> : maps.error ? <ErrorState error={maps.error} retry={() => void maps.refetch()} /> : !maps.data.items.length ? <Card><EmptyState title="地图对象库为空" description="提交一个 QQ 闪传链接，节点会安全解压、合并并清理其中的 VPK。" action={canImport ? <Button onClick={() => setImportOpen(true)}><Plus size={16} />导入第一张地图</Button> : undefined} /></Card> : <div className="map-list">{maps.data.items.map((item) => <MapCard key={item.id} item={item} instances={instances.data?.items || []} user={user} onAssignments={() => setAssignmentMap(item)} />)}</div>}
-    <ImportMapModal open={canImport && importOpen} nodes={nodes.data?.items || []} user={user} onClose={() => setImportOpen(false)} />
+    <ImportMapModal open={canImport && importOpen} nodes={nodes.data?.items || []} instances={instances.data?.items || []} user={user} onClose={() => setImportOpen(false)} />
     <AssignmentModal item={assignmentMap} instances={instances.data?.items || []} user={user} onClose={() => setAssignmentMap(null)} />
   </div>;
 }
@@ -66,8 +66,9 @@ function MapCard({ item, instances, user, onAssignments }: { item: MapRecord; in
   const poster = item.poster_url || "/map-default-poster.jpg";
   const detailsId = `map-details-${item.id}`;
   const canAssign = instances.some((instance) => instance.node_id === item.node_id && hasInstancePermission(user, instance, "maps.assign"));
-  const canVerify = hasNodePermission(user, item.node_id, "maps.verify");
-  const canDelete = hasNodePermission(user, item.node_id, "maps.delete");
+  const canVerify = hasMapNodePermission(user, instances, item.node_id, "maps.verify");
+  const canDelete = hasNodePermission(user, item.node_id, "maps.delete")
+    || item.created_by === user?.id && hasMapNodePermission(user, instances, item.node_id, "maps.delete");
   return <Card className="map-card">
     <div className="map-card__hero">
       <div className="map-card__poster"><img src={poster} alt={`${item.name} 地图海报`} onError={(event) => { if (!event.currentTarget.src.endsWith("/map-default-poster.jpg")) event.currentTarget.src = "/map-default-poster.jpg"; }} /><div className="map-card__poster-shade" /><span>{item.poster_url ? "MISSION POSTER" : "DEFAULT POSTER"}</span></div>
@@ -109,14 +110,25 @@ function mapModeName(value: string) {
   return names[value] || value;
 }
 
-function ImportMapModal({ open, nodes, user, onClose }: { open: boolean; nodes: Array<{ id: string; name: string; status: string }>; user: User | null; onClose: () => void }) {
+function ImportMapModal({ open, nodes, instances, user, onClose }: { open: boolean; nodes: Array<{ id: string; name: string; status: string }>; instances: InstanceRecord[]; user: User | null; onClose: () => void }) {
   const [nodeId, setNodeId] = useState("");
   const [shareUrl, setShareUrl] = useState("");
   const toast = useToast();
   const client = useQueryClient();
   const submit = useMutation({ mutationFn: () => api.importMap(nodeId, shareUrl.trim()), onSuccess: () => { toast.push("地图导入任务已提交"); setShareUrl(""); onClose(); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
   const handleSubmit = (event: FormEvent) => { event.preventDefault(); submit.mutate(); };
-  const eligibleNodes = nodes.filter((node) => node.status === "online" && hasNodePermission(user, node.id, "maps.import"));
+  const eligibleNodes = useMemo(() => {
+    const result = new Map<string, { id: string; name: string; status: string }>();
+    for (const node of nodes) {
+      if (node.status === "online" && hasMapNodePermission(user, instances, node.id, "maps.import")) result.set(node.id, node);
+    }
+    for (const instance of instances) {
+      if (instance.node_status === "online" && hasInstancePermission(user, instance, "maps.import") && !result.has(instance.node_id)) {
+        result.set(instance.node_id, { id: instance.node_id, name: instance.node_name || `实例 ${instance.name} 所在节点`, status: instance.node_status });
+      }
+    }
+    return [...result.values()];
+  }, [instances, nodes, user]);
   return <Modal open={open} onClose={onClose} title="从 QQ 闪传导入地图" description="一个分享链接会生成一张独立逻辑地图；下载源和中间文件不会保留。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button type="submit" form="import-map" loading={submit.isPending} disabled={!nodeId}>开始导入</Button></>}><form id="import-map" className="form-stack" onSubmit={handleSubmit}><Field label="目标节点"><select value={nodeId} onChange={(event) => setNodeId(event.target.value)} required><option value="">选择在线节点</option>{eligibleNodes.map((node) => <option value={node.id} key={node.id}>{node.name}</option>)}</select></Field>{!eligibleNodes.length && <div className="form-warning"><AlertTriangle size={16} />没有在线且允许导入地图的节点。</div>}<Field label="QQ 闪传链接" hint="仅接受 https://qfile.qq.com/q/...；链接不会写入数据库或任务回显。"><input value={shareUrl} onChange={(event) => setShareUrl(event.target.value)} placeholder="https://qfile.qq.com/q/..." required /></Field><div className="form-note"><strong>处理规则</strong><span>最多递归 3 层 ZIP/7Z/RAR；同名虚拟路径后者覆盖；缺失 BSP 字典仅警告，不阻止导入。</span></div></form></Modal>;
 }
 

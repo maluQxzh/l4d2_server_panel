@@ -294,6 +294,7 @@ export interface MapRecord {
   warnings?: MapWarningRecord[];
   replicas?: MapReplicaRecord[];
   assignments?: MapAssignmentRecord[];
+  created_by?: string;
   created_at: string;
   updated_at: string;
 }

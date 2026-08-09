@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RoleBinding } from "./types";
-import { hasInstancePermission, hasJobPermission, hasRootSecurityPermission, normalizePermissionsAtScope, permissionCatalog, tokenScopesForGlobal, tokenScopesForInstance, tokenScopesForNode, tokenScopesForUser } from "./account-permissions";
+import { hasInstancePermission, hasJobPermission, hasMapNodePermission, hasRootSecurityPermission, normalizePermissionsAtScope, permissionAllowedAtScope, permissionCatalog, tokenScopesForGlobal, tokenScopesForInstance, tokenScopesForNode, tokenScopesForUser } from "./account-permissions";
 
 describe("账号根安全权限", () => {
   it("只允许所有者进入用户管理", () => {
@@ -87,5 +87,25 @@ describe("细粒度权限", () => {
     expect(normalizePermissionsAtScope(["maps.assign"], "node")).toEqual(["instances.read", "maps.assign", "nodes.read"]);
     expect(normalizePermissionsAtScope(["notifications.manage"], "global")).toEqual(["notifications.manage"]);
     expect(normalizePermissionsAtScope([], "instance")).toEqual([]);
+  });
+
+  it("允许把共享地图权限下放到单个实例", () => {
+    const mapPermissions = ["maps.read", "maps.import", "maps.assign", "maps.verify", "maps.delete"] as const;
+    for (const permission of mapPermissions) expect(permissionAllowedAtScope(permission, "instance")).toBe(true);
+    expect(normalizePermissionsAtScope([...mapPermissions], "instance")).toEqual([
+      "instances.read", "maps.assign", "maps.delete", "maps.import", "maps.read", "maps.verify",
+    ]);
+
+    const user = {
+      role: "admin" as const,
+      role_bindings: [{
+        role: "admin" as const,
+        scope_type: "instance" as const,
+        instance_id: "instance-a",
+        permissions: ["instances.read", ...mapPermissions],
+      }] as RoleBinding[],
+    };
+    expect(hasMapNodePermission(user, [{ id: "instance-a", node_id: "node-a" }], "node-a", "maps.verify")).toBe(true);
+    expect(hasMapNodePermission(user, [{ id: "instance-a", node_id: "node-a" }], "node-b", "maps.verify")).toBe(false);
   });
 });

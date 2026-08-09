@@ -59,11 +59,11 @@ export const permissionCatalog: PermissionDefinition[] = [
   { id: "schedules.manage", label: "管理计划任务", group: "备份与计划", class: "operate", scope: "instance" },
   { id: "logs.read", label: "搜索及下载日志", group: "备份与计划", class: "read", scope: "instance" },
 
-  { id: "maps.read", label: "查看地图库", group: "地图", class: "read", scope: "node" },
-  { id: "maps.import", label: "导入地图", group: "地图", class: "manage", scope: "node" },
+  { id: "maps.read", label: "查看地图库", group: "地图", class: "read", scope: "resource" },
+  { id: "maps.import", label: "导入地图", group: "地图", class: "manage", scope: "resource" },
   { id: "maps.assign", label: "分配或取消地图", group: "地图", class: "manage", scope: "instance" },
-  { id: "maps.verify", label: "校验地图", group: "地图", class: "manage", scope: "node" },
-  { id: "maps.delete", label: "删除地图", group: "地图", class: "manage", scope: "node" },
+  { id: "maps.verify", label: "校验地图", group: "地图", class: "manage", scope: "resource" },
+  { id: "maps.delete", label: "删除地图", group: "地图", class: "manage", scope: "resource", description: "单实例范围只能删除当前账号导入的地图" },
 
   { id: "jobs.read", label: "查看任务", group: "审计与通知", class: "read", scope: "resource" },
   { id: "jobs.details", label: "查看任务正文和结果", group: "审计与通知", class: "operate", scope: "resource" },
@@ -134,6 +134,11 @@ export function hasInstancePermission(user: PermissionUser | null | undefined, i
       || (binding.scope_type === "instance" && binding.instance_id === instance.id);
     return matches && bindingAllows(binding, permission);
   });
+}
+
+export function hasMapNodePermission(user: PermissionUser | null | undefined, instances: Array<Pick<InstanceRecord, "id" | "node_id">>, nodeID: string, permission: Permission) {
+  return hasNodePermission(user, nodeID, permission)
+    || instances.some((instance) => instance.node_id === nodeID && hasInstancePermission(user, instance, permission));
 }
 
 export function hasRootSecurityPermission(user: PermissionUser | null | undefined) {

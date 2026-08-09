@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,9 +15,16 @@ import (
 func (s *Server) handleListMaps(w http.ResponseWriter, r *http.Request) {
 	principal := principalFromContext(r.Context())
 	nodeID := strings.TrimSpace(r.URL.Query().Get("node_id"))
-	if nodeID != "" && !principal.AllowsNodePermission(nodeID, PermissionMapsRead) {
-		writeTokenScopeDenied(w)
-		return
+	if nodeID != "" {
+		allowed, err := s.allowsMapNodePermission(r.Context(), principal, nodeID, PermissionMapsRead)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		if !allowed {
+			writeTokenScopeDenied(w)
+			return
+		}
 	}
 	limit := parseLimit(r, 200)
 	queryLimit := limit
@@ -29,8 +37,19 @@ func (s *Server) handleListMaps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filtered := make([]domain.Map, 0, min(limit, len(items)))
+	allowedNodes := make(map[string]bool)
+	checkedNodes := make(map[string]bool)
 	for _, item := range items {
-		if principal.AllowsNodePermission(item.NodeID, PermissionMapsRead) {
+		if !checkedNodes[item.NodeID] {
+			allowed, permissionErr := s.allowsMapNodePermission(r.Context(), principal, item.NodeID, PermissionMapsRead)
+			if permissionErr != nil {
+				s.fail(w, permissionErr)
+				return
+			}
+			checkedNodes[item.NodeID] = true
+			allowedNodes[item.NodeID] = allowed
+		}
+		if allowedNodes[item.NodeID] {
 			filtered = append(filtered, item)
 			if len(filtered) == limit {
 				break
@@ -46,7 +65,12 @@ func (s *Server) handleGetMap(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	if !principalFromContext(r.Context()).AllowsNodePermission(item.NodeID, PermissionMapsRead) {
+	allowed, err := s.allowsMapNodePermission(r.Context(), principalFromContext(r.Context()), item.NodeID, PermissionMapsRead)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !allowed {
 		writeTokenScopeDenied(w)
 		return
 	}
@@ -59,7 +83,12 @@ func (s *Server) handleGetMapPoster(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	if !principalFromContext(r.Context()).AllowsNodePermission(nodeID, PermissionMapsRead) {
+	allowed, err := s.allowsMapNodePermission(r.Context(), principalFromContext(r.Context()), nodeID, PermissionMapsRead)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !allowed {
 		writeTokenScopeDenied(w)
 		return
 	}
@@ -84,7 +113,12 @@ func (s *Server) handleImportMap(w http.ResponseWriter, r *http.Request) {
 	}
 	nodeID := chi.URLParam(r, "nodeID")
 	principal := principalFromContext(r.Context())
-	if !principal.AllowsNodePermission(nodeID, PermissionMapsImport) {
+	allowed, err := s.allowsMapNodePermission(r.Context(), principal, nodeID, PermissionMapsImport)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !allowed {
 		writeError(w, http.StatusForbidden, "forbidden", "map import permission denied")
 		return
 	}
@@ -148,7 +182,12 @@ func (s *Server) handleMapAssignment(w http.ResponseWriter, r *http.Request, act
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if !principal.AllowsNodePermission(item.NodeID, PermissionMapsRead) || !principal.AllowsInstancePermission(instance, PermissionMapsAssign) {
+	canReadMap, err := s.allowsMapNodePermission(r.Context(), principal, item.NodeID, PermissionMapsRead)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !canReadMap || !principal.AllowsInstancePermission(instance, PermissionMapsAssign) {
 		writeError(w, http.StatusForbidden, "forbidden", "map assignment permission denied")
 		return
 	}
@@ -189,7 +228,12 @@ func (s *Server) handleVerifyMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if !principal.AllowsNodePermission(item.NodeID, PermissionMapsVerify) {
+	allowed, err := s.allowsMapNodePermission(r.Context(), principal, item.NodeID, PermissionMapsVerify)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !allowed {
 		writeError(w, http.StatusForbidden, "forbidden", "map verification permission denied")
 		return
 	}
@@ -221,7 +265,12 @@ func (s *Server) handleCreateMapDeleteConfirmation(w http.ResponseWriter, r *htt
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if !principal.AllowsNodePermission(item.NodeID, PermissionMapsDelete) {
+	allowed, err := s.allowsMapDelete(r.Context(), principal, item)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !allowed {
 		writeError(w, http.StatusForbidden, "forbidden", "map deletion permission denied")
 		return
 	}
@@ -253,7 +302,12 @@ func (s *Server) handleDeleteMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if !principal.AllowsNodePermission(item.NodeID, PermissionMapsDelete) {
+	allowed, err := s.allowsMapDelete(r.Context(), principal, item)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !allowed {
 		writeError(w, http.StatusForbidden, "forbidden", "map deletion permission denied")
 		return
 	}
@@ -282,4 +336,48 @@ func (s *Server) publishMapJob(r *http.Request, job domain.Job) {
 	_, _ = s.events.Publish(r.Context(), Event{Type: "job.queued", ResourceType: "job", ResourceID: job.ID,
 		Data: map[string]any{"job": job}}, true)
 	s.dispatchSoon(job.NodeID)
+}
+
+// allowsMapNodePermission maps an instance-scoped shared-map grant to the
+// selected instance's node without granting general node-management access.
+func (s *Server) allowsMapNodePermission(ctx context.Context, principal Principal, nodeID string, permission Permission) (bool, error) {
+	if principal.AllowsNodePermission(nodeID, permission) {
+		return true, nil
+	}
+	return s.allowsInstanceScopedMapPermission(ctx, principal, nodeID, permission)
+}
+
+func (s *Server) allowsInstanceScopedMapPermission(ctx context.Context, principal Principal, nodeID string, permission Permission) (bool, error) {
+	instanceIDs := make(map[string]struct{})
+	if principal.TokenInstanceID != "" {
+		instanceIDs[principal.TokenInstanceID] = struct{}{}
+	}
+	for _, binding := range principal.Bindings {
+		if binding.ScopeType == "instance" && bindingAllows(binding, permission) {
+			instanceIDs[binding.InstanceID] = struct{}{}
+		}
+	}
+	for instanceID := range instanceIDs {
+		instance, err := s.store.GetInstance(ctx, instanceID)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if instance.NodeID == nodeID && principal.AllowsInstancePermission(instance, permission) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *Server) allowsMapDelete(ctx context.Context, principal Principal, item domain.Map) (bool, error) {
+	if principal.AllowsNodePermission(item.NodeID, PermissionMapsDelete) {
+		return true, nil
+	}
+	if item.CreatedBy == "" || item.CreatedBy != principal.User.ID {
+		return false, nil
+	}
+	return s.allowsInstanceScopedMapPermission(ctx, principal, item.NodeID, PermissionMapsDelete)
 }

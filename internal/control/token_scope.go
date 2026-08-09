@@ -302,9 +302,22 @@ func (s *Server) enforceTokenResourceScope(next http.Handler) http.Handler {
 			return
 		}
 
+		path := strings.TrimSuffix(r.URL.Path, "/")
 		if nodeID := chi.URLParam(r, "nodeID"); nodeID != "" && !principal.AllowsNode(nodeID) {
-			writeTokenScopeDenied(w)
-			return
+			mapImport := strings.HasSuffix(path, "/maps/imports")
+			allowed := false
+			if mapImport {
+				var err error
+				allowed, err = s.allowsMapNodePermission(r.Context(), principal, nodeID, PermissionMapsImport)
+				if err != nil {
+					s.fail(w, err)
+					return
+				}
+			}
+			if !allowed {
+				writeTokenScopeDenied(w)
+				return
+			}
 		}
 		if instanceID := chi.URLParam(r, "instanceID"); instanceID != "" {
 			instance, err := s.store.GetInstance(r.Context(), instanceID)
@@ -329,7 +342,6 @@ func (s *Server) enforceTokenResourceScope(next http.Handler) http.Handler {
 			}
 		}
 
-		path := strings.TrimSuffix(r.URL.Path, "/")
 		if path == "/api/v1/nodes/enrollment-tokens" || path == "/api/v1/users" ||
 			strings.HasPrefix(path, "/api/v1/notifications") ||
 			strings.HasPrefix(path, "/api/v1/notification-channels") ||

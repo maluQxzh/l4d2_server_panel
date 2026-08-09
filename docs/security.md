@@ -33,9 +33,9 @@
 - 操作员：受信任的日常值班运维预设，包含启停、任意 RCON、玩家管理、配置、文件读写/删除、备份下载/创建/恢复、任务取消和计划任务；不能注册/删除节点、删除实例，也不能配置 SteamCMD 或安装、校验修复、更新游戏本体和高风险组件。需要比该边界更窄的值班账号时，应从具体权限集合中移除 RCON、文件删除、备份恢复或任务取消等高影响能力，而不是仅依赖角色名称。
 - 观察者：只读。
 
-每条绑定还持久化具体权限集合；选择角色会填入预设，之后可逐项增减，授权时以具体权限为准。多条匹配绑定取权限并集，不支持显式拒绝。所有者的全局 `root_security` 预设不可裁剪或下放；任何节点级非查看权限必须同时带有 `nodes.read`，任何实例级非查看权限必须同时带有 `instances.read`。绑定可以是全局、某节点或某实例。节点绑定自动覆盖该节点内实例；实例绑定不授予节点级管理。全局审计与来源地址另需 `audit.read_global`，普通 `audit.read` 只用于已授权资源。
+每条绑定还持久化具体权限集合；选择角色会填入预设，之后可逐项增减，授权时以具体权限为准。多条匹配绑定取权限并集，不支持显式拒绝。所有者的全局 `root_security` 预设不可裁剪或下放；任何节点级非查看权限必须同时带有 `nodes.read`，任何实例级非查看权限必须同时带有 `instances.read`。绑定可以是全局、某节点或某实例。节点绑定自动覆盖该节点内实例；实例绑定通常不授予节点级管理，唯一例外是显式下放的共享地图权限：`maps.read/import/verify/delete` 只映射到所选实例所在节点的地图库，且实例范围的 `maps.delete` 只能删除当前账号自己导入的地图。全局审计与来源地址另需 `audit.read_global`，普通 `audit.read` 只用于已授权资源。
 
-具体权限彼此不会因为角色等级或名称而隐式推出。`players.broadcast` 只允许经过长度限制的安全聊天广播，`rcon.execute` 允许提交任意受支持的 RCON 命令，两者独立且互不包含。节点发现的专用轮询只依赖同节点的 `nodes.discover`，并只返回固定结构的发现结果，不借用通用任务正文权限。`jobs.details` 可凭已知任务 ID 独立读取目标范围内经脱敏的正文与结果，但任务列表仍需 `jobs.read`。`audit.read_global` 可独立读取全局审计与来源地址，普通 `audit.read` 只读取已授权资源且隐藏来源地址。创建计划任务同时需要目标实例的 `schedules.manage` 和被计划动作本身的权限：`start/stop/restart/backup/broadcast` 分别需要 `instances.start`、`instances.stop`、`instances.restart`、`backups.create`、`players.broadcast`；读取、启停或删除既有计划还分别受 `schedules.read`/`schedules.manage` 约束。地图分配是另一个有意的复合授权：主体必须对地图所属节点具备 `maps.read`，并对目标实例具备 `maps.assign`。这些权限可以来自不同的匹配绑定，但必须同时满足。
+具体权限彼此不会因为角色等级或名称而隐式推出。`players.broadcast` 只允许经过长度限制的安全聊天广播，`rcon.execute` 允许提交任意受支持的 RCON 命令，两者独立且互不包含。节点发现的专用轮询只依赖同节点的 `nodes.discover`，并只返回固定结构的发现结果，不借用通用任务正文权限。`jobs.details` 可凭已知任务 ID 独立读取目标范围内经脱敏的正文与结果，但任务列表仍需 `jobs.read`。`audit.read_global` 可独立读取全局审计与来源地址，普通 `audit.read` 只读取已授权资源且隐藏来源地址。创建计划任务同时需要目标实例的 `schedules.manage` 和被计划动作本身的权限：`start/stop/restart/backup/broadcast` 分别需要 `instances.start`、`instances.stop`、`instances.restart`、`backups.create`、`players.broadcast`；读取、启停或删除既有计划还分别受 `schedules.read`/`schedules.manage` 约束。地图分配是另一个有意的复合授权：主体必须通过节点绑定或同节点实例绑定获得 `maps.read`，并对目标实例具备 `maps.assign`。实例范围只允许向该实例分配或取消地图，不会借此管理同节点其他实例。
 
 Control 在列表、单资源、任务、指标、通知、审计和 WebSocket 事件上都按具体权限与资源范围执行过滤，而不是只依赖前端隐藏按钮。在线事件流使用当前主体快照做内存过滤；登出、Token 吊销、账号禁用、密码或绑定变更会递增授权代际并在通知后的下一帧前重验，另每 1 秒从数据库兜底重验数据库提交到进程内通知之间的极短调度窗口、到期和进程外变更。历史或未知且没有明确节点/实例归属的事件对受限主体一律隐藏。
 

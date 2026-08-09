@@ -209,6 +209,16 @@ func TestNormalizeFineGrainedBindings(t *testing.T) {
 	}}); err == nil || !strings.Contains(err.Error(), "instances.read") {
 		t.Fatalf("instance write permission without instances.read was accepted: %v", err)
 	}
+	mapPermissions := []string{
+		string(PermissionInstancesRead), string(PermissionMapsAssign), string(PermissionMapsDelete),
+		string(PermissionMapsImport), string(PermissionMapsRead), string(PermissionMapsVerify),
+	}
+	mapBinding, err := normalizeRoleBindings([]domain.RoleBinding{{
+		Role: domain.RoleAdmin, ScopeType: "instance", InstanceID: instanceID, Permissions: mapPermissions,
+	}})
+	if err != nil || len(mapBinding) != 1 || !equalStringSets(mapBinding[0].Permissions, mapPermissions) {
+		t.Fatalf("instance shared-map permissions were rejected: binding=%#v err=%v", mapBinding, err)
+	}
 	if _, err := normalizeRoleBindings([]domain.RoleBinding{{
 		Role:        domain.RoleAdmin,
 		ScopeType:   "instance",
