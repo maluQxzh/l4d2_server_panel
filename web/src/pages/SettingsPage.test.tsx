@@ -64,6 +64,33 @@ describe("设置页全局审计权限", () => {
     expect(audit).toHaveBeenCalledWith();
   });
 
+  it("全局审计默认只显示最近五条并可展开或收起", async () => {
+    authState.user = {
+      role: "viewer",
+      role_bindings: [{ role: "viewer", scope_type: "global", permissions: ["audit.read_global"] }],
+    };
+    vi.spyOn(api, "audit").mockResolvedValue({
+      items: Array.from({ length: 7 }, (_, index) => ({
+        id: `audit-${index + 1}`,
+        actor_name: `审计员 ${index + 1}`,
+        action: `action.${index + 1}`,
+        resource_type: "instance",
+        created_at: `2026-08-09T00:0${index}:00Z`,
+      })),
+    });
+    renderPage();
+
+    expect(await screen.findByText("审计员 1 · action.1")).toBeInTheDocument();
+    expect(screen.getByText("审计员 5 · action.5")).toBeInTheDocument();
+    expect(screen.queryByText("审计员 6 · action.6")).not.toBeInTheDocument();
+    expect(screen.getByText("共 7 条审计记录")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "展开其余 2 条" }));
+    expect(screen.getByText("审计员 7 · action.7")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "收起，仅显示最近 5 条" }));
+    expect(screen.queryByText("审计员 6 · action.6")).not.toBeInTheDocument();
+  });
+
   it("保留服务端已有零绑定，且不会在编辑时回退角色预设", async () => {
     const target: User = { id: "user-empty", username: "empty", display_name: "零权限用户", role: "admin", totp_enabled: false, account_state: "active", role_bindings: [], created_at: "2026-08-09T00:00:00Z" };
     mockOwnerSettings(target);

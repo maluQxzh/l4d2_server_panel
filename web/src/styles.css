@@ -661,6 +661,8 @@ h1, h2, h3, p { margin-top: 0; }
 .audit-event strong { font-size: 10px; }
 .audit-event span { color: var(--text-faint); font-size: 8px; }
 .audit-event code { width: fit-content; max-width: 100%; overflow: hidden; padding: 4px 6px; color: var(--text-dim); background: rgba(0,0,0,.18); border-radius: 4px; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.audit-timeline__footer { min-height: 50px; padding: 8px 18px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; border-top: 1px solid var(--line-soft); }
+.audit-timeline__footer > span { color: var(--text-faint); font-size: 8px; }
 
 .job-summary { margin-bottom: 13px; display: grid; grid-template-columns: repeat(4, minmax(150px, 240px)); gap: 11px; }
 .job-summary .card { min-height: 70px; padding: 14px 16px; display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 8px; }

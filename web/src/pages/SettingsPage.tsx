@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Bell, Braces, Check, CheckCircle2, Clipboard, DownloadCloud, KeyRound, LockKeyhole, Mail, Plus, RefreshCw, ShieldAlert, ShieldCheck,
-  Smartphone, Trash2, UserCog, Webhook,
+  Bell, Braces, Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, DownloadCloud, KeyRound, LockKeyhole, Mail, Plus, RefreshCw,
+  ShieldAlert, ShieldCheck, Smartphone, Trash2, UserCog, Webhook,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router";
@@ -59,7 +59,10 @@ export function SettingsPage() {
 
 function GlobalAuditCard() {
   const audit = useQuery({ queryKey: ["audit", "global"], queryFn: () => api.audit() });
-  return <section className="settings-section"><div className="section-heading"><div><h2>全局审计</h2><p>查看中心端所有资源的安全事件；正文已由服务端脱敏。</p></div>{!audit.isPending && <Button variant="secondary" onClick={() => void audit.refetch()}><RefreshCw size={16} />刷新</Button>}</div><Card>{audit.isPending ? <LoadingBlock label="正在读取全局审计记录…" /> : audit.error ? <ErrorState error={audit.error} retry={() => void audit.refetch()} /> : audit.data.items.length ? <div className="audit-timeline">{audit.data.items.map((event) => <div className="audit-event" key={event.id}><span className="audit-event__line" /><div className="audit-event__dot" /><time>{dateTime(event.created_at)}</time><div><strong>{event.actor_name || "系统"} · {event.action}</strong><span>{event.resource_type}{event.resource_id ? ` #${event.resource_id.slice(0, 8)}` : ""}{event.remote_ip ? ` · ${event.remote_ip}` : ""}</span>{event.metadata && Object.keys(event.metadata).length > 0 && <code>{JSON.stringify(event.metadata)}</code>}</div></div>)}</div> : <EmptyState title="还没有全局审计记录" description="登录、权限和资源写操作会保留不可编辑的安全记录。" />}</Card></section>;
+  const [expanded, setExpanded] = useState(false);
+  const items = audit.data?.items || [];
+  const visibleItems = expanded ? items : items.slice(0, 5);
+  return <section className="settings-section"><div className="section-heading"><div><h2>全局审计</h2><p>查看中心端所有资源的安全事件；正文已由服务端脱敏。</p></div>{!audit.isPending && <Button variant="secondary" onClick={() => void audit.refetch()}><RefreshCw size={16} />刷新</Button>}</div><Card>{audit.isPending ? <LoadingBlock label="正在读取全局审计记录…" /> : audit.error ? <ErrorState error={audit.error} retry={() => void audit.refetch()} /> : items.length ? <><div className="audit-timeline" id="global-audit-timeline">{visibleItems.map((event) => <div className="audit-event" key={event.id}><span className="audit-event__line" /><div className="audit-event__dot" /><time>{dateTime(event.created_at)}</time><div><strong>{event.actor_name || "系统"} · {event.action}</strong><span>{event.resource_type}{event.resource_id ? ` #${event.resource_id.slice(0, 8)}` : ""}{event.remote_ip ? ` · ${event.remote_ip}` : ""}</span>{event.metadata && Object.keys(event.metadata).length > 0 && <code>{JSON.stringify(event.metadata)}</code>}</div></div>)}</div>{items.length > 5 && <div className="audit-timeline__footer"><span>共 {items.length} 条审计记录</span><Button variant="ghost" aria-expanded={expanded} aria-controls="global-audit-timeline" onClick={() => setExpanded((value) => !value)}>{expanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}{expanded ? "收起，仅显示最近 5 条" : `展开其余 ${items.length - 5} 条`}</Button></div>}</> : <EmptyState title="还没有全局审计记录" description="登录、权限和资源写操作会保留不可编辑的安全记录。" />}</Card></section>;
 }
 
 const updatePhaseLabels: Record<SystemUpdatePhase, string> = {
