@@ -249,7 +249,7 @@ func (s *Store) RemovePendingGameInstallation(ctx context.Context, id string) er
 var environmentJobTypes = map[string]bool{
 	"environment.inspect": true, "steamcmd.configure": true, "steamcmd.clear": true, "steamcmd.install": true,
 	"steamcmd.repair": true, "game.install": true, "game.import": true, "game.validate": true,
-	"game.update": true, "game.reinstall": true, "game.delete": true,
+	"game.update": true, "game.delete": true,
 }
 
 func (s *Store) QueueEnvironmentJob(ctx context.Context, environmentID, installationID, action string, payload map[string]any,
@@ -328,7 +328,7 @@ func (s *Store) QueueEnvironmentJob(ctx context.Context, environmentID, installa
 		installationID = strings.TrimSpace(installationID)
 	}
 	steamConfiguration := strings.HasPrefix(action, "steamcmd.")
-	steamConsumer := action == "game.install" || action == "game.validate" || action == "game.update" || action == "game.reinstall"
+	steamConsumer := action == "game.install" || action == "game.validate" || action == "game.update"
 	if steamConsumer {
 		var steamStatus string
 		if err := tx.QueryRowContext(ctx, `SELECT steamcmd_status FROM environments WHERE id=?1`, environmentID).Scan(&steamStatus); err != nil {
@@ -342,6 +342,9 @@ func (s *Store) QueueEnvironmentJob(ctx context.Context, environmentID, installa
 		var conflicting bool
 		query := `SELECT EXISTS(SELECT 1 FROM jobs WHERE node_id=?1 AND status IN ('queued','dispatched','running') AND `
 		if steamConfiguration {
+			// A game.reinstall task may still be active after upgrading from a
+			// previous Control version. It can no longer be queued, but must keep
+			// blocking SteamCMD reconfiguration until its durable terminal state.
 			query += `type IN ('steamcmd.configure','steamcmd.clear','steamcmd.install','steamcmd.repair','game.install','game.validate','game.update','game.reinstall'))`
 		} else {
 			query += `type IN ('steamcmd.configure','steamcmd.clear','steamcmd.install','steamcmd.repair'))`
@@ -371,7 +374,7 @@ func (s *Store) QueueEnvironmentJob(ctx context.Context, environmentID, installa
 	}
 	if installationID != "" {
 		status := map[string]string{"game.install": "installing", "game.import": "validating", "game.validate": "validating",
-			"game.update": "updating", "game.reinstall": "installing"}[action]
+			"game.update": "updating"}[action]
 		if status != "" {
 			if _, err := tx.ExecContext(ctx, `UPDATE game_installations SET status=?2,last_error='',updated_at=?3 WHERE id=?1`, installationID, status, now); err != nil {
 				return domain.Job{}, false, err

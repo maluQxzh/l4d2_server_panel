@@ -117,7 +117,7 @@ test("删除游戏安装时选择仅删记录或永久删除全部文件", async
   await page.goto("/environments");
   await expect(page.getByRole("button", { name: "校验并修复", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "更新", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "重装", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重装", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "删除", exact: true }).click();
   const deletionDialog = page.getByRole("dialog", { name: "删除游戏安装" });
   await expect(deletionDialog.getByText("仅删除记录", { exact: true })).toBeVisible();

@@ -37,7 +37,7 @@ const installation: GameInstallationRecord = {
 describe("运行环境游戏安装维护", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("environments.manage 用户可以提交游戏安装重装", async () => {
+  it("environments.manage 用户可以更新游戏安装且不再显示重装", async () => {
     authState.user = {
       role: "admin",
       role_bindings: [{
@@ -49,13 +49,15 @@ describe("运行环境游戏安装维护", () => {
     };
     vi.spyOn(api, "environments").mockResolvedValue({ items: [environment] });
     vi.spyOn(api, "gameInstallations").mockResolvedValue({ items: [installation] });
-    const reinstall = vi.spyOn(api, "gameInstallationAction").mockResolvedValue({ job_id: "job-reinstall" });
+    const maintain = vi.spyOn(api, "gameInstallationAction").mockResolvedValue({ job_id: "job-update" });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     render(<QueryClientProvider client={client}><ToastProvider><RuntimeEnvironmentsPage /></ToastProvider></QueryClientProvider>);
 
-    const button = await screen.findByRole("button", { name: "重装" });
+    const button = await screen.findByRole("button", { name: "更新" });
     expect(button).toBeEnabled();
+    expect(screen.getByRole("button", { name: "校验并修复" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "重装" })).not.toBeInTheDocument();
     fireEvent.click(button);
-    await waitFor(() => expect(reinstall).toHaveBeenCalledWith(environment.id, installation.id, "reinstall", undefined));
+    await waitFor(() => expect(maintain).toHaveBeenCalledWith(environment.id, installation.id, "update", undefined));
   });
 });

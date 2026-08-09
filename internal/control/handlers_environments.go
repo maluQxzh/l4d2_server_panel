@@ -231,6 +231,15 @@ func (s *Server) installationForRequest(w http.ResponseWriter, r *http.Request, 
 	return installation, true
 }
 
+func gameInstallationActionAllowed(action string) bool {
+	switch action {
+	case "install", "import", "validate", "update":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) handleGameInstallationAction(w http.ResponseWriter, r *http.Request) {
 	item, ok := s.environmentForRequest(w, r, PermissionEnvironmentsManage)
 	if !ok || !s.requireEnvironmentAgent(w, item) {
@@ -248,9 +257,8 @@ func (s *Server) handleGameInstallationAction(w http.ResponseWriter, r *http.Req
 		return
 	}
 	request.Action = strings.ToLower(strings.TrimSpace(request.Action))
-	allowed := map[string]bool{"install": true, "import": true, "validate": true, "update": true, "reinstall": true}
-	if !allowed[request.Action] {
-		writeError(w, http.StatusBadRequest, "invalid_action", "unsupported game installation action")
+	if !gameInstallationActionAllowed(request.Action) {
+		writeError(w, http.StatusBadRequest, "invalid_action", "action must be install, import, validate, or update")
 		return
 	}
 	if request.Path != nil && request.Action != "import" {

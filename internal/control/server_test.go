@@ -156,6 +156,26 @@ func TestGenericInstanceActionContractIsSeparateFromInternalJobs(t *testing.T) {
 	}
 }
 
+func TestGameInstallationActionContractRetiresReinstall(t *testing.T) {
+	for _, action := range []string{"install", "import", "validate", "update"} {
+		if !gameInstallationActionAllowed(action) {
+			t.Errorf("supported game installation action %q was rejected", action)
+		}
+		if !environmentJobTypes["game."+action] {
+			t.Errorf("supported game installation job %q cannot be queued", action)
+		}
+	}
+	if gameInstallationActionAllowed("reinstall") {
+		t.Fatal("retired reinstall action remains in the public handler contract")
+	}
+	if environmentJobTypes["game.reinstall"] {
+		t.Fatal("retired game.reinstall task can still be queued by current Control code")
+	}
+	if definition := permissionDefinitions[PermissionEnvironmentsManage]; definition.Class != PermissionManage || definition.Scope != permissionScopeNode {
+		t.Fatalf("remaining maintenance permission=%#v, want node-scoped manage", definition)
+	}
+}
+
 func TestBroadcastOnlyRequiresDedicatedBroadcastPermission(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "broadcast-permission.sqlite3"))

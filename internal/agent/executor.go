@@ -142,10 +142,15 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 		return e.clearSteamCMD(progress)
 	case "steamcmd.install", "steamcmd.repair":
 		return e.installManagedSteamCMD(ctx, progress)
-	case "game.install", "game.import", "game.validate", "game.update", "game.reinstall":
+	case "game.install", "game.import", "game.validate", "game.update":
 		if action == "game.import" && job.InstanceID != "" {
 			return e.importInstance(ctx, job, progress)
 		}
+		return e.gameInstallationAction(ctx, job, action, progress)
+	case "game.reinstall":
+		// Current Control versions no longer create this redundant action. Keep
+		// execution for durable queued jobs and previous-minor Control protocol
+		// compatibility; it remains equivalent to game.validate.
 		return e.gameInstallationAction(ctx, job, action, progress)
 	case "game.delete":
 		return e.deleteGameInstallation(job, progress)
