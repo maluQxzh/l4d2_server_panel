@@ -62,7 +62,27 @@ describe("游戏实例卡片", () => {
     expect(screen.getByText("运行中", { selector: ".status" })).toBeInTheDocument();
     expect(screen.getByText("节点离线", { selector: ".status" })).toBeInTheDocument();
     expect(screen.getByText("所属节点：广州游戏节点 A")).toBeInTheDocument();
+    expect(screen.getByText("0.0.0.0:27015")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "修改端口" })).not.toBeInTheDocument();
+  });
+
+  it("节点设置公开连接地址后显示公开地址和实例端口", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    vi.spyOn(api, "instances").mockResolvedValue({ items: [{ ...instance, node_public_address: "game.example.com" }] });
+    render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <RealtimeProvider enabled={false}>
+            <MemoryRouter>
+              <InstancesPage />
+            </MemoryRouter>
+          </RealtimeProvider>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("game.example.com:27015")).toBeInTheDocument();
+    expect(screen.queryByText("0.0.0.0:27015")).not.toBeInTheDocument();
   });
 
   it("创建实例时不再要求单独填写服务器显示名称", async () => {
