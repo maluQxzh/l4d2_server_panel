@@ -320,7 +320,7 @@ function PlayersTab({ instance }: { instance: InstanceRecord }) {
   const serverActive = instance.status === "running" || instance.status === "degraded";
   const canQueryRCON = canReadPlayers && serverActive && instance.rcon_configured;
   const players = useQuery({ queryKey: ["instances", instance.id, "players"], queryFn: () => api.players(instance.id), enabled: canQueryRCON, refetchInterval: canQueryRCON ? 15_000 : false });
-  const probeJobs = useQuery({ queryKey: ["jobs", instance.id, "rcon.players"], queryFn: () => api.instanceJobs(instance.id), enabled: canQueryRCON && canReadJobs, refetchInterval: canQueryRCON && canReadJobs ? 2_000 : false });
+  const probeJobs = useQuery({ queryKey: ["jobs", instance.id, "rcon.players"], queryFn: () => api.instanceJobs(instance.id, "only"), enabled: canQueryRCON && canReadJobs, refetchInterval: canQueryRCON && canReadJobs ? 2_000 : false });
   const bans = useQuery({ queryKey: ["instances", instance.id, "bans"], queryFn: () => api.bans(instance.id), enabled: canReadPlayers, refetchInterval: canReadPlayers ? 30_000 : false });
   const toast = useToast();
   const client = useQueryClient();

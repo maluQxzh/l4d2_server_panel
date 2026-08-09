@@ -13,6 +13,7 @@ describe("实例最近操作摘要", () => {
   it("隐藏诊断探测并折叠相同的成功操作", () => {
     const result = summarizeRecentOperations([
       job("probe-1", "a2s.info", "succeeded"),
+      job("rcon-probe", "rcon.players", "failed", "RCON timeout"),
       job("stop-2", "stop", "succeeded"),
       job("stop-1", "stop", "succeeded"),
       job("start-1", "start", "succeeded"),

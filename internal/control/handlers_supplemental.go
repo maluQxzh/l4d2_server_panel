@@ -109,7 +109,11 @@ func (s *Server) queueRefresh(r *http.Request, instanceID, jobType string, paylo
 	principal := principalFromContext(r.Context())
 	bucket := time.Now().Unix() / 10
 	key := fmt.Sprintf("refresh:%s:%s:%v:%d", instanceID, jobType, payload, bucket)
-	job, _, err := s.store.QueueInstanceJob(r.Context(), instanceID, jobType, payload, principal.User.ID, key)
+	requestedBy := principal.User.ID
+	if jobType == "rcon.players" {
+		requestedBy = ""
+	}
+	job, _, err := s.store.QueueInstanceJob(r.Context(), instanceID, jobType, payload, requestedBy, key)
 	if err == nil {
 		s.dispatchSoon(job.NodeID)
 	}

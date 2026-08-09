@@ -429,7 +429,7 @@ func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelop
 		}
 		if updated.Status == domain.JobFailed {
 			metadata := map[string]any{"job_id": job.ID, "instance_id": job.InstanceID, "type": job.Type}
-			if job.RequestedBy == "" && (job.Type == "a2s.info" || job.Type == "check_update") {
+			if job.Type == "rcon.players" || (job.RequestedBy == "" && (job.Type == "a2s.info" || job.Type == "check_update")) {
 				_ = h.store.CreateNotificationOnce(ctx, "warning", "monitoring.probe_failed", "Monitoring probe failed",
 					update.Message, job.InstanceID, metadata, time.Hour)
 			} else {

@@ -275,12 +275,12 @@ func (s *Store) Housekeeping(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at<?1`, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE requested_by IS NULL AND type IN ('a2s.info','a2s.players','rcon.players','list','check_update')
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE `+backgroundJobSQLPredicate+`
 		AND status IN ('succeeded','canceled') AND COALESCE(json_extract(result,'$._projection_pending'),0)<>1
 		AND finished_at<?1`, hourAgo); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE requested_by IS NULL AND type IN ('a2s.info','a2s.players','rcon.players','list','check_update')
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE `+backgroundJobSQLPredicate+`
 		AND status='failed' AND COALESCE(json_extract(result,'$._projection_pending'),0)<>1
 		AND finished_at<?1`, dayAgo); err != nil {
 		return err

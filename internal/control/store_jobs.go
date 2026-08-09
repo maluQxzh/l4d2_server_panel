@@ -292,7 +292,7 @@ const (
 	jobBackgroundInclude      jobBackgroundFilter = "include"
 	jobBackgroundExclude      jobBackgroundFilter = "exclude"
 	jobBackgroundOnly         jobBackgroundFilter = "only"
-	backgroundJobSQLPredicate                     = `requested_by IS NULL AND type IN ('a2s.info','a2s.players','rcon.players','list','check_update')`
+	backgroundJobSQLPredicate                     = `(type='rcon.players' OR (requested_by IS NULL AND type IN ('a2s.info','a2s.players','list','check_update')))`
 )
 
 func (s *Store) ListJobs(ctx context.Context, nodeID, instanceID string, background jobBackgroundFilter, limit int) ([]domain.Job, error) {

@@ -67,13 +67,16 @@ describe("API 客户端", () => {
     await expect(api.nodes()).rejects.toMatchObject({ status: 403, code: "forbidden", message: "权限不足" } satisfies Partial<ApiError>);
   });
 
-  it("按实例查询任务用于显示 RCON 刷新诊断", async () => {
+  it("按实例和后台分类查询任务", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ items: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
     await api.instanceJobs("instance/one");
     expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/jobs?instance_id=instance%2Fone");
 
     await api.instanceJobs("instance/one", "exclude");
     expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/jobs?instance_id=instance%2Fone&background=exclude");
+
+    await api.instanceJobs("instance/one", "only");
+    expect(fetchMock.mock.calls[2][0]).toBe("/api/v1/jobs?instance_id=instance%2Fone&background=only");
   });
 
   it("恢复码登录不会同时提交 TOTP", async () => {

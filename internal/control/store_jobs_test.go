@@ -80,8 +80,9 @@ func TestListJobsFiltersBackgroundBeforeLimit(t *testing.T) {
 		INSERT INTO jobs(id,node_id,type,status,requested_by,created_at) VALUES
 			('operation','node','restart','succeeded',NULL,?1),
 			('manual-probe','node','a2s.info','succeeded','owner',?2),
-			('background','node','a2s.info','succeeded',NULL,?3)`,
-		time.Unix(1, 0).UTC(), time.Unix(2, 0).UTC(), time.Unix(3, 0).UTC()); err != nil {
+			('background','node','a2s.info','succeeded',NULL,?3),
+			('legacy-rcon','node','rcon.players','succeeded','owner',?4)`,
+		time.Unix(1, 0).UTC(), time.Unix(2, 0).UTC(), time.Unix(3, 0).UTC(), time.Unix(4, 0).UTC()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -96,8 +97,8 @@ func TestListJobsFiltersBackgroundBeforeLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(background) != 1 || background[0].ID != "background" {
-		t.Fatalf("background = %#v, want automatic probe", background)
+	if len(background) != 1 || background[0].ID != "legacy-rcon" {
+		t.Fatalf("background = %#v, want legacy user-attributed RCON probe", background)
 	}
 }
 
@@ -124,13 +125,17 @@ func TestHousekeepingRetainsBackgroundFailuresLongerThanSuccesses(t *testing.T) 
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online');
-		INSERT INTO jobs(id,node_id,type,status,finished_at,created_at) VALUES
-			('old-success','node','a2s.info','succeeded',?1,?1),
-			('recent-success','node','a2s.info','succeeded',?2,?2),
-			('recent-failure','node','a2s.info','failed',?1,?1),
-			('old-failure','node','a2s.info','failed',?3,?3),
-			('user-operation','node','restart','succeeded',?1,?1)`,
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO users(id,username,username_normalized,display_name,password_hash,role)
+		VALUES('owner','owner','owner','Owner','hash','owner');
+		INSERT INTO nodes(id,name,status) VALUES('node','Node','online');
+		INSERT INTO jobs(id,node_id,type,status,requested_by,finished_at,created_at) VALUES
+			('old-success','node','a2s.info','succeeded',NULL,?1,?1),
+			('recent-success','node','a2s.info','succeeded',NULL,?2,?2),
+			('recent-failure','node','a2s.info','failed',NULL,?1,?1),
+			('old-failure','node','a2s.info','failed',NULL,?3,?3),
+			('old-rcon-success','node','rcon.players','succeeded','owner',?1,?1),
+			('old-rcon-failure','node','rcon.players','failed','owner',?3,?3),
+			('user-operation','node','restart','succeeded','owner',?1,?1)`,
 		now.Add(-2*time.Hour), now.Add(-30*time.Minute), now.Add(-25*time.Hour)); err != nil {
 		t.Fatal(err)
 	}

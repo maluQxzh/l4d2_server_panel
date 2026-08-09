@@ -858,7 +858,7 @@ paths:
     get:
       tags: [Instances]
       summary: 获取最近 RCON 玩家列表并异步刷新
-      description: 返回最近成功缓存；运行中且已保存 RCON 凭据时，读取同时以 10 秒幂等桶排队 `rcon.players`，因此数据可能短暂滞后。客户端可按实例查询 `/jobs` 并显示最新 `rcon.players` 的失败原因；停止状态下 RCON 不可用。
+      description: 返回最近成功缓存；运行中且已保存 RCON 凭据时，读取同时以 10 秒幂等桶排队后台探测 `rcon.players`，因此数据可能短暂滞后。该任务没有用户发起人并始终归入后台探测；客户端可按实例以 background=only 查询 `/jobs` 并显示最新失败原因。停止状态下 RCON 不可用。
       parameters: [{ $ref: "#/components/parameters/InstanceID" }]
       responses:
         "200":
@@ -1623,7 +1623,7 @@ paths:
         - {
             name: background,
             in: query,
-            description: 系统自动只读探测任务的筛选方式；默认 include 保持 API 向后兼容，任务中心使用 exclude 或 only 分开显示,
+            description: 周期性只读探测任务的筛选方式，包括玩家页触发的 RCON 玩家刷新；默认 include 保持 API 向后兼容，任务中心和实例最近操作使用 exclude 或 only 分开显示,
             schema: { type: string, enum: [include, exclude, only], default: include },
           }
         - {

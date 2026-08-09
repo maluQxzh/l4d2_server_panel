@@ -1,7 +1,10 @@
 package control
 
 import (
+	"context"
 	"encoding/base64"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +84,43 @@ func TestRCONPlayerRefreshRequiresRunningServerAndCredential(t *testing.T) {
 		if rconPlayerRefreshAllowed(instance) {
 			t.Fatalf("RCON refresh accepted instance %#v", instance)
 		}
+	}
+}
+
+func TestRCONPlayerRefreshIsQueuedAsBackgroundProbe(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "rcon-refresh.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	owner, created, err := store.BootstrapOwner(ctx, "owner", "Owner", "hash")
+	if err != nil || !created {
+		t.Fatalf("bootstrap owner: created=%v err=%v", created, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online')`); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: "node", Name: "players", Port: 27015})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(Config{MasterKey: []byte("0123456789abcdef0123456789abcdef")}, store, nil)
+	defer server.Close()
+	request := httptest.NewRequest("GET", "/api/v1/instances/"+instance.ID+"/players", nil)
+	request = request.WithContext(context.WithValue(request.Context(), principalContextKey, Principal{User: owner}))
+
+	server.queueRefresh(request, instance.ID, "rcon.players", map[string]any{})
+
+	var requestedBy string
+	if err := store.db.QueryRowContext(ctx, `SELECT COALESCE(requested_by,'') FROM jobs WHERE instance_id=?1 AND type='rcon.players'`, instance.ID).Scan(&requestedBy); err != nil {
+		t.Fatal(err)
+	}
+	if requestedBy != "" {
+		t.Fatalf("RCON player refresh requester = %q, want system background probe", requestedBy)
 	}
 }
 
