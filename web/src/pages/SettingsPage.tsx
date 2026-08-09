@@ -144,7 +144,7 @@ function CenterUpdateCard() {
       {upload.isPending && <div className="center-update-progress" role="progressbar" aria-valuenow={uploadProgress}><span style={{ width: `${uploadProgress}%` }} /><small>正在上传 {uploadProgress}%</small></div>}
       {state && ["queued", "running"].includes(state.status) && <div className="center-update-running"><span className="spinner" /><div><strong>{updatePhaseLabels[state.phase] || state.phase}</strong><small>页面会等待服务恢复；升级成功后将自动刷新，请勿关闭页面或操作中心端容器。</small></div></div>}
       {state?.status === "failed" && <div className="form-warning">{state.rollback === "succeeded" ? "升级失败，旧版本和数据库已经恢复。" : "自动回滚失败，服务可能保持停止。"}{state.error ? ` ${state.error}` : ""}</div>}
-      {history.length > 0 && <div className="center-update-history"><strong>最近升级</strong>{history.slice(0, 3).map((item) => <div key={item.job_id}><StatusBadge status={item.status} /><span>{item.current_version} → {item.target_version || "未知"}</span><time>{dateTime(item.completed_at || item.updated_at)}</time><small>{item.status === "failed" ? `回滚：${item.rollback === "succeeded" ? "成功" : "失败"}` : "健康检查通过"}</small></div>)}</div>}
+      {history.length > 0 && <div className="center-update-history"><strong>最近升级</strong>{history.slice(0, 3).map((item) => <div key={item.job_id}><StatusBadge status={item.status} /><span>{item.current_version} → {item.target_version || "未知"}</span><time>{dateTime(item.completed_at || item.updated_at)}</time><small>{item.status === "failed" ? `回滚：${item.rollback === "succeeded" ? "成功" : "失败"}` : "健康检查通过"}</small>{item.status === "failed" && item.error && <code className="center-update-history__error" title={item.error}>失败诊断：{item.error}</code>}</div>)}</div>}
     </div></Card>
   </section>;
 }

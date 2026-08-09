@@ -2,14 +2,17 @@ package containerupdate
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +73,9 @@ func RunWorker(logger *slog.Logger, args []string) (resultErr error) {
 	time.Sleep(3 * time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
+	if _, err := client.negotiate(ctx); err != nil {
+		return finishWorkerFailure(manager, state, "validating", "not_required", err)
+	}
 	current, err := client.inspectContainer(ctx, spec.CurrentContainerID)
 	if err != nil {
 		return finishWorkerFailure(manager, state, "validating", "not_required", err)
@@ -83,6 +89,10 @@ func RunWorker(logger *slog.Logger, args []string) (resultErr error) {
 		if err == nil {
 			err = errors.New("target image identity changed before update")
 		}
+		return finishWorkerFailure(manager, state, "validating", "not_required", err)
+	}
+	replacement, err := replacementRequest(current, spec.TargetImageRef)
+	if err != nil {
 		return finishWorkerFailure(manager, state, "validating", "not_required", err)
 	}
 
@@ -108,10 +118,9 @@ func RunWorker(logger *slog.Logger, args []string) (resultErr error) {
 		_ = client.startContainer(context.Background(), current.ID)
 		return finishWorkerFailure(manager, state, "installing", "not_required", err)
 	}
-	request := replacementRequest(current, spec.TargetImageRef)
 	state.Phase, state.UpdatedAt = "installing", time.Now().UTC()
 	_ = writeJSONAtomic(manager.statePath(*jobID), state)
-	newID, installErr := client.createContainer(ctx, spec.CurrentName, request)
+	newID, installErr := client.createContainer(ctx, spec.CurrentName, replacement)
 	if installErr == nil {
 		installErr = client.startContainer(ctx, newID)
 	}
@@ -140,32 +149,144 @@ func RunWorker(logger *slog.Logger, args []string) (resultErr error) {
 	return nil
 }
 
-func replacementRequest(current containerInspect, targetImage string) map[string]any {
-	config := cloneMap(current.Config)
-	config["Image"] = targetImage
-	delete(config, "Hostname")
-	delete(config, "Domainname")
-	hostConfig := cloneMap(current.HostConfig)
-	endpoints := make(map[string]map[string]any, len(current.NetworkSettings.Networks))
-	for name, source := range current.NetworkSettings.Networks {
-		endpoint := map[string]any{}
-		for _, key := range []string{"Aliases", "Links", "DriverOpts", "GwPriority"} {
-			if value, exists := source[key]; exists && value != nil {
-				endpoint[key] = value
-			}
-		}
-		if ipam, exists := source["IPAMConfig"]; exists && ipam != nil {
-			endpoint["IPAMConfig"] = ipam
-		}
-		endpoints[name] = endpoint
+type dockerPortBinding struct {
+	HostIP   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
+}
+
+func replacementRequest(current containerInspect, targetImage string) (map[string]any, error) {
+	labels := stringMap(current.Config["Labels"])
+	project := strings.TrimSpace(labels["com.docker.compose.project"])
+	if labels["com.docker.compose.service"] != "app" || project == "" || len(project) > 63 {
+		return nil, errors.New("current Compose identity is invalid")
 	}
-	return map[string]any{"Image": targetImage, "HostConfig": hostConfig, "NetworkingConfig": map[string]any{"EndpointsConfig": endpoints},
-		"Hostname": config["Hostname"], "Domainname": config["Domainname"], "User": config["User"], "AttachStdin": config["AttachStdin"],
-		"AttachStdout": config["AttachStdout"], "AttachStderr": config["AttachStderr"], "ExposedPorts": config["ExposedPorts"],
-		"Tty": config["Tty"], "OpenStdin": config["OpenStdin"], "StdinOnce": config["StdinOnce"], "Env": config["Env"], "Cmd": config["Cmd"],
-		"Healthcheck": config["Healthcheck"], "ArgsEscaped": config["ArgsEscaped"], "Volumes": config["Volumes"], "WorkingDir": config["WorkingDir"],
-		"Entrypoint": config["Entrypoint"], "OnBuild": config["OnBuild"], "Labels": config["Labels"], "StopSignal": config["StopSignal"],
-		"StopTimeout": config["StopTimeout"], "Shell": config["Shell"]}
+	if len(current.NetworkSettings.Networks) != 1 {
+		return nil, errors.New("current Control must use exactly one Compose network")
+	}
+	var networkName string
+	for name := range current.NetworkSettings.Networks {
+		networkName = name
+	}
+	if networkName == "" || len(networkName) > 127 || strings.ContainsAny(networkName, "\x00\r\n") {
+		return nil, errors.New("current Compose network is invalid")
+	}
+
+	dataMount, dataOK := findMount(current.Mounts, "/app/data")
+	spoolMount, spoolOK := findMount(current.Mounts, "/app/spool")
+	updateMount, updateOK := findMount(current.Mounts, defaultUpdateRoot)
+	socketMount, socketOK := findMount(current.Mounts, defaultDockerSocket)
+	if !validNamedVolume(dataMount, dataOK) || !validNamedVolume(spoolMount, spoolOK) || !validNamedVolume(updateMount, updateOK) ||
+		!socketOK || socketMount.Type != "bind" || socketMount.Source != defaultDockerSocket {
+		return nil, errors.New("current Control mounts do not match the fixed Compose layout")
+	}
+
+	environment, err := replacementEnvironment(current.Config["Env"])
+	if err != nil {
+		return nil, err
+	}
+	portBindings, err := replacementPortBindings(current.HostConfig["PortBindings"])
+	if err != nil {
+		return nil, err
+	}
+	composeLabels := map[string]string{}
+	for key, value := range labels {
+		if strings.HasPrefix(key, "com.docker.compose.") && key != "com.docker.compose.image" {
+			composeLabels[key] = value
+		}
+	}
+
+	hostConfig := map[string]any{
+		"AutoRemove":     false,
+		"RestartPolicy":  map[string]any{"Name": "unless-stopped", "MaximumRetryCount": 0},
+		"NetworkMode":    networkName,
+		"ReadonlyRootfs": true,
+		"CapDrop":        []string{"ALL"},
+		"CapAdd":         []string{"CHOWN", "FOWNER", "SETGID", "SETUID"},
+		"SecurityOpt":    []string{"no-new-privileges"},
+		"Binds":          []string{defaultDockerSocket + ":" + defaultDockerSocket + ":rw"},
+		"Mounts": []map[string]any{
+			{"Type": "volume", "Source": dataMount.Name, "Target": "/app/data", "ReadOnly": false},
+			{"Type": "volume", "Source": spoolMount.Name, "Target": "/app/spool", "ReadOnly": false},
+			{"Type": "volume", "Source": updateMount.Name, "Target": defaultUpdateRoot, "ReadOnly": false},
+		},
+		"Tmpfs":        map[string]string{"/tmp": "size=64m,mode=1777"},
+		"PortBindings": portBindings,
+		"LogConfig":    map[string]any{"Type": "json-file", "Config": map[string]string{"max-size": "20m", "max-file": "5"}},
+	}
+	return map[string]any{
+		"Image":            targetImage,
+		"User":             "0:0",
+		"Env":              environment,
+		"Labels":           composeLabels,
+		"ExposedPorts":     map[string]any{"19090/tcp": map[string]any{}},
+		"Healthcheck":      map[string]any{"Test": []string{"CMD", "wget", "-qO-", "http://127.0.0.1:19090/healthz"}, "Interval": int64(10 * time.Second), "Timeout": int64(3 * time.Second), "Retries": 12},
+		"StopSignal":       "SIGTERM",
+		"StopTimeout":      45,
+		"HostConfig":       hostConfig,
+		"NetworkingConfig": map[string]any{"EndpointsConfig": map[string]any{networkName: map[string]any{"Aliases": []string{"app"}}}},
+	}, nil
+}
+
+func validNamedVolume(mount dockerMount, exists bool) bool {
+	return exists && mount.Type == "volume" && mount.Name != "" && len(mount.Name) <= 255 && !strings.ContainsAny(mount.Name, "\x00\r\n/\\")
+}
+
+func replacementEnvironment(raw any) ([]string, error) {
+	var source []string
+	if err := remarshal(raw, &source); err != nil {
+		return nil, errors.New("current Control environment is invalid")
+	}
+	allowed := map[string]bool{
+		"DATABASE_PATH": true, "MASTER_KEY": true, "MASTER_KEY_FILE": true, "CONTAINER_UPDATE_ENABLED": true,
+		"CONTAINER_DOCKER_SOCKET": true, "CONTAINER_UPDATE_ROOT": true, "PUBLIC_URL": true, "COOKIE_SECURE": true,
+		"TRUSTED_PROXIES": true, "BOOTSTRAP_USERNAME": true, "BOOTSTRAP_PASSWORD": true, "BOOTSTRAP_DISPLAY_NAME": true,
+		"SESSION_TTL": true, "LOG_LEVEL": true, "TZ": true,
+	}
+	values := map[string]string{}
+	for _, entry := range source {
+		key, value, found := strings.Cut(entry, "=")
+		if !found || !allowed[key] || len(entry) > 8192 || strings.ContainsAny(entry, "\x00\r\n") {
+			continue
+		}
+		values[key] = value
+	}
+	required := map[string]string{
+		"DATABASE_PATH": defaultDatabasePath, "MASTER_KEY_FILE": "/app/data/control-master.key", "CONTAINER_UPDATE_ENABLED": "true",
+		"CONTAINER_DOCKER_SOCKET": defaultDockerSocket, "CONTAINER_UPDATE_ROOT": defaultUpdateRoot,
+	}
+	for key, expected := range required {
+		if values[key] != expected {
+			return nil, fmt.Errorf("current Control environment %s is invalid", key)
+		}
+	}
+	result := make([]string, 0, len(values))
+	for _, key := range []string{"DATABASE_PATH", "MASTER_KEY", "MASTER_KEY_FILE", "CONTAINER_UPDATE_ENABLED", "CONTAINER_DOCKER_SOCKET", "CONTAINER_UPDATE_ROOT", "PUBLIC_URL", "COOKIE_SECURE", "TRUSTED_PROXIES", "BOOTSTRAP_USERNAME", "BOOTSTRAP_PASSWORD", "BOOTSTRAP_DISPLAY_NAME", "SESSION_TTL", "LOG_LEVEL", "TZ"} {
+		if value, exists := values[key]; exists {
+			result = append(result, key+"="+value)
+		}
+	}
+	return result, nil
+}
+
+func replacementPortBindings(raw any) (map[string][]dockerPortBinding, error) {
+	var bindings map[string][]dockerPortBinding
+	if err := remarshal(raw, &bindings); err != nil || len(bindings) != 1 || len(bindings["19090/tcp"]) != 1 {
+		return nil, errors.New("current Control port binding is invalid")
+	}
+	binding := bindings["19090/tcp"][0]
+	port, err := strconv.ParseUint(binding.HostPort, 10, 16)
+	if err != nil || port == 0 || (binding.HostIP != "" && net.ParseIP(binding.HostIP) == nil) {
+		return nil, errors.New("current Control host port binding is invalid")
+	}
+	return map[string][]dockerPortBinding{"19090/tcp": {binding}}, nil
+}
+
+func remarshal(source any, target any) error {
+	data, err := json.Marshal(source)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, target)
 }
 
 func rollbackContainerUpdate(ctx context.Context, manager *Manager, state portableupdate.State, oldID, oldImageID, originalName, newID string, cause error) error {
@@ -173,6 +294,7 @@ func rollbackContainerUpdate(ctx context.Context, manager *Manager, state portab
 	_ = writeJSONAtomic(manager.statePath(state.JobID), state)
 	rollbackErr := error(nil)
 	if newID != "" {
+		cause = replacementFailureDiagnostic(ctx, manager.client, newID, cause)
 		_ = manager.client.stopContainer(ctx, newID, 10)
 		if err := manager.client.removeContainer(ctx, newID, true); err != nil {
 			rollbackErr = err
@@ -200,6 +322,54 @@ func rollbackContainerUpdate(ctx context.Context, manager *Manager, state portab
 		cause = fmt.Errorf("%v; rollback failed: %w", cause, rollbackErr)
 	}
 	return finishWorkerFailure(manager, state, "rolling_back", rollback, cause)
+}
+
+func replacementFailureDiagnostic(ctx context.Context, client *dockerClient, containerID string, cause error) error {
+	parts := []string{cause.Error()}
+	if inspected, err := client.inspectContainer(ctx, containerID); err == nil {
+		detail := fmt.Sprintf("replacement exit_code=%d", inspected.State.ExitCode)
+		if inspected.State.OOMKilled {
+			detail += " oom_killed=true"
+		}
+		if engineError := sanitizeDiagnosticText(inspected.State.Error); engineError != "" {
+			detail += " engine_error=" + engineError
+		}
+		parts = append(parts, detail)
+	}
+	if logs, err := client.containerLogs(ctx, containerID, 32<<10); err == nil {
+		if excerpt := lastDiagnosticRunes(sanitizeDiagnosticText(dockerLogText(logs)), 320); excerpt != "" {
+			parts = append(parts, "replacement_log="+excerpt)
+		}
+	}
+	return errors.New(strings.Join(parts, "; "))
+}
+
+func dockerLogText(data []byte) string {
+	if len(data) < 8 || (data[0] != 1 && data[0] != 2) || data[1] != 0 || data[2] != 0 || data[3] != 0 {
+		return string(data)
+	}
+	var output strings.Builder
+	for len(data) >= 8 {
+		if (data[0] != 1 && data[0] != 2) || data[1] != 0 || data[2] != 0 || data[3] != 0 {
+			break
+		}
+		size := int(binary.BigEndian.Uint32(data[4:8]))
+		data = data[8:]
+		if size < 0 || size > len(data) {
+			break
+		}
+		output.Write(data[:size])
+		data = data[size:]
+	}
+	return output.String()
+}
+
+func lastDiagnosticRunes(value string, limit int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	return "…" + string(runes[len(runes)-limit:])
 }
 
 func finishWorkerFailure(manager *Manager, state portableupdate.State, phase, rollback string, cause error) error {

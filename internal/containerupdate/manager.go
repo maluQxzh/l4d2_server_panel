@@ -27,7 +27,11 @@ const (
 	defaultDatabasePath = "/app/data/l4d2panel.sqlite3"
 )
 
-var releaseVersionPattern = regexp.MustCompile(`^v?([0-9]+)\.([0-9]+)\.([0-9]+)$`)
+var (
+	releaseVersionPattern         = regexp.MustCompile(`^v?([0-9]+)\.([0-9]+)\.([0-9]+)$`)
+	sensitiveDiagnosticAssignment = regexp.MustCompile(`(?i)(password|secret|token|authorization|cookie|master[_-]?key|setup[_-]?key)(["']?\s*[:=]\s*["']?)([^\s,;}"']+)`)
+	bearerDiagnosticValue         = regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+/=-]+`)
+)
 
 type Manager struct {
 	Socket         string
@@ -93,6 +97,9 @@ func (m *Manager) Supported() (bool, string) {
 	defer cancel()
 	if err := m.client.ping(ctx); err != nil {
 		return false, "Docker Engine API 不可用"
+	}
+	if _, err := m.client.negotiate(ctx); err != nil {
+		return false, "Docker Engine API 版本不受支持"
 	}
 	current, err := m.client.inspectContainer(ctx, m.ContainerID)
 	if err != nil {
@@ -214,7 +221,7 @@ func (m *Manager) Create(reader io.Reader, idempotencyKey string) (portableupdat
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	engine, err := m.client.version(ctx)
+	engine, err := m.client.negotiate(ctx)
 	if err != nil {
 		return portableupdate.State{}, err
 	}
@@ -555,9 +562,22 @@ func sanitizeError(err error) string {
 	if err == nil {
 		return ""
 	}
-	message := strings.TrimSpace(err.Error())
-	if len(message) > 500 {
-		message = message[:500]
+	message := sanitizeDiagnosticText(err.Error())
+	runes := []rune(message)
+	if len(runes) > 500 {
+		message = string(runes[:500])
 	}
 	return message
+}
+
+func sanitizeDiagnosticText(value string) string {
+	value = sensitiveDiagnosticAssignment.ReplaceAllString(value, `$1$2[redacted]`)
+	value = bearerDiagnosticValue.ReplaceAllString(value, "Bearer [redacted]")
+	value = strings.Map(func(character rune) rune {
+		if character == '\n' || character == '\r' || character == '\t' || character >= 0x20 {
+			return character
+		}
+		return -1
+	}, value)
+	return strings.Join(strings.Fields(value), " ")
 }

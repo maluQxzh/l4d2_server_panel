@@ -2386,7 +2386,7 @@ components:
         package_sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
         upload_bytes: { type: integer, minimum: 1, maximum: 1073741824 }
         rollback: { type: string, enum: [not_required, succeeded, failed] }
-        error: { type: string, description: 脱敏且有长度上限的阶段错误 }
+        error: { type: string, maxLength: 500, description: 脱敏的阶段错误；容器升级失败时可含目标容器退出状态及有界尾部日志 }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         completed_at: { type: string, format: date-time }

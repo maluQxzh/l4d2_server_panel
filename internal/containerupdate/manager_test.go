@@ -42,3 +42,30 @@ func TestNormalizeArchitecture(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateDockerAPIVersion(t *testing.T) {
+	tests := []struct {
+		name       string
+		server     string
+		minimum    string
+		wantError  bool
+		containing string
+	}{
+		{name: "Docker Engine 24", server: "1.43", minimum: "1.12"},
+		{name: "newer compatible engine", server: "1.47", minimum: "1.24"},
+		{name: "older engine", server: "1.42", minimum: "1.12", wantError: true, containing: "older"},
+		{name: "future engine dropped API", server: "1.60", minimum: "1.50", wantError: true, containing: "no longer accepts"},
+		{name: "invalid server", server: "unknown", minimum: "1.24", wantError: true, containing: "invalid"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateDockerAPIVersion(test.server, test.minimum)
+			if test.wantError && (err == nil || !strings.Contains(err.Error(), test.containing)) {
+				t.Fatalf("validateDockerAPIVersion(%q, %q) error = %v", test.server, test.minimum, err)
+			}
+			if !test.wantError && err != nil {
+				t.Fatalf("validateDockerAPIVersion(%q, %q) error = %v", test.server, test.minimum, err)
+			}
+		})
+	}
+}

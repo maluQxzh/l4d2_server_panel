@@ -113,4 +113,32 @@ describe("设置页全局审计权限", () => {
     await waitFor(() => expect(revoke).toHaveBeenCalled());
     expect(revoke.mock.calls[0][0]).toBe("token-1");
   });
+
+  it("在最近升级中显示失败阶段和脱敏诊断", async () => {
+    authState.user = { id: "owner-1", username: "owner", display_name: "所有者", role: "owner", role_bindings: undefined };
+    vi.spyOn(api, "users").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "audit").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "systemUpdates").mockResolvedValue({
+      supported: true,
+      current_version: "0.1.0",
+      deployment: "docker-compose",
+      package_format: "tar.gz",
+      history: [{
+        job_id: "5c288597-90e6-445b-a46a-ce725736811e",
+        status: "failed",
+        phase: "rolling_back",
+        current_version: "0.1.0",
+        target_version: "0.1.0",
+        rollback: "succeeded",
+        error: "replacement exit_code=1; replacement_log=configuration rejected",
+        created_at: "2026-08-09T00:00:00Z",
+        updated_at: "2026-08-09T00:01:00Z",
+        completed_at: "2026-08-09T00:01:00Z",
+      }],
+    });
+    renderPage();
+
+    expect(await screen.findByText(/失败诊断：replacement exit_code=1/)).toBeInTheDocument();
+    expect(screen.getByText("回滚：成功")).toBeInTheDocument();
+  });
 });
