@@ -199,6 +199,7 @@ func isRCONDialError(err error) bool {
 
 type a2sInfoResult struct {
 	info A2SInfo
+	host string
 	err  error
 }
 
@@ -208,14 +209,26 @@ func queryLocalA2SInfo(ctx context.Context, record InstanceRecord, payload opera
 		return A2SInfo{}, errors.New("invalid A2S port")
 	}
 	hosts := localGameEndpointHosts(payload.RCONHost, record.RCONHost)
+	info, _, err := queryA2SInfoOnLocalHosts(ctx, hosts, port, timeout)
+	return info, err
+}
+
+func queryA2SInfoOnLocalHosts(ctx context.Context, hosts []string, port int, timeout time.Duration) (A2SInfo, string, error) {
+	if port <= 0 || port > 65535 {
+		return A2SInfo{}, "", errors.New("invalid A2S port")
+	}
+	if len(hosts) == 0 {
+		return A2SInfo{}, "", errors.New("no safe local address is available")
+	}
 	queryCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	results := make(chan a2sInfoResult, len(hosts))
 	for _, host := range hosts {
+		host := host
 		address := net.JoinHostPort(host, strconv.Itoa(port))
 		go func() {
 			info, err := (A2SClient{Timeout: timeout}).Info(queryCtx, address)
-			results <- a2sInfoResult{info: info, err: err}
+			results <- a2sInfoResult{info: info, host: host, err: err}
 		}()
 	}
 	var lastErr error
@@ -223,14 +236,14 @@ func queryLocalA2SInfo(ctx context.Context, record InstanceRecord, payload opera
 		select {
 		case result := <-results:
 			if result.err == nil {
-				return result.info, nil
+				return result.info, result.host, nil
 			}
 			lastErr = result.err
 		case <-ctx.Done():
-			return A2SInfo{}, ctx.Err()
+			return A2SInfo{}, "", ctx.Err()
 		}
 	}
-	return A2SInfo{}, fmt.Errorf("query A2S on Agent local addresses %s: %w", strings.Join(hosts, ", "), lastErr)
+	return A2SInfo{}, "", fmt.Errorf("query A2S on Agent local addresses %s: %w", strings.Join(hosts, ", "), lastErr)
 }
 
 type a2sPlayersResult struct {

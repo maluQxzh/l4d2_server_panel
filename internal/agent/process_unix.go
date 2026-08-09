@@ -10,6 +10,8 @@ import (
 
 type platformProcess struct{ pid int }
 
+func platformProcessOutputFailure(string) string { return "" }
+
 func preparePlatformCommand(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} }
 func attachPlatformProcess(cmd *exec.Cmd) (*platformProcess, error) {
 	return &platformProcess{pid: cmd.Process.Pid}, nil

@@ -68,6 +68,7 @@ type managedProcess struct {
 	cmd           *exec.Cmd
 	platform      *platformProcess
 	state         ProcessState
+	outputFailure string
 	done          chan struct{}
 	stopRequested bool
 	launching     bool
@@ -133,11 +134,13 @@ func (m *ProcessManager) launch(p *managedProcess) error {
 		return err
 	}
 	stdout := &lineSink{stream: "stdout", log: instanceLog, emit: func(stream, line string, at time.Time) {
+		m.recordOutputFailure(p, line)
 		if m.onLine != nil {
 			m.onLine(p.spec.InstanceID, stream, line, at)
 		}
 	}}
 	stderr := &lineSink{stream: "stderr", log: instanceLog, emit: func(stream, line string, at time.Time) {
+		m.recordOutputFailure(p, line)
 		if m.onLine != nil {
 			m.onLine(p.spec.InstanceID, stream, line, at)
 		}
@@ -169,9 +172,30 @@ func (m *ProcessManager) launch(p *managedProcess) error {
 	}
 	p.cmd, p.platform, p.launching = cmd, platform, false
 	p.state = ProcessState{Status: "running", PID: cmd.Process.Pid, StartedAt: time.Now().UTC()}
+	if p.outputFailure != "" {
+		p.state.Status = "degraded"
+		p.state.ExitError = p.outputFailure
+	}
 	m.mu.Unlock()
 	go m.wait(p, cmd, platform, instanceLog, stdout, stderr)
 	return nil
+}
+
+func (m *ProcessManager) recordOutputFailure(p *managedProcess, line string) {
+	failure := platformProcessOutputFailure(line)
+	if failure == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.items[p.spec.InstanceID] != p {
+		return
+	}
+	p.outputFailure = failure
+	if p.cmd != nil {
+		p.state.Status = "degraded"
+		p.state.ExitError = failure
+	}
 }
 
 func (m *ProcessManager) wait(p *managedProcess, cmd *exec.Cmd, platform *platformProcess, instanceLog io.Closer, sinks ...*lineSink) {
@@ -225,6 +249,7 @@ func (m *ProcessManager) restartAfterCrash(p *managedProcess) {
 	}
 	p.done = make(chan struct{})
 	p.launching = true
+	p.outputFailure = ""
 	p.state.Status = "starting"
 	m.mu.Unlock()
 	if launchErr := m.launch(p); launchErr != nil {

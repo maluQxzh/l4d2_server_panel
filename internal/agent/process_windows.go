@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -34,6 +35,13 @@ var (
 )
 
 type platformProcess struct{ job syscall.Handle }
+
+func platformProcessOutputFailure(line string) string {
+	if strings.Contains(line, "CTextConsoleWin32::GetLine: !GetNumberOfConsoleInputEvents") {
+		return "Windows SRCDS console input initialization failed; deploy and restart an Agent build with hidden console-input support"
+	}
+	return ""
+}
 
 type jobObjectBasicLimitInformation struct {
 	PerProcessUserTimeLimit int64

@@ -13,6 +13,31 @@ import (
 
 var procGetNumberOfConsoleInputEvents = syscall.NewLazyDLL("kernel32.dll").NewProc("GetNumberOfConsoleInputEvents")
 
+func TestPlatformProcessOutputFailureRecognizesSRCDSConsoleError(t *testing.T) {
+	got := platformProcessOutputFailure("CTextConsoleWin32::GetLine: !GetNumberOfConsoleInputEvents")
+	if got == "" {
+		t.Fatal("SRCDS console-input failure was not recognized")
+	}
+	if got := platformProcessOutputFailure("Console initialized."); got != "" {
+		t.Fatalf("ordinary SRCDS output was classified as a failure: %q", got)
+	}
+}
+
+func TestProcessManagerMarksSRCDSConsoleFailureDegraded(t *testing.T) {
+	const instanceID = "console-failure"
+	process := &managedProcess{
+		spec:  ProcessSpec{InstanceID: instanceID},
+		cmd:   exec.Command(os.Args[0]),
+		state: ProcessState{Status: "running", PID: 42},
+	}
+	manager := &ProcessManager{items: map[string]*managedProcess{instanceID: process}}
+	manager.recordOutputFailure(process, "CTextConsoleWin32::GetLine: !GetNumberOfConsoleInputEvents")
+	state := manager.State(instanceID)
+	if state.Status != "degraded" || state.ExitError == "" {
+		t.Fatalf("console failure state = %#v, want degraded with an explicit error", state)
+	}
+}
+
 func TestPreparePlatformCommandStartsSuspended(t *testing.T) {
 	cmd := exec.Command(os.Args[0])
 	preparePlatformCommand(cmd)
