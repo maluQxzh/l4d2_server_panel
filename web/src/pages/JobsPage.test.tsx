@@ -24,6 +24,7 @@ const operation: Job = {
   payload: { map: "c2m1_highway" },
   result: { message: "ok" },
   requested_by: "owner",
+  requested_by_display_name: "服务器管理员",
   created_at: "2026-08-07T14:00:00Z",
 };
 
@@ -68,6 +69,9 @@ describe("任务中心", () => {
     expect(screen.queryByText("查询服务器状态", { exact: true })).not.toBeInTheDocument();
     expect(screen.getByText("1 个目标")).toBeInTheDocument();
     expect(jobList).toHaveBeenCalledWith({ background: "exclude", backgroundSummary: true });
+
+    fireEvent.click(screen.getByRole("button", { name: /重启实例/ }));
+    expect(screen.getByText("服务器管理员")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("任务分类"), { target: { value: "background" } });
     expect(await screen.findByText("查询服务器状态", { exact: true })).toBeInTheDocument();

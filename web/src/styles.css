@@ -285,7 +285,10 @@ h1, h2, h3, p { margin-top: 0; }
 .map-card__identity { min-width: 0; }
 .map-card__identity h2 { margin: 4px 0 5px; overflow-wrap: anywhere; font-size: 20px; }
 .map-card__identity > small { display: block; overflow: hidden; color: var(--text-faint); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.map-card__metadata { margin: 16px 0 0; display: grid; gap: 7px; }
+.map-card__uploader { width: fit-content; max-width: 100%; margin-top: 9px; padding: 4px 7px; display: inline-flex; align-items: center; gap: 5px; color: var(--text-faint); background: rgba(255,255,255,.025); border: 1px solid var(--line-soft); border-radius: 999px; font-size: 8px; }
+.map-card__uploader svg { flex: 0 0 auto; color: var(--green); }
+.map-card__uploader strong { min-width: 0; overflow: hidden; color: var(--text-dim); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.map-card__metadata { margin: 11px 0 0; display: grid; gap: 7px; }
 .map-card__metadata > div { min-width: 0; display: grid; grid-template-columns: 104px minmax(0, 1fr); align-items: baseline; gap: 8px; }
 .map-card__metadata dt { color: var(--text-faint); font-size: 9px; }
 .map-card__metadata dd { margin: 0; overflow: hidden; color: var(--text); font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }

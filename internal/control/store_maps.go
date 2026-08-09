@@ -16,14 +16,15 @@ import (
 const mapDeleteConfirmationTTL = 5 * time.Minute
 
 const mapColumns = `id,node_id,name,author,version,description,CASE WHEN length(poster_data)>0 THEN 1 ELSE 0 END,health,aggregate_sha256,total_size,source_type,source_name,
-	removed_files,removed_bytes,COALESCE(created_by,''),created_at,updated_at`
+	removed_files,removed_bytes,COALESCE(created_by,''),COALESCE((SELECT display_name FROM users WHERE users.id=maps.created_by),''),created_at,updated_at`
 
 func scanMap(row scanner) (domain.Map, error) {
 	var item domain.Map
 	var posterPresent int
 	err := row.Scan(&item.ID, &item.NodeID, &item.Name, &item.Author, &item.Version, &item.Description, &posterPresent,
 		&item.Health, &item.AggregateSHA256, &item.TotalSize,
-		&item.SourceType, &item.SourceName, &item.RemovedFiles, &item.RemovedBytes, &item.CreatedBy, &item.CreatedAt, &item.UpdatedAt)
+		&item.SourceType, &item.SourceName, &item.RemovedFiles, &item.RemovedBytes, &item.CreatedBy, &item.CreatedByName,
+		&item.CreatedAt, &item.UpdatedAt)
 	if err == nil && posterPresent != 0 {
 		item.PosterURL = "/api/v1/maps/" + item.ID + "/poster"
 	}

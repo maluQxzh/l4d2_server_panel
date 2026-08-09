@@ -25,6 +25,8 @@ const map: MapRecord = {
   total_size: 188_743_680,
   source_type: "qq_flash",
   source_name: "l4d2_claustrophobia.zip",
+  created_by: "map-uploader",
+  created_by_display_name: "地图管理员",
   removed_files: 1_182,
   removed_bytes: 245_471_642,
   artifacts: [{ id: "artifact-1", ordinal: 1, size: 188_743_680, sha256: "a".repeat(64) }],
@@ -85,6 +87,8 @@ describe("地图管理卡片", () => {
     expect(screen.queryByText("VPK 部件")).not.toBeInTheDocument();
     expect(screen.queryByText("已清理文件")).not.toBeInTheDocument();
     expect(screen.getByText("Sean C. Wood")).toBeInTheDocument();
+    expect(screen.getByText("上传者")).toBeInTheDocument();
+    expect(screen.getByText("地图管理员")).toBeInTheDocument();
     expect(screen.getByText("1.2")).toBeInTheDocument();
     expect(screen.getByText("合作")).toBeInTheDocument();
     const assignedHeading = screen.getByText("已分配实例");

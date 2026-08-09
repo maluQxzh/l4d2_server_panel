@@ -295,6 +295,7 @@ export interface MapRecord {
   replicas?: MapReplicaRecord[];
   assignments?: MapAssignmentRecord[];
   created_by?: string;
+  created_by_display_name?: string;
   created_at: string;
   updated_at: string;
 }
@@ -311,6 +312,7 @@ export interface Job {
   payload?: Record<string, unknown>;
   result?: Record<string, unknown>;
   requested_by?: string;
+  requested_by_display_name?: string;
   created_at: string;
   started_at?: string;
   finished_at?: string;

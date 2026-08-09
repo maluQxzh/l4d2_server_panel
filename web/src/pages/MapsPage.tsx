@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, ChevronUp, Database, HardDrive, Link2, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp, Database, HardDrive, Link2, Plus, RefreshCw, ShieldCheck, Trash2, UserRound } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, ProgressBar, StatusBadge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
@@ -74,6 +74,7 @@ function MapCard({ item, instances, user, onAssignments }: { item: MapRecord; in
       <div className="map-card__poster"><img src={poster} alt={`${item.name} 地图海报`} onError={(event) => { if (!event.currentTarget.src.endsWith("/map-default-poster.jpg")) event.currentTarget.src = "/map-default-poster.jpg"; }} /><div className="map-card__poster-shade" /><span>{item.poster_url ? "MISSION POSTER" : "DEFAULT POSTER"}</span></div>
       <div className="map-card__profile">
         <div className="map-card__identity"><span className="eyebrow">CUSTOM CAMPAIGN</span><h2>{item.name}</h2><small>{item.source_name || "QQ 闪传"} · {dateTime(item.created_at)}</small>
+          <div className="map-card__uploader"><UserRound size={12} aria-hidden /><span>上传者</span><strong>{item.created_by_display_name || "未知账号"}</strong></div>
           <dl className="map-card__metadata">
             <div><dt>作者：</dt><dd>{item.author || "未提供"}</dd></div>
             <div><dt>版本：</dt><dd>{item.version || "未提供"}</dd></div>

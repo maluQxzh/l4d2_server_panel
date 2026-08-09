@@ -93,12 +93,18 @@ func TestListJobsFiltersBackgroundBeforeLimit(t *testing.T) {
 	if len(operations) != 1 || operations[0].ID != "manual-probe" {
 		t.Fatalf("operations = %#v, want newest non-background job", operations)
 	}
+	if operations[0].RequestedByName != "Owner" {
+		t.Fatalf("operation requester display name = %q, want Owner", operations[0].RequestedByName)
+	}
 	background, err := store.ListJobs(ctx, "", "", jobBackgroundOnly, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(background) != 1 || background[0].ID != "legacy-rcon" {
 		t.Fatalf("background = %#v, want legacy user-attributed RCON probe", background)
+	}
+	if background[0].RequestedByName != "Owner" {
+		t.Fatalf("background requester display name = %q, want Owner", background[0].RequestedByName)
 	}
 }
 

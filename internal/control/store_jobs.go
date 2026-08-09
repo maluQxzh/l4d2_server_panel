@@ -18,6 +18,8 @@ const jobColumns = `id,node_id,COALESCE(instance_id,''),COALESCE(game_installati
 
 const jobColumnsWithFingerprint = jobColumns + `,request_fingerprint`
 
+const jobColumnsWithRequesterName = jobColumns + `,COALESCE((SELECT display_name FROM users WHERE users.id=jobs.requested_by),'')`
+
 var errLateCanceledJobUpdate = errors.New("late non-terminal update for a pending cancellation")
 
 func scanJob(row scanner) (domain.Job, error) {
@@ -27,6 +29,23 @@ func scanJob(row scanner) (domain.Job, error) {
 
 func scanJobWithFingerprint(row scanner) (domain.Job, string, error) {
 	return scanJobWithOptionalFingerprint(row, true)
+}
+
+func scanJobWithRequesterName(row scanner) (domain.Job, error) {
+	var job domain.Job
+	var payload, result []byte
+	var idempotency *string
+	err := row.Scan(&job.ID, &job.NodeID, &job.InstanceID, &job.InstallationID, &job.Type, &job.Status, &job.Progress, &job.Message,
+		&payload, &result, &idempotency, &job.RequestedBy, &job.CreatedAt, &job.StartedAt, &job.FinishedAt, &job.RequestedByName)
+	if err == nil {
+		if idempotency != nil {
+			job.IdempotencyKey = *idempotency
+		}
+		if err = json.Unmarshal(payload, &job.Payload); err == nil {
+			err = json.Unmarshal(result, &job.Result)
+		}
+	}
+	return job, err
 }
 
 func scanJobWithOptionalFingerprint(row scanner, withFingerprint bool) (domain.Job, string, error) {
@@ -309,7 +328,7 @@ func (s *Store) ListJobs(ctx context.Context, nodeID, instanceID string, backgro
 	default:
 		return nil, fmt.Errorf("invalid background job filter %q", background)
 	}
-	query := `SELECT ` + jobColumns + ` FROM jobs WHERE (?1='' OR node_id=?1) AND (?2='' OR instance_id=?2)
+	query := `SELECT ` + jobColumnsWithRequesterName + ` FROM jobs WHERE (?1='' OR node_id=?1) AND (?2='' OR instance_id=?2)
 		` + backgroundClause + ` ORDER BY created_at DESC,id DESC LIMIT ?3`
 	rows, err := s.db.QueryContext(ctx, query, nodeID, instanceID, limit)
 	if err != nil {
@@ -318,7 +337,7 @@ func (s *Store) ListJobs(ctx context.Context, nodeID, instanceID string, backgro
 	defer rows.Close()
 	items := make([]domain.Job, 0)
 	for rows.Next() {
-		job, err := scanJob(rows)
+		job, err := scanJobWithRequesterName(rows)
 		if err != nil {
 			return nil, err
 		}

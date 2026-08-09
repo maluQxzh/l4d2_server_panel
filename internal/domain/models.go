@@ -145,21 +145,22 @@ type Instance struct {
 }
 
 type Job struct {
-	ID             string         `json:"id"`
-	NodeID         string         `json:"node_id"`
-	InstanceID     string         `json:"instance_id,omitempty"`
-	InstallationID string         `json:"game_installation_id,omitempty"`
-	Type           string         `json:"type"`
-	Status         JobStatus      `json:"status"`
-	Progress       int            `json:"progress"`
-	Message        string         `json:"message,omitempty"`
-	Payload        map[string]any `json:"payload,omitempty"`
-	Result         map[string]any `json:"result,omitempty"`
-	IdempotencyKey string         `json:"idempotency_key,omitempty"`
-	RequestedBy    string         `json:"requested_by,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
-	StartedAt      *time.Time     `json:"started_at,omitempty"`
-	FinishedAt     *time.Time     `json:"finished_at,omitempty"`
+	ID              string         `json:"id"`
+	NodeID          string         `json:"node_id"`
+	InstanceID      string         `json:"instance_id,omitempty"`
+	InstallationID  string         `json:"game_installation_id,omitempty"`
+	Type            string         `json:"type"`
+	Status          JobStatus      `json:"status"`
+	Progress        int            `json:"progress"`
+	Message         string         `json:"message,omitempty"`
+	Payload         map[string]any `json:"payload,omitempty"`
+	Result          map[string]any `json:"result,omitempty"`
+	IdempotencyKey  string         `json:"idempotency_key,omitempty"`
+	RequestedBy     string         `json:"requested_by,omitempty"`
+	RequestedByName string         `json:"requested_by_display_name,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+	StartedAt       *time.Time     `json:"started_at,omitempty"`
+	FinishedAt      *time.Time     `json:"finished_at,omitempty"`
 }
 
 type MapHealth string
@@ -239,6 +240,7 @@ type Map struct {
 	Replicas        []MapReplica    `json:"replicas,omitempty"`
 	Assignments     []MapAssignment `json:"assignments,omitempty"`
 	CreatedBy       string          `json:"created_by,omitempty"`
+	CreatedByName   string          `json:"created_by_display_name,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 }

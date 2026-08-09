@@ -26,8 +26,11 @@ func TestMapImportProjectsMissionMetadataPosterModesAndChapters(t *testing.T) {
 	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
 		t.Fatal(err)
 	}
-	nodeID, mapID := uuid.NewString(), uuid.NewString()
-	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'map-node','online')`, nodeID); err != nil {
+	nodeID, mapID, userID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO users(id,username,username_normalized,display_name,password_hash,role)
+		VALUES(?2,'map-uploader','map-uploader','地图上传者','hash','operator');
+		INSERT INTO nodes(id,name,status) VALUES(?1,'map-node','online')`, nodeID, userID); err != nil {
 		t.Fatal(err)
 	}
 	posterImage := image.NewRGBA(image.Rect(0, 0, 4, 4))
@@ -42,7 +45,7 @@ func TestMapImportProjectsMissionMetadataPosterModesAndChapters(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, Type: "map.import.qq_flash", Status: domain.JobSucceeded,
-		Payload: map[string]any{"map_id": mapID}, CreatedAt: now, FinishedAt: &now,
+		Payload: map[string]any{"map_id": mapID}, RequestedBy: userID, CreatedAt: now, FinishedAt: &now,
 		Result: map[string]any{
 			"map_id": mapID, "name": "Back to School", "author": "RedRogue", "version": "1.05", "description": "Return to class.",
 			"aggregate_sha256": strings.Repeat("a", 64), "total_size": float64(10), "source_name": "bts.vpk",
@@ -67,7 +70,8 @@ func TestMapImportProjectsMissionMetadataPosterModesAndChapters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.Author != "RedRogue" || item.Version != "1.05" || item.PosterURL == "" || len(item.Modes) != 1 || len(item.Modes[0].Chapters) != 2 || len(item.BSPs) != 2 {
+	if item.Author != "RedRogue" || item.Version != "1.05" || item.PosterURL == "" || len(item.Modes) != 1 || len(item.Modes[0].Chapters) != 2 || len(item.BSPs) != 2 ||
+		item.CreatedBy != userID || item.CreatedByName != "地图上传者" {
 		t.Fatalf("unexpected projected map: %+v", item)
 	}
 	posterNode, mime, body, err := store.GetMapPoster(ctx, mapID)

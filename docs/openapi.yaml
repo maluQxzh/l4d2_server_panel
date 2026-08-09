@@ -2955,6 +2955,8 @@ components:
         warnings: { type: array, maxItems: 4096, items: { $ref: "#/components/schemas/MapWarning" } }
         replicas: { type: array, maxItems: 64, items: { $ref: "#/components/schemas/MapReplica" } }
         assignments: { type: array, maxItems: 10000, items: { $ref: "#/components/schemas/MapAssignment" } }
+        created_by: { type: string, format: uuid, description: 导入地图的账号 ID；账号删除后省略。 }
+        created_by_display_name: { type: string, maxLength: 128, description: 上传者当前显示名称；不包含用户名，账号删除后省略。 }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -3510,6 +3512,10 @@ components:
         result: { type: object, additionalProperties: true, readOnly: true }
         idempotency_key: { type: string }
         requested_by: { type: string, format: uuid }
+        requested_by_display_name:
+          type: string
+          maxLength: 128
+          description: 操作发起人的当前昵称；系统任务或账号已不存在时省略，不返回登录用户名
         created_at: { type: string, format: date-time }
         started_at: { type: [string, "null"], format: date-time }
         finished_at: { type: [string, "null"], format: date-time }
