@@ -147,11 +147,6 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 			return e.importInstance(ctx, job, progress)
 		}
 		return e.gameInstallationAction(ctx, job, action, progress)
-	case "game.reinstall":
-		// Current Control versions no longer create this redundant action. Keep
-		// execution for durable queued jobs and previous-minor Control protocol
-		// compatibility; it remains equivalent to game.validate.
-		return e.gameInstallationAction(ctx, job, action, progress)
 	case "game.delete":
 		return e.deleteGameInstallation(job, progress)
 	case "create":
@@ -159,12 +154,7 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 	case "configure":
 		return e.configure(ctx, job, progress)
 	case "install":
-		return e.install(ctx, job, false, progress)
-	case "reinstall":
-		if _, registered := e.registry.Get(job.InstanceID); registered {
-			return e.update(ctx, job, true, progress)
-		}
-		return e.install(ctx, job, true, progress)
+		return e.install(ctx, job, progress)
 	case "start":
 		return e.start(ctx, job, progress)
 	case "stop":
@@ -576,7 +566,7 @@ func (e *Executor) createRecord(job domain.Job, payload operationPayload) (Insta
 	return record, instancePath, payload.RCONPassword, nil
 }
 
-func (e *Executor) install(ctx context.Context, job domain.Job, reinstall bool, progress ProgressFunc) (map[string]any, error) {
+func (e *Executor) install(ctx context.Context, job domain.Job, progress ProgressFunc) (map[string]any, error) {
 	payload, err := decodeOperation(job)
 	if err != nil {
 		return nil, err
@@ -601,7 +591,7 @@ func (e *Executor) install(ctx context.Context, job domain.Job, reinstall bool, 
 	if appID != L4D2DedicatedAppID {
 		return nil, errors.New("only L4D2 dedicated server app 222860 is supported")
 	}
-	validate := reinstall || payload.Validate
+	validate := payload.Validate
 	progress(5, "starting SteamCMD")
 	steam := e.steamClient()
 	err = steam.Install(ctx, path, appID, validate, func(p int, message string) {

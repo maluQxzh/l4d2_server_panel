@@ -415,9 +415,7 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		return err
 	case "configure":
 		return s.applyInstanceConfigureResult(ctx, job)
-	case "game.install", "game.import", "game.validate", "game.update", "game.reinstall":
-		// game.reinstall is no longer accepted by current APIs; retaining this
-		// projection safely settles jobs created before the action was retired.
+	case "game.install", "game.import", "game.validate", "game.update":
 		_, err := s.db.ExecContext(ctx, `UPDATE game_installations SET status='ready',build_id=COALESCE(NULLIF(?2,''),build_id),
 			last_error='',last_checked_at=?3,updated_at=?3 WHERE id=?1`, job.InstallationID,
 			stringFromAny(job.Result["build_id"]), jobProjectionTimestamp(job))
@@ -471,7 +469,7 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 	case "stop":
 		_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,started_at=NULL,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID)
 		return err
-	case "install", "reinstall":
+	case "install":
 		path, _ := job.Result["path"].(string)
 		buildID := stringFromAny(job.Result["build_id"])
 		if restart, ok := job.Result["restart"].(map[string]any); ok {
@@ -687,9 +685,9 @@ func (s *Store) ApplyJobFailure(ctx context.Context, job domain.Job) error {
 		return tx.Commit()
 	}
 	if job.Type == "start" || job.Type == "stop" || job.Type == "restart" || job.Type == "install" ||
-		job.Type == "reinstall" || job.Type == "import" || job.Type == "update" || job.Type == "validate" {
+		job.Type == "import" || job.Type == "update" || job.Type == "validate" {
 		_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='degraded',updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID)
-		if err == nil && job.InstallationID != "" && (job.Type == "import" || job.Type == "install" || job.Type == "reinstall" || job.Type == "update" || job.Type == "validate") {
+		if err == nil && job.InstallationID != "" && (job.Type == "import" || job.Type == "install" || job.Type == "update" || job.Type == "validate") {
 			_, err = s.db.ExecContext(ctx, `UPDATE game_installations SET status='degraded',last_error=?2,last_checked_at=?3,updated_at=?3 WHERE id=?1`,
 				job.InstallationID, job.Message, jobProjectionTimestamp(job))
 		}
@@ -806,9 +804,7 @@ func applyJobCancellationTx(ctx context.Context, tx *sql.Tx, job domain.Job) err
 		return err
 	}
 	switch job.Type {
-	case "game.install", "game.import", "game.validate", "game.update", "game.reinstall":
-		// See the successful projection above: legacy durable jobs still need a
-		// terminal cancellation projection even though new requests are rejected.
+	case "game.install", "game.import", "game.validate", "game.update":
 		if job.InstallationID == "" {
 			return nil
 		}
@@ -824,7 +820,7 @@ func applyJobCancellationTx(ctx context.Context, tx *sql.Tx, job domain.Job) err
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE instances SET status='degraded',updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID)
 		return err
-	case "start", "stop", "restart", "install", "reinstall", "import", "update", "validate":
+	case "start", "stop", "restart", "install", "import", "update", "validate":
 		if job.InstanceID == "" {
 			return nil
 		}

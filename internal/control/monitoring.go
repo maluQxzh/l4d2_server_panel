@@ -402,7 +402,7 @@ func (s *Store) ApplyUpdateCheckResult(ctx context.Context, job domain.Job) erro
 	tag, err := s.db.ExecContext(ctx, `INSERT INTO instance_update_state(instance_id,installed_build,available_build,available,checked_at)
 		SELECT ?1,?2,?3,?4,?5 WHERE NOT EXISTS (
 			SELECT 1 FROM jobs newer WHERE newer.instance_id=?1
-			AND newer.type IN ('install','reinstall','update','validate') AND newer.created_at>?6
+			AND newer.type IN ('install','update','validate') AND newer.created_at>?6
 		) ON CONFLICT(instance_id) DO UPDATE SET installed_build=EXCLUDED.installed_build,
 		available_build=EXCLUDED.available_build,available=EXCLUDED.available,checked_at=EXCLUDED.checked_at`,
 		job.InstanceID, installed, availableBuild, available, jobProjectionTimestamp(job), job.CreatedAt)

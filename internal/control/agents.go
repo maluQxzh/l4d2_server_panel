@@ -29,7 +29,7 @@ type agentConnection struct {
 
 var serverConfigNativeJobTypes = map[string]bool{
 	"create": true, "import": true, "game.import": true, "install": true,
-	"reinstall": true, "configure": true, "start": true, "restart": true,
+	"configure": true, "start": true, "restart": true,
 	"restore": true, "update": true, "validate": true,
 }
 
@@ -639,7 +639,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 			h.log.Error("decrypt queued job payload", "job_id", job.ID, "error", err)
 			continue
 		}
-		secretActions := map[string]bool{"create": true, "import": true, "game.import": true, "install": true, "reinstall": true, "configure": true, "start": true, "stop": true, "restart": true, "restore": true,
+		secretActions := map[string]bool{"create": true, "import": true, "game.import": true, "install": true, "configure": true, "start": true, "stop": true, "restart": true, "restore": true,
 			"update": true, "validate": true, "delete": true, "rcon": true, "kick_player": true, "ban_player": true,
 			"unban_player": true, "change_map": true, "rcon.players": true, "map.assign": true, "install_mod": true, "install_package": true, "rollback_package": true}
 		if job.InstanceID != "" && secretActions[job.Type] {
@@ -725,7 +725,7 @@ func isTerminalJobStatus(status domain.JobStatus) bool {
 
 func jobChangesInstance(jobType string) bool {
 	switch jobType {
-	case "start", "stop", "restart", "install", "reinstall", "import", "restore", "configure", "update", "validate", "a2s.info", "delete", "detach", "install_mod", "toggle_package", "rollback_package", "delete_package", "qq_flash_import":
+	case "start", "stop", "restart", "install", "import", "restore", "configure", "update", "validate", "a2s.info", "delete", "detach", "install_mod", "toggle_package", "rollback_package", "delete_package", "qq_flash_import":
 		return true
 	default:
 		return false

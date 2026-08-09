@@ -150,7 +150,7 @@ func (e *Executor) gameInstallationAction(ctx context.Context, job domain.Job, a
 		}
 		progress(5, "installing L4D2 dedicated server")
 		err = steam.Install(ctx, path, L4D2DedicatedAppID, false, progress)
-	case "game.validate", "game.reinstall": // game.reinstall is legacy protocol compatibility only.
+	case "game.validate":
 		progress(5, "validating L4D2 dedicated server")
 		err = steam.Install(ctx, path, L4D2DedicatedAppID, true, progress)
 	case "game.update":

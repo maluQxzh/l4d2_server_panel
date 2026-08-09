@@ -236,7 +236,6 @@ var instanceJobPermissions = map[string]Permission{
 	"logs.search":         PermissionLogsRead,
 	"rcon":                PermissionRCONExecute,
 	"rcon.players":        PermissionPlayersRead,
-	"reinstall":           PermissionEnvironmentsManage,
 	"rollback_package":    PermissionPackagesRollback,
 	"restart":             PermissionInstancesRestart,
 	"restore":             PermissionBackupsRestore,

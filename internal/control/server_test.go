@@ -139,7 +139,7 @@ func TestGenericInstanceActionContractIsSeparateFromInternalJobs(t *testing.T) {
 
 	internalOnly := []string{
 		"a2s.info", "a2s.players", "backup.chunk", "backup.upload.abort", "configure", "create", "delete", "detach", "file", "game.import",
-		"import", "install", "install_mod", "list", "logs.chunk", "logs.search", "rcon.players", "reinstall", "rollback_package", "update", "validate",
+		"import", "install", "install_mod", "list", "logs.chunk", "logs.search", "rcon.players", "rollback_package", "update", "validate",
 	}
 	for _, action := range internalOnly {
 		if genericInstanceActionAllowed(action) {
@@ -156,7 +156,7 @@ func TestGenericInstanceActionContractIsSeparateFromInternalJobs(t *testing.T) {
 	}
 }
 
-func TestGameInstallationActionContractRetiresReinstall(t *testing.T) {
+func TestGameInstallationActionContract(t *testing.T) {
 	for _, action := range []string{"install", "import", "validate", "update"} {
 		if !gameInstallationActionAllowed(action) {
 			t.Errorf("supported game installation action %q was rejected", action)
@@ -164,12 +164,6 @@ func TestGameInstallationActionContractRetiresReinstall(t *testing.T) {
 		if !environmentJobTypes["game."+action] {
 			t.Errorf("supported game installation job %q cannot be queued", action)
 		}
-	}
-	if gameInstallationActionAllowed("reinstall") {
-		t.Fatal("retired reinstall action remains in the public handler contract")
-	}
-	if environmentJobTypes["game.reinstall"] {
-		t.Fatal("retired game.reinstall task can still be queued by current Control code")
 	}
 	if definition := permissionDefinitions[PermissionEnvironmentsManage]; definition.Class != PermissionManage || definition.Scope != permissionScopeNode {
 		t.Fatalf("remaining maintenance permission=%#v, want node-scoped manage", definition)

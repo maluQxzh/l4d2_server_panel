@@ -733,7 +733,7 @@ func validateStructuredConfig(config domain.InstanceConfig) error {
 
 func isLifecycleAction(action string) bool {
 	switch action {
-	case "start", "stop", "restart", "update", "validate", "reinstall":
+	case "start", "stop", "restart", "update", "validate":
 		return true
 	default:
 		return false
@@ -752,7 +752,7 @@ func canonicalLifecyclePayload(action string, supplied map[string]any, instance 
 		if instance.Status == domain.InstanceExternal {
 			allowed["existing_rcon_password"] = true
 		}
-	case "update", "validate", "reinstall":
+	case "update", "validate":
 		allowed["timeout_seconds"], allowed["maintenance"], allowed["warning_seconds"], allowed["health_timeout_seconds"] = true, true, true, true
 	default:
 		return nil, errors.New("unsupported lifecycle action")

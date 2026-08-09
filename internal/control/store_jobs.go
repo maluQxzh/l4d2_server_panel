@@ -136,7 +136,7 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 		return domain.Job{}, false, err
 	}
 	transient := map[string]string{"start": "starting", "stop": "stopping", "restart": "stopping", "update": "updating",
-		"validate": "updating", "install": "installing", "reinstall": "installing"}
+		"validate": "updating", "install": "installing"}
 	if status := transient[action]; status != "" {
 		if _, err := tx.ExecContext(ctx, `UPDATE instances SET status=?2,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, instanceID, status); err != nil {
 			return domain.Job{}, false, err

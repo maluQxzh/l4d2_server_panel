@@ -72,7 +72,7 @@ UPDATE instances SET installation_id='installation-' || id WHERE trim(path)<>'';
 ALTER TABLE jobs ADD COLUMN game_installation_id TEXT REFERENCES game_installations(id) ON DELETE SET NULL;
 CREATE UNIQUE INDEX jobs_active_installation_write_idx ON jobs(game_installation_id)
 WHERE game_installation_id IS NOT NULL AND status IN ('queued','dispatched','running')
-  AND type IN ('game.install','game.import','game.validate','game.update','game.reinstall','game.quarantine');
+  AND type IN ('game.install','game.import','game.validate','game.update','game.quarantine');
 CREATE UNIQUE INDEX jobs_active_environment_steamcmd_idx ON jobs(node_id)
 WHERE instance_id IS NULL AND status IN ('queued','dispatched','running')
   AND type IN ('steamcmd.configure','steamcmd.clear','steamcmd.install','steamcmd.repair');

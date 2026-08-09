@@ -254,10 +254,3 @@ func TestRuntimeEnvironmentResourcesAndExclusiveBinding(t *testing.T) {
 		t.Fatalf("bound import did not acquire the instance write lock: %#v %v", retry, err)
 	}
 }
-
-func TestQueueEnvironmentJobRejectsRetiredGameReinstall(t *testing.T) {
-	store := &Store{}
-	if _, _, err := store.QueueEnvironmentJob(context.Background(), "environment", "installation", "game.reinstall", nil, "", "", ""); err == nil || !strings.Contains(err.Error(), "unsupported environment action") {
-		t.Fatalf("retired game.reinstall queue error=%v", err)
-	}
-}

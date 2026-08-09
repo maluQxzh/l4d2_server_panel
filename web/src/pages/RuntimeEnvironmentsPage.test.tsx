@@ -37,7 +37,7 @@ const installation: GameInstallationRecord = {
 describe("运行环境游戏安装维护", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("environments.manage 用户可以更新游戏安装且不再显示重装", async () => {
+  it("environments.manage 用户可以更新和校验游戏安装", async () => {
     authState.user = {
       role: "admin",
       role_bindings: [{
@@ -56,7 +56,6 @@ describe("运行环境游戏安装维护", () => {
     const button = await screen.findByRole("button", { name: "更新" });
     expect(button).toBeEnabled();
     expect(screen.getByRole("button", { name: "校验并修复" })).toBeEnabled();
-    expect(screen.queryByRole("button", { name: "重装" })).not.toBeInTheDocument();
     fireEvent.click(button);
     await waitFor(() => expect(maintain).toHaveBeenCalledWith(environment.id, installation.id, "update", undefined));
   });

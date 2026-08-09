@@ -655,7 +655,7 @@ func testAtomicCancellationProjection(t *testing.T, ctx context.Context, store *
 		t.Fatal(err)
 	}
 
-	actions := []string{"start", "stop", "restart", "install", "reinstall", "import", "configure", "update", "validate"}
+	actions := []string{"start", "stop", "restart", "install", "import", "configure", "update", "validate"}
 	var lastCanceled domain.Job
 	for index, action := range actions {
 		status := domain.InstanceStopped

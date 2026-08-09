@@ -1533,5 +1533,5 @@ function saveBrowserDownload(blob: Blob, filename: string) {
 }
 
 function actionLabel(type: string) {
-  return ({ start: "启动", stop: "停止", restart: "重启", validate: "文件校验", backup: "备份", restore: "恢复", update: "更新", reinstall: "重新安装", broadcast: "广播" } as Record<string, string>)[type] || type;
+  return ({ start: "启动", stop: "停止", restart: "重启", validate: "文件校验", backup: "备份", restore: "恢复", update: "更新", broadcast: "广播" } as Record<string, string>)[type] || type;
 }

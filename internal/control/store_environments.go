@@ -342,10 +342,7 @@ func (s *Store) QueueEnvironmentJob(ctx context.Context, environmentID, installa
 		var conflicting bool
 		query := `SELECT EXISTS(SELECT 1 FROM jobs WHERE node_id=?1 AND status IN ('queued','dispatched','running') AND `
 		if steamConfiguration {
-			// A game.reinstall task may still be active after upgrading from a
-			// previous Control version. It can no longer be queued, but must keep
-			// blocking SteamCMD reconfiguration until its durable terminal state.
-			query += `type IN ('steamcmd.configure','steamcmd.clear','steamcmd.install','steamcmd.repair','game.install','game.validate','game.update','game.reinstall'))`
+			query += `type IN ('steamcmd.configure','steamcmd.clear','steamcmd.install','steamcmd.repair','game.install','game.validate','game.update'))`
 		} else {
 			query += `type IN ('steamcmd.configure','steamcmd.clear','steamcmd.install','steamcmd.repair'))`
 		}

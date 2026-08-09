@@ -117,7 +117,6 @@ test("删除游戏安装时选择仅删记录或永久删除全部文件", async
   await page.goto("/environments");
   await expect(page.getByRole("button", { name: "校验并修复", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "更新", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "重装", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "删除", exact: true }).click();
   const deletionDialog = page.getByRole("dialog", { name: "删除游戏安装" });
   await expect(deletionDialog.getByText("仅删除记录", { exact: true })).toBeVisible();
@@ -1297,7 +1296,6 @@ test("实例详情展示安装绑定并仅解除实例绑定", async ({ page }) 
   await expect(page.getByText(/SteamCMD、更新和校验修复统一在运行环境中执行/)).toBeVisible();
   await expect(page.getByRole("button", { name: "校验", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "更新", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "重新安装", exact: true })).toHaveCount(0);
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "删除实例" }).click();
   await expect.poll(() => deleteMode).toBe("detach");

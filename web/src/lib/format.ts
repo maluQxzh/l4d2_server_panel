@@ -92,7 +92,6 @@ export const jobLabels: Record<string, string> = {
   toggle_package: "启停模组",
   rollback_package: "回退模组版本",
   import: "导入实例",
-  reinstall: "重新安装",
   configure: "应用配置",
   delete: "隔离实例",
   detach: "解除管理",

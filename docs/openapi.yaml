@@ -663,7 +663,7 @@ paths:
     post:
       tags: [Environments]
       summary: 手动维护游戏安装
-      description: 需要目标节点的 `environments.manage`；只提供检测/路径导入、Steam 校验修复和更新，不再接受重装动作。
+      description: 需要目标节点的 `environments.manage`；提供检测/路径导入、Steam 校验修复和更新。
       parameters:
         - { name: environmentId, in: path, required: true, schema: { type: string } }
         - { name: installationId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -831,7 +831,7 @@ paths:
         `packages.install`、`packages.toggle`。`players.broadcast` 与
         `rcon.execute` 是互不包含的独立权限，安全广播不要求也不授予任意 RCON。
         `create_schedule` 除 `schedules.manage` 外，还需要计划目标动作对应的权限。
-        游戏文件的 update、validate 已移至运行环境专用端点，不再属于实例通用动作；冗余的 reinstall 动作已退役。
+        游戏文件的 update、validate 使用运行环境专用端点，不属于实例通用动作。
         创建、导入、配置、文件、日志传输、备份下载和状态探测使用各自的专用端点，不能把对应内部任务类型提交到此通用端点。
         `delete` 与 `detach` 不属于通用动作，必须调用 `DELETE /instances/{instanceId}?mode=quarantine|detach`，
         以执行节点在线和隔离清理能力门控。
