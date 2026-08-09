@@ -16,7 +16,7 @@ Read `README.md` before substantial work. For protocol, persistence, authorizati
 - `internal/containerupdate`: constrained Docker Engine API client, Docker-save archive validation, Compose self-recreation worker, persistent update state, and rollback.
 - `internal/agent`: lifecycle, SteamCMD, A2S/RCON, packages, backups, files, and platform process management.
 - `internal/domain` and `internal/protocol`: shared domain and wire types.
-- `migrations/sqlite`: active ordered SQLite migrations. SQLite is the only supported database; add a new numbered migration and never rewrite an applied migration.
+<!-- - `migrations/sqlite`: active ordered SQLite migrations. SQLite is the only supported database; add a new numbered migration and never rewrite an applied migration. -->
 - `web`: React 19, TypeScript, Vite, Vitest, and Playwright application.
 - `docs/openapi.yaml`: public API contract. `docs/architecture.md` and `docs/security.md` describe invariants and threat boundaries.
 - `packaging/windows`: Windows x64 portable Control ZIP build, structure validation, elevated lifecycle/upgrade smoke, and portable deployment documentation.
@@ -34,7 +34,7 @@ Do not weaken or remove pinned security versions merely to make an older local t
 ## Implementation rules
 
 - Keep REST endpoints under `/api/v1`. Long-running writes return `202` plus `job_id`, and mutating APIs must preserve `Idempotency-Key` behavior.
-- Keep the Agent protocol compatible with the current and previous minor version. Gate new task types through capability negotiation so an older Agent never receives an unsupported command.
+<!-- - Keep the Agent protocol compatible with the current and previous minor version. Gate new task types through capability negotiation so an older Agent never receives an unsupported command. -->
 - Keep job state transitions within `queued/dispatched/running/succeeded/failed/canceled`. Agent terminal results remain durable until Control persists the projection and sends `job_ack`.
 - Maintain one concurrent instance write job and the node-level SteamCMD concurrency limit. Read-only probes must not acquire the instance write barrier.
 - Agents may execute only known task types using argument arrays. Do not add arbitrary shell-command execution or accept caller-supplied executables/environments for game processes.
