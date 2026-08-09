@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RoleBinding } from "./types";
-import { hasInstancePermission, hasJobPermission, hasMapNodePermission, hasRootSecurityPermission, normalizePermissionsAtScope, permissionAllowedAtScope, permissionCatalog, tokenScopesForGlobal, tokenScopesForInstance, tokenScopesForNode, tokenScopesForUser } from "./account-permissions";
+import { hasInstancePermission, hasJobPermission, hasMapNodePermission, hasRootSecurityPermission, normalizePermissionsAtScope, permissionAllowedAtScope, permissionCatalog, rolePresetPermissions, tokenScopesForGlobal, tokenScopesForInstance, tokenScopesForNode, tokenScopesForUser } from "./account-permissions";
 
 describe("账号根安全权限", () => {
   it("只允许所有者进入用户管理", () => {
@@ -13,6 +13,28 @@ describe("账号根安全权限", () => {
 });
 
 describe("细粒度权限", () => {
+  it("操作员预设移除高影响权限并保留观察者读取权限", () => {
+    const operator = rolePresetPermissions("operator");
+    const admin = rolePresetPermissions("admin");
+    const excluded = [
+      "players.kick", "players.ban", "players.unban", "players.broadcast", "rcon.execute",
+      "files.read", "files.write", "files.delete",
+      "backups.download", "backups.create", "backups.restore", "schedules.manage",
+    ] as const;
+    for (const permission of excluded) {
+      expect(operator).not.toContain(permission);
+      expect(admin).toContain(permission);
+    }
+    for (const permission of ["files.list", "backups.read", "schedules.read", "logs.read"] as const) {
+      expect(rolePresetPermissions("viewer")).toContain(permission);
+      expect(operator).toContain(permission);
+    }
+    for (const permission of ["maps.read", "maps.import", "maps.assign", "maps.verify", "maps.delete"] as const) {
+      expect(operator).toContain(permission);
+    }
+    expect(operator).toContain("players.change_map");
+  });
+
   it("以显式权限为准而不继承角色预设", () => {
     const user = {
       role: "admin" as const,

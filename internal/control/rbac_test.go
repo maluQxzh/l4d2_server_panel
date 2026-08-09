@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -76,6 +77,72 @@ func TestFrontendPermissionCatalogMatchesBackend(t *testing.T) {
 	}
 }
 
+func TestFrontendOperatorPresetExclusionsMatchBackend(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "lib", "account-permissions.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	start := strings.Index(text, "const operatorPresetExcludedPermissions")
+	if start < 0 {
+		t.Fatal("frontend operator preset exclusion declaration is missing")
+	}
+	text = text[start:]
+	end := strings.Index(text, "]);")
+	if end < 0 {
+		t.Fatal("frontend operator preset exclusion terminator is missing")
+	}
+	frontend := make(map[Permission]struct{})
+	for _, match := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(text[:end], -1) {
+		frontend[Permission(match[1])] = struct{}{}
+	}
+	if len(frontend) != len(operatorPresetExcludedPermissions) {
+		t.Errorf("frontend operator exclusions=%d, backend=%d", len(frontend), len(operatorPresetExcludedPermissions))
+	}
+	for permission := range operatorPresetExcludedPermissions {
+		if _, ok := frontend[permission]; !ok {
+			t.Errorf("backend operator exclusion %q is missing from frontend", permission)
+		}
+		delete(frontend, permission)
+	}
+	for permission := range frontend {
+		t.Errorf("frontend operator exclusion %q is missing from backend", permission)
+	}
+}
+
+func TestFrontendOperatorPresetAdditionsMatchBackend(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "lib", "account-permissions.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	start := strings.Index(text, "const operatorPresetAdditionalPermissions")
+	if start < 0 {
+		t.Fatal("frontend operator preset addition declaration is missing")
+	}
+	text = text[start:]
+	end := strings.Index(text, "]);")
+	if end < 0 {
+		t.Fatal("frontend operator preset addition terminator is missing")
+	}
+	frontend := make(map[Permission]struct{})
+	for _, match := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(text[:end], -1) {
+		frontend[Permission(match[1])] = struct{}{}
+	}
+	if len(frontend) != len(operatorPresetAdditionalPermissions) {
+		t.Errorf("frontend operator additions=%d, backend=%d", len(frontend), len(operatorPresetAdditionalPermissions))
+	}
+	for permission := range operatorPresetAdditionalPermissions {
+		if _, ok := frontend[permission]; !ok {
+			t.Errorf("backend operator addition %q is missing from frontend", permission)
+		}
+		delete(frontend, permission)
+	}
+	for permission := range frontend {
+		t.Errorf("frontend operator addition %q is missing from backend", permission)
+	}
+}
+
 func TestRolePermissions(t *testing.T) {
 	tests := []struct {
 		role       domain.Role
@@ -93,6 +160,33 @@ func TestRolePermissions(t *testing.T) {
 	for _, test := range tests {
 		if got := RoleAllows(test.role, test.permission); got != test.want {
 			t.Errorf("RoleAllows(%q,%q)=%v, want %v", test.role, test.permission, got, test.want)
+		}
+	}
+}
+
+func TestOperatorPresetExcludesHighImpactPermissionsAndKeepsViewerReads(t *testing.T) {
+	operator := presetPermissions(domain.RoleOperator)
+	instanceOperator := presetPermissionsForScope(domain.RoleOperator, "instance")
+	viewer := presetPermissions(domain.RoleViewer)
+	for permission := range operatorPresetExcludedPermissions {
+		if slices.Contains(operator, string(permission)) {
+			t.Errorf("operator preset contains excluded permission %q", permission)
+		}
+		if !RoleAllows(domain.RoleAdmin, permission) {
+			t.Errorf("operator exclusion leaked into administrator permission %q", permission)
+		}
+	}
+	for _, permission := range []Permission{PermissionFilesList, PermissionBackupsRead, PermissionSchedulesRead, PermissionLogsRead} {
+		if !slices.Contains(viewer, string(permission)) || !slices.Contains(operator, string(permission)) {
+			t.Errorf("viewer read permission %q was not retained by the operator preset", permission)
+		}
+	}
+	if !slices.Contains(operator, string(PermissionPlayersChangeMap)) {
+		t.Fatal("operator preset unexpectedly lost map switching")
+	}
+	for permission := range operatorPresetAdditionalPermissions {
+		if !slices.Contains(operator, string(permission)) || !slices.Contains(instanceOperator, string(permission)) {
+			t.Errorf("operator global or instance preset is missing additional map permission %q", permission)
 		}
 	}
 }

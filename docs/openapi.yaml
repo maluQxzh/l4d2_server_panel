@@ -2457,7 +2457,7 @@ components:
     Role:
       type: string
       enum: [owner, admin, operator, viewer]
-      description: 权限预设名称；角色绑定的 permissions 才是最终授权集合。
+      description: 权限预设名称；角色绑定的 permissions 才是最终授权集合。操作员预设包含全部地图权限并保留观察者读取权限，但默认不含玩家踢出/封禁/解除封禁、聊天广播、任意 RCON、文件内容操作、备份操作或计划任务管理。
     PermissionScope: { type: string, enum: [read, operate, manage] }
     BindingPermission:
       type: string

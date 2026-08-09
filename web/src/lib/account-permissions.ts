@@ -79,10 +79,18 @@ export const permissionCatalog: PermissionDefinition[] = [
 const definitions = new Map(permissionCatalog.map((item) => [item.id, item]));
 const roleRank: Record<Role, number> = { viewer: 1, operator: 2, admin: 3, owner: 4 };
 const classRank: Record<PermissionClass, number> = { read: 1, operate: 2, manage: 3, root: 4 };
+const operatorPresetExcludedPermissions = new Set<Permission>([
+  "players.kick", "players.ban", "players.unban", "players.broadcast", "rcon.execute",
+  "files.read", "files.write", "files.delete",
+  "backups.download", "backups.create", "backups.restore", "schedules.manage",
+]);
+const operatorPresetAdditionalPermissions = new Set<Permission>([
+  "maps.read", "maps.import", "maps.assign", "maps.verify", "maps.delete",
+]);
 type PermissionUser = Pick<User, "role" | "role_bindings">;
 
 export function rolePresetPermissions(role: Role): Permission[] {
-  return permissionCatalog.filter((item) => classRank[item.class] <= roleRank[role]).map((item) => item.id);
+  return permissionCatalog.filter((item) => roleAllows(role, item.id)).map((item) => item.id);
 }
 
 export function permissionAllowedAtScope(permission: Permission, scope: RoleBinding["scope_type"]) {
@@ -103,7 +111,9 @@ export function normalizePermissionsAtScope(permissions: Permission[], scope: Ro
 
 function roleAllows(role: Role, permission: Permission) {
   const definition = definitions.get(permission);
-  return Boolean(definition && classRank[definition.class] <= roleRank[role]);
+  if (!definition || role === "operator" && operatorPresetExcludedPermissions.has(permission)) return false;
+  return role === "operator" && operatorPresetAdditionalPermissions.has(permission)
+    || classRank[definition.class] <= roleRank[role];
 }
 
 function bindingAllows(binding: RoleBinding, permission: Permission) {

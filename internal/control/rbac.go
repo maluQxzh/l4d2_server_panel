@@ -150,6 +150,29 @@ func permissionClass(permission Permission) (Permission, bool) {
 	return definition.Class, ok
 }
 
+var operatorPresetExcludedPermissions = map[Permission]struct{}{
+	PermissionPlayersKick:      {},
+	PermissionPlayersBan:       {},
+	PermissionPlayersUnban:     {},
+	PermissionPlayersBroadcast: {},
+	PermissionRCONExecute:      {},
+	PermissionFilesRead:        {},
+	PermissionFilesWrite:       {},
+	PermissionFilesDelete:      {},
+	PermissionBackupsDownload:  {},
+	PermissionBackupsCreate:    {},
+	PermissionBackupsRestore:   {},
+	PermissionSchedulesManage:  {},
+}
+
+var operatorPresetAdditionalPermissions = map[Permission]struct{}{
+	PermissionMapsRead:   {},
+	PermissionMapsImport: {},
+	PermissionMapsAssign: {},
+	PermissionMapsVerify: {},
+	PermissionMapsDelete: {},
+}
+
 func presetPermissions(role domain.Role) []string {
 	items := make([]string, 0, len(permissionDefinitions))
 	for permission := range permissionDefinitions {
@@ -409,6 +432,14 @@ func RoleAllowsInstanceAction(role domain.Role, action string) bool {
 }
 
 func RoleAllows(role domain.Role, permission Permission) bool {
+	if role == domain.RoleOperator {
+		if _, excluded := operatorPresetExcludedPermissions[permission]; excluded {
+			return false
+		}
+		if _, additional := operatorPresetAdditionalPermissions[permission]; additional {
+			return true
+		}
+	}
 	class, ok := permissionClass(permission)
 	if !ok {
 		return false

@@ -96,11 +96,17 @@ func TestSessionRoleBindingsDoNotMixPrivilegesAcrossResources(t *testing.T) {
 	if !principal.AllowsNodePermission("node-a", PermissionOperate) {
 		t.Fatal("node operator binding did not grant operate")
 	}
-	if principal.AllowsNodePermission("node-a", PermissionManage) {
+	if principal.AllowsNodePermission("node-a", PermissionNodesUpdate) {
 		t.Fatal("instance admin binding was incorrectly borrowed to manage another node")
 	}
-	if !principal.AllowsInstancePermission(instanceA, PermissionOperate) || principal.AllowsInstancePermission(instanceA, PermissionManage) {
+	if !principal.AllowsNodePermission("node-a", PermissionMapsImport) || principal.AllowsNodePermission("node-b", PermissionMapsImport) {
+		t.Fatal("operator map management did not stay within its node binding")
+	}
+	if !principal.AllowsInstancePermission(instanceA, PermissionOperate) || principal.AllowsInstancePermission(instanceA, PermissionInstancesDelete) {
 		t.Fatal("node binding did not propagate to its instance with the same role")
+	}
+	if !principal.AllowsInstancePermission(instanceA, PermissionMapsDelete) {
+		t.Fatal("node operator binding did not propagate map management to its instance")
 	}
 	if !principal.AllowsInstancePermission(instanceB, PermissionManage) {
 		t.Fatal("instance admin binding did not grant manage on its instance")
