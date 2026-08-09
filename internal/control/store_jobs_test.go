@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,59 @@ import (
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
+
+func TestBackgroundA2SProbeCannotCrossLifecycleTransition(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "a2s-lifecycle.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online')`); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: "node", Name: "probe-target", Port: 27015})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := monitoringTarget{InstanceID: instance.ID, NodeID: instance.NodeID}
+	if _, _, err := store.QueueSystemProbe(ctx, target, "a2s.info", "stopped-probe"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stopped instance accepted background A2S probe: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='running' WHERE id=?1`, instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	probe, reused, err := store.QueueSystemProbe(ctx, target, "a2s.info", "running-probe")
+	if err != nil || reused {
+		t.Fatalf("queue running probe: reused=%v err=%v", reused, err)
+	}
+	if _, _, err := store.QueueInstanceJob(ctx, instance.ID, "stop", map[string]any{}, "", "stop-after-probe"); err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := store.MarkDispatched(ctx, probe.ID); err != nil || claimed {
+		t.Fatalf("stale probe dispatch: claimed=%v err=%v", claimed, err)
+	}
+	canceled, err := store.GetJob(ctx, probe.ID)
+	if err != nil || canceled.Status != domain.JobCanceled {
+		t.Fatalf("stale probe was not settled as canceled: %#v err=%v", canceled, err)
+	}
+	if _, _, err := store.QueueSystemProbe(ctx, target, "a2s.info", "stopping-probe"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stopping instance accepted background A2S probe: %v", err)
+	}
+
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET status='succeeded' WHERE type='stop'; UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.QueueInstanceJob(ctx, instance.ID, "start", map[string]any{}, "", "start-before-probe"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.QueueSystemProbe(ctx, target, "a2s.info", "starting-probe"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("starting instance accepted background A2S probe: %v", err)
+	}
+}
 
 func TestListJobsFiltersBackgroundBeforeLimit(t *testing.T) {
 	ctx := context.Background()

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RealtimeProvider } from "./RealtimeContext";
+import type { InstanceRecord, ListResponse } from "../lib/types";
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -64,5 +65,39 @@ describe("实时节点事件", () => {
     });
 
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["environments"] });
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["instances"] });
+  });
+
+  it("实例终态事件直接同步详情与列表缓存", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new QueryClient();
+    const running = {
+      id: "instance-a", node_id: "node-a", node_name: "Node", node_status: "online", name: "Server",
+      status: "running", host: "0.0.0.0", port: 27015, players: 1, max_players: 4, update_available: false,
+      rcon_configured: true, version: 1, config: { hostname: "Server", mode: "coop", difficulty: "normal", max_players: 4, start_map: "c1m1_hotel", public_status: false, auto_restart: true },
+      created_at: "2026-08-09T00:00:00Z", updated_at: "2026-08-09T00:00:00Z",
+    } satisfies InstanceRecord;
+    const stopping = { ...running, status: "stopping", updated_at: "2026-08-09T00:00:30Z" } satisfies InstanceRecord;
+    const stopped = { ...running, status: "stopped", players: 0, updated_at: "2026-08-09T00:01:00Z" } satisfies InstanceRecord;
+    client.setQueryData<InstanceRecord>(["instances", running.id], running);
+    client.setQueryData<ListResponse<InstanceRecord>>(["instances"], { items: [running] });
+    render(
+      <QueryClientProvider client={client}>
+        <RealtimeProvider><span>ready</span></RealtimeProvider>
+      </QueryClientProvider>,
+    );
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onmessage?.({
+        data: JSON.stringify({ id: 3, type: "instance.updated", resource_type: "instance", resource_id: running.id, data: { instance: stopping }, created_at: stopping.updated_at }),
+      } as MessageEvent);
+      FakeWebSocket.instances[0].onmessage?.({
+        data: JSON.stringify({ id: 4, type: "instance.updated", resource_type: "instance", resource_id: running.id, data: { instance: stopped }, created_at: stopped.updated_at }),
+      } as MessageEvent);
+      await Promise.resolve();
+    });
+
+    expect(client.getQueryData<InstanceRecord>(["instances", running.id])).toEqual(stopped);
+    expect(client.getQueryData<ListResponse<InstanceRecord>>(["instances"])?.items).toEqual([stopped]);
   });
 });

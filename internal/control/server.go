@@ -149,6 +149,11 @@ func (s *Server) runDueSchedules(ctx context.Context) {
 		}
 		job, _, queueErr := s.store.QueueInstanceJob(ctx, schedule.InstanceID, action, payload, "", key)
 		if queueErr == nil {
+			if action == "start" || action == "stop" || action == "restart" {
+				if projectionErr := s.publishInstanceProjection(ctx, schedule.InstanceID, job.ID); projectionErr != nil {
+					s.logger.Error("publish scheduled lifecycle projection", "schedule_id", schedule.ID, "job_id", job.ID, "error", projectionErr)
+				}
+			}
 			_ = s.store.WriteAudit(ctx, domain.AuditEvent{ActorName: "scheduler", Action: "schedule.triggered", ResourceType: "schedule",
 				ResourceID: schedule.ID, Metadata: map[string]any{"job_id": job.ID, "instance_id": schedule.InstanceID}})
 			s.dispatchSoon(job.NodeID)

@@ -68,9 +68,12 @@ describe("API 客户端", () => {
   });
 
   it("按实例查询任务用于显示 RCON 刷新诊断", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ items: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ items: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
     await api.instanceJobs("instance/one");
     expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/jobs?instance_id=instance%2Fone");
+
+    await api.instanceJobs("instance/one", "exclude");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/jobs?instance_id=instance%2Fone&background=exclude");
   });
 
   it("恢复码登录不会同时提交 TOTP", async () => {

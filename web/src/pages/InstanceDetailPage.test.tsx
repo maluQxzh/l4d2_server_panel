@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { RealtimeProvider } from "../context/RealtimeContext";
 import { ToastProvider } from "../context/ToastContext";
 import { api } from "../lib/api";
 import type { InstanceRecord } from "../lib/types";
@@ -51,9 +52,11 @@ function renderConfigPage(item: InstanceRecord) {
   );
   return render(
     <QueryClientProvider client={client}>
-      <ToastProvider>
-        <RouterProvider router={router} />
-      </ToastProvider>
+      <RealtimeProvider enabled={false}>
+        <ToastProvider>
+          <RouterProvider router={router} />
+        </ToastProvider>
+      </RealtimeProvider>
     </QueryClientProvider>,
   );
 }
@@ -122,7 +125,7 @@ describe("游戏实例配置中的端口", () => {
       { initialEntries: [`/instances/${instance.id}?tab=backups`] },
     );
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-    render(<QueryClientProvider client={client}><ToastProvider><RouterProvider router={router} /></ToastProvider></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><RealtimeProvider enabled={false}><ToastProvider><RouterProvider router={router} /></ToastProvider></RealtimeProvider></QueryClientProvider>);
 
     expect(await screen.findByRole("heading", { name: "实例备份" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "立即备份" })).toBeEnabled();

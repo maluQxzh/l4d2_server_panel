@@ -549,7 +549,7 @@ func (s *Store) MarkDispatched(ctx context.Context, id string) (bool, error) {
 		return false, err
 	}
 	defer tx.Rollback()
-	if (isAutomaticMaintenanceUpdate(preflight) || preflight.Type == "check_update") && preflight.InstanceID != "" {
+	if (isAutomaticMaintenanceUpdate(preflight) || preflight.Type == "check_update" || preflight.Type == "a2s.info") && preflight.InstanceID != "" {
 		var lockedID string
 		if err := tx.QueryRowContext(ctx, `SELECT id FROM instances WHERE id=?1`, preflight.InstanceID).Scan(&lockedID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -568,8 +568,26 @@ func (s *Store) MarkDispatched(ctx context.Context, id string) (bool, error) {
 	if current.Status != domain.JobQueued {
 		return false, tx.Commit()
 	}
-	if isAutomaticMaintenanceUpdate(current) != isAutomaticMaintenanceUpdate(preflight) || current.InstanceID != preflight.InstanceID {
+	if isAutomaticMaintenanceUpdate(current) != isAutomaticMaintenanceUpdate(preflight) || current.InstanceID != preflight.InstanceID || current.Type != preflight.Type {
 		return false, errors.New("job dispatch identity changed while claiming")
+	}
+	if current.Type == "a2s.info" && current.RequestedBy == "" {
+		var eligible bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+			SELECT 1 FROM instances instance JOIN nodes node ON node.id=instance.node_id
+			WHERE instance.id=?1 AND instance.node_id=?2 AND instance.status='running' AND node.status='online'
+			AND NOT EXISTS (SELECT 1 FROM jobs job WHERE job.instance_id=instance.id
+				AND `+activeJobSQLPredicate+` AND `+instanceWriteJobSQLPredicate+`)
+		)`, current.InstanceID, current.NodeID).Scan(&eligible); err != nil {
+			return false, err
+		}
+		if !eligible {
+			if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status='canceled',progress=100,message='probe no longer applicable',
+				finished_at=unixepoch('subsec')*1000000 WHERE id=?1 AND status='queued'`, current.ID); err != nil {
+				return false, err
+			}
+			return false, tx.Commit()
+		}
 	}
 	if current.Type == "check_update" {
 		var activeWrite bool

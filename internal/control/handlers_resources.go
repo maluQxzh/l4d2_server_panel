@@ -185,7 +185,11 @@ func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) populateInstanceSecretState(ctx context.Context, instance *domain.Instance) error {
-	rconCiphertext, _, err := s.store.InstanceSecrets(ctx, instance.ID)
+	return populateInstanceSecretState(ctx, s.store, s.config.MasterKey, instance)
+}
+
+func populateInstanceSecretState(ctx context.Context, store *Store, masterKey []byte, instance *domain.Instance) error {
+	rconCiphertext, _, err := store.InstanceSecrets(ctx, instance.ID)
 	if errors.Is(err, ErrNotFound) {
 		instance.RCONConfigured = false
 		return nil
@@ -193,12 +197,25 @@ func (s *Server) populateInstanceSecretState(ctx context.Context, instance *doma
 	if err != nil {
 		return err
 	}
-	rconPassword, err := decryptSecret(s.config.MasterKey, rconCiphertext)
+	rconPassword, err := decryptSecret(masterKey, rconCiphertext)
 	if err != nil {
 		return fmt.Errorf("read instance RCON credential state: %w", err)
 	}
 	instance.RCONConfigured = rconPassword != ""
 	return nil
+}
+
+func (s *Server) publishInstanceProjection(ctx context.Context, instanceID, jobID string) error {
+	instance, err := s.store.GetInstance(ctx, instanceID)
+	if err != nil {
+		return err
+	}
+	if err := s.populateInstanceSecretState(ctx, &instance); err != nil {
+		return err
+	}
+	_, err = s.events.Publish(ctx, Event{Type: "instance.updated", ResourceType: "instance", ResourceID: instance.ID,
+		Data: map[string]any{"instance": instance, "job_id": jobID}}, true)
+	return err
 }
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
@@ -722,6 +739,12 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		writeTokenScopeDenied(w)
 		return
 	}
+	if originalType == "start" || originalType == "stop" || originalType == "restart" {
+		if projectionErr := s.publishInstanceProjection(r.Context(), instanceID, job.ID); projectionErr != nil {
+			s.fail(w, projectionErr)
+			return
+		}
+	}
 	s.audit(r, "instance.action.requested", "instance", job.InstanceID, map[string]any{"type": originalType, "job_id": job.ID})
 	_, _ = s.events.Publish(r.Context(), Event{Type: "job.queued", ResourceType: "job", ResourceID: job.ID, Data: map[string]any{"job": job}}, true)
 	s.dispatchSoon(job.NodeID)
@@ -930,6 +953,12 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	s.agents.forgetSent(job.NodeID, job.ID)
 	s.audit(r, "job.canceled", "job", job.ID, map[string]any{"previous_status": previousStatus, "cancel_delivered": cancelDelivered})
 	publicJob := redactJobForPrincipal(job, principalFromContext(r.Context()))
+	if !cancelPending && job.InstanceID != "" && jobChangesInstance(job.Type) {
+		if instanceErr := s.publishInstanceProjection(r.Context(), job.InstanceID, job.ID); instanceErr != nil && !errors.Is(instanceErr, ErrNotFound) {
+			s.fail(w, instanceErr)
+			return
+		}
+	}
 	_, _ = s.events.Publish(r.Context(), Event{Type: "job.updated", ResourceType: "job", ResourceID: job.ID, Data: map[string]any{"job": publicJob}}, true)
 	writeJSON(w, http.StatusOK, map[string]any{"job": publicJob, "cancel_delivered": cancelDelivered})
 }

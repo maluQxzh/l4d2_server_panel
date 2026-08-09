@@ -328,7 +328,9 @@ export const api = {
     if (backgroundSummary) query.set("background_summary", "true");
     return request<JobListResponse>(`/jobs?${query.toString()}`);
   },
-  instanceJobs: (instanceId: string) => list<Job>(`/jobs?instance_id=${encodeURIComponent(instanceId)}`),
+  instanceJobs: (instanceId: string, background: "include" | "exclude" | "only" = "include") => list<Job>(
+    `/jobs?instance_id=${encodeURIComponent(instanceId)}${background === "include" ? "" : `&background=${background}`}`,
+  ),
   job: (id: string) => request<{ job: Job }>(`/jobs/${encodeURIComponent(id)}`).then((r) => r.job),
   cancelJob: (id: string) => request<void>(`/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
   audit: (resourceId?: string) => list<AuditEvent>(`/audit${resourceId ? `?resource_id=${encodeURIComponent(resourceId)}` : ""}`),

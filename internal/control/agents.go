@@ -439,6 +439,9 @@ func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelop
 		if isTerminalJobStatus(updated.Status) && jobChangesInstance(updated.Type) && job.InstanceID != "" {
 			instance, instanceErr := h.store.GetInstance(ctx, job.InstanceID)
 			if instanceErr == nil {
+				instanceErr = populateInstanceSecretState(ctx, h.store, h.masterKey, &instance)
+			}
+			if instanceErr == nil {
 				_, _ = h.events.Publish(ctx, Event{Type: "instance.updated", ResourceType: "instance", ResourceID: instance.ID,
 					Data: map[string]any{"instance": instance, "job_id": updated.ID}}, true)
 			} else if errors.Is(instanceErr, ErrNotFound) && updated.Status == domain.JobSucceeded && (updated.Type == "delete" || updated.Type == "detach") {

@@ -62,6 +62,7 @@ import {
 } from "../lib/backup-download";
 import { bytes, dateTime, duration, jobLabels } from "../lib/format";
 import { buildInstanceConfigUpdate, type RCONPasswordChange } from "../lib/instance-config";
+import { setCachedInstanceStatus } from "../lib/instance-cache";
 import { buildStartupArgumentPreview, canAccessInstance, lifecycleActionAllowed } from "../lib/instance-lifecycle";
 import { defaultTickrate, gameDifficulties, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
 import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, PackageRecord, Permission, Player, PlayerBan, ScheduleRecord } from "../lib/types";
@@ -82,9 +83,15 @@ type TabId = typeof tabs[number]["id"];
 
 export function InstanceDetailPage() {
   const { user } = useAuth();
+  const realtime = useRealtime();
   const { instanceId = "" } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
-  const instance = useQuery({ queryKey: ["instances", instanceId], queryFn: () => api.instance(instanceId), enabled: Boolean(instanceId) });
+  const instance = useQuery({
+    queryKey: ["instances", instanceId],
+    queryFn: () => api.instance(instanceId),
+    enabled: Boolean(instanceId),
+    refetchInterval: realtime.state === "live" ? false : 5_000,
+  });
 
   if (instance.isPending) return <LoadingBlock label="正在读取实例状态…" />;
   if (instance.error) return <><Link className="back-link" to="/instances"><ArrowLeft size={16} />返回实例列表</Link><ErrorState error={instance.error} retry={() => void instance.refetch()} /></>;
@@ -129,8 +136,20 @@ function InstanceHero({ instance }: { instance: InstanceRecord }) {
   const disabledReason = !canStart && !canStop && !canRestart ? "当前账号没有对应的实例生命周期权限" : "当前实例状态不允许此操作";
   const action = useMutation({
     mutationFn: (type: string) => api.instanceAction(instance.id, type),
-    onSuccess: (_result, type) => { setRestartOpen(false); toast.push(`${actionLabel(type)}任务已提交`); void client.invalidateQueries({ queryKey: ["jobs"] }); void client.invalidateQueries({ queryKey: ["instances", instance.id] }); },
-    onError: (error) => toast.push(error.message, "error"),
+    onMutate: async (type) => {
+      await client.cancelQueries({ queryKey: ["instances"] });
+      if (type === "start") setCachedInstanceStatus(client, instance.id, "starting");
+      if (type === "stop" || type === "restart") setCachedInstanceStatus(client, instance.id, "stopping");
+    },
+    onSuccess: (_result, type) => {
+      setRestartOpen(false);
+      toast.push(`${actionLabel(type)}任务已提交`);
+      void client.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: (error) => {
+      toast.push(error.message, "error");
+      void client.invalidateQueries({ queryKey: ["instances"] });
+    },
   });
   const restartCheck = useMutation({
     mutationFn: () => api.instance(instance.id),
@@ -155,12 +174,19 @@ function InstanceHero({ instance }: { instance: InstanceRecord }) {
       input.value = "";
       return request;
     },
+    onMutate: async () => {
+      await client.cancelQueries({ queryKey: ["instances"] });
+      setCachedInstanceStatus(client, instance.id, "stopping");
+    },
     onSuccess: () => {
       setTakeoverOpen(false);
       toast.push("受控重启与接管任务已提交");
       void client.invalidateQueries({ queryKey: ["jobs"] });
     },
-    onError: (error) => toast.push(error.message, "error"),
+    onError: (error) => {
+      toast.push(error.message, "error");
+      void client.invalidateQueries({ queryKey: ["instances"] });
+    },
   });
   const closeTakeover = () => {
     if (takeoverPassword.current) takeoverPassword.current.value = "";
@@ -188,8 +214,8 @@ function OverviewTab({ instance }: { instance: InstanceRecord }) {
   const { user } = useAuth();
   const canReadJobs = hasInstancePermission(user, instance, "jobs.read");
   const canReadEnvironment = hasNodePermission(user, instance.node_id, "environments.read");
-  const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, enabled: canReadJobs });
-  const instanceJobs = (jobs.data?.items || []).filter((job) => job.instance_id === instance.id).slice(0, 5);
+  const jobs = useQuery({ queryKey: ["jobs", "instance", instance.id, "operations"], queryFn: () => api.instanceJobs(instance.id, "exclude"), enabled: canReadJobs });
+  const instanceJobs = (jobs.data?.items || []).slice(0, 5);
   return <div className="overview-layout">
     <div className="overview-main">
       <section className="detail-stat-grid"><Card><span>在线玩家</span><strong>{instance.players}<small> / {instance.max_players}</small></strong><div className="mini-progress"><ProgressBar value={(instance.players / Math.max(instance.max_players, 1)) * 100} /></div></Card><Card><span>当前地图</span><strong className="text-value">{instance.map || "未载入"}</strong><small><Map size={14} />{instance.mode || instance.config.mode}</small></Card><Card><span>连续运行</span><strong className="text-value">{duration(instance.started_at)}</strong><small><Power size={14} />PID {instance.pid || "—"}</small></Card><Card><span>游戏构建</span><strong className="text-value">{instance.build_id || "待检测"}</strong><small><Box size={14} />当前启动配置</small></Card></section>

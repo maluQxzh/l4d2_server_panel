@@ -299,17 +299,56 @@ func (s *Store) QueueSystemProbe(ctx context.Context, target monitoringTarget, j
 	if jobType == "check_update" {
 		return s.queueUpdateProbe(ctx, target, job, payload, requestFingerprint)
 	}
-	err = s.db.QueryRowContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
-		VALUES(?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9) ON CONFLICT DO NOTHING RETURNING created_at`,
-		job.ID, job.NodeID, job.InstanceID, job.Type, job.Status, string(payload), key, job.CreatedAt, requestFingerprint).Scan(&job.CreatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		existing, lookupErr := s.JobByIdempotencyKeyMatching(ctx, "", key, requestFingerprint)
-		if lookupErr != nil {
-			return domain.Job{}, false, lookupErr
+	return s.queueA2SProbe(ctx, target, job, payload, requestFingerprint)
+}
+
+// queueA2SProbe rechecks the lifecycle projection inside the writer
+// transaction. RunningMonitoringTargets is only a candidate snapshot: a stop
+// or restart may commit between that query and this durable insert.
+func (s *Store) queueA2SProbe(ctx context.Context, target monitoringTarget, job domain.Job, payload []byte, requestFingerprint string) (domain.Job, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Job{}, false, err
+	}
+	defer tx.Rollback()
+	existing, storedFingerprint, lookupErr := scanJobWithFingerprint(tx.QueryRowContext(ctx, `SELECT `+jobColumnsWithFingerprint+`
+		FROM jobs WHERE requested_by IS NULL AND idempotency_key=?1`, job.IdempotencyKey))
+	if lookupErr == nil {
+		if existing.NodeID != target.NodeID || existing.InstanceID != target.InstanceID || existing.Type != "a2s.info" ||
+			!requestFingerprintsEqual(storedFingerprint, requestFingerprint) {
+			return domain.Job{}, false, ErrConflict
+		}
+		if err := tx.Commit(); err != nil {
+			return domain.Job{}, false, err
 		}
 		return existing, true, nil
 	}
-	return job, false, err
+	if !errors.Is(lookupErr, sql.ErrNoRows) {
+		return domain.Job{}, false, lookupErr
+	}
+	var eligible bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM instances instance JOIN nodes node ON node.id=instance.node_id
+		WHERE instance.id=?1 AND instance.node_id=?2 AND instance.status='running' AND node.status='online'
+		AND NOT EXISTS (SELECT 1 FROM jobs job WHERE job.instance_id=instance.id
+			AND `+activeJobSQLPredicate+` AND `+instanceWriteJobSQLPredicate+`)
+	)`, target.InstanceID, target.NodeID).Scan(&eligible); err != nil {
+		return domain.Job{}, false, err
+	}
+	if !eligible {
+		return domain.Job{}, false, ErrConflict
+	}
+	if err := tx.QueryRowContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
+		VALUES(?1,?2,?3,?4,?5,?6,?7,NULL,?8,?9) ON CONFLICT DO NOTHING RETURNING created_at`,
+		job.ID, job.NodeID, job.InstanceID, job.Type, job.Status, string(payload), job.IdempotencyKey, job.CreatedAt, requestFingerprint).Scan(&job.CreatedAt); errors.Is(err, sql.ErrNoRows) {
+		return domain.Job{}, false, ErrConflict
+	} else if err != nil {
+		return domain.Job{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Job{}, false, err
+	}
+	return job, false, nil
 }
 
 // queueUpdateProbe uses the same immediate writer transaction as automatic
@@ -377,7 +416,9 @@ func (s *Server) runMonitoringProbes(ctx context.Context) {
 		key := fmt.Sprintf("monitor:a2s:%s:%d", target.InstanceID, now.Unix()/30)
 		job, reused, queueErr := s.store.QueueSystemProbe(ctx, target, "a2s.info", key)
 		if queueErr != nil {
-			s.logger.Error("queue A2S probe", "instance_id", target.InstanceID, "error", queueErr)
+			if !errors.Is(queueErr, ErrConflict) && !errors.Is(queueErr, ErrNotFound) {
+				s.logger.Error("queue A2S probe", "instance_id", target.InstanceID, "error", queueErr)
+			}
 		} else if !reused {
 			s.dispatchSoon(job.NodeID)
 		}

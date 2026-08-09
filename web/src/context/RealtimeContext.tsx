@@ -1,7 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { apiBaseURL } from "../lib/api";
-import type { RealtimeEvent } from "../lib/types";
+import { removeCachedInstance, setCachedInstance } from "../lib/instance-cache";
+import type { InstanceRecord, RealtimeEvent } from "../lib/types";
 
 type ConnectionState = "connecting" | "live" | "polling";
 type Listener = (event: RealtimeEvent) => void;
@@ -34,6 +35,13 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
     let retryTimer: number | undefined;
     let attempts = 0;
     let stopped = false;
+    let instanceProjectionChain = Promise.resolve();
+
+    const applyInstanceProjection = (update: () => void) => {
+      instanceProjectionChain = instanceProjectionChain
+        .then(() => queryClient.cancelQueries({ queryKey: ["instances"] }))
+        .then(() => { if (!stopped) update(); });
+    };
 
     const connect = () => {
       if (stopped) return;
@@ -56,12 +64,25 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
             // 实例响应投影所属节点的名称与在线状态，节点事件也必须刷新实例卡片。
             void queryClient.invalidateQueries({ queryKey: ["instances"] });
           }
-          if (event.resource_type === "instance") void queryClient.invalidateQueries({ queryKey: ["instances"] });
+          if (event.resource_type === "instance") {
+            const instance = event.data?.instance as InstanceRecord | undefined;
+            if (instance && event.type === "instance.updated" && instance.id === event.resource_id) {
+              // The event is published from the same committed projection as the
+              // API response. Write it directly so an older refetch cannot race
+              // back in and overwrite a completed start/stop transition.
+              applyInstanceProjection(() => setCachedInstance(queryClient, instance));
+            } else if (event.type === "instance.deleted" && event.resource_id) {
+              const instanceID = event.resource_id;
+              applyInstanceProjection(() => removeCachedInstance(queryClient, instanceID));
+            } else {
+              void queryClient.invalidateQueries({ queryKey: ["instances"] });
+            }
+          }
           if (event.resource_type === "job" || event.type.startsWith("job")) {
             void queryClient.invalidateQueries({ queryKey: ["jobs"] });
-            // 任务结果会同时改变运行环境、实例状态、PID、构建号或地图等派生字段。
+            // 实例投影由同一事务随后发布的 instance.updated 权威事件更新；
+            // 不在这里重复 refetch，避免旧请求覆盖启动/停止终态。
             void queryClient.invalidateQueries({ queryKey: ["environments"] });
-            void queryClient.invalidateQueries({ queryKey: ["instances"] });
             void queryClient.invalidateQueries({ queryKey: ["maps"] });
           }
           if (event.type.startsWith("notification")) void queryClient.invalidateQueries({ queryKey: ["notifications"] });

@@ -9,6 +9,7 @@ import { useToast } from "../context/ToastContext";
 import { api } from "../lib/api";
 import { hasAnyPermission, hasInstancePermission, hasNodePermission } from "../lib/account-permissions";
 import { relativeTime } from "../lib/format";
+import { setCachedInstanceStatus } from "../lib/instance-cache";
 import { defaultTickrate, gameDifficulties, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
 import type { InstanceRecord } from "../lib/types";
 
@@ -41,8 +42,19 @@ function InstanceCard({ instance }: { instance: InstanceRecord }) {
   const client = useQueryClient();
   const action = useMutation({
     mutationFn: ({ type, payload }: { type: string; payload?: Record<string, unknown> }) => api.instanceAction(instance.id, type, payload),
-    onSuccess: (_result, { type }) => { toast.push(type === "start" ? "启动任务已提交" : type === "restart" ? "重启任务已提交" : "停止任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); void client.invalidateQueries({ queryKey: ["instances"] }); },
-    onError: (error) => toast.push(error.message, "error"),
+    onMutate: async ({ type }) => {
+      await client.cancelQueries({ queryKey: ["instances"] });
+      if (type === "start") setCachedInstanceStatus(client, instance.id, "starting");
+      if (type === "stop" || type === "restart") setCachedInstanceStatus(client, instance.id, "stopping");
+    },
+    onSuccess: (_result, { type }) => {
+      toast.push(type === "start" ? "启动任务已提交" : type === "restart" ? "重启任务已提交" : "停止任务已提交");
+      void client.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: (error) => {
+      toast.push(error.message, "error");
+      void client.invalidateQueries({ queryKey: ["instances"] });
+    },
   });
   const restartCheck = useMutation({
     mutationFn: () => api.instance(instance.id),

@@ -39,6 +39,74 @@ func TestRealIPOnlyTrustsConfiguredProxy(t *testing.T) {
 	}
 }
 
+func TestLifecycleActionPublishesCommittedTransientInstance(t *testing.T) {
+	for _, test := range []struct {
+		action string
+		before domain.InstanceStatus
+		want   domain.InstanceStatus
+	}{
+		{action: "start", before: domain.InstanceStopped, want: domain.InstanceStarting},
+		{action: "stop", before: domain.InstanceRunning, want: domain.InstanceStopping},
+	} {
+		t.Run(test.action, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "lifecycle-event.sqlite3"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+				t.Fatal(err)
+			}
+			owner, created, err := store.BootstrapOwner(ctx, "owner", "Owner", "hash")
+			if err != nil || !created {
+				t.Fatalf("bootstrap owner: created=%v err=%v", created, err)
+			}
+			if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online')`); err != nil {
+				t.Fatal(err)
+			}
+			instance, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: "node", Name: "lifecycle", Port: 27015})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status=?2 WHERE id=?1`, instance.ID, test.before); err != nil {
+				t.Fatal(err)
+			}
+			server := NewServer(Config{MasterKey: []byte("0123456789abcdef0123456789abcdef")}, store, nil)
+			defer server.Close()
+			events, unsubscribe := server.events.Subscribe()
+			defer unsubscribe()
+
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+instance.ID+"/actions",
+				strings.NewReader(`{"type":"`+test.action+`"}`))
+			routeContext := chi.NewRouteContext()
+			routeContext.URLParams.Add("instanceID", instance.ID)
+			request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
+			request = request.WithContext(context.WithValue(request.Context(), principalContextKey, Principal{User: owner}))
+			response := httptest.NewRecorder()
+
+			server.handleInstanceAction(response, request)
+
+			if response.Code != http.StatusAccepted {
+				t.Fatalf("%s returned %d: %s", test.action, response.Code, response.Body.String())
+			}
+			select {
+			case event := <-events:
+				projected, ok := event.Data["instance"].(domain.Instance)
+				if event.Type != "instance.updated" || !ok || projected.ID != instance.ID || projected.Status != test.want {
+					t.Fatalf("unexpected lifecycle event: %#v", event)
+				}
+			default:
+				t.Fatal("lifecycle action did not publish the committed instance projection")
+			}
+			stored, err := store.GetInstance(ctx, instance.ID)
+			if err != nil || stored.Status != test.want {
+				t.Fatalf("stored lifecycle projection=%#v err=%v", stored, err)
+			}
+		})
+	}
+}
+
 func TestSecurityHeadersRestrictConnectionsAndDisableAPICaching(t *testing.T) {
 	server := &Server{}
 	handler := server.securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
