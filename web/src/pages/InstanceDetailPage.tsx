@@ -44,6 +44,7 @@ import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
 import { useToast } from "../context/ToastContext";
 import { api, ApiError } from "../lib/api";
+import { hasInstancePermission, hasNodePermission } from "../lib/account-permissions";
 import { backupUploadChunkSize, bytesToBase64 as encodeBackupChunk, hashBlobSHA256, readBlobSlice, sha256Hex, validateBackupUploadFile } from "../lib/backup-upload";
 import {
   clearBackupUploadSession,
@@ -63,36 +64,39 @@ import { bytes, dateTime, duration, jobLabels } from "../lib/format";
 import { buildInstanceConfigUpdate, type RCONPasswordChange } from "../lib/instance-config";
 import { buildStartupArgumentPreview, canAccessInstance, lifecycleActionAllowed } from "../lib/instance-lifecycle";
 import { defaultTickrate, gameDifficulties, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
-import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, PackageRecord, Player, PlayerBan, ScheduleRecord } from "../lib/types";
+import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, PackageRecord, Permission, Player, PlayerBan, ScheduleRecord } from "../lib/types";
 
 const tabs = [
-  { id: "overview", label: "概览", icon: CircleDot },
-  { id: "console", label: "控制台", icon: Terminal },
-  { id: "players", label: "玩家", icon: Users },
-  { id: "config", label: "配置", icon: Settings2 },
-  { id: "mods", label: "模组", icon: PackageOpen },
-  { id: "plugins", label: "插件", icon: Code2 },
-  { id: "files", label: "文件", icon: Folder },
-  { id: "backups", label: "备份", icon: Archive },
-  { id: "schedules", label: "计划任务", icon: CalendarClock },
-  { id: "audit", label: "审计", icon: ClipboardList },
+  { id: "overview", label: "概览", icon: CircleDot, permissions: [] },
+  { id: "console", label: "控制台", icon: Terminal, permissions: ["rcon.execute", "logs.read"] },
+  { id: "players", label: "玩家", icon: Users, permissions: ["players.read", "players.kick", "players.ban", "players.unban", "players.change_map", "players.broadcast"] },
+  { id: "config", label: "配置", icon: Settings2, permissions: ["instances.configure"] },
+  { id: "mods", label: "模组", icon: PackageOpen, permissions: ["packages.read", "packages.install", "packages.toggle", "packages.delete", "packages.rollback"] },
+  { id: "plugins", label: "插件", icon: Code2, permissions: ["packages.read", "packages.install", "packages.toggle", "packages.delete", "packages.rollback"] },
+  { id: "files", label: "文件", icon: Folder, permissions: ["files.list", "files.read", "files.write", "files.delete"] },
+  { id: "backups", label: "备份", icon: Archive, permissions: ["backups.read", "backups.download", "backups.create", "backups.restore"] },
+  { id: "schedules", label: "计划任务", icon: CalendarClock, permissions: ["schedules.read", "schedules.manage"] },
+  { id: "audit", label: "审计", icon: ClipboardList, permissions: ["audit.read"] },
 ] as const;
 type TabId = typeof tabs[number]["id"];
 
 export function InstanceDetailPage() {
+  const { user } = useAuth();
   const { instanceId = "" } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
-  const active = (tabs.some((tab) => tab.id === searchParams.get("tab")) ? searchParams.get("tab") : "overview") as TabId;
   const instance = useQuery({ queryKey: ["instances", instanceId], queryFn: () => api.instance(instanceId), enabled: Boolean(instanceId) });
 
   if (instance.isPending) return <LoadingBlock label="正在读取实例状态…" />;
   if (instance.error) return <><Link className="back-link" to="/instances"><ArrowLeft size={16} />返回实例列表</Link><ErrorState error={instance.error} retry={() => void instance.refetch()} /></>;
   const item = instance.data;
+  const visibleTabs = tabs.filter((tab) => tab.permissions.length === 0 || tab.permissions.some((permission) => hasInstancePermission(user, item, permission as Permission)));
+  const requestedTab = searchParams.get("tab");
+  const active = (visibleTabs.some((tab) => tab.id === requestedTab) ? requestedTab : "overview") as TabId;
 
   return <div className="instance-detail">
     <div className="detail-breadcrumb"><Link to="/instances">游戏实例</Link><ChevronRight size={14} /><span>{item.name}</span></div>
     <InstanceHero instance={item} />
-    <nav className="detail-tabs" aria-label="实例管理分类">{tabs.map(({ id, label, icon: Icon }) => <button key={id} className={active === id ? "active" : ""} onClick={() => setSearchParams(id === "overview" ? {} : { tab: id })}><Icon size={17} />{label}</button>)}</nav>
+    <nav className="detail-tabs" aria-label="实例管理分类">{visibleTabs.map(({ id, label, icon: Icon }) => <button key={id} className={active === id ? "active" : ""} onClick={() => setSearchParams(id === "overview" ? {} : { tab: id })}><Icon size={17} />{label}</button>)}</nav>
     <div className="detail-content">
       {active === "overview" && <OverviewTab instance={item} />}
       {active === "console" && <ConsoleTab instance={item} />}
@@ -181,15 +185,18 @@ function InstanceHero({ instance }: { instance: InstanceRecord }) {
 }
 
 function OverviewTab({ instance }: { instance: InstanceRecord }) {
-  const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs });
+  const { user } = useAuth();
+  const canReadJobs = hasInstancePermission(user, instance, "jobs.read");
+  const canReadEnvironment = hasNodePermission(user, instance.node_id, "environments.read");
+  const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, enabled: canReadJobs });
   const instanceJobs = (jobs.data?.items || []).filter((job) => job.instance_id === instance.id).slice(0, 5);
   return <div className="overview-layout">
     <div className="overview-main">
       <section className="detail-stat-grid"><Card><span>在线玩家</span><strong>{instance.players}<small> / {instance.max_players}</small></strong><div className="mini-progress"><ProgressBar value={(instance.players / Math.max(instance.max_players, 1)) * 100} /></div></Card><Card><span>当前地图</span><strong className="text-value">{instance.map || "未载入"}</strong><small><Map size={14} />{instance.mode || instance.config.mode}</small></Card><Card><span>连续运行</span><strong className="text-value">{duration(instance.started_at)}</strong><small><Power size={14} />PID {instance.pid || "—"}</small></Card><Card><span>游戏构建</span><strong className="text-value">{instance.build_id || "待检测"}</strong><small><Box size={14} />当前启动配置</small></Card></section>
       <InstanceBindingCard instance={instance} />
-      <Card><div className="card-heading"><div><span className="eyebrow">RECENT OPERATIONS</span><h2>最近操作</h2></div><Link to="/jobs">全部任务 <ChevronRight size={15} /></Link></div>{jobs.isPending ? <LoadingBlock /> : instanceJobs.length ? <div className="detail-job-list">{instanceJobs.map((job) => <div key={job.id}><div className={`job-icon job-icon--${job.status}`}><Code2 size={15} /></div><div><strong>{jobLabels[job.type] || job.type}</strong><small>{job.message || dateTime(job.created_at)}</small></div><StatusBadge status={job.status} />{["queued", "dispatched", "running"].includes(job.status) && <div className="job-inline-progress"><ProgressBar value={job.progress} /><span>{job.progress}%</span></div>}</div>)}</div> : <EmptyState title="还没有操作记录" description="启动、更新或备份实例后，任务进度会显示在这里。" />}</Card>
+      {canReadJobs && <Card><div className="card-heading"><div><span className="eyebrow">RECENT OPERATIONS</span><h2>最近操作</h2></div><Link to="/jobs">全部任务 <ChevronRight size={15} /></Link></div>{jobs.isPending ? <LoadingBlock /> : instanceJobs.length ? <div className="detail-job-list">{instanceJobs.map((job) => <div key={job.id}><div className={`job-icon job-icon--${job.status}`}><Code2 size={15} /></div><div><strong>{jobLabels[job.type] || job.type}</strong><small>{job.message || dateTime(job.created_at)}</small></div><StatusBadge status={job.status} />{["queued", "dispatched", "running"].includes(job.status) && <div className="job-inline-progress"><ProgressBar value={job.progress} /><span>{job.progress}%</span></div>}</div>)}</div> : <EmptyState title="还没有操作记录" description="启动、备份或其他实例操作的进度会显示在这里。" />}</Card>}
     </div>
-    <aside className="overview-side"><Card><div className="card-heading"><div><span className="eyebrow">SERVER PROFILE</span><h2>实例资料</h2></div></div><div className="detail-pairs detail-pairs--stack"><div><span>所属节点</span><strong>{instance.node_name || instance.node_id}</strong></div><div><span>游戏安装</span><code>{instance.game_installation_id || "尚未绑定"}</code></div><div><span>安装路径</span><code>{instance.path || "等待 Agent 校验"}</code></div><div><span>游戏端口</span><strong>{instance.port}</strong></div><div><span>SourceTV 端口</span><strong>{instance.tv_port || "未启用"}</strong></div><div><span>自动重启</span><strong>{instance.config.auto_restart ? "已启用" : "已关闭"}</strong></div><div><span>公开状态</span><strong>{instance.config.public_status ? "可见" : "隐藏"}</strong></div></div></Card><StartupArgumentsCard instance={instance} /><Card className="maintenance-card"><Wrench size={22} /><div><strong>游戏文件维护</strong><span>SteamCMD、更新和校验修复统一在运行环境中执行</span></div><Link to="/environments">打开运行环境 <ChevronRight size={14} /></Link></Card></aside>
+    <aside className="overview-side"><Card><div className="card-heading"><div><span className="eyebrow">SERVER PROFILE</span><h2>实例资料</h2></div></div><div className="detail-pairs detail-pairs--stack"><div><span>所属节点</span><strong>{instance.node_name || instance.node_id}</strong></div><div><span>游戏安装</span><code>{instance.game_installation_id || "尚未绑定"}</code></div><div><span>安装路径</span><code>{instance.path || "等待 Agent 校验"}</code></div><div><span>游戏端口</span><strong>{instance.port}</strong></div><div><span>SourceTV 端口</span><strong>{instance.tv_port || "未启用"}</strong></div><div><span>自动重启</span><strong>{instance.config.auto_restart ? "已启用" : "已关闭"}</strong></div><div><span>公开状态</span><strong>{instance.config.public_status ? "可见" : "隐藏"}</strong></div></div></Card><StartupArgumentsCard instance={instance} />{canReadEnvironment && <Card className="maintenance-card"><Wrench size={22} /><div><strong>游戏文件维护</strong><span>SteamCMD、更新和校验修复统一在运行环境中执行</span></div><Link to="/environments">打开运行环境 <ChevronRight size={14} /></Link></Card>}</aside>
   </div>;
 }
 
@@ -198,15 +205,17 @@ function InstanceBindingCard({ instance }: { instance: InstanceRecord }) {
   const toast = useToast();
   const navigate = useNavigate();
   const canManage = canAccessInstance(user, instance, "instances.delete");
+  const canReadEnvironment = hasNodePermission(user, instance.node_id, "environments.read");
+  const canReadJobs = hasInstancePermission(user, instance, "jobs.read");
   const remove = useMutation({
     mutationFn: () => api.deleteInstance(instance.id, "detach"),
-    onSuccess: () => { toast.push("实例已提交解除绑定，游戏文件将保留"); navigate("/jobs"); },
+    onSuccess: () => { toast.push("实例已提交解除绑定，游戏文件将保留"); navigate(canReadJobs ? "/jobs" : "/instances"); },
     onError: (error) => toast.push(error.message, "error"),
   });
   return <Card className="lifecycle-card">
-    <div className="card-heading"><div><span className="eyebrow">GAME INSTALLATION</span><h2>游戏安装绑定</h2></div><Link to="/environments">运行环境 <ChevronRight size={15} /></Link></div>
+    <div className="card-heading"><div><span className="eyebrow">GAME INSTALLATION</span><h2>游戏安装绑定</h2></div>{canReadEnvironment && <Link to="/environments">运行环境 <ChevronRight size={15} /></Link>}</div>
     <div className="lifecycle-actions">
-      <div><HardDrive size={19} /><span><strong>{instance.game_installation_id ? "已绑定独占游戏安装" : "游戏安装未就绪"}</strong><small>{instance.path || "请到运行环境检查目录状态"}</small></span><Button variant="secondary" onClick={() => navigate("/environments")}>查看环境</Button></div>
+      <div><HardDrive size={19} /><span><strong>{instance.game_installation_id ? "已绑定独占游戏安装" : "游戏安装未就绪"}</strong><small>{instance.path || "请联系有运行环境权限的管理员检查目录状态"}</small></span>{canReadEnvironment && <Button variant="secondary" onClick={() => navigate("/environments")}>查看环境</Button>}</div>
       <div className="lifecycle-danger"><Trash2 size={19} /><span><strong>删除实例并解除绑定</strong><small>保留全部游戏文件；之后可再次绑定或在运行环境中隔离删除</small></span><Button variant="danger" loading={remove.isPending} disabled={!canManage} title={!canManage ? "当前角色没有实例管理权限" : undefined} onClick={() => { if (window.confirm(`删除实例“${instance.name}”并保留游戏文件？`)) remove.mutate(); }}>删除实例</Button></div>
     </div>
   </Card>;
@@ -218,18 +227,24 @@ function StartupArgumentsCard({ instance }: { instance: InstanceRecord }) {
 }
 
 function ConsoleTab({ instance }: { instance: InstanceRecord }) {
+  const { user } = useAuth();
   const realtime = useRealtime();
   const toast = useToast();
   const [lines, setLines] = useState<Array<{ at: string; stream: string; line: string }>>([]);
   const [command, setCommand] = useState("");
+  const canExecuteRCON = hasInstancePermission(user, instance, "rcon.execute");
+  const canReadLogs = hasInstancePermission(user, instance, "logs.read");
   const send = useMutation({ mutationFn: () => api.instanceAction(instance.id, "rcon", { command }), onSuccess: () => { setLines((value) => [...value, { at: new Date().toISOString(), stream: "command", line: `> ${command}` }]); setCommand(""); toast.push("RCON 命令已发送"); }, onError: (error) => toast.push(error.message, "error") });
-  useEffect(() => realtime.subscribe((event) => {
+  useEffect(() => {
+    if (!canReadLogs) return;
+    return realtime.subscribe((event) => {
     if (event.resource_id !== instance.id || !["log", "console"].some((word) => event.type.includes(word))) return;
     const data = event.data || {};
     setLines((current) => [...current.slice(-499), { at: String(data.at || event.created_at), stream: String(data.stream || "stdout"), line: String(data.line || data.message || "") }]);
-  }), [instance.id, realtime]);
-  const submit = (event: FormEvent) => { event.preventDefault(); if (command.trim()) send.mutate(); };
-  return <div className="console-stack"><Card className="console-card"><div className="console-toolbar"><div><span className={`health-dot health-dot--${realtime.state === "live" ? "online" : "pending"}`} /><strong>{realtime.state === "live" ? "实时日志" : "连接降级"}</strong><small>{realtime.state === "live" ? "输出会自动滚动" : "实时输出暂不可用，命令仍可提交"}</small></div><Button variant="ghost" onClick={() => setLines([])}><Trash2 size={15} />清屏</Button></div><div className="terminal-output" role="log" aria-live="polite">{lines.length ? lines.map((line, index) => <div key={`${line.at}-${index}`} className={`terminal-line terminal-line--${line.stream}`}><time>{new Date(line.at).toLocaleTimeString("zh-CN", { hour12: false })}</time><span>{line.line}</span></div>) : <div className="terminal-placeholder"><Terminal size={27} /><strong>等待服务器输出</strong><span>启动实例后，Agent 推送的控制台日志会出现在这里。</span></div>}</div><form className="command-line" onSubmit={submit}><span>RCON</span><input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="输入 Source RCON 命令，例如 status" aria-label="RCON 命令" disabled={instance.status === "stopped"} /><Button type="submit" loading={send.isPending} disabled={!command.trim() || instance.status === "stopped"}><Send size={16} />发送</Button></form><p className="console-note">这里只接受游戏 RCON 命令，不提供主机 Shell。密码类参数不会写入审计日志。</p></Card><LogHistoryCard instance={instance} /></div>;
+    });
+  }, [canReadLogs, instance.id, realtime]);
+  const submit = (event: FormEvent) => { event.preventDefault(); if (canExecuteRCON && command.trim()) send.mutate(); };
+  return <div className="console-stack"><Card className="console-card"><div className="console-toolbar"><div><span className={`health-dot health-dot--${realtime.state === "live" ? "online" : "pending"}`} /><strong>{canReadLogs ? realtime.state === "live" ? "实时日志" : "连接降级" : "RCON 控制台"}</strong><small>{canReadLogs ? realtime.state === "live" ? "输出会自动滚动" : "实时输出暂不可用，命令仍可提交" : "当前权限不包含日志读取"}</small></div>{canReadLogs && <Button variant="ghost" onClick={() => setLines([])}><Trash2 size={15} />清屏</Button>}</div>{canReadLogs ? <div className="terminal-output" role="log" aria-live="polite">{lines.length ? lines.map((line, index) => <div key={`${line.at}-${index}`} className={`terminal-line terminal-line--${line.stream}`}><time>{new Date(line.at).toLocaleTimeString("zh-CN", { hour12: false })}</time><span>{line.line}</span></div>) : <div className="terminal-placeholder"><Terminal size={27} /><strong>等待服务器输出</strong><span>启动实例后，Agent 推送的控制台日志会出现在这里。</span></div>}</div> : <div className="form-note"><ShieldAlert size={17} />日志输出已按权限隐藏。</div>}{canExecuteRCON && <form className="command-line" onSubmit={submit}><span>RCON</span><input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="输入 Source RCON 命令，例如 status" aria-label="RCON 命令" disabled={instance.status === "stopped"} /><Button type="submit" loading={send.isPending} disabled={!command.trim() || instance.status === "stopped"}><Send size={16} />发送</Button></form>}<p className="console-note">这里只接受游戏 RCON 命令，不提供主机 Shell。密码类参数不会写入审计日志。</p></Card>{canReadLogs && <LogHistoryCard instance={instance} />}</div>;
 }
 
 function LogHistoryCard({ instance }: { instance: InstanceRecord }) {
@@ -267,11 +282,19 @@ function LogHistoryCard({ instance }: { instance: InstanceRecord }) {
 }
 
 function PlayersTab({ instance }: { instance: InstanceRecord }) {
+  const { user } = useAuth();
+  const canReadPlayers = hasInstancePermission(user, instance, "players.read");
+  const canKick = hasInstancePermission(user, instance, "players.kick");
+  const canBan = hasInstancePermission(user, instance, "players.ban");
+  const canUnban = hasInstancePermission(user, instance, "players.unban");
+  const canChangeMap = hasInstancePermission(user, instance, "players.change_map");
+  const canBroadcast = hasInstancePermission(user, instance, "players.broadcast");
+  const canReadJobs = hasInstancePermission(user, instance, "jobs.read");
   const serverActive = instance.status === "running" || instance.status === "degraded";
-  const canQueryRCON = serverActive && instance.rcon_configured;
+  const canQueryRCON = canReadPlayers && serverActive && instance.rcon_configured;
   const players = useQuery({ queryKey: ["instances", instance.id, "players"], queryFn: () => api.players(instance.id), enabled: canQueryRCON, refetchInterval: canQueryRCON ? 15_000 : false });
-  const probeJobs = useQuery({ queryKey: ["jobs", instance.id, "rcon.players"], queryFn: () => api.instanceJobs(instance.id), enabled: canQueryRCON, refetchInterval: canQueryRCON ? 2_000 : false });
-  const bans = useQuery({ queryKey: ["instances", instance.id, "bans"], queryFn: () => api.bans(instance.id), refetchInterval: 30_000 });
+  const probeJobs = useQuery({ queryKey: ["jobs", instance.id, "rcon.players"], queryFn: () => api.instanceJobs(instance.id), enabled: canQueryRCON && canReadJobs, refetchInterval: canQueryRCON && canReadJobs ? 2_000 : false });
+  const bans = useQuery({ queryKey: ["instances", instance.id, "bans"], queryFn: () => api.bans(instance.id), enabled: canReadPlayers, refetchInterval: canReadPlayers ? 30_000 : false });
   const toast = useToast();
   const client = useQueryClient();
   const [selected, setSelected] = useState<Player | null>(null);
@@ -286,7 +309,9 @@ function PlayersTab({ instance }: { instance: InstanceRecord }) {
 
   const playerItems = players.data?.items || [];
   let playerContent: ReactNode;
-  if (!serverActive) {
+  if (!canReadPlayers) {
+    playerContent = <EmptyState title="玩家清单已隐藏" description="当前账号没有查看在线玩家和封禁清单的权限。" />;
+  } else if (!serverActive) {
     playerContent = <div className="form-warning"><ShieldAlert size={17} />服务器尚未启动，RCON 查询只在运行中生效。</div>;
   } else if (!instance.rcon_configured) {
     playerContent = <div className="form-warning"><ShieldAlert size={17} />中心端尚未保存 RCON 密码。请设置与 server.cfg 完全一致的密码后重试。</div>;
@@ -298,15 +323,33 @@ function PlayersTab({ instance }: { instance: InstanceRecord }) {
     playerContent = <>
       {latestProbe?.status === "failed" && <div className="form-error" role="alert">RCON 查询失败：{latestProbe.message || "请确认 server.cfg 密码已在当前游戏进程中生效，并检查任务详情。"}</div>}
       {latestProbe && ["queued", "dispatched", "running"].includes(latestProbe.status) && <div className="form-note"><RefreshCw className="spin" size={16} />正在通过节点查询最新玩家信息…</div>}
-      {playerItems.length ? <div className="data-table-wrap"><table className="data-table"><thead><tr><th>玩家</th><th>Steam ID</th><th>分数</th><th>延迟</th><th>连接时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{playerItems.map((player) => <tr key={player.steam_id || player.name}><td><strong>{player.name}</strong></td><td><code>{player.steam_id || "—"}</code></td><td>{player.score ?? "—"}</td><td>{player.ping != null ? `${player.ping} ms` : "—"}</td><td>{dateTime(player.connected_at)}</td><td className="table-actions"><Button variant="ghost" onClick={() => action.mutate({ type: "kick_player", payload: { steam_id: player.steam_id, name: player.name } })}><Power size={14} />踢出</Button><Button variant="ghost" onClick={() => setSelected(player)} disabled={!player.steam_id}><Ban size={14} />封禁</Button></td></tr>)}</tbody></table></div> : <EmptyState title="服务器里暂时没人" description="查询成功后，在线玩家会显示在这里；若上方出现错误，请按错误信息检查 RCON。" />}
+      {playerItems.length ? <div className="data-table-wrap"><table className="data-table"><thead><tr><th>玩家</th><th>Steam ID</th><th>分数</th><th>延迟</th><th>连接时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{playerItems.map((player) => <tr key={player.steam_id || player.name}><td><strong>{player.name}</strong></td><td><code>{player.steam_id || "—"}</code></td><td>{player.score ?? "—"}</td><td>{player.ping != null ? `${player.ping} ms` : "—"}</td><td>{dateTime(player.connected_at)}</td><td className="table-actions">{canKick && <Button variant="ghost" onClick={() => action.mutate({ type: "kick_player", payload: { steam_id: player.steam_id, name: player.name } })}><Power size={14} />踢出</Button>}{canBan && <Button variant="ghost" onClick={() => setSelected(player)} disabled={!player.steam_id}><Ban size={14} />封禁</Button>}</td></tr>)}</tbody></table></div> : <EmptyState title="服务器里暂时没人" description="查询成功后，在线玩家会显示在这里；若上方出现错误，请按错误信息检查 RCON。" />}
     </>;
   }
 
-  return <div className="players-stack"><Card><div className="card-heading"><div><span className="eyebrow">CONNECTED PLAYERS</span><h2>在线玩家</h2></div><span className="table-count">{playerItems.length} / {instance.max_players}</span></div>{playerContent}</Card><Card><div className="card-heading"><div><span className="eyebrow">ACTIVE BANS</span><h2>封禁记录</h2></div><span className="table-count">{bans.data?.items.length || 0} 条</span></div>{bans.isPending ? <LoadingBlock /> : bans.error ? <ErrorState error={bans.error} retry={() => void bans.refetch()} /> : bans.data.items.length ? <div className="data-table-wrap"><table className="data-table"><thead><tr><th>Steam ID</th><th>原因</th><th>创建时间</th><th>到期时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{bans.data.items.map((ban) => <BanRow key={ban.id} ban={ban} unban={() => action.mutate({ type: "unban_player", payload: { steam_id: ban.steam_id } })} busy={action.isPending} />)}</tbody></table></div> : <EmptyState title="没有有效封禁" description="限时封禁到期后会自动从清单移除；永久封禁需要手动解除。" />}</Card><BanPlayerModal instance={instance} player={selected} onClose={() => setSelected(null)} /></div>;
+  return <div className="players-stack">{(canChangeMap || canBroadcast) && <PlayerCommandsCard instance={instance} canChangeMap={canChangeMap} canBroadcast={canBroadcast} />}<Card><div className="card-heading"><div><span className="eyebrow">CONNECTED PLAYERS</span><h2>在线玩家</h2></div>{canReadPlayers && <span className="table-count">{playerItems.length} / {instance.max_players}</span>}</div>{playerContent}</Card>{canReadPlayers && <Card><div className="card-heading"><div><span className="eyebrow">ACTIVE BANS</span><h2>封禁记录</h2></div><span className="table-count">{bans.data?.items.length || 0} 条</span></div>{bans.isPending ? <LoadingBlock /> : bans.error ? <ErrorState error={bans.error} retry={() => void bans.refetch()} /> : bans.data.items.length ? <div className="data-table-wrap"><table className="data-table"><thead><tr><th>Steam ID</th><th>原因</th><th>创建时间</th><th>到期时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{bans.data.items.map((ban) => <BanRow key={ban.id} ban={ban} unban={canUnban ? () => action.mutate({ type: "unban_player", payload: { steam_id: ban.steam_id } }) : undefined} busy={action.isPending} />)}</tbody></table></div> : <EmptyState title="没有有效封禁" description="限时封禁到期后会自动从清单移除；永久封禁需要手动解除。" />}</Card>}<BanPlayerModal instance={instance} player={canBan ? selected : null} onClose={() => setSelected(null)} /></div>;
 }
 
-function BanRow({ ban, unban, busy }: { ban: PlayerBan; unban: () => void; busy: boolean }) {
-  return <tr><td><code>{ban.steam_id}</code></td><td>{ban.reason || "管理员封禁"}</td><td>{dateTime(ban.created_at)}</td><td>{ban.expires_at ? dateTime(ban.expires_at) : "永久"}</td><td className="table-actions"><Button variant="ghost" onClick={() => { if (window.confirm(`确认解除 ${ban.steam_id} 的封禁？`)) unban(); }} loading={busy}><RotateCcw size={14} />解封</Button></td></tr>;
+function PlayerCommandsCard({ instance, canChangeMap, canBroadcast }: { instance: InstanceRecord; canChangeMap: boolean; canBroadcast: boolean }) {
+  const toast = useToast();
+  const [mapName, setMapName] = useState(instance.map || instance.config.start_map || "");
+  const [message, setMessage] = useState("");
+  const ready = ["running", "degraded"].includes(instance.status) && instance.rcon_configured;
+  const validMap = /^[A-Za-z0-9_-]+$/.test(mapName);
+  const validMessage = Boolean(message.trim()) && [...message.trim()].length <= 200 && !/[\0\r\n;"\\]/.test(message);
+  const command = useMutation({
+    mutationFn: ({ type, payload }: { type: "change_map" | "broadcast"; payload: Record<string, unknown> }) => api.instanceAction(instance.id, type, payload),
+    onSuccess: (_result, values) => {
+      if (values.type === "broadcast") setMessage("");
+      toast.push(values.type === "change_map" ? "切换地图任务已提交" : "聊天广播任务已提交");
+    },
+    onError: (error) => toast.push(error.message, "error"),
+  });
+  return <Card><div className="card-heading"><div><span className="eyebrow">GAMEPLAY CONTROL</span><h2>游戏内管理</h2></div></div>{!ready && <div className="form-warning"><ShieldAlert size={17} />服务器需要处于运行状态并配置 RCON 后才能执行。</div>}<div className="form-grid">{canChangeMap && <Field label="切换地图" hint="只允许地图代码中的字母、数字、下划线和连字符"><div className="inline-field"><input value={mapName} maxLength={128} onChange={(event) => setMapName(event.target.value.trim())} placeholder="c2m1_highway" /><Button variant="secondary" disabled={!ready || !validMap} loading={command.isPending} onClick={() => command.mutate({ type: "change_map", payload: { map: mapName } })}><Map size={15} />切换</Button></div></Field>}{canBroadcast && <Field label="聊天广播" hint="1–200 个字符；不允许换行、分号、引号或反斜杠"><div className="inline-field"><input value={message} maxLength={200} onChange={(event) => setMessage(event.target.value)} placeholder="服务器将在 5 分钟后重启" /><Button variant="secondary" disabled={!ready || !validMessage} loading={command.isPending} onClick={() => command.mutate({ type: "broadcast", payload: { message: message.trim() } })}><Send size={15} />广播</Button></div></Field>}</div></Card>;
+}
+
+function BanRow({ ban, unban, busy }: { ban: PlayerBan; unban?: () => void; busy: boolean }) {
+  return <tr><td><code>{ban.steam_id}</code></td><td>{ban.reason || "管理员封禁"}</td><td>{dateTime(ban.created_at)}</td><td>{ban.expires_at ? dateTime(ban.expires_at) : "永久"}</td><td className="table-actions">{unban && <Button variant="ghost" onClick={() => { if (window.confirm(`确认解除 ${ban.steam_id} 的封禁？`)) unban(); }} loading={busy}><RotateCcw size={14} />解封</Button>}</td></tr>;
 }
 
 function BanPlayerModal({ instance, player, onClose }: { instance: InstanceRecord; player: Player | null; onClose: () => void }) {
@@ -320,7 +363,10 @@ function BanPlayerModal({ instance, player, onClose }: { instance: InstanceRecor
 }
 
 function ConfigTab({ instance }: { instance: InstanceRecord }) {
-	const maps = useQuery({ queryKey: ["maps", instance.node_id], queryFn: () => api.maps(instance.node_id) });
+  const { user } = useAuth();
+  const canConfigure = hasInstancePermission(user, instance, "instances.configure");
+  const canReadMaps = hasNodePermission(user, instance.node_id, "maps.read");
+	const maps = useQuery({ queryKey: ["maps", instance.node_id], queryFn: () => api.maps(instance.node_id), enabled: canReadMaps });
 	const assignedMapOptions = (maps.data?.items || []).filter((item) => item.assignments?.some((assignment) => assignment.instance_id === instance.id)).flatMap((item) => (item.bsps || []).filter((bsp) => Boolean(bsp.start_name)).map((bsp) => ({ value: bsp.start_name!, label: item.name })));
   const [config, setConfig] = useState<InstanceConfig>(() => ({
     ...instance.config,
@@ -350,6 +396,8 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
   const portChangeBlocked = portChanged && !portEditable;
   const save = useMutation({
     mutationFn: () => {
+      if (!canConfigure)
+        throw new ApiError("当前账号没有实例配置权限", 403, "forbidden");
       if (publicStatusBlocked)
         throw new ApiError(
           "请先为所属节点设置公开连接地址",
@@ -432,6 +480,7 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
             save.mutate();
           }}
         >
+          {!canConfigure && <div className="form-warning"><ShieldAlert size={17} />当前账号只能查看配置，不能保存更改。</div>}
           <div className="form-grid">
             <Field label="服务器名称">
               <input
@@ -629,7 +678,8 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
             <Button
               type="submit"
               loading={save.isPending}
-              disabled={publicStatusBlocked || portInvalid || portChangeBlocked}
+              disabled={!canConfigure || publicStatusBlocked || portInvalid || portChangeBlocked}
+              title={!canConfigure ? "当前账号没有实例配置权限" : undefined}
             >
               <Save size={16} />
               保存配置
@@ -664,16 +714,25 @@ function PluginsTab({ instance }: { instance: InstanceRecord }) {
 type PackageSection = "mods" | "plugins";
 
 function PackagesTab({ instance, section }: { instance: InstanceRecord; section: PackageSection }) {
+  const { user } = useAuth();
   const [open, setOpen] = useState(false);
-  const packages = useQuery({ queryKey: ["instances", instance.id, "packages"], queryFn: () => api.packages(instance.id), refetchInterval: 15_000 });
+  const canRead = hasInstancePermission(user, instance, "packages.read");
+  const canInstall = hasInstancePermission(user, instance, "packages.install");
+  const packages = useQuery({ queryKey: ["instances", instance.id, "packages"], queryFn: () => api.packages(instance.id), enabled: canRead, refetchInterval: canRead ? 15_000 : false });
   const pluginSection = section === "plugins";
   const items = packages.data?.items.filter((item) => pluginSection ? item.kind !== "vpk" && item.kind !== "workshop" : item.kind === "vpk" || item.kind === "workshop") || [];
   const noun = pluginSection ? "插件" : "模组";
   const description = pluginSection ? "支持 SourceMod 插件、SourceMod/Metamod 整包与第三方原生扩展。" : "支持 VPK、Workshop 项目与合集，以及 QQ闪传 VPK 批量导入。";
-  return <Card><div className="card-heading"><div><span className="eyebrow">{pluginSection ? "SERVER PLUGINS" : "ADD-ONS"}</span><h2>{pluginSection ? "插件与服务端组件" : "模组"}</h2></div><Button onClick={() => setOpen(true)}><Plus size={16} />安装{noun}</Button></div>{packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title={`${noun}清单尚不可用`} description={`当前控制端未开放${noun}清单接口；安装任务仍可通过面板提交。`} action={<Button onClick={() => setOpen(true)}><Plus size={16} />提交安装任务</Button>} /> : items.length ? <div className="package-grid">{items.map((item) => <PackageCard key={item.id} item={item} instanceId={instance.id} />)}</div> : <EmptyState title={`还没有安装${noun}`} description={description} action={<Button onClick={() => setOpen(true)}><Plus size={16} />安装第一个{noun}</Button>} />}<InstallPackageModal open={open} instance={instance} section={section} onClose={() => setOpen(false)} /></Card>;
+  const installButton = canInstall ? <Button onClick={() => setOpen(true)}><Plus size={16} />安装{noun}</Button> : undefined;
+  return <Card><div className="card-heading"><div><span className="eyebrow">{pluginSection ? "SERVER PLUGINS" : "ADD-ONS"}</span><h2>{pluginSection ? "插件与服务端组件" : "模组"}</h2></div>{installButton}</div>{!canRead ? <EmptyState title={`${noun}清单已隐藏`} description={`当前账号没有查看${noun}清单的权限，但仍可执行上方单独授予的安装操作。`} /> : packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title={`${noun}清单尚不可用`} description={`当前控制端未开放${noun}清单接口；安装任务仍可通过面板提交。`} /> : items.length ? <div className="package-grid">{items.map((item) => <PackageCard key={item.id} item={item} instance={instance} />)}</div> : <EmptyState title={`还没有安装${noun}`} description={description} />}<InstallPackageModal open={canInstall && open} instance={instance} section={section} onClose={() => setOpen(false)} /></Card>;
 }
 
-function PackageCard({ item, instanceId }: { item: PackageRecord; instanceId: string }) {
+function PackageCard({ item, instance }: { item: PackageRecord; instance: InstanceRecord }) {
+  const { user } = useAuth();
+  const instanceId = instance.id;
+  const canToggle = hasInstancePermission(user, instance, "packages.toggle");
+  const canDelete = hasInstancePermission(user, instance, "packages.delete");
+  const canRollback = hasInstancePermission(user, instance, "packages.rollback");
   const toast = useToast();
   const client = useQueryClient();
   const [selectedVersion, setSelectedVersion] = useState("");
@@ -692,8 +751,8 @@ function PackageCard({ item, instanceId }: { item: PackageRecord; instanceId: st
   const versions = useQuery({
     queryKey: ["instances", instanceId, "packages", item.id, "versions"],
     queryFn: () => api.packageVersions(instanceId, item.id),
-    enabled: toggleable,
-    refetchInterval: toggleable ? 15_000 : false,
+    enabled: toggleable && canRollback,
+    refetchInterval: toggleable && canRollback ? 15_000 : false,
   });
   useEffect(() => {
     if (!versions.data?.items.length) {
@@ -716,19 +775,19 @@ function PackageCard({ item, instanceId }: { item: PackageRecord; instanceId: st
     <div className="package-card__identity"><strong>{item.name}</strong><span>{item.kind.toUpperCase()} · {item.version || "版本未知"}</span>{item.sha256 && <code>{item.sha256.slice(0, 16)}…</code>}</div>
     <div className="package-card__controls">
       <div className="package-card__actions">
-        {toggleable ? <button className={`switch ${item.enabled ? "switch--on" : ""}`} disabled={toggle.isPending || remove.isPending} onClick={() => toggle.mutate()} aria-label={`${item.enabled ? "停用" : "启用"} ${item.name}`}><span /></button> : <span className="package-installed">已安装</span>}
-        {deletable && <button className="package-delete-button" disabled={remove.isPending || toggle.isPending} aria-label={`删除 ${item.name}`} title="删除组件" onClick={() => {
+        {toggleable && canToggle ? <button className={`switch ${item.enabled ? "switch--on" : ""}`} disabled={toggle.isPending || remove.isPending} onClick={() => toggle.mutate()} aria-label={`${item.enabled ? "停用" : "启用"} ${item.name}`}><span /></button> : <span className="package-installed">{item.enabled ? "已启用" : "已停用"}</span>}
+        {deletable && canDelete && <button className="package-delete-button" disabled={remove.isPending || toggle.isPending} aria-label={`删除 ${item.name}`} title="删除组件" onClick={() => {
           if (window.confirm(`确认永久删除 ${item.name}？文件及面板中的版本历史会一并移除；运行中的服务器可能需要重启后才能完全卸载。`)) remove.mutate();
         }}><Trash2 size={14} /></button>}
       </div>
-      {toggleable && versions.data?.items.length ? <div className="package-version-rollback">
+      {canRollback && toggleable && versions.data?.items.length ? <div className="package-version-rollback">
         <select value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)} aria-label={`${item.name} 可回退版本`} disabled={!item.enabled || rollback.isPending}>
           {versions.data.items.map((version) => <option value={version.id} key={version.id}>{version.version || "未标记"} · {version.sha256.slice(0, 10)} · {dateTime(version.created_at)}</option>)}
         </select>
         <button className="package-rollback-button" disabled={!item.enabled || !selectedVersion || rollback.isPending} title={!item.enabled ? "请先启用组件" : `恢复 ${selected?.version || "选中版本"}`} onClick={() => {
           if (selected && window.confirm(`确认将 ${item.name} 回退到 ${selected.version || selected.sha256.slice(0, 12)}？当前文件会作为新的可回退版本保留。`)) rollback.mutate();
         }}><RotateCcw size={13} />{rollback.isPending ? "提交中" : "回退"}</button>
-      </div> : toggleable && versions.error ? <small className="package-version-error">版本历史暂不可用</small> : null}
+      </div> : canRollback && toggleable && versions.error ? <small className="package-version-error">版本历史暂不可用</small> : null}
     </div>
   </div>;
 }
@@ -807,34 +866,45 @@ function InstallPackageModal({ open, instance, section, onClose }: { open: boole
 }
 
 function FilesTab({ instance }: { instance: InstanceRecord }) {
+  const { user } = useAuth();
   const [path, setPath] = useState("");
   const [editor, setEditor] = useState<{ path: string; isNew: boolean } | null>(null);
   const [serverShortcut, setServerShortcut] = useState(false);
-  const files = useQuery({ queryKey: ["instances", instance.id, "files", path], queryFn: () => api.files(instance.id, path) });
+  const canList = hasInstancePermission(user, instance, "files.list");
+  const canRead = hasInstancePermission(user, instance, "files.read");
+  const canWrite = hasInstancePermission(user, instance, "files.write");
+  const canDelete = hasInstancePermission(user, instance, "files.delete");
+  const canOpenFile = canRead || canWrite || canDelete;
+  const files = useQuery({ queryKey: ["instances", instance.id, "files", path], queryFn: () => api.files(instance.id, path), enabled: canList });
   const allowedRoots = ["left4dead2/addons", "left4dead2/cfg"];
   useEffect(() => {
     if (!serverShortcut || path !== "left4dead2/cfg" || files.isPending || files.error) return;
     const serverPath = "left4dead2/cfg/server.cfg";
     const exists = files.data.items.some((item) => item.type === "file" && item.path.toLowerCase() === serverPath);
-    setEditor({ path: serverPath, isNew: !exists });
+    if (exists ? canOpenFile : canWrite) setEditor({ path: serverPath, isNew: !exists });
     setServerShortcut(false);
-  }, [files.data, files.error, files.isPending, path, serverShortcut]);
-  if (files.isPending) return <LoadingBlock label="正在读取实例目录…" />;
+  }, [canOpenFile, canWrite, files.data, files.error, files.isPending, path, serverShortcut]);
+  if (canList && files.isPending) return <LoadingBlock label="正在读取实例目录…" />;
   if (files.error) return <OptionalUnavailable error={files.error} title="文件浏览暂不可用" description="当前控制端未开放受限文件列表接口。Agent 仍会强制执行实例根目录边界。" />;
   const newPath = `${path || "left4dead2/cfg"}/new-file.cfg`;
-  return <><Card><div className="card-heading"><div><span className="eyebrow">SANDBOXED FILES</span><h2>文件管理</h2></div><Button variant="secondary" onClick={() => setEditor({ path: newPath, isNew: true })}><Upload size={16} />上传或新建</Button></div><div className="file-browser"><aside><button onClick={() => { setServerShortcut(true); setPath("left4dead2/cfg"); }}><FileCode2 size={15} />server.cfg</button>{allowedRoots.map((root) => <button className={path === root ? "active" : ""} onClick={() => setPath(root)} key={root}><Folder size={15} />{root}</button>)}</aside><div className="file-list"><div className="file-path"><button onClick={() => setPath("")}>实例目录</button>{path.split("/").filter(Boolean).map((part, index, all) => <span key={`${part}-${index}`}><ChevronRight size={13} /><button onClick={() => setPath(all.slice(0, index + 1).join("/"))}>{part}</button></span>)}</div>{files.data.items.length ? files.data.items.map((item) => <button className="file-row" key={item.path} onClick={() => item.type === "directory" ? setPath(item.path) : setEditor({ path: item.path, isNew: false })}><span className={`file-type file-type--${item.type}`}>{item.type === "directory" ? <Folder size={18} /> : <File size={18} />}</span><strong>{item.name}</strong><span>{item.type === "file" ? bytes(item.size) : "文件夹"}</span><time>{dateTime(item.modified_at)}</time><ChevronRight size={15} /></button>) : <EmptyState title="目录为空" description="这个受限目录中还没有文件。" />}</div></div></Card><FileEditorModal instance={instance} editor={editor} onClose={() => { setEditor(null); void files.refetch(); }} /></>;
+  const createButton = canWrite ? <Button variant="secondary" onClick={() => setEditor({ path: newPath, isNew: true })}><Upload size={16} />上传或新建</Button> : undefined;
+  return <><Card><div className="card-heading"><div><span className="eyebrow">SANDBOXED FILES</span><h2>文件管理</h2></div>{createButton}</div>{!canList ? <EmptyState title="文件目录已隐藏" description="当前账号没有浏览目录权限，但仍可向已知安全路径执行单独授予的写入操作。" action={createButton} /> : <div className="file-browser"><aside><button disabled={!canOpenFile && !canWrite} onClick={() => { setServerShortcut(true); setPath("left4dead2/cfg"); }}><FileCode2 size={15} />server.cfg</button>{allowedRoots.map((root) => <button className={path === root ? "active" : ""} onClick={() => setPath(root)} key={root}><Folder size={15} />{root}</button>)}</aside><div className="file-list"><div className="file-path"><button onClick={() => setPath("")}>实例目录</button>{path.split("/").filter(Boolean).map((part, index, all) => <span key={`${part}-${index}`}><ChevronRight size={13} /><button onClick={() => setPath(all.slice(0, index + 1).join("/"))}>{part}</button></span>)}</div>{files.data?.items.length ? files.data.items.map((item) => <button className="file-row" key={item.path} disabled={item.type === "file" && !canOpenFile} onClick={() => item.type === "directory" ? setPath(item.path) : setEditor({ path: item.path, isNew: false })}><span className={`file-type file-type--${item.type}`}>{item.type === "directory" ? <Folder size={18} /> : <File size={18} />}</span><strong>{item.name}</strong><span>{item.type === "file" ? bytes(item.size) : "文件夹"}</span><time>{dateTime(item.modified_at)}</time><ChevronRight size={15} /></button>) : <EmptyState title="目录为空" description="这个受限目录中还没有文件。" />}</div></div>}</Card><FileEditorModal instance={instance} editor={editor} onClose={() => { setEditor(null); if (canList) void files.refetch(); }} /></>;
 }
 
 function FileEditorModal({ instance, editor, onClose }: { instance: InstanceRecord; editor: { path: string; isNew: boolean } | null; onClose: () => void }) {
+  const { user } = useAuth();
   const toast = useToast();
   const client = useQueryClient();
   const [relative, setRelative] = useState("");
   const [content, setContent] = useState("");
   const [binary, setBinary] = useState<string | null>(null);
+  const canRead = hasInstancePermission(user, instance, "files.read");
+  const canWrite = hasInstancePermission(user, instance, "files.write");
+  const canDelete = hasInstancePermission(user, instance, "files.delete");
   const file = useQuery({
     queryKey: ["instances", instance.id, "file-content", editor?.path],
     queryFn: () => api.fileContent(instance.id, editor?.path || ""),
-    enabled: Boolean(editor && !editor.isNew),
+    enabled: canRead && Boolean(editor && !editor.isNew),
     refetchInterval: (query) => query.state.data?.status === "loading" ? 1_000 : false,
   });
   useEffect(() => {
@@ -884,9 +954,9 @@ function FileEditorModal({ instance, editor, onClose }: { instance: InstanceReco
     anchor.href = url; anchor.download = relative.split("/").pop() || "download"; anchor.click();
     URL.revokeObjectURL(url);
   };
-  const loading = Boolean(editor && !editor.isNew && (file.isPending || file.data?.status === "loading"));
-  return <Modal open={Boolean(editor)} onClose={onClose} title={editor?.isNew ? "上传或新建文件" : "编辑受限文件"} description="Agent 会再次校验实例边界、重解析点和 8 MiB 大小限制。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button>{!editor?.isNew && <Button variant="danger" onClick={() => { if (window.confirm(`确认删除 ${relative}？`)) remove.mutate(); }} loading={remove.isPending}><Trash2 size={15} />删除</Button>}<Button onClick={() => save.mutate()} loading={save.isPending} disabled={!relative || loading}><Save size={16} />提交写入</Button></>}>
-    {loading ? <LoadingBlock label="正在从节点安全读取文件…" /> : file.error ? <ErrorState error={file.error} retry={() => void file.refetch()} /> : <div className="form-stack"><Field label="实例内相对路径"><input value={relative} onChange={(event) => setRelative(event.target.value)} disabled={!editor?.isNew} /></Field>{editor?.isNew && <Field label="从本机选择文件" hint="文本文件可继续编辑；二进制文件会以 Base64 安全传输"><input type="file" onChange={(event) => { const selected = event.target.files?.[0]; if (selected) void loadUpload(selected); }} /></Field>}{binary != null ? <div className="binary-file-note"><File size={20} /><div><strong>二进制文件</strong><span>{binary.length ? `Base64 载荷约 ${bytes(Math.floor(binary.length * 0.75))}` : "空文件"}</span></div>{!editor?.isNew && <Button variant="secondary" onClick={download}><Download size={15} />下载</Button>}</div> : <Field label="文件内容" hint="保存使用读取时的 SHA-256 做并发保护，文件被外部修改时会拒绝覆盖。"><textarea className="file-editor" rows={18} value={content} onChange={(event) => setContent(event.target.value)} spellCheck={false} /></Field>}{file.data?.sha256 && <div className="file-digest"><span>SHA-256</span><code>{file.data.sha256}</code></div>}</div>}
+  const loading = Boolean(canRead && editor && !editor.isNew && (file.isPending || file.data?.status === "loading"));
+  return <Modal open={Boolean(editor)} onClose={onClose} title={editor?.isNew ? "上传或新建文件" : canWrite ? "编辑受限文件" : "查看受限文件"} description="Agent 会再次校验实例边界、重解析点和 8 MiB 大小限制。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button>{!editor?.isNew && canDelete && <Button variant="danger" onClick={() => { if (window.confirm(`确认删除 ${relative}？`)) remove.mutate(); }} loading={remove.isPending}><Trash2 size={15} />删除</Button>}{canWrite && <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!relative || loading}><Save size={16} />提交写入</Button>}</>}>
+    {loading ? <LoadingBlock label="正在从节点安全读取文件…" /> : canRead && file.error ? <ErrorState error={file.error} retry={() => void file.refetch()} /> : <div className="form-stack"><Field label="实例内相对路径"><input value={relative} onChange={(event) => setRelative(event.target.value)} disabled={!editor?.isNew} /></Field>{!canRead && !editor?.isNew && <div className="form-note"><ShieldAlert size={17} />当前权限不允许读取文件内容；仍可执行单独授予的写入或删除操作。</div>}{editor?.isNew && canWrite && <Field label="从本机选择文件" hint="文本文件可继续编辑；二进制文件会以 Base64 安全传输"><input type="file" onChange={(event) => { const selected = event.target.files?.[0]; if (selected) void loadUpload(selected); }} /></Field>}{canRead || editor?.isNew ? binary != null ? <div className="binary-file-note"><File size={20} /><div><strong>二进制文件</strong><span>{binary.length ? `Base64 载荷约 ${bytes(Math.floor(binary.length * 0.75))}` : "空文件"}</span></div>{!editor?.isNew && <Button variant="secondary" onClick={download}><Download size={15} />下载</Button>}</div> : <Field label="文件内容" hint="保存使用读取时的 SHA-256 做并发保护，文件被外部修改时会拒绝覆盖。"><textarea className="file-editor" rows={18} value={content} onChange={(event) => setContent(event.target.value)} readOnly={!canWrite} spellCheck={false} /></Field> : null}{file.data?.sha256 && <div className="file-digest"><span>SHA-256</span><code>{file.data.sha256}</code></div>}</div>}
   </Modal>;
 }
 
@@ -903,20 +973,15 @@ function wait(milliseconds: number) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
-async function waitForBackupUploadJob(jobID: string) {
-  for (let attempt = 0; attempt < 600; attempt += 1) {
-    const job = await api.job(jobID);
-    if (["succeeded", "failed", "canceled"].includes(job.status)) return job;
-    await wait(500);
-  }
-  throw new ApiError("等待备份分片传输超时", 408, "backup_upload_timeout");
-}
-
-async function waitForBackupUploadOffset(instanceID: string, uploadID: string, expectedOffset: number) {
+async function waitForBackupUploadOffset(instanceID: string, uploadID: string, jobID: string, expectedOffset: number) {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     const upload = await api.backupUpload(instanceID, uploadID);
     if (upload.received_size >= expectedOffset || upload.status === "ready") return upload;
     if (["failed", "expired"].includes(upload.status)) throw new ApiError("节点未能暂存备份分片", 409, "backup_upload_failed");
+    const chunk = await api.backupUploadChunkStatus(instanceID, uploadID, jobID);
+    if (chunk.status === "failed" || chunk.status === "canceled") {
+      throw new ApiError("节点未能暂存备份分片，可以重试当前分片", 409, "backup_upload_chunk_failed");
+    }
     await wait(250);
   }
   throw new ApiError("备份分片已执行，但中心端偏移量未及时更新", 408, "backup_upload_projection_timeout");
@@ -943,7 +1008,9 @@ async function waitForBackupRestoreProjection(instanceID: string, uploadID: stri
 
 function BackupsTab({ instance }: { instance: InstanceRecord }) {
   const { user } = useAuth();
-  const backups = useQuery({ queryKey: ["instances", instance.id, "backups"], queryFn: () => api.backups(instance.id) });
+  const canRead = canAccessInstance(user, instance, "backups.read");
+  const canDownload = canAccessInstance(user, instance, "backups.download");
+  const backups = useQuery({ queryKey: ["instances", instance.id, "backups"], queryFn: () => api.backups(instance.id), enabled: canRead });
   const toast = useToast();
   const client = useQueryClient();
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -955,12 +1022,14 @@ function BackupsTab({ instance }: { instance: InstanceRecord }) {
   const restoreReason = !canRestorePermission ? "当前账号没有备份恢复权限" : "请先停止实例再恢复";
   const backupButton = <Button onClick={() => action.mutate({ type: "backup" })} loading={action.isPending} disabled={!canCreate} title={!canCreate ? "当前账号没有备份创建权限" : undefined}><Archive size={16} />立即备份</Button>;
   const alternateBackupButton = (label: string) => <Button onClick={() => action.mutate({ type: "backup" })} loading={action.isPending} disabled={!canCreate}><Archive size={16} />{label}</Button>;
-  return <><Card><div className="card-heading"><div><span className="eyebrow">LOCAL SNAPSHOTS</span><h2>实例备份</h2></div><div className="backup-heading-actions"><Button variant="secondary" onClick={() => setUploadOpen(true)} disabled={!canRestore} title={canRestore ? "上传其他节点下载的 ZIP 备份并恢复" : restoreReason}><Upload size={16} />上传并恢复</Button>{backupButton}</div></div>{!canRestore && <div className="form-warning backup-restore-warning"><ShieldAlert size={17} />{!canRestorePermission ? "当前账号没有备份恢复权限。" : "恢复会替换实例数据，必须先停止服务器。"}</div>}{backups.isPending ? <LoadingBlock /> : backups.error ? <OptionalUnavailable error={backups.error} title="备份清单尚不可用" description="当前控制端未开放节点本地备份列表；仍可提交新的备份任务。" action={alternateBackupButton("创建备份")} /> : backups.data.items.length ? <div className="backup-list">{backups.data.items.map((backup) => <div className="backup-row" key={backup.id}><div className="backup-icon"><Archive size={19} /></div><div><strong>{backup.name}</strong><span>{dateTime(backup.created_at)} · {backup.platform || "可移植数据"}</span></div><span>{bytes(backup.size)}</span><code>{backup.checksum ? `${backup.checksum.slice(0, 12)}…` : "校验待完成"}</code><Button variant="secondary" disabled={!canRestore} title={canRestore ? "恢复此备份" : restoreReason} onClick={() => action.mutate({ type: "restore", backup })}><RotateCcw size={15} />恢复</Button><BackupDownloadButton instance={instance} backup={backup} /></div>)}</div> : <EmptyState title="还没有备份" description="备份保存在节点本地，包含配置、封禁、插件与 VPK，不包含游戏本体。" action={alternateBackupButton("创建首个备份")} />}<div className="retention-note"><History size={19} /><span><strong>默认保留策略</strong> 每日 04:00，保留 7 个日备份与 4 个周备份。恢复前会自动创建检查点。</span></div></Card><BackupUploadRestoreModal open={uploadOpen} instance={instance} onClose={() => setUploadOpen(false)} /></>;
+  return <><Card><div className="card-heading"><div><span className="eyebrow">LOCAL SNAPSHOTS</span><h2>实例备份</h2></div><div className="backup-heading-actions"><Button variant="secondary" onClick={() => setUploadOpen(true)} disabled={!canRestore} title={canRestore ? "上传其他节点下载的 ZIP 备份并恢复" : restoreReason}><Upload size={16} />上传并恢复</Button>{backupButton}</div></div>{canRestorePermission && !restoreReady && <div className="form-warning backup-restore-warning"><ShieldAlert size={17} />恢复会替换实例数据，必须先停止服务器。</div>}{!canRead ? <EmptyState title="备份清单已隐藏" description="当前账号没有查看备份清单的权限，但仍可执行上方单独授予的创建或上传恢复操作。" /> : backups.isPending ? <LoadingBlock /> : backups.error ? <OptionalUnavailable error={backups.error} title="备份清单尚不可用" description="当前控制端未开放节点本地备份列表；仍可提交新的备份任务。" action={canCreate ? alternateBackupButton("创建备份") : undefined} /> : backups.data.items.length ? <div className="backup-list">{backups.data.items.map((backup) => <div className="backup-row" key={backup.id}><div className="backup-icon"><Archive size={19} /></div><div><strong>{backup.name}</strong><span>{dateTime(backup.created_at)} · {backup.platform || "可移植数据"}</span></div><span>{bytes(backup.size)}</span><code>{backup.checksum ? `${backup.checksum.slice(0, 12)}…` : "校验待完成"}</code>{canRestorePermission && <Button variant="secondary" disabled={!canRestore} title={canRestore ? "恢复此备份" : restoreReason} onClick={() => action.mutate({ type: "restore", backup })}><RotateCcw size={15} />恢复</Button>}{canDownload && <BackupDownloadButton instance={instance} backup={backup} />}</div>)}</div> : <EmptyState title="还没有备份" description="备份保存在节点本地，包含配置、封禁、插件与 VPK，不包含游戏本体。" action={canCreate ? alternateBackupButton("创建首个备份") : undefined} />}<div className="retention-note"><History size={19} /><span><strong>默认保留策略</strong> 每日 04:00，保留 7 个日备份与 4 个周备份。恢复前会自动创建检查点。</span></div></Card>{canRestorePermission && <BackupUploadRestoreModal open={uploadOpen} instance={instance} onClose={() => setUploadOpen(false)} />}</>;
 }
 
 type BackupPlatform = PersistedBackupPlatform;
 
 function BackupUploadRestoreModal({ open, instance, onClose }: { open: boolean; instance: InstanceRecord; onClose: () => void }) {
+  const { user } = useAuth();
+  const canReadJobs = hasInstancePermission(user, instance, "jobs.read");
   const toast = useToast();
   const client = useQueryClient();
   const navigate = useNavigate();
@@ -1161,24 +1230,22 @@ function BackupUploadRestoreModal({ open, instance, onClose }: { open: boolean; 
         return { job_id: completed.job_id };
       };
 
-      const reconcileRestoreJob = async (jobID: string) => {
-        const job = await api.job(jobID);
-        if (["queued", "dispatched", "running"].includes(job.status)) {
+      const reconcileRestore = async (jobID: string) => {
+        session = applyRecord(await api.backupUpload(instance.id, session.id));
+        if (session.status === "restoring") {
           setProgress({ value: 100, label: "恢复任务仍在执行" });
           return { done: true, result: { job_id: jobID } };
         }
-        const expected = job.status === "succeeded" ? "succeeded" : "failed";
-        session = applyRecord(await waitForBackupRestoreProjection(instance.id, session.id, expected));
-        if (job.status === "succeeded" && session.status === "succeeded") {
+        if (session.status === "succeeded") {
           forget();
           setProgress({ value: 100, label: "恢复已完成" });
           return { done: true, result: { job_id: jobID } };
         }
-        if (job.status === "failed" || job.status === "canceled") {
+        if (session.status === "failed" || session.status === "ready") {
           local = persist({ ...local!, pendingComplete: undefined, restoreJobId: jobID });
           return { done: false as const };
         }
-        throw new ApiError("恢复任务状态与上传会话不一致", 409, "backup_restore_state_mismatch");
+        throw new ApiError("恢复状态与上传会话不一致", 409, "backup_restore_state_mismatch");
       };
 
       if (session.status === "succeeded") {
@@ -1189,7 +1256,7 @@ function BackupUploadRestoreModal({ open, instance, onClose }: { open: boolean; 
       }
       if (session.status === "restoring") {
         if (!session.restore_job_id) throw new ApiError("恢复中的会话缺少任务标识", 409, "backup_restore_job_missing");
-        const reconciled = await reconcileRestoreJob(session.restore_job_id);
+        const reconciled = await reconcileRestore(session.restore_job_id);
         if (reconciled.done) return reconciled.result;
       } else if (session.status === "failed") {
         if (local.pendingComplete && !local.pendingComplete.jobId) {
@@ -1197,10 +1264,10 @@ function BackupUploadRestoreModal({ open, instance, onClose }: { open: boolean; 
           return enqueueRestore();
         }
         if (!session.restore_job_id) throw new ApiError("上传校验失败，请重新创建上传会话", 409, "backup_upload_failed");
-        const reconciled = await reconcileRestoreJob(session.restore_job_id);
+        const reconciled = await reconcileRestore(session.restore_job_id);
         if (reconciled.done) return reconciled.result;
       } else if (session.status === "ready" && local.pendingComplete?.jobId) {
-        const reconciled = await reconcileRestoreJob(local.pendingComplete.jobId);
+        const reconciled = await reconcileRestore(local.pendingComplete.jobId);
         if (reconciled.done) return reconciled.result;
       }
 
@@ -1246,12 +1313,14 @@ function BackupUploadRestoreModal({ open, instance, onClose }: { open: boolean; 
           pending = { ...pending, jobId: jobID };
           local = persist({ ...local, pendingChunk: pending });
         }
-        const chunkJob = await waitForBackupUploadJob(jobID);
-        if (chunkJob.status === "failed" || chunkJob.status === "canceled") {
-          local = persist({ ...local, pendingChunk: undefined });
-          throw new ApiError(chunkJob.message || "备份分片传输失败；下次重试将使用新的幂等键", 409, "backup_upload_job_failed");
+        try {
+          session = await waitForBackupUploadOffset(instance.id, session.id, jobID, expectedOffset);
+        } catch (error) {
+          if (error instanceof ApiError && error.code === "backup_upload_chunk_failed") {
+            local = persist({ ...local!, pendingChunk: undefined });
+          }
+          throw error;
         }
-        session = await waitForBackupUploadOffset(instance.id, session.id, expectedOffset);
         applyRecord(session);
         offset = session.received_size;
         local = persist({ ...local, pendingChunk: undefined });
@@ -1266,7 +1335,7 @@ function BackupUploadRestoreModal({ open, instance, onClose }: { open: boolean; 
       void client.invalidateQueries({ queryKey: ["instances", instance.id, "backups"] });
       file.current = null;
       onClose();
-      navigate("/jobs");
+      if (canReadJobs) navigate("/jobs");
     },
     onError: (error) => toast.push(error.message, "error"),
   });
@@ -1358,25 +1427,41 @@ interface SaveFilePicker {
 }
 
 function SchedulesTab({ instance }: { instance: InstanceRecord }) {
+  const { user } = useAuth();
   const [open, setOpen] = useState(false);
-  const schedules = useQuery({ queryKey: ["instances", instance.id, "schedules"], queryFn: () => api.schedules(instance.id) });
-  return <Card><div className="card-heading"><div><span className="eyebrow">AUTOMATION</span><h2>计划任务</h2></div><Button onClick={() => setOpen(true)}><Plus size={16} />新增计划</Button></div>{schedules.isPending ? <LoadingBlock /> : schedules.error ? <OptionalUnavailable error={schedules.error} title="计划清单尚不可用" description="当前控制端未开放计划任务列表；仍可提交新的 Agent 计划。" action={<Button onClick={() => setOpen(true)}><Plus size={16} />创建计划</Button>} /> : schedules.data.items.length ? <div className="schedule-list">{schedules.data.items.map((schedule) => <ScheduleRow key={schedule.id} instanceId={instance.id} schedule={schedule} />)}</div> : <EmptyState title="还没有自定义计划" description="默认备份策略仍会运行。你可以安排重启、更新、备份或广播。" action={<Button onClick={() => setOpen(true)}><Plus size={16} />新增计划</Button>} />}<ScheduleModal open={open} instance={instance} onClose={() => setOpen(false)} /></Card>;
+  const canRead = hasInstancePermission(user, instance, "schedules.read");
+  const canManage = hasInstancePermission(user, instance, "schedules.manage");
+  const hasSchedulableAction = (["instances.start", "instances.stop", "instances.restart", "backups.create", "players.broadcast"] as const).some((permission) => hasInstancePermission(user, instance, permission));
+  const schedules = useQuery({ queryKey: ["instances", instance.id, "schedules"], queryFn: () => api.schedules(instance.id), enabled: canRead });
+  const createButton = canManage && hasSchedulableAction ? <Button onClick={() => setOpen(true)}><Plus size={16} />新增计划</Button> : undefined;
+  return <Card><div className="card-heading"><div><span className="eyebrow">AUTOMATION</span><h2>计划任务</h2></div>{createButton}</div>{canManage && !hasSchedulableAction && <div className="form-warning"><ShieldAlert size={17} />创建计划还需要所选动作的权限：启动、停止、重启、备份或聊天广播。</div>}{!canRead ? <EmptyState title="计划清单已隐藏" description="当前账号没有查看计划任务清单的权限，但仍可执行单独授予的创建操作。" action={createButton} /> : schedules.isPending ? <LoadingBlock /> : schedules.error ? <OptionalUnavailable error={schedules.error} title="计划清单尚不可用" description="当前控制端未开放计划任务列表；仍可提交新的 Agent 计划。" action={createButton} /> : schedules.data.items.length ? <div className="schedule-list">{schedules.data.items.map((schedule) => <ScheduleRow key={schedule.id} instanceId={instance.id} schedule={schedule} canManage={canManage} />)}</div> : <EmptyState title="还没有自定义计划" description="默认备份策略仍会运行。你可以安排启动、停止、重启、备份或广播。" action={createButton} />}<ScheduleModal open={canManage && open} instance={instance} onClose={() => setOpen(false)} /></Card>;
 }
 
-function ScheduleRow({ instanceId, schedule }: { instanceId: string; schedule: ScheduleRecord }) {
+function ScheduleRow({ instanceId, schedule, canManage }: { instanceId: string; schedule: ScheduleRecord; canManage: boolean }) {
   const client = useQueryClient();
   const toast = useToast();
   const refresh = () => void client.invalidateQueries({ queryKey: ["instances", instanceId, "schedules"] });
   const toggle = useMutation({ mutationFn: () => api.setScheduleEnabled(instanceId, schedule.id, !schedule.enabled), onSuccess: () => { refresh(); toast.push(schedule.enabled ? "计划已停用" : "计划已启用"); }, onError: (error) => toast.push(error.message, "error") });
   const remove = useMutation({ mutationFn: () => api.deleteSchedule(instanceId, schedule.id), onSuccess: () => { refresh(); toast.push("计划已删除"); }, onError: (error) => toast.push(error.message, "error") });
-  return <div className="schedule-row"><div className={`schedule-icon ${schedule.enabled ? "schedule-icon--active" : ""}`}><CalendarClock size={18} /></div><div><strong>{schedule.name}</strong><span>{actionLabel(schedule.action)} · <code>{schedule.cron}</code></span></div><div><small>下次运行</small><strong>{schedule.enabled ? dateTime(schedule.next_run_at) : "暂停"}</strong></div><span className={`status status--${schedule.enabled ? "online" : "offline"}`}>{schedule.enabled ? "已启用" : "已停用"}</span><div className="schedule-actions"><Button variant="ghost" aria-label={schedule.enabled ? `停用 ${schedule.name}` : `启用 ${schedule.name}`} onClick={() => toggle.mutate()} loading={toggle.isPending}><Power size={14} />{schedule.enabled ? "停用" : "启用"}</Button><Button variant="danger" aria-label={`删除 ${schedule.name}`} onClick={() => { if (window.confirm(`确认删除计划“${schedule.name}”？`)) remove.mutate(); }} loading={remove.isPending}><Trash2 size={14} />删除</Button></div></div>;
+  const supported = ["start", "stop", "restart", "backup", "broadcast"].includes(schedule.action);
+  return <div className="schedule-row"><div className={`schedule-icon ${schedule.enabled ? "schedule-icon--active" : ""}`}><CalendarClock size={18} /></div><div><strong>{schedule.name}</strong><span>{actionLabel(schedule.action)} · <code>{schedule.cron}</code>{!supported && " · 已停止支持"}</span></div><div><small>下次运行</small><strong>{supported && schedule.enabled ? dateTime(schedule.next_run_at) : "暂停"}</strong></div><span className={`status status--${supported && schedule.enabled ? "online" : "offline"}`}>{supported && schedule.enabled ? "已启用" : "已停用"}</span>{canManage && <div className="schedule-actions">{supported && <Button variant="ghost" aria-label={schedule.enabled ? `停用 ${schedule.name}` : `启用 ${schedule.name}`} onClick={() => toggle.mutate()} loading={toggle.isPending}><Power size={14} />{schedule.enabled ? "停用" : "启用"}</Button>}<Button variant="danger" aria-label={`删除 ${schedule.name}`} onClick={() => { if (window.confirm(`确认删除计划“${schedule.name}”？`)) remove.mutate(); }} loading={remove.isPending}><Trash2 size={14} />删除</Button></div>}</div>;
 }
 
 function ScheduleModal({ open, instance, onClose }: { open: boolean; instance: InstanceRecord; onClose: () => void }) {
-  const [name, setName] = useState(""); const [cron, setCron] = useState("0 4 * * *"); const [action, setAction] = useState("backup"); const toast = useToast();
+  const { user } = useAuth();
+  const availableActions = ([
+    { value: "start", label: "启动实例", permission: "instances.start" },
+    { value: "stop", label: "停止实例", permission: "instances.stop" },
+    { value: "backup", label: "创建备份", permission: "backups.create" },
+    { value: "restart", label: "重启实例", permission: "instances.restart" },
+    { value: "broadcast", label: "聊天广播", permission: "players.broadcast" },
+  ] as const).filter((item) => hasInstancePermission(user, instance, item.permission));
+  const [name, setName] = useState(""); const [cron, setCron] = useState("0 4 * * *"); const [action, setAction] = useState("backup"); const [message, setMessage] = useState(""); const toast = useToast();
   const client = useQueryClient();
-  const create = useMutation({ mutationFn: () => api.instanceAction(instance.id, "create_schedule", { name, cron, action, enabled: true }), onSuccess: () => { toast.push("计划任务已提交"); void client.invalidateQueries({ queryKey: ["instances", instance.id, "schedules"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
-  return <Modal open={open} onClose={onClose} title="新增计划任务" description="计划按中心端时区执行，长操作仍遵循实例写锁。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={() => create.mutate()} loading={create.isPending} disabled={!name || !cron}>创建计划</Button></>}><div className="form-stack"><Field label="计划名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="每日备份" /></Field><div className="form-grid"><Field label="执行动作"><select value={action} onChange={(event) => setAction(event.target.value)}><option value="backup">创建备份</option><option value="restart">重启实例</option><option value="broadcast">聊天广播</option></select></Field><Field label="Cron 表达式" hint="分 时 日 月 周"><input value={cron} onChange={(event) => setCron(event.target.value)} /></Field></div><div className="form-note"><strong>不会自动广播</strong><span>计划重启到时会直接执行；如需提前通知玩家，请单独创建聊天广播计划。</span></div></div></Modal>;
+  useEffect(() => { if (!availableActions.some((item) => item.value === action)) setAction(availableActions[0]?.value || ""); }, [action, availableActions]);
+  const create = useMutation({ mutationFn: () => api.instanceAction(instance.id, "create_schedule", { name, cron, action, enabled: true, message: action === "broadcast" ? message.trim() : undefined, payload: {} }), onSuccess: () => { toast.push("计划任务已提交"); setMessage(""); void client.invalidateQueries({ queryKey: ["instances", instance.id, "schedules"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
+  const validMessage = action !== "broadcast" || Boolean(message.trim()) && [...message.trim()].length <= 200 && !/[\0\r\n;"\\]/.test(message);
+  return <Modal open={open} onClose={onClose} title="新增计划任务" description="计划按中心端时区执行，长操作仍遵循实例写锁。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={() => create.mutate()} loading={create.isPending} disabled={!name || !cron || !action || !validMessage}>创建计划</Button></>}><div className="form-stack"><Field label="计划名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="每日备份" /></Field><div className="form-grid"><Field label="执行动作"><select value={action} onChange={(event) => setAction(event.target.value)}>{availableActions.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></Field><Field label="Cron 表达式" hint="分 时 日 月 周"><input value={cron} onChange={(event) => setCron(event.target.value)} /></Field></div>{action === "broadcast" && <Field label="广播内容" hint="1–200 个字符，不允许换行、分号、引号或反斜杠"><input value={message} maxLength={200} onChange={(event) => setMessage(event.target.value)} /></Field>}<div className="form-note"><strong>不会自动广播</strong><span>计划重启到时会直接执行；如需提前通知玩家，请单独创建聊天广播计划。</span></div></div></Modal>;
 }
 
 function AuditTab({ instance }: { instance: InstanceRecord }) {

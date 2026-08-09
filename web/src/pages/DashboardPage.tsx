@@ -3,27 +3,37 @@ import { Activity, ArrowRight, Boxes, CircleAlert, Clock3, Cpu, HardDrive, Serve
 import { Link } from "react-router";
 import { Area, AreaChart, ResponsiveContainer, Tooltip } from "recharts";
 import { Card, EmptyState, ErrorState, LoadingBlock, MetricBar, PageHeader, ProgressBar, StatusBadge } from "../components/ui";
+import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
 import { api } from "../lib/api";
+import { hasAnyPermission } from "../lib/account-permissions";
 import { availableInstanceUpdates, fleetNetworkTotals } from "../lib/dashboard";
 import { bytes, dateTime, jobLabels, percent } from "../lib/format";
 
 export function DashboardPage() {
+  const { user } = useAuth();
   const realtime = useRealtime();
   const polling = realtime.state === "live" ? false : 15_000;
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.nodes, refetchInterval: polling });
-  const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, refetchInterval: polling });
-  const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, refetchInterval: polling });
+  const canReadNodes = hasAnyPermission(user, "nodes.read");
+  const canReadInstances = hasAnyPermission(user, "instances.read");
+  const canReadJobs = hasAnyPermission(user, "jobs.read");
+  const canReadMetrics = hasAnyPermission(user, "metrics.read");
+  const canReadNotifications = hasAnyPermission(user, "notifications.read");
+  const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.nodes, enabled: canReadNodes, refetchInterval: polling });
+  const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: canReadInstances, refetchInterval: polling });
+  const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, enabled: canReadJobs, refetchInterval: polling });
   const metricInstanceID = instances.data?.items.find((item) => item.status === "running")?.id || instances.data?.items[0]?.id;
   const history = useQuery({
     queryKey: ["metrics", "dashboard", metricInstanceID],
     queryFn: () => api.metrics({ instanceId: metricInstanceID, resolution: "1m", from: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() }),
-    enabled: Boolean(metricInstanceID),
+    enabled: canReadMetrics && Boolean(metricInstanceID),
     refetchInterval: 60_000,
   });
 
-  if (nodes.isPending || instances.isPending || jobs.isPending) return <><PageHeader eyebrow="COMMAND OVERVIEW" title="作战总览" /><LoadingBlock label="正在汇总节点状态…" /></>;
-  if (nodes.error || instances.error || jobs.error) return <><PageHeader eyebrow="COMMAND OVERVIEW" title="作战总览" /><ErrorState error={nodes.error || instances.error || jobs.error} retry={() => { void nodes.refetch(); void instances.refetch(); void jobs.refetch(); }} /></>;
+  const pending = canReadNodes && nodes.isPending || canReadInstances && instances.isPending || canReadJobs && jobs.isPending;
+  const queryError = canReadNodes && nodes.error || canReadInstances && instances.error || canReadJobs && jobs.error;
+  if (pending) return <><PageHeader eyebrow="COMMAND OVERVIEW" title="作战总览" /><LoadingBlock label="正在汇总可查看资源…" /></>;
+  if (queryError) return <><PageHeader eyebrow="COMMAND OVERVIEW" title="作战总览" /><ErrorState error={queryError} retry={() => { if (canReadNodes) void nodes.refetch(); if (canReadInstances) void instances.refetch(); if (canReadJobs) void jobs.refetch(); }} /></>;
 
   const nodeList = nodes.data?.items || [];
   const instanceList = instances.data?.items || [];
@@ -41,7 +51,7 @@ export function DashboardPage() {
   const diskUsed = nodeList.reduce((sum, node) => sum + node.disk_used, 0);
   const diskTotal = nodeList.reduce((sum, node) => sum + node.disk_total, 0);
   const network = fleetNetworkTotals(nodeList);
-  const attentionHref = availableUpdates > 0 && offlineNodes === 0 && failedJobs === 0 ? "/notifications" : "/jobs";
+  const attentionHref = failedJobs > 0 && canReadJobs ? "/jobs" : offlineNodes > 0 && canReadNodes ? "/nodes" : canReadNotifications ? "/notifications" : canReadInstances ? "/instances" : undefined;
   const chartData: Array<{ label: string; players: number }> = history.data?.items.length
     ? history.data.items.map((point) => ({ label: new Date(point.collected_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }), players: point.players }))
     : instanceList.slice(0, 12).map((instance, index) => ({ label: String(index + 1), players: instance.players }));
@@ -49,24 +59,27 @@ export function DashboardPage() {
 
   return (
     <div className="dashboard-page">
-      <PageHeader eyebrow="COMMAND OVERVIEW" title="作战总览" description="监控全部节点与战役实例的实时状态。" actions={<div className="header-clock"><Clock3 size={16} />{new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "short" }).format(new Date())}</div>} />
+      <PageHeader eyebrow="COMMAND OVERVIEW" title="作战总览" description="仅汇总当前账号有权查看的节点、实例和任务。" actions={<div className="header-clock"><Clock3 size={16} />{new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "short" }).format(new Date())}</div>} />
 
       {(failedJobs > 0 || offlineNodes > 0 || availableUpdates > 0) && (
         <div className="alert-banner">
           <CircleAlert size={21} />
           <div><strong>有项目需要处理</strong><span>{offlineNodes} 个节点离线，{failedJobs} 个任务执行失败，{availableUpdates} 个实例可更新。</span></div>
-          <Link to={attentionHref}>查看详情 <ArrowRight size={15} /></Link>
+          {attentionHref && <Link to={attentionHref}>查看详情 <ArrowRight size={15} /></Link>}
         </div>
       )}
 
       <section className="stat-grid" aria-label="关键状态">
-        <Card className="stat-card stat-card--green"><div className="stat-card__icon"><Server /></div><div><span>在线节点</span><strong>{onlineNodes}<small> / {nodeList.length}</small></strong><em>{nodeList.length ? Math.round((onlineNodes / nodeList.length) * 100) : 0}% 可用</em></div></Card>
-        <Card className="stat-card stat-card--amber"><div className="stat-card__icon"><Boxes /></div><div><span>运行实例</span><strong>{running}<small> / {instanceList.length}</small></strong><em>{activeJobs.length} 个任务进行中</em></div></Card>
-        <Card className="stat-card stat-card--blue"><div className="stat-card__icon"><Users /></div><div><span>在线玩家</span><strong>{players}</strong><em>{instanceList.reduce((sum, item) => sum + item.max_players, 0)} 个总席位</em></div></Card>
-        <Card className="stat-card stat-card--slate"><div className="stat-card__icon"><Cpu /></div><div><span>平均 CPU</span><strong>{cpu}<small>%</small></strong><em>{nodeList.length} 个节点采样</em></div></Card>
+        {canReadNodes && <Card className="stat-card stat-card--green"><div className="stat-card__icon"><Server /></div><div><span>在线节点</span><strong>{onlineNodes}<small> / {nodeList.length}</small></strong><em>{nodeList.length ? Math.round((onlineNodes / nodeList.length) * 100) : 0}% 可用</em></div></Card>}
+        {canReadInstances && <Card className="stat-card stat-card--amber"><div className="stat-card__icon"><Boxes /></div><div><span>运行实例</span><strong>{running}<small> / {instanceList.length}</small></strong><em>{canReadJobs ? `${activeJobs.length} 个任务进行中` : "仅显示可见实例"}</em></div></Card>}
+        {canReadInstances && <Card className="stat-card stat-card--blue"><div className="stat-card__icon"><Users /></div><div><span>在线玩家</span><strong>{players}</strong><em>{instanceList.reduce((sum, item) => sum + item.max_players, 0)} 个总席位</em></div></Card>}
+        {canReadNodes && <Card className="stat-card stat-card--slate"><div className="stat-card__icon"><Cpu /></div><div><span>平均 CPU</span><strong>{cpu}<small>%</small></strong><em>{nodeList.length} 个节点采样</em></div></Card>}
       </section>
 
-      <section className="dashboard-grid">
+      {!canReadNodes && !canReadInstances && !canReadJobs && <Card><EmptyState title="暂无可汇总资源" description="当前账号没有节点、实例或任务的查看权限；可从左侧进入其他已授权功能。" /></Card>}
+
+      {(canReadInstances || canReadNodes || canReadMetrics) && <section className="dashboard-grid">
+        {canReadInstances && (
         <Card className="operations-card">
           <div className="card-heading"><div><span className="eyebrow">LIVE INSTANCES</span><h2>活跃实例</h2></div><Link to="/instances">查看全部 <ArrowRight size={15} /></Link></div>
           {instanceList.length === 0 ? <EmptyState title="还没有游戏实例" description="接入节点后创建你的第一个 L4D2 专用服务器。" action={<Link className="button button--primary" to="/instances">创建实例</Link>} /> : (
@@ -84,7 +97,9 @@ export function DashboardPage() {
             </div>
           )}
         </Card>
+        )}
 
+        {(canReadNodes || canReadMetrics) && (
         <Card className="capacity-card">
           <div className="card-heading"><div><span className="eyebrow">FLEET CAPACITY</span><h2>集群容量</h2></div><HardDrive size={20} /></div>
           <div className="capacity-chart">
@@ -99,18 +114,23 @@ export function DashboardPage() {
             <div className="network-totals" aria-label="节点网络累计流量"><span>网络接收<strong>{bytes(network.rx)}</strong></span><span>网络发送<strong>{bytes(network.tx)}</strong></span></div>
           </div>
         </Card>
-      </section>
+        )}
+      </section>}
 
-      <section className="dashboard-grid dashboard-grid--lower">
+      {(canReadNodes || canReadJobs) && <section className="dashboard-grid dashboard-grid--lower">
+        {canReadNodes && (
         <Card>
           <div className="card-heading"><div><span className="eyebrow">NODE HEALTH</span><h2>节点健康</h2></div><Link to="/nodes">管理节点 <ArrowRight size={15} /></Link></div>
           {nodeList.length === 0 ? <EmptyState title="等待节点接入" description="生成注册令牌，并在 Windows 或 Linux 主机上运行 Agent。" /> : <div className="node-mini-grid">{nodeList.slice(0, 4).map((node) => <div className="node-mini" key={node.id}><div><strong>{node.name}</strong><StatusBadge status={node.status} /></div><small>{node.os} · {node.arch}</small><div className="node-mini__metrics"><span>CPU {Math.round(node.cpu_percent)}%</span><ProgressBar value={node.cpu_percent} /><span>MEM {percent(node.memory_used, node.memory_total)}%</span><ProgressBar value={percent(node.memory_used, node.memory_total)} /></div></div>)}</div>}
         </Card>
+        )}
+        {canReadJobs && (
         <Card>
           <div className="card-heading"><div><span className="eyebrow">RECENT JOBS</span><h2>最近任务</h2></div><Link to="/jobs">任务中心 <ArrowRight size={15} /></Link></div>
           {jobList.length === 0 ? <EmptyState title="暂无任务" description="创建实例或执行维护操作后，进度会显示在这里。" /> : <div className="job-mini-list">{jobList.slice(0, 5).map((job) => <div className="job-mini" key={job.id}><div className={`job-icon job-icon--${job.status}`}><ClipboardIcon /></div><div><strong>{jobLabels[job.type] || job.type}</strong><small>{job.message || dateTime(job.created_at)}</small></div><div><StatusBadge status={job.status} />{["queued", "dispatched", "running"].includes(job.status) && <ProgressBar value={job.progress} />}</div></div>)}</div>}
         </Card>
-      </section>
+        )}
+      </section>}
     </div>
   );
 }

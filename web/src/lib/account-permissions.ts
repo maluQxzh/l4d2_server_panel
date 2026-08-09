@@ -1,4 +1,4 @@
-import type { InstanceRecord, Permission, Role, RoleBinding, User } from "./types";
+import type { InstanceRecord, Job, Permission, Role, RoleBinding, User } from "./types";
 
 type PermissionClass = "read" | "operate" | "manage" | "root";
 type PermissionScope = "global" | "node" | "instance" | "resource";
@@ -31,8 +31,6 @@ export const permissionCatalog: PermissionDefinition[] = [
   { id: "instances.start", label: "启动实例", group: "实例生命周期", class: "operate", scope: "instance" },
   { id: "instances.stop", label: "停止实例", group: "实例生命周期", class: "operate", scope: "instance" },
   { id: "instances.restart", label: "重启实例", group: "实例生命周期", class: "operate", scope: "instance" },
-  { id: "instances.update", label: "更新实例", group: "实例生命周期", class: "operate", scope: "instance" },
-  { id: "instances.validate", label: "校验实例", group: "实例生命周期", class: "operate", scope: "instance" },
 
   { id: "players.read", label: "查看玩家与封禁", group: "玩家与控制台", class: "read", scope: "instance" },
   { id: "players.kick", label: "踢出玩家", group: "玩家与控制台", class: "operate", scope: "instance" },
@@ -46,7 +44,6 @@ export const permissionCatalog: PermissionDefinition[] = [
   { id: "files.read", label: "读取文件内容", group: "文件", class: "operate", scope: "instance" },
   { id: "files.write", label: "写入文件", group: "文件", class: "operate", scope: "instance" },
   { id: "files.delete", label: "删除文件", group: "文件", class: "operate", scope: "instance" },
-  { id: "files.upload", label: "导入文件", group: "文件", class: "manage", scope: "instance" },
 
   { id: "packages.read", label: "查看插件与模组", group: "插件与模组", class: "read", scope: "instance" },
   { id: "packages.install", label: "安装插件与模组", group: "插件与模组", class: "manage", scope: "instance" },
@@ -95,33 +92,42 @@ export function permissionAllowedAtScope(permission: Permission, scope: RoleBind
   return definition.scope === "instance" || definition.scope === "resource";
 }
 
+export function normalizePermissionsAtScope(permissions: Permission[], scope: RoleBinding["scope_type"]): Permission[] {
+  const normalized = new Set(permissions.filter((permission) => permissionAllowedAtScope(permission, scope)));
+  const selectedDefinitions = permissionCatalog.filter((definition) => normalized.has(definition.id));
+  const hasNonRead = selectedDefinitions.some((definition) => definition?.class !== "read");
+  if ((scope === "node" && hasNonRead || selectedDefinitions.some((definition) => definition?.class !== "read" && definition.scope === "node")) && permissionAllowedAtScope("nodes.read", scope)) normalized.add("nodes.read");
+  if ((scope === "instance" && hasNonRead || selectedDefinitions.some((definition) => definition?.class !== "read" && definition.scope === "instance")) && permissionAllowedAtScope("instances.read", scope)) normalized.add("instances.read");
+  return [...normalized].sort();
+}
+
 function roleAllows(role: Role, permission: Permission) {
   const definition = definitions.get(permission);
   return Boolean(definition && classRank[definition.class] <= roleRank[role]);
 }
 
 function bindingAllows(binding: RoleBinding, permission: Permission) {
-  return binding.permissions?.length ? binding.permissions.includes(permission) : roleAllows(binding.role, permission);
+  return binding.permissions === undefined ? roleAllows(binding.role, permission) : binding.permissions.includes(permission);
 }
 
 export function hasGlobalPermission(user: PermissionUser | null | undefined, permission: Permission) {
   if (!user) return false;
-  const bindings = user.role_bindings || [];
-  if (!bindings.length) return roleAllows(user.role, permission);
+  const bindings = user.role_bindings;
+  if (bindings === undefined) return roleAllows(user.role, permission);
   return bindings.some((binding) => binding.scope_type === "global" && bindingAllows(binding, permission));
 }
 
 export function hasNodePermission(user: PermissionUser | null | undefined, nodeID: string, permission: Permission) {
   if (!user) return false;
-  const bindings = user.role_bindings || [];
-  if (!bindings.length) return roleAllows(user.role, permission);
+  const bindings = user.role_bindings;
+  if (bindings === undefined) return roleAllows(user.role, permission);
   return bindings.some((binding) => (binding.scope_type === "global" || (binding.scope_type === "node" && binding.node_id === nodeID)) && bindingAllows(binding, permission));
 }
 
 export function hasInstancePermission(user: PermissionUser | null | undefined, instance: Pick<InstanceRecord, "id" | "node_id">, permission: Permission) {
   if (!user) return false;
-  const bindings = user.role_bindings || [];
-  if (!bindings.length) return roleAllows(user.role, permission);
+  const bindings = user.role_bindings;
+  if (bindings === undefined) return roleAllows(user.role, permission);
   return bindings.some((binding) => {
     const matches = binding.scope_type === "global"
       || (binding.scope_type === "node" && binding.node_id === instance.node_id)
@@ -136,19 +142,54 @@ export function hasRootSecurityPermission(user: PermissionUser | null | undefine
 
 export function hasAnyPermission(user: PermissionUser | null | undefined, permission: Permission) {
   if (!user) return false;
-  const bindings = user.role_bindings || [];
-  if (!bindings.length) return roleAllows(user.role, permission);
+  const bindings = user.role_bindings;
+  if (bindings === undefined) return roleAllows(user.role, permission);
   return bindings.some((binding) => bindingAllows(binding, permission));
 }
 
+export function hasAnyOfPermissions(user: PermissionUser | null | undefined, permissions: readonly Permission[]) {
+  return permissions.some((permission) => hasAnyPermission(user, permission));
+}
+
+export function hasJobPermission(user: PermissionUser | null | undefined, job: Pick<Job, "node_id" | "instance_id">, permission: Permission) {
+  if (job.instance_id) return hasInstancePermission(user, { id: job.instance_id, node_id: job.node_id }, permission);
+  if (job.node_id) return hasNodePermission(user, job.node_id, permission);
+  return hasGlobalPermission(user, permission);
+}
+
 export function tokenScopesForUser(user: PermissionUser | null | undefined): Array<"read" | "operate" | "manage"> {
-  if (!user) return ["read"];
-  const bindings = user.role_bindings || [];
-  const classes = bindings.length
-    ? bindings.flatMap((binding) => binding.permissions?.length
-      ? binding.permissions.map((permission) => definitions.get(permission)?.class).filter(Boolean)
-      : rolePresetPermissions(binding.role).map((permission) => definitions.get(permission)?.class).filter(Boolean))
-    : rolePresetPermissions(user.role).map((permission) => definitions.get(permission)?.class).filter(Boolean);
-  const highest = classes.reduce((rank, value) => Math.max(rank, value ? classRank[value] : 0), 1);
-  return highest >= 3 ? ["read", "operate", "manage"] : highest >= 2 ? ["read", "operate"] : ["read"];
+  if (!user) return [];
+  const bindings = user.role_bindings;
+  return tokenScopesForBindings(bindings === undefined ? [{ role: user.role, scope_type: "global" }] : bindings);
+}
+
+export function tokenScopesForGlobal(user: PermissionUser | null | undefined): Array<"read" | "operate" | "manage"> {
+  if (!user) return [];
+  const bindings = user.role_bindings;
+  if (bindings === undefined) return tokenScopesForBindings([{ role: user.role, scope_type: "global" }]);
+  return tokenScopesForBindings(bindings.filter((binding) => binding.scope_type === "global"));
+}
+
+export function tokenScopesForNode(user: PermissionUser | null | undefined, nodeID: string): Array<"read" | "operate" | "manage"> {
+  if (!user) return [];
+  const bindings = user.role_bindings;
+  if (bindings === undefined) return tokenScopesForBindings([{ role: user.role, scope_type: "global" }]);
+  return tokenScopesForBindings(bindings.filter((binding) => binding.scope_type === "global" || binding.scope_type === "node" && binding.node_id === nodeID));
+}
+
+export function tokenScopesForInstance(user: PermissionUser | null | undefined, instance: Pick<InstanceRecord, "id" | "node_id">): Array<"read" | "operate" | "manage"> {
+  if (!user) return [];
+  const bindings = user.role_bindings;
+  if (bindings === undefined) return tokenScopesForBindings([{ role: user.role, scope_type: "global" }]);
+  return tokenScopesForBindings(bindings.filter((binding) => binding.scope_type === "global"
+    || binding.scope_type === "node" && binding.node_id === instance.node_id
+    || binding.scope_type === "instance" && binding.instance_id === instance.id));
+}
+
+function tokenScopesForBindings(bindings: Array<Pick<RoleBinding, "role" | "permissions" | "scope_type" | "node_id" | "instance_id">>): Array<"read" | "operate" | "manage"> {
+  const classes = bindings.flatMap((binding) => binding.permissions === undefined
+    ? rolePresetPermissions(binding.role).map((permission) => definitions.get(permission)?.class).filter(Boolean)
+    : binding.permissions.map((permission) => definitions.get(permission)?.class).filter(Boolean));
+  const highest = classes.reduce((rank, value) => Math.max(rank, value ? classRank[value] : 0), 0);
+  return highest >= 3 ? ["read", "operate", "manage"] : highest >= 2 ? ["read", "operate"] : highest >= 1 ? ["read"] : [];
 }

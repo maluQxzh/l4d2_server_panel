@@ -28,12 +28,8 @@ describe("实例生命周期权限与状态", () => {
     expect(canAccessNode({ ...scopedOperator, role_bindings: [{ role: "admin", scope_type: "node", node_id: "node-a" }] }, "node-a", "nodes.update")).toBe(true);
   });
 
-  it("稳定状态允许维护，过渡状态全部阻止写操作", () => {
+  it("生命周期操作遵循权限和实例状态", () => {
     const operate = () => true;
-    expect(lifecycleActionAllowed("update", "running", operate)).toBe(true);
-    expect(lifecycleActionAllowed("reinstall", "stopped", () => false)).toBe(false);
-    expect(lifecycleActionAllowed("reinstall", "stopped", operate)).toBe(true);
-    expect(lifecycleActionAllowed("update", "updating", operate)).toBe(false);
     expect(lifecycleActionAllowed("start", "running", operate)).toBe(false);
     expect(lifecycleActionAllowed("restart", "stopped", operate)).toBe(false);
     expect(lifecycleActionAllowed("restart", "running", operate)).toBe(true);

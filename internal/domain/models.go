@@ -62,14 +62,14 @@ type User struct {
 	Disabled       bool          `json:"disabled"`
 	BootstrapOwner bool          `json:"bootstrap_owner,omitempty"`
 	AccountState   AccountState  `json:"account_state"`
-	RoleBindings   []RoleBinding `json:"role_bindings,omitempty"`
+	RoleBindings   []RoleBinding `json:"role_bindings"`
 }
 
 type RoleBinding struct {
 	ID          string    `json:"id"`
 	UserID      string    `json:"user_id"`
 	Role        Role      `json:"role"`
-	Permissions []string  `json:"permissions,omitempty"`
+	Permissions []string  `json:"permissions"`
 	ScopeType   string    `json:"scope_type"`
 	NodeID      string    `json:"node_id,omitempty"`
 	InstanceID  string    `json:"instance_id,omitempty"`

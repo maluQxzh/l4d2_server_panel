@@ -1,7 +1,9 @@
 package control
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -24,11 +26,33 @@ func (s *Server) updateTeamUserAndInvalidate(ctx context.Context, actorID, userI
 }
 
 type roleBindingRequest struct {
-	Role        domain.Role `json:"role"`
-	Permissions []string    `json:"permissions,omitempty"`
-	ScopeType   string      `json:"scope_type"`
-	NodeID      string      `json:"node_id,omitempty"`
-	InstanceID  string      `json:"instance_id,omitempty"`
+	Role        domain.Role     `json:"role"`
+	Permissions json.RawMessage `json:"permissions,omitempty"`
+	ScopeType   string          `json:"scope_type"`
+	NodeID      string          `json:"node_id,omitempty"`
+	InstanceID  string          `json:"instance_id,omitempty"`
+}
+
+func parseRoleBindingRequests(raw json.RawMessage) ([]roleBindingRequest, bool, error) {
+	if raw == nil {
+		return nil, false, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, true, errors.New("role_bindings must contain between 1 and 500 bindings")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var requests []roleBindingRequest
+	if err := decoder.Decode(&requests); err != nil {
+		return nil, true, errors.New("role_bindings must be an array of bindings")
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		return nil, true, errors.New("role_bindings must be an array of bindings")
+	}
+	if len(requests) == 0 {
+		return nil, true, errors.New("role_bindings must contain between 1 and 500 bindings")
+	}
+	return requests, true, nil
 }
 
 // requireAccountSecurity is a defence-in-depth check for handlers that expose
@@ -53,7 +77,18 @@ func bindingsFromRequest(role domain.Role, requests []roleBindingRequest) ([]dom
 	}
 	bindings := make([]domain.RoleBinding, 0, len(requests))
 	for _, request := range requests {
-		bindings = append(bindings, domain.RoleBinding{Role: request.Role, Permissions: request.Permissions, ScopeType: request.ScopeType,
+		var permissions []string
+		if request.Permissions != nil {
+			if strings.TrimSpace(string(request.Permissions)) == "null" {
+				permissions = make([]string, 0)
+			} else if err := json.Unmarshal(request.Permissions, &permissions); err != nil {
+				return nil, errors.New("permissions must be an array of permission names")
+			}
+			if permissions == nil {
+				permissions = make([]string, 0)
+			}
+		}
+		bindings = append(bindings, domain.RoleBinding{Role: request.Role, Permissions: permissions, ScopeType: request.ScopeType,
 			NodeID: request.NodeID, InstanceID: request.InstanceID})
 	}
 	return normalizeRoleBindings(bindings)
@@ -92,15 +127,20 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Username     string               `json:"username"`
-		DisplayName  string               `json:"display_name,omitempty"`
-		Role         domain.Role          `json:"role,omitempty"`
-		RoleBindings []roleBindingRequest `json:"role_bindings,omitempty"`
+		Username     string          `json:"username"`
+		DisplayName  string          `json:"display_name,omitempty"`
+		Role         domain.Role     `json:"role,omitempty"`
+		RoleBindings json.RawMessage `json:"role_bindings,omitempty"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	bindings, err := bindingsFromRequest(request.Role, request.RoleBindings)
+	roleBindings, _, err := parseRoleBindingRequests(request.RoleBindings)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_role_bindings", err.Error())
+		return
+	}
+	bindings, err := bindingsFromRequest(request.Role, roleBindings)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_role_bindings", err.Error())
 		return
@@ -173,21 +213,27 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		DisplayName  *string               `json:"display_name,omitempty"`
-		Password     *string               `json:"password,omitempty"`
-		Disabled     *bool                 `json:"disabled,omitempty"`
-		Role         *domain.Role          `json:"role,omitempty"`
-		RoleBindings *[]roleBindingRequest `json:"role_bindings,omitempty"`
+		DisplayName  *string         `json:"display_name,omitempty"`
+		Password     *string         `json:"password,omitempty"`
+		Disabled     *bool           `json:"disabled,omitempty"`
+		Role         *domain.Role    `json:"role,omitempty"`
+		RoleBindings json.RawMessage `json:"role_bindings,omitempty"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	if request.DisplayName == nil && request.Password == nil && request.Disabled == nil && request.Role == nil && request.RoleBindings == nil {
+	roleBindingsProvided := request.RoleBindings != nil
+	if request.DisplayName == nil && request.Password == nil && request.Disabled == nil && request.Role == nil && !roleBindingsProvided {
 		writeError(w, http.StatusBadRequest, "invalid_user_update", "at least one field must be provided")
 		return
 	}
-	if request.Role != nil && request.RoleBindings != nil {
+	if request.Role != nil && roleBindingsProvided {
 		writeError(w, http.StatusBadRequest, "invalid_role_bindings", "provide role or role_bindings, not both")
+		return
+	}
+	roleBindings, _, err := parseRoleBindingRequests(request.RoleBindings)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_role_bindings", err.Error())
 		return
 	}
 	userID := chi.URLParam(r, "userID")
@@ -217,13 +263,13 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		input.PasswordHash = &hash
 	}
-	if request.Role != nil || request.RoleBindings != nil {
+	if request.Role != nil || roleBindingsProvided {
 		var raw []roleBindingRequest
 		role := domain.Role("")
 		if request.Role != nil {
 			role = *request.Role
 		} else {
-			raw = *request.RoleBindings
+			raw = roleBindings
 		}
 		bindings, bindingErr := bindingsFromRequest(role, raw)
 		if bindingErr != nil {

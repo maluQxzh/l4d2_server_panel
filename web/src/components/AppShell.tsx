@@ -17,15 +17,17 @@ import { useState, type ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router";
 import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
+import { hasAnyOfPermissions } from "../lib/account-permissions";
+import type { Permission } from "../lib/types";
 
-const navigation = [
+const navigation: Array<{ to: string; label: string; icon: typeof CircleGauge; end?: boolean; permissions?: Permission[] }> = [
   { to: "/", label: "作战总览", icon: CircleGauge, end: true },
-  { to: "/nodes", label: "节点", icon: Server },
-  { to: "/environments", label: "运行环境", icon: Wrench },
-  { to: "/instances", label: "游戏实例", icon: Boxes },
-  { to: "/maps", label: "地图管理", icon: MapPinned },
-  { to: "/jobs", label: "任务中心", icon: ClipboardList },
-  { to: "/notifications", label: "通知", icon: Bell },
+  { to: "/nodes", label: "节点", icon: Server, permissions: ["nodes.read", "nodes.enroll"] },
+  { to: "/environments", label: "运行环境", icon: Wrench, permissions: ["environments.read", "environments.manage"] },
+  { to: "/instances", label: "游戏实例", icon: Boxes, permissions: ["instances.read", "instances.create"] },
+  { to: "/maps", label: "地图管理", icon: MapPinned, permissions: ["maps.read", "maps.import"] },
+  { to: "/jobs", label: "任务中心", icon: ClipboardList, permissions: ["jobs.read"] },
+  { to: "/notifications", label: "通知", icon: Bell, permissions: ["notifications.read"] },
   { to: "/settings", label: "设置", icon: Settings },
 ];
 
@@ -35,6 +37,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const auth = useAuth();
   const realtime = useRealtime();
   const navigate = useNavigate();
+  const visibleNavigation = navigation.filter((item) => !item.permissions || hasAnyOfPermissions(auth.user, item.permissions));
+  const canReadNotifications = hasAnyOfPermissions(auth.user, ["notifications.read"]);
 
   const signOut = async () => {
     await auth.logout();
@@ -53,7 +57,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
         <nav className="sidebar__nav" aria-label="主导航">
           <span className="sidebar__label">管理</span>
-          {navigation.map(({ to, label, icon: Icon, end }) => (
+          {visibleNavigation.map(({ to, label, icon: Icon, end }) => (
             <NavLink key={to} to={to} end={end} onClick={() => setSidebarOpen(false)}>
               <Icon size={19} aria-hidden /><span>{label}</span>
             </NavLink>
@@ -75,7 +79,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             {realtime.state === "live" ? "实时同步" : realtime.state === "connecting" ? "正在连接" : "轮询模式"}
           </div>
           <div className="topbar__spacer" />
-          <NavLink className="icon-button notification-button" to="/notifications" aria-label="查看通知"><Bell size={19} /></NavLink>
+          {canReadNotifications && <NavLink className="icon-button notification-button" to="/notifications" aria-label="查看通知"><Bell size={19} /></NavLink>}
           <div className="account-menu">
             <button className="account-menu__trigger" onClick={() => setAccountOpen((open) => !open)} aria-expanded={accountOpen}>
               <span className="avatar">{(auth.user?.display_name || auth.user?.username || "管").slice(0, 1).toUpperCase()}</span>

@@ -117,7 +117,7 @@ test("删除游戏安装时选择仅删记录或永久删除全部文件", async
   await page.goto("/environments");
   await expect(page.getByRole("button", { name: "校验并修复", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "更新", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "重装", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "重装", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "删除", exact: true }).click();
   const deletionDialog = page.getByRole("dialog", { name: "删除游戏安装" });
   await expect(deletionDialog.getByText("仅删除记录", { exact: true })).toBeVisible();
@@ -838,9 +838,10 @@ test("停止实例可串行分块上传跨节点备份并排队恢复", async ({
   let receivedSize = 0;
   let uploadStatus = "uploading";
   const chunkOffsets: number[] = [];
-  const chunkJobs = new Map<string, { offset: number; length: number }>();
+  let pendingChunk: { offset: number; length: number; jobID: string; statusPolled: boolean } | undefined;
   const idempotencyKeys: string[] = [];
   let restoreQueued = false;
+  let genericJobDetailReads = 0;
   const uploadRecord = () => ({
     id: "upload-cross-node", instance_id: instance.id, name: "cross-node.zip", platform: "windows/amd64",
     size: archive.length, sha256: String(uploadBody?.sha256 || ""), received_size: receivedSize, status: uploadStatus,
@@ -857,9 +858,15 @@ test("停止实例可串行分块上传跨节点备份并排队恢复", async ({
       expect(length).toBeLessThanOrEqual(1 << 20);
       chunkOffsets.push(body.offset);
       const jobID = `job-upload-chunk-${chunkOffsets.length}`;
-      chunkJobs.set(jobID, { offset: body.offset, length });
+      pendingChunk = { offset: body.offset, length, jobID, statusPolled: false };
       idempotencyKeys.push(route.request().headers()["idempotency-key"] || "");
       return json(route, { job_id: jobID, status: "queued", idempotent_replay: false }, 202);
+    }
+    if (path.includes("/chunks/") && method === "GET") {
+      expect(pendingChunk).toBeDefined();
+      expect(path.endsWith(`/${pendingChunk?.jobID}`)).toBeTruthy();
+      pendingChunk!.statusPolled = true;
+      return json(route, { job_id: pendingChunk!.jobID, status: "succeeded" });
     }
     if (path.endsWith("/complete") && method === "POST") {
       expect(uploadStatus).toBe("ready");
@@ -868,7 +875,14 @@ test("停止实例可串行分块上传跨节点备份并排队恢复", async ({
       idempotencyKeys.push(route.request().headers()["idempotency-key"] || "");
       return json(route, { job_id: "job-cross-node-restore", status: "queued", idempotent_replay: false }, 202);
     }
-    if (method === "GET") return json(route, { upload: uploadRecord() });
+    if (method === "GET") {
+      if (pendingChunk?.statusPolled && receivedSize === pendingChunk.offset) {
+        receivedSize += pendingChunk.length;
+        pendingChunk = undefined;
+        if (receivedSize === archive.length) uploadStatus = "ready";
+      }
+      return json(route, { upload: uploadRecord() });
+    }
     uploadBody = route.request().postDataJSON() as Record<string, unknown>;
     idempotencyKeys.push(route.request().headers()["idempotency-key"] || "");
     return json(route, { upload: uploadRecord(), idempotent_replay: false }, 201);
@@ -876,16 +890,8 @@ test("停止实例可串行分块上传跨节点备份并排队恢复", async ({
   await page.route("**/api/v1/jobs**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v1/jobs") return json(route, { items: [] });
-    const jobID = path.split("/").at(-1) || "";
-    const chunk = chunkJobs.get(jobID);
-    if (chunk && receivedSize === chunk.offset) {
-      receivedSize += chunk.length;
-      if (receivedSize === archive.length) uploadStatus = "ready";
-    }
-    return json(route, { job: {
-      id: jobID, node_id: node.id, instance_id: instance.id, type: "backup.upload.chunk", status: "succeeded",
-      progress: 100, created_at: "2026-08-01T00:00:00Z", finished_at: "2026-08-01T00:00:01Z",
-    } });
+    genericJobDetailReads += 1;
+    return json(route, { error: { code: "forbidden", message: "jobs.read is not granted" } }, 403);
   });
 
   await page.goto("/instances/instance-1?tab=backups");
@@ -902,6 +908,81 @@ test("停止实例可串行分块上传跨节点备份并排队恢复", async ({
   expect(restoreQueued).toBeTruthy();
   expect(new Set(idempotencyKeys).size).toBe(idempotencyKeys.length);
   expect(idempotencyKeys.every(Boolean)).toBeTruthy();
+  expect(genericJobDetailReads).toBe(0);
+});
+
+test("备份分块失败后清除旧幂等键并可独立重试", async ({ page }) => {
+  await authenticated(page);
+  const stopped = { ...instance, status: "stopped", pid: undefined, started_at: undefined };
+  const archive = Buffer.from("retry failed backup upload chunk");
+  const digest = createHash("sha256").update(archive).digest("hex");
+  const uploadID = "upload-retry-failed-chunk";
+  let receivedSize = 0;
+  let uploadStatus = "uploading";
+  let chunkCalls = 0;
+  let secondChunkStatusPolled = false;
+  let genericJobDetailReads = 0;
+  const chunkKeys: string[] = [];
+  const polledChunkJobs: string[] = [];
+  const uploadRecord = () => ({
+    id: uploadID, instance_id: instance.id, name: "retry-chunk.zip", platform: "linux/amd64",
+    size: archive.length, sha256: digest, received_size: receivedSize, status: uploadStatus,
+    expires_at: "2099-08-02T00:00:00Z", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z",
+  });
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: stopped }));
+  await page.route("**/api/v1/instances/instance-1/backups", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/instances/instance-1/backup-uploads**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    if (path.endsWith("/chunks") && method === "POST") {
+      chunkCalls += 1;
+      chunkKeys.push(route.request().headers()["idempotency-key"] || "");
+      return json(route, { job_id: `failed-chunk-job-${chunkCalls}`, status: "queued", idempotent_replay: false }, 202);
+    }
+    if (path.includes("/chunks/") && method === "GET") {
+      const jobID = path.split("/").at(-1) || "";
+      polledChunkJobs.push(jobID);
+      if (jobID === "failed-chunk-job-1") return json(route, { job_id: jobID, status: "failed" });
+      secondChunkStatusPolled = true;
+      return json(route, { job_id: jobID, status: "succeeded" });
+    }
+    if (path.endsWith("/complete") && method === "POST") {
+      expect(uploadStatus).toBe("ready");
+      return json(route, { job_id: "retry-chunk-restore", status: "queued", idempotent_replay: false }, 202);
+    }
+    if (method === "GET") {
+      if (secondChunkStatusPolled && receivedSize === 0) {
+        receivedSize = archive.length;
+        uploadStatus = "ready";
+      }
+      return json(route, { upload: uploadRecord() });
+    }
+    return json(route, { upload: uploadRecord(), idempotent_replay: false }, 201);
+  });
+  await page.route("**/api/v1/jobs**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/jobs") return json(route, { items: [] });
+    genericJobDetailReads += 1;
+    return json(route, { error: { code: "forbidden", message: "jobs.read is not granted" } }, 403);
+  });
+
+  await page.goto("/instances/instance-1?tab=backups");
+  await page.getByRole("button", { name: "上传并恢复" }).click();
+  const dialog = page.getByRole("dialog", { name: "上传备份并恢复" });
+  await dialog.getByLabel("ZIP 备份文件").setInputFiles({ name: "retry-chunk.zip", mimeType: "application/zip", buffer: archive });
+  await dialog.getByLabel("备份来源平台").selectOption("linux/amd64");
+  await dialog.getByRole("button", { name: "开始上传并恢复" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("可以重试当前分片");
+  expect(chunkCalls).toBe(1);
+
+  await dialog.getByRole("button", { name: "开始上传并恢复" }).click();
+  await expect(page).toHaveURL(/\/jobs$/);
+  expect(chunkCalls).toBe(2);
+  expect(chunkKeys).toHaveLength(2);
+  expect(chunkKeys.every(Boolean)).toBeTruthy();
+  expect(chunkKeys[1]).not.toBe(chunkKeys[0]);
+  expect(polledChunkJobs).toEqual(["failed-chunk-job-1", "failed-chunk-job-2"]);
+  expect(genericJobDetailReads).toBe(0);
 });
 
 test("可放弃持久化上传会话并排队节点暂存清理", async ({ page }) => {
@@ -1003,6 +1084,7 @@ test("恢复异步失败后重开页面复用原上传会话且不重传分块",
   let createCalls = 0;
   let completeCalls = 0;
   let chunkCalls = 0;
+  let chunkQueued = false;
   let createKey = "";
   const completeKeys: string[] = [];
   const requestedUploadIDs: string[] = [];
@@ -1028,6 +1110,7 @@ test("恢复异步失败后重开页面复用原上传会话且不重传分块",
     const method = route.request().method();
     if (path.endsWith("/chunks") && method === "POST") {
       chunkCalls += 1;
+      chunkQueued = true;
       expect(path).toContain(`/${uploadID}/chunks`);
       return json(route, { job_id: "job-upload-resume-chunk", status: "queued", idempotent_replay: false }, 202);
     }
@@ -1042,6 +1125,11 @@ test("恢复异步失败后重开页面复用原上传会话且不重传分块",
     }
     if (method === "GET") {
       requestedUploadIDs.push(path.split("/").at(-1) || "");
+      if (chunkQueued) {
+        receivedSize = archive.length;
+        uploadStatus = "ready";
+        chunkQueued = false;
+      }
       return json(route, { upload: uploadRecord() });
     }
     expect(path).toBe("/api/v1/instances/instance-1/backup-uploads");

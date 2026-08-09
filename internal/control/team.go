@@ -64,6 +64,9 @@ func (s *Store) RoleBindings(ctx context.Context, userID string) ([]domain.RoleB
 	}
 	for index := range items {
 		items[index].Permissions = permissions[items[index].ID]
+		if items[index].Permissions == nil {
+			items[index].Permissions = make([]string, 0)
+		}
 	}
 	return items, nil
 }
@@ -143,7 +146,7 @@ func normalizeRoleBindings(bindings []domain.RoleBinding) ([]domain.RoleBinding,
 		if !validRole(binding.Role) {
 			return nil, fmt.Errorf("invalid role %q", binding.Role)
 		}
-		if len(binding.Permissions) == 0 {
+		if binding.Permissions == nil {
 			binding.Permissions = presetPermissionsForScope(binding.Role, binding.ScopeType)
 		}
 		if len(binding.Permissions) == 0 || len(binding.Permissions) > len(permissionDefinitions) {

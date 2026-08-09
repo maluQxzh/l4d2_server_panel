@@ -420,6 +420,7 @@ h1, h2, h3, p { margin-top: 0; }
 .discovery-candidate { width: 100%; padding: 10px; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 9px; color: var(--text); text-align: left; background: #0d1311; border: 1px solid var(--line-soft); border-radius: 7px; cursor: pointer; }
 .discovery-candidate:hover, .discovery-candidate.active { border-color: rgba(167,218,60,.38); background: var(--green-soft); }
 .discovery-candidate:disabled { opacity: .48; cursor: not-allowed; }
+.discovery-candidate--readonly { cursor: default; }
 .discovery-radio { width: 10px; height: 10px; border: 1px solid var(--text-faint); border-radius: 50%; }
 .discovery-candidate.active .discovery-radio { border: 3px solid var(--green); }
 .discovery-candidate > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
@@ -689,6 +690,8 @@ h1, h2, h3, p { margin-top: 0; }
 .job-row__details > div { display: flex; flex-direction: column; gap: 4px; }
 .job-row__details span { color: var(--text-faint); font-size: 8px; }
 .job-row__details strong, .job-row__details code { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.job-row__details .job-row__technical { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.job-row__technical code { padding: 8px; overflow: auto; color: var(--text-dim); background: #090e0c; border-radius: 6px; overflow-wrap: anywhere; white-space: pre-wrap; }
 
 .notification-list { overflow: hidden; }
 .notification-row { min-height: 76px; padding: 14px 17px; display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 12px; border-bottom: 1px solid var(--line-soft); }

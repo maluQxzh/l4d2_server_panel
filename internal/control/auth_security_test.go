@@ -87,7 +87,7 @@ func TestScopedLiveLogAuthorizationUsesEmbeddedOwnershipAndFailsClosed(t *testin
 	t.Parallel()
 	server := &Server{}
 	principal := Principal{BindingsLoaded: true, Bindings: []domain.RoleBinding{
-		{Role: domain.RoleViewer, ScopeType: "node", NodeID: "node-a"},
+		{Role: domain.RoleViewer, ScopeType: "node", NodeID: "node-a", Permissions: presetPermissionsForScope(domain.RoleViewer, "node")},
 	}}
 	logEvent := Event{Type: "instance.log", ResourceType: "instance", ResourceID: "instance-a", Data: map[string]any{
 		"node_id": "node-a", "instance_id": "instance-a", "line": "ready",
@@ -105,7 +105,7 @@ func TestScopedLiveLogAuthorizationUsesEmbeddedOwnershipAndFailsClosed(t *testin
 	}
 
 	instancePrincipal := Principal{BindingsLoaded: true, Bindings: []domain.RoleBinding{
-		{Role: domain.RoleViewer, ScopeType: "instance", InstanceID: "instance-a"},
+		{Role: domain.RoleViewer, ScopeType: "instance", InstanceID: "instance-a", Permissions: presetPermissionsForScope(domain.RoleViewer, "instance")},
 	}}
 	if !server.eventAllowed(context.Background(), instancePrincipal, logEvent) {
 		t.Fatal("direct instance binding could not authorize its own compact event")

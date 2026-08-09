@@ -2,12 +2,15 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
@@ -67,7 +70,7 @@ func TestAdministratorCannotAccessAccountManagementHandlers(t *testing.T) {
 
 func TestAccountSecurityRequiresInteractiveGlobalOwner(t *testing.T) {
 	owner := Principal{User: domain.User{Role: domain.RoleOwner}, Bindings: []domain.RoleBinding{
-		{Role: domain.RoleOwner, ScopeType: "global"},
+		{Role: domain.RoleOwner, ScopeType: "global", Permissions: presetPermissionsForScope(domain.RoleOwner, "global")},
 	}, BindingsLoaded: true}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
 	request = request.WithContext(context.WithValue(request.Context(), principalContextKey, owner))
@@ -85,8 +88,8 @@ func TestAccountSecurityRequiresInteractiveGlobalOwner(t *testing.T) {
 
 func TestSessionRoleBindingsDoNotMixPrivilegesAcrossResources(t *testing.T) {
 	principal := Principal{User: domain.User{Role: domain.RoleAdmin}, Bindings: []domain.RoleBinding{
-		{Role: domain.RoleOperator, ScopeType: "node", NodeID: "node-a"},
-		{Role: domain.RoleAdmin, ScopeType: "instance", InstanceID: "instance-b"},
+		{Role: domain.RoleOperator, ScopeType: "node", NodeID: "node-a", Permissions: presetPermissionsForScope(domain.RoleOperator, "node")},
+		{Role: domain.RoleAdmin, ScopeType: "instance", InstanceID: "instance-b", Permissions: presetPermissionsForScope(domain.RoleAdmin, "instance")},
 	}}
 	instanceA := domain.Instance{ID: "instance-a", NodeID: "node-a"}
 	instanceB := domain.Instance{ID: "instance-b", NodeID: "node-b"}
@@ -109,8 +112,8 @@ func TestSessionRoleBindingsDoNotMixPrivilegesAcrossResources(t *testing.T) {
 
 func TestGlobalViewerAndNodeAdminAreCombinedAtTheMatchingScopeOnly(t *testing.T) {
 	principal := Principal{User: domain.User{Role: domain.RoleAdmin}, Bindings: []domain.RoleBinding{
-		{Role: domain.RoleViewer, ScopeType: "global"},
-		{Role: domain.RoleAdmin, ScopeType: "node", NodeID: "node-a"},
+		{Role: domain.RoleViewer, ScopeType: "global", Permissions: presetPermissionsForScope(domain.RoleViewer, "global")},
+		{Role: domain.RoleAdmin, ScopeType: "node", NodeID: "node-a", Permissions: presetPermissionsForScope(domain.RoleAdmin, "node")},
 	}}
 	if !principal.AllowsNodePermission("node-b", PermissionRead) {
 		t.Fatal("global viewer binding did not grant read")
@@ -128,7 +131,7 @@ func TestGlobalViewerAndNodeAdminAreCombinedAtTheMatchingScopeOnly(t *testing.T)
 
 func TestAPITokenScopeIntersectsRoleBinding(t *testing.T) {
 	principal := Principal{User: domain.User{Role: domain.RoleAdmin}, Bindings: []domain.RoleBinding{
-		{Role: domain.RoleAdmin, ScopeType: "node", NodeID: "node-a"},
+		{Role: domain.RoleAdmin, ScopeType: "node", NodeID: "node-a", Permissions: presetPermissionsForScope(domain.RoleAdmin, "node")},
 	}, APITokenID: "token", TokenScopes: []string{"operate"}, TokenNodeID: "node-a"}
 	if !principal.AllowsNodePermission("node-a", PermissionOperate) {
 		t.Fatal("in-scope operation was rejected")
@@ -146,8 +149,8 @@ func TestOwnerBindingValidation(t *testing.T) {
 		NodeID: "04ca41f2-9760-47b1-91d7-acba7632ded9"}}); err == nil {
 		t.Fatal("node-scoped owner was accepted")
 	}
-	owner := Principal{User: domain.User{Role: domain.RoleOwner}, Bindings: []domain.RoleBinding{{Role: domain.RoleOwner, ScopeType: "global"}}}
-	admin := Principal{User: domain.User{Role: domain.RoleAdmin}, Bindings: []domain.RoleBinding{{Role: domain.RoleAdmin, ScopeType: "global"}}}
+	owner := Principal{User: domain.User{Role: domain.RoleOwner}, Bindings: []domain.RoleBinding{{Role: domain.RoleOwner, ScopeType: "global", Permissions: presetPermissionsForScope(domain.RoleOwner, "global")}}}
+	admin := Principal{User: domain.User{Role: domain.RoleAdmin}, Bindings: []domain.RoleBinding{{Role: domain.RoleAdmin, ScopeType: "global", Permissions: presetPermissionsForScope(domain.RoleAdmin, "global")}}}
 	target := []domain.RoleBinding{{Role: domain.RoleOwner, ScopeType: "global"}}
 	if !actorCanAssignBindings(owner, target) {
 		t.Fatal("owner could not assign an owner binding")
@@ -190,6 +193,15 @@ func TestNormalizeFineGrainedBindings(t *testing.T) {
 		t.Fatalf("unexpected normalized permissions: %#v", bindings)
 	}
 	if _, err := normalizeRoleBindings([]domain.RoleBinding{{
+		Role: domain.RoleAdmin, ScopeType: "instance", InstanceID: instanceID, Permissions: make([]string, 0),
+	}}); err == nil || !strings.Contains(err.Error(), "at least one") {
+		t.Fatalf("explicit empty permissions were expanded instead of rejected: %v", err)
+	}
+	preset, err := normalizeRoleBindings([]domain.RoleBinding{{Role: domain.RoleViewer, ScopeType: "instance", InstanceID: instanceID}})
+	if err != nil || len(preset) != 1 || len(preset[0].Permissions) == 0 {
+		t.Fatalf("omitted permissions did not receive a preset: %#v err=%v", preset, err)
+	}
+	if _, err := normalizeRoleBindings([]domain.RoleBinding{{
 		Role:        domain.RoleOperator,
 		ScopeType:   "instance",
 		InstanceID:  instanceID,
@@ -205,4 +217,133 @@ func TestNormalizeFineGrainedBindings(t *testing.T) {
 	}}); err == nil {
 		t.Fatal("global permission was accepted on an instance binding")
 	}
+}
+
+func TestTeamHandlersRejectExplicitEmptyOrNullPermissions(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "explicit-empty-permissions.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	owner, created, err := store.BootstrapOwner(ctx, "owner", "Owner", "hash")
+	if err != nil || !created {
+		t.Fatalf("bootstrap owner: created=%v err=%v", created, err)
+	}
+	owner, err = store.TeamUser(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, _, err := store.CreateTeamUser(ctx, owner.ID, CreateTeamUserInput{
+		Username: "target-viewer", DisplayName: "Target viewer",
+		Bindings: []domain.RoleBinding{{Role: domain.RoleViewer, ScopeType: "global"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := Principal{User: owner, Bindings: owner.RoleBindings, BindingsLoaded: true}
+	server := &Server{store: store, events: NewEventBroker(store)}
+
+	for _, permissions := range []string{"[]", "null"} {
+		t.Run("create "+permissions, func(t *testing.T) {
+			body := `{"username":"bad-admin-` + strings.Trim(permissions, "[]") + `","role_bindings":[{"role":"admin","scope_type":"global","permissions":` + permissions + `}]}`
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/users", strings.NewReader(body))
+			request = request.WithContext(context.WithValue(request.Context(), principalContextKey, principal))
+			response := httptest.NewRecorder()
+			server.handleCreateUser(response, request)
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_role_bindings") {
+				t.Fatalf("create response=%d %s", response.Code, response.Body.String())
+			}
+		})
+		t.Run("update "+permissions, func(t *testing.T) {
+			body := `{"role_bindings":[{"role":"admin","scope_type":"global","permissions":` + permissions + `}]}`
+			request := httptest.NewRequest(http.MethodPatch, "/api/v1/users/"+target.ID, strings.NewReader(body))
+			routeContext := chi.NewRouteContext()
+			routeContext.URLParams.Add("userID", target.ID)
+			request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
+			request = request.WithContext(context.WithValue(request.Context(), principalContextKey, principal))
+			response := httptest.NewRecorder()
+			server.handleUpdateUser(response, request)
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_role_bindings") {
+				t.Fatalf("update response=%d %s", response.Code, response.Body.String())
+			}
+			unchanged, err := store.TeamUser(ctx, target.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if unchanged.Role != domain.RoleViewer || len(unchanged.RoleBindings) != 1 ||
+				!bindingAllows(unchanged.RoleBindings[0], PermissionInstancesRead) || bindingAllows(unchanged.RoleBindings[0], PermissionManage) {
+				t.Fatalf("invalid update changed target authorization: %#v", unchanged)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name   string
+		method string
+		body   string
+	}{
+		{
+			name:   "create explicit null bindings with legacy role",
+			method: http.MethodPost,
+			body:   `{"username":"null-bindings","role":"admin","role_bindings":null}`,
+		},
+		{
+			name:   "create explicit empty bindings with legacy role",
+			method: http.MethodPost,
+			body:   `{"username":"empty-bindings","role":"admin","role_bindings":[]}`,
+		},
+		{
+			name:   "update explicit null bindings with legacy role",
+			method: http.MethodPatch,
+			body:   `{"role":"admin","role_bindings":null}`,
+		},
+		{
+			name:   "update explicit empty bindings",
+			method: http.MethodPatch,
+			body:   `{"role_bindings":[]}`,
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, "/api/v1/users/"+target.ID, strings.NewReader(test.body))
+			request = request.WithContext(context.WithValue(request.Context(), principalContextKey, principal))
+			response := httptest.NewRecorder()
+			if test.method == http.MethodPost {
+				server.handleCreateUser(response, request)
+			} else {
+				routeContext := chi.NewRouteContext()
+				routeContext.URLParams.Add("userID", target.ID)
+				request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
+				server.handleUpdateUser(response, request)
+			}
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_role_bindings") {
+				t.Fatalf("response=%d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+
+	t.Run("omitted bindings keep legacy role fallback", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/users", strings.NewReader(
+			`{"username":"legacy-role-viewer","display_name":"Legacy role viewer","role":"viewer"}`))
+		request = request.WithContext(context.WithValue(request.Context(), principalContextKey, principal))
+		response := httptest.NewRecorder()
+		server.handleCreateUser(response, request)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create response=%d %s", response.Code, response.Body.String())
+		}
+		var body struct {
+			User domain.User `json:"user"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body.User.RoleBindings) != 1 || len(body.User.RoleBindings[0].Permissions) == 0 ||
+			!bindingAllows(body.User.RoleBindings[0], PermissionInstancesRead) {
+			t.Fatalf("legacy role did not receive its preset: %#v", body.User.RoleBindings)
+		}
+	})
 }

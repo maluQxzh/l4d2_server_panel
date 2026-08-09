@@ -1,11 +1,16 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RealtimeProvider } from "../context/RealtimeContext";
 import { ToastProvider } from "../context/ToastContext";
 import { api } from "../lib/api";
 import type { InstanceRecord, MapRecord } from "../lib/types";
+
+const authState = vi.hoisted(() => ({ user: { role: "owner" } as { role: string; role_bindings?: unknown } }));
+
+vi.mock("../context/AuthContext", () => ({ useAuth: () => authState }));
+
 import { MapsPage } from "./MapsPage";
 
 const map: MapRecord = {
@@ -44,6 +49,7 @@ const assignedInstance = {
 } as InstanceRecord;
 
 describe("地图管理卡片", () => {
+  beforeEach(() => { authState.user = { role: "owner" }; });
   afterEach(() => vi.restoreAllMocks());
 
   it("使用三项总览并默认折叠次要地图信息", async () => {
@@ -122,5 +128,30 @@ describe("地图管理卡片", () => {
     fireEvent.click(screen.getByRole("button", { name: "提交变更" }));
     await waitFor(() => expect(confirm).toHaveBeenCalledWith(expect.stringContaining("!update_vpk")));
     await waitFor(() => expect(assign).toHaveBeenCalledWith(map.id, assignedInstance.id));
+  });
+
+  it("只读地图绑定不显示导入、分配、校验或删除操作", async () => {
+    authState.user = {
+      role: "viewer",
+      role_bindings: [{
+        role: "viewer",
+        scope_type: "node",
+        node_id: map.node_id,
+        permissions: ["nodes.read", "maps.read"],
+      }],
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    vi.spyOn(api, "maps").mockResolvedValue({ items: [map] });
+    vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
+    const instances = vi.spyOn(api, "instances").mockResolvedValue({ items: [assignedInstance] });
+
+    render(<QueryClientProvider client={client}><ToastProvider><RealtimeProvider enabled={false}><MemoryRouter><MapsPage /></MemoryRouter></RealtimeProvider></ToastProvider></QueryClientProvider>);
+
+    expect(await screen.findByRole("heading", { name: "Claustrophobia" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /QQ 闪传导入/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "分配实例" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "校验" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "永久删除" })).not.toBeInTheDocument();
+    expect(instances).not.toHaveBeenCalled();
   });
 });

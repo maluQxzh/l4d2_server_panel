@@ -7,7 +7,7 @@ import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
 import { useToast } from "../context/ToastContext";
 import { api } from "../lib/api";
-import { hasAnyPermission, hasInstancePermission } from "../lib/account-permissions";
+import { hasAnyPermission, hasInstancePermission, hasNodePermission } from "../lib/account-permissions";
 import { relativeTime } from "../lib/format";
 import { defaultTickrate, gameDifficulties, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
 import type { InstanceRecord } from "../lib/types";
@@ -15,11 +15,12 @@ import type { InstanceRecord } from "../lib/types";
 export function InstancesPage() {
   const { user } = useAuth();
   const canCreate = hasAnyPermission(user, "instances.create");
+  const canRead = hasAnyPermission(user, "instances.read");
   const [createOpen, setCreateOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const realtime = useRealtime();
-  const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, refetchInterval: realtime.state === "live" ? false : 15_000 });
+  const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: canRead, refetchInterval: realtime.state === "live" ? false : 15_000 });
   const filtered = useMemo(() => (instances.data?.items || []).filter((item) => {
     const matchesSearch = `${item.name} ${item.node_name} ${item.host} ${item.map}`.toLowerCase().includes(search.trim().toLowerCase());
     const matchesStatus = status === "all" || (status === "node_offline" ? item.node_status === "offline" : item.status === status);
@@ -27,9 +28,9 @@ export function InstancesPage() {
   }), [instances.data, search, status]);
 
   return <div>
-    <PageHeader eyebrow="GAME SERVERS" title="游戏实例" description="部署、运行和维护彼此隔离的 L4D2 专用服务器。" actions={<><Button variant="secondary" onClick={() => void instances.refetch()}><RefreshCw size={16} />刷新</Button>{canCreate && <Button onClick={() => setCreateOpen(true)}><Plus size={17} />创建实例</Button>}</>} />
-    <Card className="toolbar-card"><div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索实例、节点、地址或地图" aria-label="搜索实例" /></div><div className="filter-select"><Filter size={16} /><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="按状态筛选"><option value="all">全部状态</option><option value="running">运行中</option><option value="stopped">已停止</option><option value="degraded">异常</option><option value="installing">安装中</option><option value="updating">更新中</option><option value="node_offline">节点离线</option></select></div><span className="toolbar-count">{filtered.length} 个实例</span></Card>
-    {instances.isPending ? <LoadingBlock label="正在获取实例清单…" /> : instances.error ? <ErrorState error={instances.error} retry={() => void instances.refetch()} /> : filtered.length === 0 ? <Card><EmptyState title={instances.data.items.length ? "没有匹配的实例" : "还没有游戏实例"} description={instances.data.items.length ? "尝试调整搜索关键词或状态筛选。" : "先在运行环境中准备或登记游戏目录，再创建实例并手动开服。"} action={!instances.data.items.length && canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus size={16} />创建第一个实例</Button> : undefined} /></Card> : <div className="instance-grid">{filtered.map((instance) => <InstanceCard key={instance.id} instance={instance} />)}</div>}
+    <PageHeader eyebrow="GAME SERVERS" title="游戏实例" description="部署、运行和维护彼此隔离的 L4D2 专用服务器。" actions={<>{canRead && <Button variant="secondary" onClick={() => void instances.refetch()}><RefreshCw size={16} />刷新</Button>}{canCreate && <Button onClick={() => setCreateOpen(true)}><Plus size={17} />创建实例</Button>}</>} />
+    {canRead && <Card className="toolbar-card"><div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索实例、节点、地址或地图" aria-label="搜索实例" /></div><div className="filter-select"><Filter size={16} /><select value={status} onChange={(event) => setStatus(event.target.value)} aria-label="按状态筛选"><option value="all">全部状态</option><option value="running">运行中</option><option value="stopped">已停止</option><option value="degraded">异常</option><option value="installing">安装中</option><option value="updating">更新中</option><option value="node_offline">节点离线</option></select></div><span className="toolbar-count">{filtered.length} 个实例</span></Card>}
+    {!canRead ? <Card><EmptyState title="实例清单已隐藏" description="当前账号没有查看实例清单的权限，但仍可执行单独授予的创建操作。" action={canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus size={16} />创建实例</Button> : undefined} /></Card> : instances.isPending ? <LoadingBlock label="正在获取实例清单…" /> : instances.error ? <ErrorState error={instances.error} retry={() => void instances.refetch()} /> : filtered.length === 0 ? <Card><EmptyState title={instances.data.items.length ? "没有匹配的实例" : "还没有游戏实例"} description={instances.data.items.length ? "尝试调整搜索关键词或状态筛选。" : "先在运行环境中准备或登记游戏目录，再创建实例并手动开服。"} action={!instances.data.items.length && canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus size={16} />创建第一个实例</Button> : undefined} /></Card> : <div className="instance-grid">{filtered.map((instance) => <InstanceCard key={instance.id} instance={instance} />)}</div>}
     <CreateInstanceModal open={canCreate && createOpen} onClose={() => setCreateOpen(false)} />
   </div>;
 }
@@ -68,7 +69,9 @@ function InstanceCard({ instance }: { instance: InstanceRecord }) {
 }
 
 function CreateInstanceModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const environments = useQuery({ queryKey: ["environments"], queryFn: api.environments, enabled: open });
+  const { user } = useAuth();
+  const canReadEnvironments = hasAnyPermission(user, "environments.read");
+  const environments = useQuery({ queryKey: ["environments"], queryFn: api.environments, enabled: open && canReadEnvironments });
   const [name, setName] = useState("");
   const [environmentId, setEnvironmentId] = useState("");
   const [installationId, setInstallationId] = useState("");
@@ -100,15 +103,19 @@ function CreateInstanceModal({ open, onClose }: { open: boolean; onClose: () => 
     onSuccess: (result) => {
       toast.push("实例绑定任务已提交");
       onClose();
-      if (result.instance?.id) navigate(`/instances/${result.instance.id}`);
-      else navigate("/jobs");
+      const environment = environments.data?.items.find((item) => item.id === environmentId);
+      if (result.instance?.id && environment && hasNodePermission(user, environment.node_id, "instances.read")) navigate(`/instances/${result.instance.id}`);
+      else if (environment && hasNodePermission(user, environment.node_id, "jobs.read")) navigate("/jobs");
+      else navigate("/instances");
     },
   });
   const submit = (event: FormEvent) => { event.preventDefault(); create.mutate(); };
-  const onlineEnvironments = environments.data?.items.filter((item) => item.node_status === "online" && item.agent_supported) || [];
+  const onlineEnvironments = environments.data?.items.filter((item) => item.node_status === "online" && item.agent_supported && hasNodePermission(user, item.node_id, "environments.read") && hasNodePermission(user, item.node_id, "instances.create")) || [];
   const readyInstallations = installations.data?.items.filter((item) => item.status === "ready" && !item.bound_instance_id) || [];
-  return <Modal open={open} onClose={onClose} title="创建游戏实例" description="绑定运行节点上已安装且未被占用的游戏目录；实例创建后保持停止，由你手动开服。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button type="submit" form="create-instance" loading={create.isPending}>创建实例</Button></>}>
+  return <Modal open={open} onClose={onClose} title="创建游戏实例" description="绑定运行节点上已安装且未被占用的游戏目录；实例创建后保持停止，由你手动开服。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button type="submit" form="create-instance" loading={create.isPending} disabled={!canReadEnvironments || !onlineEnvironments.length}>创建实例</Button></>}>
     <form id="create-instance" onSubmit={submit} className="form-stack">
+      {!canReadEnvironments && <div className="form-warning">创建实例需要同时授予目标节点的“查看运行环境”权限，才能安全选择尚未绑定的游戏安装。</div>}
+      {canReadEnvironments && !environments.isPending && !onlineEnvironments.length && <div className="form-warning">没有同时具备运行环境查看与实例创建权限的在线节点。</div>}
       <div className="form-grid"><Field label="实例名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：专家战役 #1" required /></Field><Field label="运行节点"><select value={environmentId} onChange={(event) => { setEnvironmentId(event.target.value); setInstallationId(""); }} required><option value="">选择在线运行节点</option>{onlineEnvironments.map((item) => <option value={item.id} key={item.id}>{item.node_name || item.node_id}</option>)}</select></Field></div>
       <Field label="可用游戏安装" hint="仅显示所选节点上已安装且尚未绑定实例的目录。"><select value={installationId} onChange={(event) => setInstallationId(event.target.value)} required disabled={!environmentId}><option value="">{environmentId ? "选择可用游戏安装" : "请先选择运行节点"}</option>{readyInstallations.map((item) => <option value={item.id} key={item.id}>{item.path} · 构建 {item.build_id || "未知"}</option>)}</select></Field>
       <div className="form-grid form-grid--three"><Field label="游戏模式"><select value={mode} onChange={(event) => setMode(event.target.value)}>{gameModes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></Field><Field label="难度"><select value={difficulty} onChange={(event) => setDifficulty(event.target.value)}>{gameDifficulties.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></Field><Field label="最大玩家"><input type="number" min={1} max={32} value={maxPlayers} onChange={(event) => setMaxPlayers(Number(event.target.value))} /></Field></div>
@@ -116,7 +123,7 @@ function CreateInstanceModal({ open, onClose }: { open: boolean; onClose: () => 
       <Field label="初始地图"><select value={startMap} onChange={(event) => setStartMap(event.target.value)} required>{officialMapGroups.map((group) => <optgroup label={group.campaign} key={group.campaign}>{group.maps.map(([value, label]) => <option value={value} key={value}>{label} · {value}</option>)}</optgroup>)}</select></Field>
       <div className="form-grid"><label className="toggle-field"><button type="button" role="switch" aria-label="启用 Tickrate" aria-checked={tickrate} className={`switch ${tickrate ? "switch--on" : ""}`} onClick={() => setTickrate((value) => !value)}><span /></button><span><strong>启用 Tickrate</strong><small>作为 -tickrate 启动参数传递</small></span></label>{tickrate && <Field label="Tickrate 数值" hint={`${minTickrate}–${maxTickrate} 的整数`}><input type="number" min={minTickrate} max={maxTickrate} step={1} value={tickrateValue} onChange={(event) => setTickrateValue(Number(event.target.value))} required /></Field>}</div>
       <div className="form-note"><strong>创建流程</strong><span>建立独占绑定并保存启动设置。不会生成 l4d2panel.cfg、重复校验或安装游戏，也不会自动启动服务器。</span></div>
-      {create.error && <div className="form-error" role="alert">{create.error.message}</div>}
+      {(environments.error || create.error) && <div className="form-error" role="alert">{(environments.error || create.error)?.message}</div>}
     </form>
   </Modal>;
 }

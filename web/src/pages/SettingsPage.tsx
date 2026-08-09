@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Bell, Braces, Check, CheckCircle2, Clipboard, DownloadCloud, KeyRound, LockKeyhole, Mail, Plus, RefreshCw, ShieldCheck,
+  Bell, Braces, Check, CheckCircle2, Clipboard, DownloadCloud, KeyRound, LockKeyhole, Mail, Plus, RefreshCw, ShieldAlert, ShieldCheck,
   Smartphone, Trash2, UserCog, Webhook,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -8,7 +8,7 @@ import { useLocation } from "react-router";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, StatusBadge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
-import { hasGlobalPermission, hasRootSecurityPermission, permissionAllowedAtScope, permissionCatalog, rolePresetPermissions, tokenScopesForUser } from "../lib/account-permissions";
+import { hasAnyPermission, hasGlobalPermission, hasInstancePermission, hasNodePermission, hasRootSecurityPermission, normalizePermissionsAtScope, permissionAllowedAtScope, permissionCatalog, rolePresetPermissions, tokenScopesForGlobal, tokenScopesForInstance, tokenScopesForNode } from "../lib/account-permissions";
 import { api, ApiError } from "../lib/api";
 import { dateTime } from "../lib/format";
 import type { Permission, Role, RoleBinding, SystemUpdatePhase, User } from "../lib/types";
@@ -48,12 +48,18 @@ export function SettingsPage() {
       <Card><div className="card-heading"><div><span className="eyebrow">NOTIFICATION DELIVERY</span><h2>通知渠道</h2></div><Bell size={21} /></div><div className="settings-list"><button onClick={() => setChannelKind("smtp")} disabled={!hasGlobalPermission(auth.user, "notifications.manage")}><span><Mail size={18} /><span><strong>SMTP 邮件</strong><small>强制 STARTTLS，凭据加密保存</small></span></span><em>配置</em></button><button onClick={() => setChannelKind("webhook")} disabled={!hasGlobalPermission(auth.user, "notifications.manage")}><span><Webhook size={18} /><span><strong>Webhook</strong><small>HMAC-SHA256 签名与持久化重试</small></span></span><em>配置</em></button></div></Card>
       <Card><div className="card-heading"><div><span className="eyebrow">DISPLAY</span><h2>界面偏好</h2></div><Braces size={21} /></div><label className="preference-row"><span><strong>紧凑布局</strong><small>在表格中显示更多信息</small></span><button type="button" role="switch" aria-checked={compact} className={`switch ${compact ? "switch--on" : ""}`} onClick={() => setCompact((value) => !value)}><span /></button></label><Field label="语言"><select value="zh-CN" disabled><option>简体中文</option></select></Field></Card>
     </div>
+    {hasGlobalPermission(auth.user, "audit.read_global") && <GlobalAuditCard />}
     {canManageUsers && <CenterUpdateCard />}
     <TotpModal open={totpOpen} enabled={Boolean(auth.user?.totp_enabled)} onClose={() => setTotpOpen(false)} />
     <APITokenModal open={tokenOpen} user={auth.user || null} onClose={() => setTokenOpen(false)} />
     <NotificationChannelModal kind={channelKind} onClose={() => setChannelKind(null)} />
     <UserModal target={canManageUsers ? managedUser : null} actor={auth.user || null} onClose={() => setManagedUser(null)} />
   </div>;
+}
+
+function GlobalAuditCard() {
+  const audit = useQuery({ queryKey: ["audit", "global"], queryFn: () => api.audit() });
+  return <section className="settings-section"><div className="section-heading"><div><h2>全局审计</h2><p>查看中心端所有资源的安全事件；正文已由服务端脱敏。</p></div>{!audit.isPending && <Button variant="secondary" onClick={() => void audit.refetch()}><RefreshCw size={16} />刷新</Button>}</div><Card>{audit.isPending ? <LoadingBlock label="正在读取全局审计记录…" /> : audit.error ? <ErrorState error={audit.error} retry={() => void audit.refetch()} /> : audit.data.items.length ? <div className="audit-timeline">{audit.data.items.map((event) => <div className="audit-event" key={event.id}><span className="audit-event__line" /><div className="audit-event__dot" /><time>{dateTime(event.created_at)}</time><div><strong>{event.actor_name || "系统"} · {event.action}</strong><span>{event.resource_type}{event.resource_id ? ` #${event.resource_id.slice(0, 8)}` : ""}{event.remote_ip ? ` · ${event.remote_ip}` : ""}</span>{event.metadata && Object.keys(event.metadata).length > 0 && <code>{JSON.stringify(event.metadata)}</code>}</div></div>)}</div> : <EmptyState title="还没有全局审计记录" description="登录、权限和资源写操作会保留不可编辑的安全记录。" />}</Card></section>;
 }
 
 const updatePhaseLabels: Record<SystemUpdatePhase, string> = {
@@ -167,15 +173,16 @@ function UserModal({ target, actor, onClose }: { target: User | "new" | null; ac
     setPassword("");
     setIssuedCredential(null);
     setDisabled(Boolean(existing?.disabled));
-    setBindings(creating ? [{ role: "viewer", permissions: rolePresetPermissions("viewer"), scope_type: "global" }] : (existing?.role_bindings?.length ? existing.role_bindings.map(cleanBinding) : [{ role: existing?.role || "viewer", permissions: rolePresetPermissions(existing?.role || "viewer"), scope_type: "global" }]));
+    setBindings(creating ? [{ role: "viewer", permissions: rolePresetPermissions("viewer"), scope_type: "global" }] : existing?.role_bindings === undefined ? [{ role: existing?.role || "viewer", permissions: rolePresetPermissions(existing?.role || "viewer"), scope_type: "global" }] : existing.role_bindings.map(cleanBinding));
   }, [creating, existing, target]);
 
   const normalizedBindings = bindings.map(cleanBinding);
   const bindingKeys = normalizedBindings.map((item) => `${item.scope_type}:${item.node_id || item.instance_id || "global"}`);
-  const bindingsValid = normalizedBindings.length > 0 && normalizedBindings.every((item) => Boolean(item.permissions?.length) && (item.scope_type === "global" || (item.scope_type === "node" ? Boolean(item.node_id) : Boolean(item.instance_id)))) && new Set(bindingKeys).size === bindingKeys.length;
-  const originalBindings: EditableBinding[] = existing?.role_bindings?.length
-    ? existing.role_bindings.map(cleanBinding)
-    : existing ? [{ role: existing.role, permissions: rolePresetPermissions(existing.role), scope_type: "global" }] : [];
+  const originalBindings: EditableBinding[] = existing?.role_bindings === undefined
+    ? existing ? [{ role: existing.role, permissions: rolePresetPermissions(existing.role), scope_type: "global" }] : []
+    : existing.role_bindings.map(cleanBinding);
+  const emptyBindingsInvalid = normalizedBindings.length === 0 && (creating || originalBindings.length > 0);
+  const bindingsValid = !emptyBindingsInvalid && normalizedBindings.every((item) => Boolean(item.permissions?.length) && (item.scope_type === "global" || (item.scope_type === "node" ? Boolean(item.node_id) : Boolean(item.instance_id)))) && new Set(bindingKeys).size === bindingKeys.length;
   const bindingsChanged = existing ? JSON.stringify(normalizedBindings) !== JSON.stringify(originalBindings) : true;
   const changed = creating || displayName.trim() !== existing?.display_name || Boolean(password) || disabled !== Boolean(existing?.disabled) || bindingsChanged;
   const valid = username.trim() && displayName.trim() && (!password || password.length >= 12) && bindingsValid && changed;
@@ -226,13 +233,12 @@ function UserModal({ target, actor, onClose }: { target: User | "new" | null; ac
     <div className="activation-credential"><div><span>用户名</span><code>{issuedCredential.username}</code></div><div><span>一次性密码</span><code>{issuedCredential.oneTimePassword}</code></div><Button variant="secondary" onClick={() => void navigator.clipboard.writeText(`用户名：${issuedCredential.username}\n一次性密码：${issuedCredential.oneTimePassword}`)}><Clipboard size={15} />复制账号信息</Button><small>有效期至 {dateTime(issuedCredential.expiresAt)}。首次登录后只能设置新密码，不能访问其他功能。</small></div>
   </Modal>;
   return <Modal open={open} onClose={close} title={creating ? "添加团队成员" : `管理 ${existing?.display_name || existing?.username || "用户"}`} description="角色用于一键填充预设，实际授权以每个范围勾选的具体权限为准。" footer={<>{existing?.account_state === "pending_activation" && <Button variant="secondary" onClick={() => reissue.mutate()} loading={reissue.isPending}><RefreshCw size={14} />重新生成一次性密码</Button>}<Button variant="secondary" onClick={close}>取消</Button><Button onClick={() => save.mutate()} loading={save.isPending} disabled={!valid}>{creating ? "创建账号并生成密码" : "保存更改"}</Button></>}>
-    <div className="form-stack"><div className="form-grid"><Field label="用户名"><input value={username} onChange={(event) => setUsername(event.target.value)} disabled={!creating} maxLength={128} autoComplete="username" /></Field><Field label="显示名称"><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={128} /></Field></div>{creating ? <div className="setup-notice">账号创建后由系统生成一次性密码，有效期 24 小时；管理员不需要也不能指定用户的正式密码。</div> : existing?.account_state === "pending_activation" ? <div className="setup-notice">该账号尚未完成首次登录。可以重新生成一次性密码，旧密码会立即失效。</div> : <Field label="重置密码（可留空）" hint="至少 12 个字符；修改密码会撤销该账号的全部会话和 API Token"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={12} maxLength={1024} autoComplete="new-password" /></Field>}{!creating && <label className={`risk-check ${protectedOwner || existing?.id === actor?.id ? "risk-check--disabled" : ""}`}><input type="checkbox" checked={disabled} onChange={(event) => setDisabled(event.target.checked)} disabled={protectedOwner || existing?.id === actor?.id} /><LockKeyhole size={18} /><span><strong>停用账号</strong><small>{protectedOwner ? "首启根所有者不可停用" : existing?.id === actor?.id ? "不能停用当前登录账号" : "立即撤销该账号的全部会话和 API Token"}</small></span></label>}<div className="binding-editor"><div className="binding-editor__heading"><div><strong>资源权限绑定</strong><span>匹配范围的权限取并集；不支持显式拒绝</span></div><Button type="button" variant="secondary" onClick={() => setBindings((items) => [...items, { role: "viewer", permissions: rolePresetPermissions("viewer").filter((permission) => permissionAllowedAtScope(permission, "instance")), scope_type: "instance" }])} disabled={protectedOwner || bindings.length >= 50}><Plus size={14} />添加范围</Button></div>{bindings.map((binding, index) => <div className="binding-block" key={`${index}-${binding.scope_type}`}><div className="binding-row"><Field label="角色预设"><select value={binding.role} disabled={protectedOwner} onChange={(event) => { const role = event.target.value as Role; const scope = role === "owner" ? "global" : binding.scope_type; updateBinding(index, { ...binding, role, scope_type: scope, permissions: rolePresetPermissions(role).filter((permission) => permissionAllowedAtScope(permission, scope)) }); }}>{availableRoles.map((role) => <option value={role} key={role}>{roleName(role)}</option>)}</select></Field><Field label="范围"><select value={binding.scope_type} disabled={protectedOwner || binding.role === "owner"} onChange={(event) => { const scope = event.target.value as EditableBinding["scope_type"]; updateBinding(index, { ...binding, scope_type: scope, permissions: (binding.permissions || []).filter((permission) => permissionAllowedAtScope(permission, scope)) }); }}><option value="global">全局</option><option value="node">单个节点</option><option value="instance">单个实例</option></select></Field>{binding.scope_type === "node" ? <Field label="节点"><select value={binding.node_id || ""} disabled={protectedOwner} onChange={(event) => updateBinding(index, { ...binding, node_id: event.target.value })}><option value="">请选择节点</option>{(nodes.data?.items || []).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field> : binding.scope_type === "instance" ? <Field label="实例"><select value={binding.instance_id || ""} disabled={protectedOwner} onChange={(event) => updateBinding(index, { ...binding, instance_id: event.target.value })}><option value="">请选择实例</option>{(instances.data?.items || []).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field> : <div className="binding-global-note"><ShieldCheck size={16} />适用于全部节点与实例</div>}<Button type="button" variant="danger" aria-label="删除权限绑定" onClick={() => setBindings((items) => items.filter((_, itemIndex) => itemIndex !== index))} disabled={protectedOwner || bindings.length === 1}><Trash2 size={14} /></Button></div><PermissionCheckboxes binding={binding} disabled={protectedOwner || binding.role === "owner"} onChange={(permissions) => updateBinding(index, { ...binding, permissions })} /></div>)}{!bindingsValid && <div className="form-warning">每条绑定至少选择一个权限，并选择对应资源；同一资源不能重复绑定。</div>}</div></div>
+    <div className="form-stack"><div className="form-grid"><Field label="用户名"><input value={username} onChange={(event) => setUsername(event.target.value)} disabled={!creating} maxLength={128} autoComplete="username" /></Field><Field label="显示名称"><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={128} /></Field></div>{creating ? <div className="setup-notice">账号创建后由系统生成一次性密码，有效期 24 小时；管理员不需要也不能指定用户的正式密码。</div> : existing?.account_state === "pending_activation" ? <div className="setup-notice">该账号尚未完成首次登录。可以重新生成一次性密码，旧密码会立即失效。</div> : <Field label="重置密码（可留空）" hint="至少 12 个字符；修改密码会撤销该账号的全部会话和 API Token"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={12} maxLength={1024} autoComplete="new-password" /></Field>}{!creating && <label className={`risk-check ${protectedOwner || existing?.id === actor?.id ? "risk-check--disabled" : ""}`}><input type="checkbox" checked={disabled} onChange={(event) => setDisabled(event.target.checked)} disabled={protectedOwner || existing?.id === actor?.id} /><LockKeyhole size={18} /><span><strong>停用账号</strong><small>{protectedOwner ? "首启根所有者不可停用" : existing?.id === actor?.id ? "不能停用当前登录账号" : "立即撤销该账号的全部会话和 API Token"}</small></span></label>}<div className="binding-editor"><div className="binding-editor__heading"><div><strong>资源权限绑定</strong><span>匹配范围的权限取并集；不支持显式拒绝</span></div><Button type="button" variant="secondary" onClick={() => setBindings((items) => [...items, { role: "viewer", permissions: rolePresetPermissions("viewer").filter((permission) => permissionAllowedAtScope(permission, "instance")), scope_type: "instance" }])} disabled={protectedOwner || bindings.length >= 50}><Plus size={14} />添加范围</Button></div>{bindings.length === 0 && <div className="form-warning">{emptyBindingsInvalid ? "至少保留一条权限绑定；如需撤销访问，请停用账号或调整为最小权限。" : "该账号当前没有权限绑定，因此不能访问任何受保护资源。可添加范围后再授予权限。"}</div>}{bindings.map((binding, index) => <div className="binding-block" key={`${index}-${binding.scope_type}`}><div className="binding-row"><Field label="角色预设"><select value={binding.role} disabled={protectedOwner} onChange={(event) => { const role = event.target.value as Role; const scope = role === "owner" ? "global" : binding.scope_type; updateBinding(index, { ...binding, role, scope_type: scope, permissions: rolePresetPermissions(role).filter((permission) => permissionAllowedAtScope(permission, scope)) }); }}>{availableRoles.map((role) => <option value={role} key={role}>{roleName(role)}</option>)}</select></Field><Field label="范围"><select value={binding.scope_type} disabled={protectedOwner || binding.role === "owner"} onChange={(event) => { const scope = event.target.value as EditableBinding["scope_type"]; updateBinding(index, { ...binding, scope_type: scope, permissions: (binding.permissions || []).filter((permission) => permissionAllowedAtScope(permission, scope)) }); }}><option value="global">全局</option><option value="node">单个节点</option><option value="instance">单个实例</option></select></Field>{binding.scope_type === "node" ? <Field label="节点"><select value={binding.node_id || ""} disabled={protectedOwner} onChange={(event) => updateBinding(index, { ...binding, node_id: event.target.value })}><option value="">请选择节点</option>{(nodes.data?.items || []).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field> : binding.scope_type === "instance" ? <Field label="实例"><select value={binding.instance_id || ""} disabled={protectedOwner} onChange={(event) => updateBinding(index, { ...binding, instance_id: event.target.value })}><option value="">请选择实例</option>{(instances.data?.items || []).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field> : <div className="binding-global-note"><ShieldCheck size={16} />适用于全部节点与实例</div>}<Button type="button" variant="danger" aria-label="删除权限绑定" onClick={() => setBindings((items) => items.filter((_, itemIndex) => itemIndex !== index))} disabled={protectedOwner}><Trash2 size={14} /></Button></div><PermissionCheckboxes binding={binding} disabled={protectedOwner || binding.role === "owner"} onChange={(permissions) => updateBinding(index, { ...binding, permissions })} /></div>)}{bindings.length > 0 && !bindingsValid && <div className="form-warning">每条绑定至少选择一个权限，并选择对应资源；同一资源不能重复绑定。</div>}</div></div>
   </Modal>;
 }
 
 function cleanBinding(binding: EditableBinding): EditableBinding {
-  const permissions = [...(binding.permissions === undefined ? rolePresetPermissions(binding.role) : binding.permissions)]
-    .filter((permission) => permissionAllowedAtScope(permission, binding.scope_type)).sort();
+  const permissions = normalizePermissionsAtScope(binding.permissions === undefined ? rolePresetPermissions(binding.role) : binding.permissions, binding.scope_type);
   if (binding.scope_type === "node") return { role: binding.role, permissions, scope_type: "node", node_id: binding.node_id || "" };
   if (binding.scope_type === "instance") return { role: binding.role, permissions, scope_type: "instance", instance_id: binding.instance_id || "" };
   return { role: binding.role, permissions, scope_type: "global" };
@@ -256,10 +262,8 @@ function PermissionCheckboxes({ binding, disabled, onChange }: { binding: Editab
       const definition = permissionCatalog.find((item) => item.id === permission);
       if (definition?.class !== "read" && (definition?.scope === "node" || binding.scope_type === "node") && permissionAllowedAtScope("nodes.read", binding.scope_type)) next.add("nodes.read");
       if (definition?.class !== "read" && (definition?.scope === "instance" || binding.scope_type === "instance") && permissionAllowedAtScope("instances.read", binding.scope_type)) next.add("instances.read");
-    } else {
-      next.delete(permission);
-    }
-    onChange([...next].sort());
+    } else next.delete(permission);
+    onChange(normalizePermissionsAtScope([...next], binding.scope_type));
   };
   return <div className="permission-editor"><div className="permission-editor__summary"><span><strong>{selected.size} 项权限</strong>{customized && <em>已自定义</em>}</span><Button type="button" variant="ghost" disabled={disabled} onClick={() => onChange(preset)}>恢复角色预设</Button></div>{groups.map((group) => <fieldset key={group}><legend>{group}</legend><div className="permission-grid">{available.filter((item) => item.group === group).map((item) => <label key={item.id} title={item.description}><input type="checkbox" checked={selected.has(item.id)} disabled={disabled || baseRequired(item.id)} onChange={(event) => toggle(item.id, event.target.checked)} /><span><strong>{item.label}</strong><small>{item.description || item.id}</small></span></label>)}</div></fieldset>)}</div>;
 }
@@ -269,9 +273,10 @@ function roleName(role: Role) {
 }
 
 function bindingSummary(bindings?: RoleBinding[]) {
-  if (!bindings?.length) return "全局角色";
+  if (bindings === undefined) return "全局角色";
+  if (bindings.length === 0) return "无权限绑定";
   const global = bindings.find((item) => item.scope_type === "global");
-  const customized = bindings.some((binding) => binding.permissions?.length
+  const customized = bindings.some((binding) => binding.permissions !== undefined
     && JSON.stringify([...binding.permissions].sort()) !== JSON.stringify(rolePresetPermissions(binding.role).filter((permission) => permissionAllowedAtScope(permission, binding.scope_type)).sort()));
   const suffix = customized ? " · 自定义权限" : "";
   return global ? `${roleName(global.role)} · 全局${suffix}` : `${bindings.length} 个资源范围${suffix}`;
@@ -352,36 +357,57 @@ function APITokenModal({ open, user, onClose }: { open: boolean; user: User | nu
   const toast = useToast();
   const client = useQueryClient();
   const tokens = useQuery({ queryKey: ["api-tokens"], queryFn: api.apiTokens, enabled: open });
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.nodes, enabled: open });
-  const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: open });
+  const canReadNodes = hasAnyPermission(user, "nodes.read");
+  const canReadInstances = hasAnyPermission(user, "instances.read");
+  const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.nodes, enabled: open && canReadNodes });
+  const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: open && canReadInstances });
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
-  const allowedScopes = useMemo(() => tokenScopesForUser(user), [user]);
-  const [scope, setScope] = useState<"read" | "operate" | "manage">(allowedScopes.includes("operate") ? "operate" : "read");
+  const globalScopes = useMemo(() => tokenScopesForGlobal(user), [user]);
+  const [scope, setScope] = useState<"read" | "operate" | "manage">("read");
   const [resource, setResource] = useState<"global" | "node" | "instance">("global");
   const [resourceID, setResourceID] = useState("");
   const [days, setDays] = useState(90);
   const [secret, setSecret] = useState("");
+  const nodeOptions = useMemo(() => (nodes.data?.items || []).filter((item) => hasNodePermission(user, item.id, "nodes.read") && tokenScopesForNode(user, item.id).length > 0), [nodes.data, user]);
+  const instanceOptions = useMemo(() => (instances.data?.items || []).filter((item) => hasInstancePermission(user, item, "instances.read") && tokenScopesForInstance(user, item).length > 0), [instances.data, user]);
+  const selectedInstance = instanceOptions.find((item) => item.id === resourceID);
+  const allowedScopes = resource === "global" ? globalScopes
+    : resource === "node" && resourceID ? tokenScopesForNode(user, resourceID)
+      : resource === "instance" && selectedInstance ? tokenScopesForInstance(user, selectedInstance) : [];
+  const canDelegate = globalScopes.length > 0 || nodeOptions.length > 0 || instanceOptions.length > 0;
+  const delegateOptionsLoading = (canReadNodes && nodes.isPending) || (canReadInstances && instances.isPending);
   const create = useMutation({
-    mutationFn: () => api.createApiToken({
-      name: name.trim(), scopes: [scope],
-      node_id: resource === "node" ? resourceID : undefined,
-      instance_id: resource === "instance" ? resourceID : undefined,
-      expires_at: new Date(Date.now() + days * 86_400_000).toISOString(),
-    }),
+    mutationFn: () => {
+      if (!allowedScopes.includes(scope)) throw new Error("当前资源范围不能委派所选权限");
+      return api.createApiToken({
+        name: name.trim(), scopes: [scope],
+        node_id: resource === "node" ? resourceID : undefined,
+        instance_id: resource === "instance" ? resourceID : undefined,
+        expires_at: new Date(Date.now() + days * 86_400_000).toISOString(),
+      });
+    },
     onSuccess: (result) => { setSecret(result.token); void client.invalidateQueries({ queryKey: ["api-tokens"] }); toast.push("API Token 已创建，只会显示一次"); },
     onError: (error) => toast.push(error.message, "error"),
   });
   const revoke = useMutation({ mutationFn: api.revokeApiToken, onSuccess: () => { void client.invalidateQueries({ queryKey: ["api-tokens"] }); toast.push("API Token 已撤销"); }, onError: (error) => toast.push(error.message, "error") });
   useEffect(() => { if (!open) { setCreating(false); setName(""); setResource("global"); setResourceID(""); setSecret(""); } }, [open]);
-  useEffect(() => { if (!allowedScopes.includes(scope)) setScope(allowedScopes[allowedScopes.length - 1]); }, [allowedScopes, scope]);
+  useEffect(() => {
+    if (!open || resource !== "global" || globalScopes.length) return;
+    if (canReadNodes) setResource("node");
+    else if (canReadInstances) setResource("instance");
+  }, [canReadInstances, canReadNodes, globalScopes.length, open, resource]);
+  useEffect(() => {
+    if (allowedScopes.length && !allowedScopes.includes(scope)) setScope(allowedScopes[allowedScopes.length - 1]);
+  }, [allowedScopes, scope]);
 
   const close = () => {
     if (secret && !window.confirm("令牌关闭后不会再次显示。确认已经保存？")) return;
     onClose();
   };
-  const resourceOptions = resource === "node" ? nodes.data?.items || [] : instances.data?.items || [];
-  return <Modal open={open} onClose={close} title="API Token" description="令牌受账号角色、权限范围、资源范围和到期时间四重限制。" footer={<><Button variant="secondary" onClick={close}>关闭</Button>{!creating && !secret && <Button onClick={() => setCreating(true)}><Plus size={16} />新建令牌</Button>}{creating && !secret && <Button onClick={() => create.mutate()} loading={create.isPending} disabled={!name.trim() || (resource !== "global" && !resourceID)}>创建</Button>}</>}>
-    {secret ? <div className="form-stack"><div className="form-warning"><ShieldCheck size={18} />令牌只显示这一次，请立即复制到安全位置。</div><div className="token-secret"><code>{secret}</code><Button variant="secondary" onClick={() => void navigator.clipboard.writeText(secret)}><Clipboard size={16} />复制</Button></div></div> : creating ? <div className="form-stack"><Field label="名称"><input autoFocus value={name} onChange={(event) => setName(event.target.value)} maxLength={100} placeholder="自动化维护脚本" /></Field><div className="form-grid"><Field label="权限范围"><select value={scope} onChange={(event) => setScope(event.target.value as typeof scope)}>{allowedScopes.map((item) => <option value={item} key={item}>{item === "read" ? "只读" : item === "operate" ? "操作" : "管理"}</option>)}</select></Field><Field label="有效期"><select value={days} onChange={(event) => setDays(Number(event.target.value))}><option value={30}>30 天</option><option value={90}>90 天</option><option value={180}>180 天</option><option value={365}>1 年</option></select></Field></div><Field label="资源范围"><select value={resource} onChange={(event) => { setResource(event.target.value as typeof resource); setResourceID(""); }}><option value="global">全部允许资源</option><option value="node">单个节点及其实例</option><option value="instance">单个实例</option></select></Field>{resource !== "global" && <Field label={resource === "node" ? "节点" : "实例"}><select value={resourceID} onChange={(event) => setResourceID(event.target.value)}><option value="">请选择</option>{resourceOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>}</div> : tokens.isPending ? <LoadingBlock label="正在读取令牌…" /> : tokens.error ? <ErrorState error={tokens.error} retry={() => void tokens.refetch()} /> : tokens.data.items.length ? <div className="token-list">{tokens.data.items.map((token) => <div className="token-row" key={token.id}><div><strong>{token.name}</strong><span>{token.scopes.join(" / ")} · {token.instance_id ? "实例范围" : token.node_id ? "节点范围" : "全局范围"}</span></div><div><small>到期</small><time>{dateTime(token.expires_at)}</time></div><div><small>最近使用</small><time>{dateTime(token.last_used_at)}</time></div><Button variant="danger" aria-label={`撤销 ${token.name}`} onClick={() => { if (window.confirm(`确认撤销“${token.name}”？`)) revoke.mutate(token.id); }} loading={revoke.isPending}><Trash2 size={15} />撤销</Button></div>)}</div> : <EmptyState title="还没有 API Token" description="为自动化创建最小权限、最小资源范围且会自动过期的令牌。" />}
+  const resourceOptions = resource === "node" ? nodeOptions : instanceOptions;
+  return <Modal open={open} onClose={close} title="API Token" description="令牌受账号角色、权限范围、资源范围和到期时间四重限制。" footer={<><Button variant="secondary" onClick={close}>关闭</Button>{!creating && !secret && <Button onClick={() => setCreating(true)} disabled={!canDelegate} title={!canDelegate ? "当前账号没有可委派权限" : undefined}><Plus size={16} />新建令牌</Button>}{creating && !secret && <Button onClick={() => create.mutate()} loading={create.isPending} disabled={!canDelegate || !allowedScopes.includes(scope) || !name.trim() || (resource !== "global" && !resourceID)}>创建</Button>}</>}>
+    {!canDelegate && !delegateOptionsLoading && <div className="form-warning"><ShieldAlert size={18} />当前账号没有可委派权限，不能创建新的 API Token；已有令牌仍可在下方撤销。</div>}
+    {secret ? <div className="form-stack"><div className="form-warning"><ShieldCheck size={18} />令牌只显示这一次，请立即复制到安全位置。</div><div className="token-secret"><code>{secret}</code><Button variant="secondary" onClick={() => void navigator.clipboard.writeText(secret)}><Clipboard size={16} />复制</Button></div></div> : creating ? <div className="form-stack"><Field label="名称"><input autoFocus value={name} onChange={(event) => setName(event.target.value)} maxLength={100} placeholder="自动化维护脚本" /></Field><div className="form-grid"><Field label="权限范围"><select value={scope} disabled={!allowedScopes.length} onChange={(event) => setScope(event.target.value as typeof scope)}>{!allowedScopes.length && <option value="">请先选择资源</option>}{allowedScopes.map((item) => <option value={item} key={item}>{item === "read" ? "只读" : item === "operate" ? "操作" : "管理"}</option>)}</select></Field><Field label="有效期"><select value={days} onChange={(event) => setDays(Number(event.target.value))}><option value={30}>30 天</option><option value={90}>90 天</option><option value={180}>180 天</option><option value={365}>1 年</option></select></Field></div><Field label="资源范围"><select value={resource} onChange={(event) => { setResource(event.target.value as typeof resource); setResourceID(""); }}>{globalScopes.length > 0 && <option value="global">全部允许资源</option>}{canReadNodes && <option value="node">单个节点及其实例</option>}{canReadInstances && <option value="instance">单个实例</option>}</select></Field>{resource !== "global" && <Field label={resource === "node" ? "节点" : "实例"}><select value={resourceID} onChange={(event) => setResourceID(event.target.value)}><option value="">请选择</option>{resourceOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>}</div> : tokens.isPending ? <LoadingBlock label="正在读取令牌…" /> : tokens.error ? <ErrorState error={tokens.error} retry={() => void tokens.refetch()} /> : tokens.data.items.length ? <div className="token-list">{tokens.data.items.map((token) => <div className="token-row" key={token.id}><div><strong>{token.name}</strong><span>{token.scopes.join(" / ")} · {token.instance_id ? "实例范围" : token.node_id ? "节点范围" : "全局范围"}</span></div><div><small>到期</small><time>{dateTime(token.expires_at)}</time></div><div><small>最近使用</small><time>{dateTime(token.last_used_at)}</time></div><Button variant="danger" aria-label={`撤销 ${token.name}`} onClick={() => { if (window.confirm(`确认撤销“${token.name}”？`)) revoke.mutate(token.id); }} loading={revoke.isPending}><Trash2 size={15} />撤销</Button></div>)}</div> : <EmptyState title="还没有 API Token" description="为自动化创建最小权限、最小资源范围且会自动过期的令牌。" />}
   </Modal>;
 }

@@ -33,8 +33,6 @@ const (
 	PermissionInstancesStart         Permission = "instances.start"
 	PermissionInstancesStop          Permission = "instances.stop"
 	PermissionInstancesRestart       Permission = "instances.restart"
-	PermissionInstancesUpdate        Permission = "instances.update"
-	PermissionInstancesValidate      Permission = "instances.validate"
 	PermissionPlayersRead            Permission = "players.read"
 	PermissionPlayersKick            Permission = "players.kick"
 	PermissionPlayersBan             Permission = "players.ban"
@@ -46,7 +44,6 @@ const (
 	PermissionFilesRead              Permission = "files.read"
 	PermissionFilesWrite             Permission = "files.write"
 	PermissionFilesDelete            Permission = "files.delete"
-	PermissionFilesUpload            Permission = "files.upload"
 	PermissionPackagesRead           Permission = "packages.read"
 	PermissionPackagesInstall        Permission = "packages.install"
 	PermissionPackagesToggle         Permission = "packages.toggle"
@@ -106,8 +103,6 @@ var permissionDefinitions = map[Permission]permissionDefinition{
 	PermissionInstancesStart:         {PermissionOperate, permissionScopeInstance},
 	PermissionInstancesStop:          {PermissionOperate, permissionScopeInstance},
 	PermissionInstancesRestart:       {PermissionOperate, permissionScopeInstance},
-	PermissionInstancesUpdate:        {PermissionOperate, permissionScopeInstance},
-	PermissionInstancesValidate:      {PermissionOperate, permissionScopeInstance},
 	PermissionPlayersRead:            {PermissionRead, permissionScopeInstance},
 	PermissionPlayersKick:            {PermissionOperate, permissionScopeInstance},
 	PermissionPlayersBan:             {PermissionOperate, permissionScopeInstance},
@@ -119,7 +114,6 @@ var permissionDefinitions = map[Permission]permissionDefinition{
 	PermissionFilesRead:              {PermissionOperate, permissionScopeInstance},
 	PermissionFilesWrite:             {PermissionOperate, permissionScopeInstance},
 	PermissionFilesDelete:            {PermissionOperate, permissionScopeInstance},
-	PermissionFilesUpload:            {PermissionManage, permissionScopeInstance},
 	PermissionPackagesRead:           {PermissionRead, permissionScopeInstance},
 	PermissionPackagesInstall:        {PermissionManage, permissionScopeInstance},
 	PermissionPackagesToggle:         {PermissionManage, permissionScopeInstance},
@@ -181,9 +175,6 @@ func presetPermissionsForScope(role domain.Role, scopeType string) []string {
 }
 
 func bindingAllows(binding domain.RoleBinding, permission Permission) bool {
-	if len(binding.Permissions) == 0 {
-		return RoleAllows(binding.Role, permission)
-	}
 	requestedClass, requestedIsClass := permissionClass(permission)
 	requestedIsClass = requestedIsClass && requestedClass == permission && permission != PermissionRootSecurity
 	for _, granted := range binding.Permissions {
@@ -254,8 +245,11 @@ var instanceJobPermissions = map[string]Permission{
 	"toggle_package":      PermissionPackagesToggle,
 	"delete_package":      PermissionPackagesDelete,
 	"unban_player":        PermissionPlayersUnban,
-	"update":              PermissionInstancesUpdate,
-	"validate":            PermissionInstancesValidate,
+	// Legacy instance maintenance jobs remain valid for durable job replay and
+	// state projection, but maintenance authority now belongs to the selected
+	// game installation's node-scoped runtime environment.
+	"update":   PermissionEnvironmentsManage,
+	"validate": PermissionEnvironmentsManage,
 }
 
 // genericInstanceActionPermissions is the public contract for
@@ -306,8 +300,6 @@ func validateScheduledPayload(action string, payload map[string]any) error {
 		allowed["timeout_seconds"], allowed["maintenance"], allowed["warning_seconds"] = true, true, true
 	case "restart":
 		allowed["timeout_seconds"], allowed["health_timeout_seconds"] = true, true
-	case "update", "validate":
-		allowed["timeout_seconds"], allowed["maintenance"], allowed["warning_seconds"], allowed["health_timeout_seconds"] = true, true, true, true
 	case "backup":
 		allowed["kind"], allowed["retention_daily"], allowed["retention_weekly"] = true, true, true
 	case "broadcast":
@@ -399,6 +391,17 @@ func scheduledInteger(value any) (int, bool) {
 func InstanceActionPermission(action string) (Permission, bool) {
 	permission, ok := instanceJobPermissions[action]
 	return permission, ok
+}
+
+// normalizedInstanceActionPermission keeps authorization tied to the public
+// action after it is converted into a fixed internal Agent job. Broadcast is
+// intentionally dispatched as a sanitized RCON command without granting the
+// caller authority to submit arbitrary RCON commands.
+func normalizedInstanceActionPermission(publicAction, internalAction string) (Permission, bool) {
+	if publicAction == "broadcast" && internalAction == "rcon" {
+		return PermissionPlayersBroadcast, true
+	}
+	return InstanceActionPermission(internalAction)
 }
 
 func RoleAllowsInstanceAction(role domain.Role, action string) bool {

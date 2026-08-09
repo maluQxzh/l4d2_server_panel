@@ -123,6 +123,29 @@ func (s *Server) handleCreateBackupUploadChunk(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "status": job.Status, "idempotent_replay": reused})
 }
 
+// handleGetBackupUploadChunk exposes only the terminal state needed to resume
+// an upload. It deliberately does not use the generic job endpoint: a caller
+// with backups.restore may upload and recover a backup without also receiving
+// jobs.read or jobs.details.
+func (s *Server) handleGetBackupUploadChunk(w http.ResponseWriter, r *http.Request) {
+	instanceID, uploadID := chi.URLParam(r, "instanceID"), chi.URLParam(r, "uploadID")
+	upload, err := s.store.GetBackupUpload(r.Context(), instanceID, uploadID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	job, err := s.store.GetJob(r.Context(), chi.URLParam(r, "jobID"))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if job.Type != "backup.upload.chunk" || job.InstanceID != upload.InstanceID || stringFromAny(job.Payload["upload_id"]) != upload.ID {
+		s.fail(w, ErrNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"job_id": job.ID, "status": job.Status})
+}
+
 func (s *Server) handleCompleteBackupUpload(w http.ResponseWriter, r *http.Request) {
 	instanceID, uploadID := chi.URLParam(r, "instanceID"), chi.URLParam(r, "uploadID")
 	requestFingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "backup-upload", instanceID, "restore", map[string]any{"upload_id": uploadID})

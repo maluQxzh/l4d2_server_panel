@@ -1,0 +1,116 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ToastProvider } from "../context/ToastContext";
+import { api } from "../lib/api";
+import type { User } from "../lib/types";
+
+const authState = vi.hoisted(() => ({
+  user: { role: "viewer", role_bindings: [] } as Record<string, unknown>,
+  logout: vi.fn(),
+}));
+
+vi.mock("../context/AuthContext", () => ({ useAuth: () => authState }));
+
+import { SettingsPage } from "./SettingsPage";
+
+function renderPage() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  return render(<QueryClientProvider client={client}><ToastProvider><MemoryRouter><SettingsPage /></MemoryRouter></ToastProvider></QueryClientProvider>);
+}
+
+function mockOwnerSettings(target: User) {
+  authState.user = { id: "owner-1", username: "owner", display_name: "所有者", role: "owner", role_bindings: undefined };
+  vi.spyOn(api, "users").mockResolvedValue({ items: [target] });
+  vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
+  vi.spyOn(api, "instances").mockResolvedValue({ items: [] });
+  vi.spyOn(api, "systemUpdates").mockResolvedValue({ supported: false, current_version: "dev", history: [], reason: "test" });
+}
+
+describe("设置页全局审计权限", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+  });
+
+  it("没有 audit.read_global 时不查询或显示全局审计", async () => {
+    authState.user = { role: "viewer", role_bindings: [] };
+    const audit = vi.spyOn(api, "audit").mockResolvedValue({ items: [] });
+    renderPage();
+    expect(screen.queryByRole("heading", { name: "全局审计" })).not.toBeInTheDocument();
+    await waitFor(() => expect(audit).not.toHaveBeenCalled());
+  });
+
+  it("仅凭独立全局审计权限即可读取脱敏事件", async () => {
+    authState.user = {
+      role: "viewer",
+      role_bindings: [{ role: "viewer", scope_type: "global", permissions: ["audit.read_global"] }],
+    };
+    const audit = vi.spyOn(api, "audit").mockResolvedValue({ items: [{
+      id: "audit-1",
+      actor_name: "审计员",
+      action: "permissions.updated",
+      resource_type: "user",
+      resource_id: "user-123456789",
+      remote_ip: "192.0.2.10",
+      metadata: { changed: 2 },
+      created_at: "2026-08-09T00:00:00Z",
+    }] });
+    renderPage();
+    expect(await screen.findByRole("heading", { name: "全局审计" })).toBeInTheDocument();
+    expect(await screen.findByText("审计员 · permissions.updated")).toBeInTheDocument();
+    expect(screen.getByText('{"changed":2}')).toBeInTheDocument();
+    expect(audit).toHaveBeenCalledWith();
+  });
+
+  it("保留服务端已有零绑定，且不会在编辑时回退角色预设", async () => {
+    const target: User = { id: "user-empty", username: "empty", display_name: "零权限用户", role: "admin", totp_enabled: false, account_state: "active", role_bindings: [], created_at: "2026-08-09T00:00:00Z" };
+    mockOwnerSettings(target);
+    const update = vi.spyOn(api, "updateUser").mockResolvedValue({ user: target });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "管理" }));
+    expect(await screen.findByText(/当前没有权限绑定/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("显示名称"), { target: { value: "新的显示名" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存更改" }));
+    await waitFor(() => expect(update).toHaveBeenCalledWith("user-empty", { display_name: "新的显示名" }));
+  });
+
+  it("阻止把已有非空绑定删除为后端不接受的空集合", async () => {
+    const target: User = { id: "user-bound", username: "bound", display_name: "有权限用户", role: "viewer", totp_enabled: false, account_state: "active", role_bindings: [{ role: "viewer", scope_type: "global", permissions: ["nodes.read"] }], created_at: "2026-08-09T00:00:00Z" };
+    mockOwnerSettings(target);
+    const update = vi.spyOn(api, "updateUser").mockResolvedValue({ user: target });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "管理" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除权限绑定" }));
+    expect(screen.getByText(/至少保留一条权限绑定/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("显示名称"), { target: { value: "仍然无效" } });
+    expect(screen.getByRole("button", { name: "保存更改" })).toBeDisabled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("零权限账号仍可查看并撤销已有 API Token", async () => {
+    authState.user = { id: "empty-user", username: "empty", display_name: "零权限", role: "viewer", role_bindings: [] };
+    vi.spyOn(api, "apiTokens").mockResolvedValue({ items: [{
+      id: "token-1",
+      user_id: "empty-user",
+      name: "旧自动化令牌",
+      scopes: ["operate"],
+      expires_at: "2026-12-31T00:00:00Z",
+      created_at: "2026-08-01T00:00:00Z",
+    }] });
+    const revoke = vi.spyOn(api, "revokeApiToken").mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: /API Token/ }));
+    expect(await screen.findByText("旧自动化令牌")).toBeInTheDocument();
+    expect(screen.getByText(/已有令牌仍可在下方撤销/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新建令牌" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "撤销 旧自动化令牌" }));
+    await waitFor(() => expect(revoke).toHaveBeenCalled());
+    expect(revoke.mock.calls[0][0]).toBe("token-1");
+  });
+});

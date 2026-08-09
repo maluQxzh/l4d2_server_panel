@@ -698,7 +698,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		// supervision for the first time.
 		request.Payload["instance"] = instance
 	}
-	requiredPermission, _ = InstanceActionPermission(request.Type)
+	requiredPermission, _ = normalizedInstanceActionPermission(originalType, request.Type)
 	if !principal.AllowsInstancePermission(instance, requiredPermission) {
 		writeError(w, http.StatusForbidden, "forbidden", "this action requires administrator permission")
 		return
@@ -876,7 +876,12 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	job = redactJobForPrincipal(job, principalFromContext(r.Context()))
+	principal := principalFromContext(r.Context())
+	if !principal.AllowsJobPermission(job, PermissionJobsRead) && !principal.AllowsJobPermission(job, PermissionJobsDetails) {
+		writeError(w, http.StatusForbidden, "forbidden", "job permission denied")
+		return
+	}
+	job = redactJobForPrincipal(job, principal)
 	writeJSON(w, http.StatusOK, map[string]any{"job": job})
 }
 
@@ -931,17 +936,26 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 	principal := principalFromContext(r.Context())
 	resourceID := r.URL.Query().Get("resource_id")
-	if resourceID != "" && !s.tokenAllowsAuditResource(r.Context(), principal, resourceID) {
-		writeTokenScopeDenied(w)
-		return
-	}
-	if resourceID == "" && principal.GlobalAllows(PermissionAuditRead) && !principal.GlobalAllows(PermissionAuditReadGlobal) {
-		writeError(w, http.StatusForbidden, "forbidden", "global audit access requires administrator permission")
-		return
+	globalRead := principal.GlobalAllows(PermissionAuditRead)
+	globalReadAll := principal.GlobalAllows(PermissionAuditReadGlobal)
+	if resourceID != "" {
+		if !globalReadAll && !s.tokenAllowsAuditResource(r.Context(), principal, resourceID) {
+			writeTokenScopeDenied(w)
+			return
+		}
+	} else {
+		if globalRead && !globalReadAll {
+			writeError(w, http.StatusForbidden, "forbidden", "global audit access requires administrator permission")
+			return
+		}
+		if !globalReadAll && !principal.Allows(PermissionAuditRead) {
+			writeError(w, http.StatusForbidden, "forbidden", "audit permission denied")
+			return
+		}
 	}
 	limit := parseLimit(r, 100)
 	queryLimit := limit
-	if resourceID == "" && !principal.GlobalAllows(PermissionAuditReadGlobal) {
+	if resourceID == "" && !globalReadAll {
 		queryLimit = limit * 5
 		if queryLimit > 500 {
 			queryLimit = 500
@@ -952,7 +966,7 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	if !principal.GlobalAllows(PermissionAuditReadGlobal) {
+	if !globalReadAll {
 		filtered := make([]domain.AuditEvent, 0, min(limit, len(items)))
 		for _, item := range items {
 			if s.auditEventAllowed(r.Context(), principal, item) {
@@ -964,7 +978,7 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		}
 		items = filtered
 	}
-	if !principal.GlobalAllows(PermissionAuditReadGlobal) {
+	if !globalReadAll {
 		for i := range items {
 			items[i].RemoteIP = ""
 		}

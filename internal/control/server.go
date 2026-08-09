@@ -147,9 +147,6 @@ func (s *Server) runDueSchedules(ctx context.Context) {
 				continue
 			}
 		}
-		if schedule.Action == "update" {
-			payload["maintenance"] = true
-		}
 		job, _, queueErr := s.store.QueueInstanceJob(ctx, schedule.InstanceID, action, payload, "", key)
 		if queueErr == nil {
 			_ = s.store.WriteAudit(ctx, domain.AuditEvent{ActorName: "scheduler", Action: "schedule.triggered", ResourceType: "schedule",
@@ -204,7 +201,7 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requireNodePermission(PermissionNodesUpdate)).Patch("/nodes/{nodeID}", s.handlePatchNode)
 			r.With(s.requireNodePermission(PermissionNodesCredentialsRotate)).Post("/nodes/{nodeID}/credential/rotate", s.handleRotateNodeCredential)
 			r.With(s.requireNodePermission(PermissionNodesDiscover)).Post("/nodes/{nodeID}/discoveries", s.handleCreateNodeDiscovery)
-			r.With(s.requireNodePermission(PermissionNodesDiscover), s.requireJobPermission(PermissionJobsRead)).Get("/nodes/{nodeID}/discoveries/{jobID}", s.handleGetNodeDiscovery)
+			r.With(s.requireNodePermission(PermissionNodesDiscover)).Get("/nodes/{nodeID}/discoveries/{jobID}", s.handleGetNodeDiscovery)
 			r.With(s.requireNodePermission(PermissionNodesQuarantineRead)).Get("/nodes/{nodeID}/quarantine", s.handleListNodeQuarantine)
 			r.With(s.requireInteractiveSession, s.requireNodePermission(PermissionNodesQuarantinePurge)).Post("/nodes/{nodeID}/quarantine/{entryID}/purge-confirmations", s.handleCreateQuarantinePurgeConfirmation)
 			r.With(s.requireInteractiveSession, s.requireNodePermission(PermissionNodesQuarantinePurge)).Post("/nodes/{nodeID}/quarantine/{entryID}/purge", s.handlePurgeQuarantineEntry)
@@ -238,6 +235,7 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requireInstancePermission(PermissionBackupsRestore)).Get("/instances/{instanceID}/backup-uploads/{uploadID}", s.handleGetBackupUpload)
 			r.With(s.requireInstancePermission(PermissionBackupsRestore)).Delete("/instances/{instanceID}/backup-uploads/{uploadID}", s.handleAbortBackupUpload)
 			r.With(s.requireInstancePermission(PermissionBackupsRestore)).Post("/instances/{instanceID}/backup-uploads/{uploadID}/chunks", s.handleCreateBackupUploadChunk)
+			r.With(s.requireInstancePermission(PermissionBackupsRestore)).Get("/instances/{instanceID}/backup-uploads/{uploadID}/chunks/{jobID}", s.handleGetBackupUploadChunk)
 			r.With(s.requireInstancePermission(PermissionBackupsRestore)).Post("/instances/{instanceID}/backup-uploads/{uploadID}/complete", s.handleCompleteBackupUpload)
 			r.With(s.requireInstancePermission(PermissionLogsRead)).Post("/instances/{instanceID}/logs/search", s.handleCreateLogSearch)
 			r.With(s.requireInstancePermission(PermissionLogsRead)).Get("/instances/{instanceID}/logs/search/{jobID}", s.handleGetLogSearch)
@@ -262,9 +260,9 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requireInteractiveSession, s.requirePermission(PermissionMapsDelete)).Post("/maps/{mapID}/delete-confirmations", s.handleCreateMapDeleteConfirmation)
 			r.With(s.requireInteractiveSession, s.requirePermission(PermissionMapsDelete)).Delete("/maps/{mapID}", s.handleDeleteMap)
 			r.With(s.requirePermission(PermissionJobsRead)).Get("/jobs", s.handleListJobs)
-			r.With(s.requireJobPermission(PermissionJobsRead)).Get("/jobs/{jobID}", s.handleGetJob)
+			r.Get("/jobs/{jobID}", s.handleGetJob)
 			r.With(s.requireJobPermission(PermissionJobsCancel)).Post("/jobs/{jobID}/cancel", s.handleCancelJob)
-			r.With(s.requirePermission(PermissionAuditRead)).Get("/audit", s.handleListAudit)
+			r.Get("/audit", s.handleListAudit)
 			r.With(s.requirePermission(PermissionNotificationsRead)).Get("/notifications", s.handleListNotifications)
 			r.With(s.requirePermission(PermissionNotificationsRead)).Post("/notifications/{notificationID}/read", s.handleReadNotification)
 			r.With(s.requirePermission(PermissionMetricsRead)).Get("/metrics", s.handleMetrics)

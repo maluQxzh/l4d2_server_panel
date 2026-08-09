@@ -1,28 +1,29 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, Copy, KeyRound, Laptop, MoreHorizontal, Plus, RefreshCw, RotateCw, Server, ShieldAlert, Trash2 } from "lucide-react";
+import { Archive, Copy, FolderSearch, KeyRound, Laptop, MoreHorizontal, Plus, RefreshCw, RotateCw, Server, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, MetricBar, Modal, PageHeader, StatusBadge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
 import { useToast } from "../context/ToastContext";
 import { api } from "../lib/api";
-import { hasGlobalPermission } from "../lib/account-permissions";
+import { hasAnyPermission, hasGlobalPermission } from "../lib/account-permissions";
 import { bytes, dateTime, percent, relativeTime } from "../lib/format";
 import { canAccessNode } from "../lib/instance-lifecycle";
-import type { NodeRecord, QuarantineEntry } from "../lib/types";
+import type { NodeDiscoveryResult, NodeRecord, QuarantineEntry } from "../lib/types";
 
 export function NodesPage() {
   const { user } = useAuth();
   const canEnroll = hasGlobalPermission(user, "nodes.enroll");
+  const canReadNodes = hasAnyPermission(user, "nodes.read");
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [selected, setSelected] = useState<NodeRecord | null>(null);
   const realtime = useRealtime();
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.nodes, refetchInterval: realtime.state === "live" ? false : 15_000 });
+  const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.nodes, enabled: canReadNodes, refetchInterval: realtime.state === "live" ? false : 15_000 });
 
   return (
     <div>
-      <PageHeader eyebrow="NODE FLEET" title="节点" description="管理承载游戏实例的 Windows 与 Linux 主机。" actions={<><Button variant="secondary" onClick={() => void nodes.refetch()}><RefreshCw size={16} />刷新</Button>{canEnroll && <Button onClick={() => setEnrollOpen(true)}><Plus size={17} />接入节点</Button>}</>} />
-      {nodes.isPending ? <LoadingBlock label="正在检查节点心跳…" /> : nodes.error ? <ErrorState error={nodes.error} retry={() => void nodes.refetch()} /> : nodes.data.items.length === 0 ? <Card><EmptyState title="还没有节点" description="创建一次性注册令牌，在 Windows 或 Linux 主机上安装 Agent。" action={canEnroll ? <Button onClick={() => setEnrollOpen(true)}><Plus size={16} />接入第一个节点</Button> : undefined} /></Card> : (
+      <PageHeader eyebrow="NODE FLEET" title="节点" description="管理承载游戏实例的 Windows 与 Linux 主机。" actions={<>{canReadNodes && <Button variant="secondary" onClick={() => void nodes.refetch()}><RefreshCw size={16} />刷新</Button>}{canEnroll && <Button onClick={() => setEnrollOpen(true)}><Plus size={17} />接入节点</Button>}</>} />
+      {!canReadNodes ? <Card><EmptyState title="可接入新节点" description="当前账号不能读取节点列表；你仍可创建一次性注册令牌接入新主机。" action={canEnroll ? <Button onClick={() => setEnrollOpen(true)}><Plus size={16} />接入节点</Button> : undefined} /></Card> : nodes.isPending ? <LoadingBlock label="正在检查节点心跳…" /> : nodes.error ? <ErrorState error={nodes.error} retry={() => void nodes.refetch()} /> : nodes.data.items.length === 0 ? <Card><EmptyState title="还没有节点" description="创建一次性注册令牌，在 Windows 或 Linux 主机上安装 Agent。" action={canEnroll ? <Button onClick={() => setEnrollOpen(true)}><Plus size={16} />接入第一个节点</Button> : undefined} /></Card> : (
         <div className="node-grid">
           {nodes.data.items.map((node) => (
             <Card className={`node-card node-card--${node.status}`} key={node.id}>
@@ -66,18 +67,29 @@ function NodeManageModal({ node, onClose }: { node: NodeRecord | null; onClose: 
   const { user } = useAuth();
   const toast = useToast();
   const client = useQueryClient();
+  const [discovery, setDiscovery] = useState<NodeDiscoveryResult | null>(null);
   const [newCredential, setNewCredential] = useState("");
   const [publicAddress, setPublicAddress] = useState("");
   const canUpdate = Boolean(node && canAccessNode(user, node.id, "nodes.update"));
   const canRotate = Boolean(node && canAccessNode(user, node.id, "nodes.credentials.rotate"));
   const canDelete = Boolean(node && canAccessNode(user, node.id, "nodes.delete"));
+  const canDiscover = Boolean(node && canAccessNode(user, node.id, "nodes.discover"));
   const canViewQuarantine = Boolean(node && canAccessNode(user, node.id, "nodes.quarantine.read"));
   const canPurgeQuarantine = Boolean(node && canAccessNode(user, node.id, "nodes.quarantine.purge"));
   useEffect(() => { setPublicAddress(node?.public_address || ""); }, [node?.id, node?.public_address]);
   const close = () => {
+    setDiscovery(null);
     setNewCredential("");
     onClose();
   };
+  const discover = useMutation({
+    mutationFn: () => api.discoverNodeInstances(node!.id),
+    onSuccess: (result) => {
+      setDiscovery(result);
+      toast.push(result.candidates.length ? `发现 ${result.candidates.length} 个 L4D2 安装` : "扫描完成，未发现可识别安装");
+    },
+    onError: (error) => toast.push(error.message, "error"),
+  });
   const rotate = useMutation({
     mutationFn: () => api.rotateNodeCredential(node!.id),
     onSuccess: (result) => {
@@ -124,6 +136,11 @@ function NodeManageModal({ node, onClose }: { node: NodeRecord | null; onClose: 
           <Button type="submit" variant="secondary" loading={saveNode.isPending} disabled={!canUpdate}>保存公开地址</Button>
         </form>
       </section>
+      {canDiscover && <section className="node-discovery">
+        <div className="node-section-heading"><div><strong>发现已有游戏安装</strong><span>只扫描 Agent 配置的实例根目录；不会跟随符号链接或 Windows 重解析点。</span></div><Button variant="secondary" loading={discover.isPending} disabled={node.status !== "online" || rotate.isSuccess} onClick={() => discover.mutate()}><FolderSearch size={15} />扫描安装</Button></div>
+        {discover.isPending && <LoadingBlock label="正在安全扫描实例根目录…" />}
+        {discovery && !discover.isPending && <><div className="discovery-summary"><span>检查 {discovery.scanned_directories} 个目录</span><span>跳过 {discovery.skipped_links} 个链接</span>{discovery.truncated && <strong>已达到扫描上限</strong>}</div>{discovery.candidates.length ? <div className="discovery-list">{discovery.candidates.map((candidate) => <div className="discovery-candidate discovery-candidate--readonly" key={`${candidate.root_index}:${candidate.path}`}><span className="discovery-radio" /><span><strong>{candidate.name}</strong><code>根目录 {candidate.root_index} · {candidate.path}</code><small>{candidate.evidence.join(" · ")}</small></span><span>{candidate.managed ? "已登记" : candidate.likely_running ? `可能运行中${candidate.pid ? ` · PID ${candidate.pid}` : ""}` : "可登记"}</span></div>)}</div> : <EmptyState title="未发现可识别的安装" description="候选目录需要包含 srcds 可执行文件和 left4dead2 目录。" />}</>}
+      </section>}
       <NodeQuarantineSection node={node} canView={canViewQuarantine} canPurge={canPurgeQuarantine} />
       <section className="node-credential-risk">
         <div className="danger-note"><ShieldAlert size={20} /><div><strong>节点凭据属于高风险设置</strong><span>轮换会立即断开 Agent。新凭据只在这里返回一次，必须写入该节点的 agent.json 后重启 Agent。</span></div></div>

@@ -368,6 +368,9 @@ export const api = {
     `/instances/${encodeURIComponent(instanceId)}/backup-uploads/${encodeURIComponent(uploadId)}/chunks`,
     { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) },
   ),
+  backupUploadChunkStatus: (instanceId: string, uploadId: string, jobId: string) => request<{ job_id: string; status: JobStatus }>(
+    `/instances/${encodeURIComponent(instanceId)}/backup-uploads/${encodeURIComponent(uploadId)}/chunks/${encodeURIComponent(jobId)}`,
+  ),
   completeBackupUpload: (instanceId: string, uploadId: string, idempotencyKey: string) => request<{ job_id: string; status: JobStatus; idempotent_replay?: boolean }>(
     `/instances/${encodeURIComponent(instanceId)}/backup-uploads/${encodeURIComponent(uploadId)}/complete`,
     { method: "POST", headers: { "Idempotency-Key": idempotencyKey } },

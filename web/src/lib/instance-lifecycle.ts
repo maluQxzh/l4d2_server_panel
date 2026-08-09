@@ -1,7 +1,7 @@
 import { hasInstancePermission, hasNodePermission } from "./account-permissions";
 import type { InstanceConfig, InstanceRecord, InstanceStatus, Permission, User } from "./types";
 
-export type LifecycleAction = "start" | "stop" | "restart" | "validate" | "update" | "reinstall" | "detach" | "quarantine";
+export type LifecycleAction = "start" | "stop" | "restart" | "detach" | "quarantine";
 
 export function canAccessInstance(user: User | null, instance: Pick<InstanceRecord, "id" | "node_id">, permission: Permission) {
   return hasInstancePermission(user, instance, permission);
@@ -36,7 +36,6 @@ export function lifecycleActionAllowed(
   status: InstanceStatus,
   allows: (permission: Permission) => boolean,
 ) {
-  const stableManaged = status === "stopped" || status === "running" || status === "degraded";
   switch (action) {
   case "start":
     return allows("instances.start") && status === "stopped";
@@ -44,12 +43,6 @@ export function lifecycleActionAllowed(
     return allows("instances.stop") && (status === "running" || status === "degraded");
   case "restart":
     return allows("instances.restart") && (status === "running" || status === "degraded" || status === "external");
-  case "validate":
-    return allows("instances.validate") && stableManaged;
-  case "update":
-    return allows("instances.update") && stableManaged;
-  case "reinstall":
-    return allows("instances.delete") && stableManaged;
   case "detach":
     return allows("instances.delete") && (status === "stopped" || status === "external");
   case "quarantine":

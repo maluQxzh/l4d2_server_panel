@@ -184,6 +184,9 @@ func (s *Store) SetScheduleEnabled(ctx context.Context, instanceID, scheduleID s
 		return domain.Schedule{}, err
 	}
 	if enabled {
+		if !scheduledActionAllowed(item.Action) {
+			return domain.Schedule{}, fmt.Errorf("schedule action %q is no longer supported: %w", item.Action, ErrConflict)
+		}
 		location, locationErr := time.LoadLocation(item.Timezone)
 		if locationErr != nil {
 			return domain.Schedule{}, locationErr

@@ -1,14 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../context/ToastContext";
 import { api } from "../lib/api";
 import type { InstanceRecord } from "../lib/types";
 
-vi.mock("../context/AuthContext", () => ({
-  useAuth: () => ({ user: { role: "owner" } }),
-}));
+const authState = vi.hoisted(() => ({ user: { role: "owner" } as { role: string; role_bindings?: unknown } }));
+
+vi.mock("../context/AuthContext", () => ({ useAuth: () => authState }));
 
 import { InstanceDetailPage } from "./InstanceDetailPage";
 
@@ -59,7 +59,11 @@ function renderConfigPage(item: InstanceRecord) {
 }
 
 describe("游戏实例配置中的端口", () => {
-  afterEach(() => vi.restoreAllMocks());
+  beforeEach(() => { authState.user = { role: "owner" }; });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+  });
 
   it("停止状态把新端口随配置一起提交", async () => {
     const update = vi.spyOn(api, "updateInstance").mockResolvedValue({ instance: { ...instance, version: 5 } });
@@ -87,5 +91,46 @@ describe("游戏实例配置中的端口", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存配置" }));
 
     await waitFor(() => expect(update).toHaveBeenCalledWith(instance.id, expect.not.objectContaining({ port: expect.anything() })));
+  });
+
+  it("只显示已授权标签，且创建备份不依赖备份清单权限", async () => {
+    authState.user = {
+      role: "operator",
+      role_bindings: [{
+        role: "operator",
+        scope_type: "instance",
+        instance_id: instance.id,
+        permissions: ["instances.read", "backups.create"],
+      }],
+    };
+    localStorage.setItem(`l4d2panel.backup-upload.v1:${instance.id}`, JSON.stringify({
+      version: 1,
+      instanceId: instance.id,
+      createKey: "persisted-create-key",
+      uploadId: "22222222-2222-4222-8222-222222222222",
+      name: "old.zip",
+      size: 1024,
+      sha256: "a".repeat(64),
+      platform: "linux/amd64",
+      updatedAt: "2026-08-09T00:00:00Z",
+    }));
+    vi.spyOn(api, "instance").mockResolvedValue(instance);
+    const backups = vi.spyOn(api, "backups").mockResolvedValue({ items: [] });
+    const reconcileUpload = vi.spyOn(api, "backupUpload").mockRejectedValue(new Error("must not be queried"));
+    const router = createMemoryRouter(
+      [{ path: "/instances/:instanceId", element: <InstanceDetailPage /> }],
+      { initialEntries: [`/instances/${instance.id}?tab=backups`] },
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><ToastProvider><RouterProvider router={router} /></ToastProvider></QueryClientProvider>);
+
+    expect(await screen.findByRole("heading", { name: "实例备份" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "立即备份" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "控制台" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "玩家" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "配置" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "文件" })).not.toBeInTheDocument();
+    expect(backups).not.toHaveBeenCalled();
+    expect(reconcileUpload).not.toHaveBeenCalled();
   });
 });

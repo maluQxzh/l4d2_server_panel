@@ -5,9 +5,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
@@ -154,6 +156,84 @@ func TestGenericInstanceActionContractIsSeparateFromInternalJobs(t *testing.T) {
 	}
 }
 
+func TestBroadcastOnlyRequiresDedicatedBroadcastPermission(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "broadcast-permission.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	owner, created, err := store.BootstrapOwner(ctx, "owner", "Owner", "hash")
+	if err != nil || !created {
+		t.Fatalf("bootstrap owner: created=%v err=%v", created, err)
+	}
+	const nodeID = "4fe0dd94-ce80-448c-b9fa-20a2dccbfa44"
+	const instanceID = "3303620c-8c20-47c3-8c67-e49560416a3f"
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO nodes(id,name,status) VALUES(?1,'broadcast-node','online');
+		INSERT INTO instances(id,node_id,name,status,port,config) VALUES(?2,?1,'broadcast-instance','stopped',27015,'{}');
+	`, nodeID, instanceID); err != nil {
+		t.Fatal(err)
+	}
+
+	principal := Principal{User: owner, BindingsLoaded: true, Bindings: []domain.RoleBinding{{
+		Role: domain.RoleOperator, ScopeType: "instance", InstanceID: instanceID,
+		Permissions: []string{string(PermissionInstancesRead), string(PermissionPlayersBroadcast)},
+	}}}
+	instance := domain.Instance{ID: instanceID, NodeID: nodeID}
+	if !principal.AllowsInstancePermission(instance, PermissionPlayersBroadcast) {
+		t.Fatal("test principal is missing broadcast permission")
+	}
+	if principal.AllowsInstancePermission(instance, PermissionRCONExecute) {
+		t.Fatal("test principal unexpectedly has arbitrary RCON permission")
+	}
+	if permission, ok := normalizedInstanceActionPermission("broadcast", "rcon"); !ok || permission != PermissionPlayersBroadcast {
+		t.Fatalf("normalized broadcast permission=%q, %v", permission, ok)
+	}
+
+	server := NewServer(Config{MasterKey: []byte("0123456789abcdef0123456789abcdef")}, store, nil)
+	defer server.Close()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+instanceID+"/actions",
+		strings.NewReader(`{"type":"broadcast","payload":{"message":"Maintenance soon"}}`))
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("instanceID", instanceID)
+	request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
+	request = request.WithContext(context.WithValue(request.Context(), principalContextKey, principal))
+	response := httptest.NewRecorder()
+
+	server.handleInstanceAction(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("broadcast returned %d, want 202: %s", response.Code, response.Body.String())
+	}
+	var jobType string
+	if err := store.db.QueryRowContext(ctx, `SELECT type FROM jobs WHERE instance_id=?1 ORDER BY created_at DESC LIMIT 1`, instanceID).Scan(&jobType); err != nil {
+		t.Fatal(err)
+	}
+	if jobType != "rcon" {
+		t.Fatalf("broadcast queued job type %q, want fixed rcon job", jobType)
+	}
+}
+
+func TestRetiredPermissionsAreNotAssignable(t *testing.T) {
+	for _, permission := range []Permission{"instances.update", "instances.validate", "files.upload"} {
+		if _, ok := permissionClass(permission); ok {
+			t.Errorf("retired permission %q remains recognized", permission)
+		}
+	}
+	for _, action := range []string{"update", "validate"} {
+		if permission, ok := InstanceActionPermission(action); !ok || permission != PermissionEnvironmentsManage {
+			t.Errorf("legacy internal job %q permission=%q, %v; want %q", action, permission, ok, PermissionEnvironmentsManage)
+		}
+		if err := validateScheduledPayload(action, map[string]any{}); err == nil {
+			t.Errorf("retired scheduled action %q was accepted", action)
+		}
+	}
+}
+
 func TestInternalJobsCannotBeSubmittedThroughGenericActions(t *testing.T) {
 	for _, action := range []string{
 		"a2s.info", "a2s.players", "backup.chunk", "backup.upload.abort", "configure", "create", "file", "game.import", "import", "install",
@@ -246,8 +326,8 @@ func TestJobRedactionUsesTargetResourcePermission(t *testing.T) {
 		User:           domain.User{ID: "mixed-role"},
 		BindingsLoaded: true,
 		Bindings: []domain.RoleBinding{
-			{Role: domain.RoleOperator, ScopeType: "instance", InstanceID: "instance-a"},
-			{Role: domain.RoleViewer, ScopeType: "instance", InstanceID: "instance-b"},
+			{Role: domain.RoleOperator, ScopeType: "instance", InstanceID: "instance-a", Permissions: presetPermissionsForScope(domain.RoleOperator, "instance")},
+			{Role: domain.RoleViewer, ScopeType: "instance", InstanceID: "instance-b", Permissions: presetPermissionsForScope(domain.RoleViewer, "instance")},
 		},
 	}
 	redacted := redactJobForPrincipal(job, principal)
@@ -256,6 +336,7 @@ func TestJobRedactionUsesTargetResourcePermission(t *testing.T) {
 	}
 
 	principal.Bindings[1].Role = domain.RoleOperator
+	principal.Bindings[1].Permissions = presetPermissionsForScope(domain.RoleOperator, "instance")
 	visible := redactJobForPrincipal(job, principal)
 	if visible.Payload == nil || visible.Result == nil {
 		t.Fatal("target-resource operator job detail was unexpectedly redacted")
