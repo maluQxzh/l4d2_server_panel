@@ -88,6 +88,7 @@ export const jobLabels: Record<string, string> = {
   rcon: "执行 RCON",
   install_package: "安装模组",
   install_mod: "安装模组",
+  install_plugin: "安装插件",
   qq_flash_import: "QQ闪传 VPK 导入",
   scan_packages: "扫描已安装 VPK",
   toggle_package: "启停模组",
@@ -113,3 +114,14 @@ export const jobLabels: Record<string, string> = {
   "map.verify": "校验地图",
   "map.delete": "永久删除地图",
 };
+
+const pluginPackageKinds = new Set(["plugin", "smx", "native", "sourcemod", "metamod", "sourcemod_url", "metamod_url"]);
+
+export function jobLabel(job: { type: string; display_type?: string; payload?: Record<string, unknown> }) {
+  let displayType = job.display_type;
+  if (!displayType && (job.type === "install_mod" || job.type === "install_package")) {
+    const kind = typeof job.payload?.kind === "string" ? job.payload.kind.toLowerCase() : "";
+    displayType = pluginPackageKinds.has(kind) ? "install_plugin" : "install_mod";
+  }
+  return jobLabels[displayType || job.type] || job.type;
+}

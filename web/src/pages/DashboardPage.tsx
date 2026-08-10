@@ -8,7 +8,7 @@ import { useRealtime } from "../context/RealtimeContext";
 import { api } from "../lib/api";
 import { hasAnyPermission } from "../lib/account-permissions";
 import { availableInstanceUpdates, fleetNetworkTotals } from "../lib/dashboard";
-import { bytes, dateTime, jobLabels, percent } from "../lib/format";
+import { bytes, dateTime, jobLabel, percent } from "../lib/format";
 
 export function DashboardPage() {
   const { user } = useAuth();
@@ -127,7 +127,7 @@ export function DashboardPage() {
         {canReadJobs && (
         <Card>
           <div className="card-heading"><div><span className="eyebrow">RECENT JOBS</span><h2>最近任务</h2></div><Link to="/jobs">任务中心 <ArrowRight size={15} /></Link></div>
-          {jobList.length === 0 ? <EmptyState title="暂无任务" description="创建实例或执行维护操作后，进度会显示在这里。" /> : <div className="job-mini-list">{jobList.slice(0, 5).map((job) => <div className="job-mini" key={job.id}><div className={`job-icon job-icon--${job.status}`}><ClipboardIcon /></div><div><strong>{jobLabels[job.type] || job.type}</strong><small>{job.message || dateTime(job.created_at)}</small></div><div><StatusBadge status={job.status} />{["queued", "dispatched", "running"].includes(job.status) && <ProgressBar value={job.progress} />}</div></div>)}</div>}
+          {jobList.length === 0 ? <EmptyState title="暂无任务" description="创建实例或执行维护操作后，进度会显示在这里。" /> : <div className="job-mini-list">{jobList.slice(0, 5).map((job) => <div className="job-mini" key={job.id}><div className={`job-icon job-icon--${job.status}`}><ClipboardIcon /></div><div><strong>{jobLabel(job)}</strong><small>{job.message || dateTime(job.created_at)}</small></div><div><StatusBadge status={job.status} />{["queued", "dispatched", "running"].includes(job.status) && <ProgressBar value={job.progress} />}</div></div>)}</div>}
         </Card>
         )}
       </section>}

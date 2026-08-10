@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { bytes, duration, jobLabels, percent, relativeTime, statusLabels } from "./format";
+import { bytes, duration, jobLabel, jobLabels, percent, relativeTime, statusLabels } from "./format";
 
 describe("格式化工具", () => {
   it("安全格式化容量与百分比", () => {
@@ -20,5 +20,11 @@ describe("格式化工具", () => {
     expect(statusLabels.running).toBe("运行中");
     expect(statusLabels.failed).toBe("失败");
     expect(jobLabels["backup.upload.abort"]).toBe("清理上传暂存");
+  });
+
+  it("按安全展示类型或包类型区分插件和模组安装", () => {
+    expect(jobLabel({ type: "install_mod", display_type: "install_plugin" })).toBe("安装插件");
+    expect(jobLabel({ type: "install_mod", payload: { kind: "sourcemod" } })).toBe("安装插件");
+    expect(jobLabel({ type: "install_mod", payload: { kind: "workshop" } })).toBe("安装模组");
   });
 });

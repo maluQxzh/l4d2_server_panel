@@ -32,6 +32,36 @@ func DownloadOfficialHTTPS(ctx context.Context, rawURL, destination string) (str
 	return downloadHTTPS(ctx, rawURL, destination, validateOfficialAssetURL)
 }
 
+func downloadPackageFromSources(ctx context.Context, sources []string, destination string, official bool,
+	downloader func(context.Context, string, string, bool) (string, int64, error), progress ProgressFunc,
+) (string, int64, string, error) {
+	var failures []error
+	for index, source := range sources {
+		if official {
+			if err := validateOfficialAssetURL(source); err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			if index > 0 {
+				progress(10, "retrying official package from trusted AlliedModders fallback")
+			}
+		}
+		hash, size, err := downloader(ctx, source, destination, official)
+		if err == nil {
+			return hash, size, source, nil
+		}
+		parsed, _ := url.Parse(source)
+		failures = append(failures, fmt.Errorf("%s: %w", parsed.Hostname(), err))
+		if ctx.Err() != nil {
+			return "", 0, "", ctx.Err()
+		}
+	}
+	if official {
+		return "", 0, "", fmt.Errorf("download official package from trusted sources failed: %w", errors.Join(failures...))
+	}
+	return "", 0, "", errors.Join(failures...)
+}
+
 func downloadHTTPS(ctx context.Context, rawURL, destination string, validateURL func(string) error) (string, int64, error) {
 	if err := validateURL(rawURL); err != nil {
 		return "", 0, err

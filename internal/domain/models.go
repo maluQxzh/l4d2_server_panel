@@ -150,6 +150,7 @@ type Job struct {
 	InstanceID      string         `json:"instance_id,omitempty"`
 	InstallationID  string         `json:"game_installation_id,omitempty"`
 	Type            string         `json:"type"`
+	DisplayType     string         `json:"display_type,omitempty"`
 	Status          JobStatus      `json:"status"`
 	Progress        int            `json:"progress"`
 	Message         string         `json:"message,omitempty"`

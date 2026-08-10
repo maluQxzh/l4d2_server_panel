@@ -1799,6 +1799,7 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 
 	official := false
 	officialVersion := ""
+	var officialFallbackURLs []string
 	if source == "" && uploadedContent == "" {
 		if kind != "sourcemod" && kind != "metamod" {
 			return nil, errors.New("package source is required")
@@ -1819,6 +1820,7 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 			return nil, err
 		}
 		source, official, officialVersion = resolved.URL, true, resolved.Version
+		officialFallbackURLs = append(officialFallbackURLs, resolved.FallbackURLs...)
 	}
 	allowNative := payload.RiskConfirmed || payload.AcknowledgeRisk
 	componentKind := strings.TrimSuffix(kind, "_url")
@@ -1883,7 +1885,8 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 				return DownloadHTTPS(ctx, source, destination)
 			}
 		}
-		downloadedHash, downloadedSize, err = downloader(ctx, source, localSource, official)
+		sources := append([]string{source}, officialFallbackURLs...)
+		downloadedHash, downloadedSize, source, err = downloadPackageFromSources(ctx, sources, localSource, official, downloader, progress)
 		if err != nil {
 			return nil, err
 		}

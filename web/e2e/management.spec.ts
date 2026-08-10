@@ -710,10 +710,14 @@ test("安装模组可选择 QQ闪传批量导入", async ({ page }) => {
       id: "job-a2s-probe", node_id: node.id, instance_id: instance.id, type: "a2s.info",
       status: "succeeded", progress: 100, message: "operation completed", created_at: "2026-08-04T00:01:00Z",
     }], background_summary: { targets: 1, active: 0, failed: 0, latest_at: "2026-08-04T00:01:00Z" } });
+    const pluginInstall = {
+      id: "job-plugin-install", node_id: node.id, instance_id: instance.id, type: "install_mod", display_type: "install_plugin",
+      status: "failed", progress: 10, message: "download official package from trusted sources failed", created_at: "2026-08-03T23:59:00Z",
+    };
     return json(route, { items: qqFlashImport ? [{
       id: "job-qq-flash-import", node_id: node.id, instance_id: instance.id, type: "qq_flash_import",
       status: "running", progress: 42, message: "downloading QQ flash files", created_at: "2026-08-04T00:00:00Z",
-    }] : [], background_summary: { targets: 1, active: 0, failed: 0, latest_at: "2026-08-04T00:01:00Z" } });
+    }, pluginInstall] : [pluginInstall], background_summary: { targets: 1, active: 0, failed: 0, latest_at: "2026-08-04T00:01:00Z" } });
   });
   await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: [] }));
   await page.route("**/api/v1/instances/instance-1/files**", (route) => json(route, { items: [] }));
@@ -738,6 +742,8 @@ test("安装模组可选择 QQ闪传批量导入", async ({ page }) => {
 
   await page.goto("/jobs");
   await expect(page.getByText("QQ闪传 VPK 导入", { exact: true })).toBeVisible();
+  await expect(page.getByText("安装插件", { exact: true })).toBeVisible();
+  await expect(page.getByText("安装模组", { exact: true })).toHaveCount(0);
   await expect(page.getByText("42%", { exact: true })).toBeVisible();
   await expect(page.getByText("查询服务器状态", { exact: true })).toHaveCount(0);
   await page.getByLabel("任务分类").selectOption("background");

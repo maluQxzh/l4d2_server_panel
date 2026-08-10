@@ -304,8 +304,9 @@ export interface Job {
   id: string;
   node_id: string;
 	instance_id?: string;
-	game_installation_id?: string;
+  game_installation_id?: string;
   type: string;
+  display_type?: "install_mod" | "install_plugin";
   status: JobStatus;
   progress: number;
   message?: string;

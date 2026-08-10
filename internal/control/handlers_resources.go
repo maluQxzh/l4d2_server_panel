@@ -914,6 +914,7 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func redactJob(job domain.Job, role domain.Role) domain.Job {
+	job.DisplayType = jobDisplayType(job)
 	if !RoleAllows(role, PermissionOperate) {
 		job.Payload = nil
 		job.Result = nil
@@ -926,6 +927,7 @@ func redactJob(job domain.Job, role domain.Role) domain.Job {
 }
 
 func redactJobForPrincipal(job domain.Job, principal Principal) domain.Job {
+	job.DisplayType = jobDisplayType(job)
 	if !principal.AllowsJobPermission(job, PermissionJobsDetails) {
 		job.Payload = nil
 		job.Result = nil
@@ -935,6 +937,21 @@ func redactJobForPrincipal(job domain.Job, principal Principal) domain.Job {
 	job.Result = cloneMap(job.Result)
 	stripJobFields(job.Type, job.Payload, job.Result)
 	return job
+}
+
+func jobDisplayType(job domain.Job) string {
+	if job.DisplayType != "" {
+		return job.DisplayType
+	}
+	if job.Type != "install_mod" && job.Type != "install_package" {
+		return ""
+	}
+	switch strings.ToLower(stringFromAny(job.Payload["kind"])) {
+	case "plugin", "smx", "native", "sourcemod", "metamod", "sourcemod_url", "metamod_url":
+		return "install_plugin"
+	default:
+		return "install_mod"
+	}
 }
 
 func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {

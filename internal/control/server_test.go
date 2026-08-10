@@ -396,6 +396,19 @@ func TestViewerJobRedaction(t *testing.T) {
 	}
 }
 
+func TestJobDisplayTypeSurvivesDetailRedaction(t *testing.T) {
+	t.Parallel()
+	job := domain.Job{Type: "install_mod", Payload: map[string]any{"kind": "sourcemod", "source": "secret"}}
+	redacted := redactJob(job, domain.RoleViewer)
+	if redacted.DisplayType != "install_plugin" || redacted.Payload != nil {
+		t.Fatalf("redacted plugin job = %#v", redacted)
+	}
+	job.Payload["kind"] = "workshop"
+	if displayType := jobDisplayType(job); displayType != "install_mod" {
+		t.Fatalf("workshop display type = %q", displayType)
+	}
+}
+
 func TestJobRedactionUsesTargetResourcePermission(t *testing.T) {
 	t.Parallel()
 	job := domain.Job{

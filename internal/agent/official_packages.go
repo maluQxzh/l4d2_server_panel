@@ -20,12 +20,14 @@ import (
 const maxOfficialDownloadPage = int64(2 << 20)
 
 var hrefPattern = regexp.MustCompile(`(?i)href\s*=\s*["']([^"']+)["']`)
+var officialVersionBranchPattern = regexp.MustCompile(`^(\d+\.\d+)(?:\.|$)`)
 
 type OfficialPackage struct {
-	Kind    string
-	URL     string
-	Version string
-	OS      string
+	Kind         string
+	URL          string
+	FallbackURLs []string
+	Version      string
+	OS           string
 }
 
 type officialPackageSpec struct {
@@ -136,9 +138,25 @@ func parseOfficialPackagePage(kind, targetOS, pageURL string, raw []byte) (Offic
 		if len(versionMatch) != 2 {
 			continue
 		}
-		return OfficialPackage{Kind: kind, URL: candidate.String(), Version: versionMatch[1], OS: targetOS}, nil
+		result := OfficialPackage{Kind: kind, URL: candidate.String(), Version: versionMatch[1], OS: targetOS}
+		if host == "github.com" {
+			result.FallbackURLs = officialLegacyFallbackURLs(spec, versionMatch[1], fileName)
+		}
+		return result, nil
 	}
 	return OfficialPackage{}, fmt.Errorf("official %s stable page did not contain a trusted %s package", kind, targetOS)
+}
+
+func officialLegacyFallbackURLs(spec officialPackageSpec, version, fileName string) []string {
+	branch := officialVersionBranchPattern.FindStringSubmatch(version)
+	if len(branch) != 2 || spec.legacyHost == "" || spec.legacyPrefix == "" {
+		return nil
+	}
+	fallback := (&url.URL{Scheme: "https", Host: spec.legacyHost, Path: path.Join(spec.legacyPrefix, branch[1], fileName)}).String()
+	if err := validateOfficialAssetURL(fallback); err != nil {
+		return nil
+	}
+	return []string{fallback}
 }
 
 func officialPageHosts() map[string]bool {

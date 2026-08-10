@@ -3529,6 +3529,10 @@ components:
         instance_id: { type: string, format: uuid }
         game_installation_id: { type: string, format: uuid }
         type: { type: string }
+        display_type:
+          type: string
+          enum: [install_mod, install_plugin]
+          description: 非敏感的任务展示分类；安装任务即使正文因权限隐藏也可区分模组与插件
         status: { $ref: "#/components/schemas/JobStatus" }
         progress: { type: integer, minimum: 0, maximum: 100 }
         message: { type: string }

@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -26,12 +28,41 @@ func TestParseOfficialPackagePageSelectsTrustedOperatingSystemAsset(t *testing.T
 	if windows.Version != "1.12.0-git7246" || !strings.HasSuffix(windows.URL, "-windows.zip") {
 		t.Fatalf("unexpected Windows package: %#v", windows)
 	}
+	if len(windows.FallbackURLs) != 1 || windows.FallbackURLs[0] != "https://sm.alliedmods.net/smdrop/1.12/sourcemod-1.12.0-git7246-windows.zip" {
+		t.Fatalf("unexpected Windows fallback package: %#v", windows.FallbackURLs)
+	}
 	linux, err := parseOfficialPackagePage("sourcemod", "linux", officialPackageSpecs["sourcemod"].pageURL, html)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if linux.Version != "1.12.0-git7246" || !strings.HasSuffix(linux.URL, "-linux.tar.gz") {
 		t.Fatalf("unexpected Linux package: %#v", linux)
+	}
+}
+
+func TestOfficialPackageDownloadRetriesTrustedAlliedModdersFallback(t *testing.T) {
+	sources := []string{
+		"https://github.com/alliedmodders/sourcemod/releases/download/1.12.0.7246/sourcemod-1.12.0-git7246-windows.zip",
+		"https://sm.alliedmods.net/smdrop/1.12/sourcemod-1.12.0-git7246-windows.zip",
+	}
+	var attempted []string
+	var progressMessages []string
+	hash, size, selected, err := downloadPackageFromSources(context.Background(), sources, t.TempDir()+"/package.zip", true,
+		func(_ context.Context, source, _ string, official bool) (string, int64, error) {
+			if !official {
+				t.Fatal("official fallback was downloaded as an ordinary URL")
+			}
+			attempted = append(attempted, source)
+			if len(attempted) == 1 {
+				return "", 0, errors.New("download package from github.com failed")
+			}
+			return "sha256", 42, nil
+		}, func(_ int, message string) { progressMessages = append(progressMessages, message) })
+	if err != nil || hash != "sha256" || size != 42 || selected != sources[1] {
+		t.Fatalf("fallback download = hash %q size %d selected %q err %v", hash, size, selected, err)
+	}
+	if !reflect.DeepEqual(attempted, sources) || len(progressMessages) != 1 || !strings.Contains(progressMessages[0], "AlliedModders") {
+		t.Fatalf("fallback attempts = %#v, progress = %#v", attempted, progressMessages)
 	}
 }
 

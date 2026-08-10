@@ -79,6 +79,22 @@ describe("任务中心", () => {
     await waitFor(() => expect(jobList).toHaveBeenCalledWith({ background: "only", backgroundSummary: true }));
   });
 
+  it("插件安装任务在正文隐藏时仍显示为安装插件", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    vi.spyOn(api, "jobList").mockResolvedValue({ items: [{
+      ...operation,
+      id: "plugin-install-job",
+      type: "install_mod",
+      display_type: "install_plugin",
+      payload: undefined,
+    }] });
+
+    render(<QueryClientProvider client={client}><ToastProvider><RealtimeProvider enabled={false}><MemoryRouter><JobsPage /></MemoryRouter></RealtimeProvider></ToastProvider></QueryClientProvider>);
+
+    expect(await screen.findByText("安装插件", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("安装模组", { exact: true })).not.toBeInTheDocument();
+  });
+
   it("取消按钮严格跟随任务所属实例范围", async () => {
     authState.user = {
       role: "operator",
