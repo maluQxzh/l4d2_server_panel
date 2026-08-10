@@ -46,6 +46,12 @@ func TestValidatePackageUpload(t *testing.T) {
 	if err := validatePackageUpload(valid); err != nil {
 		t.Fatal(err)
 	}
+	previouslyTooLarge := make([]byte, 8<<20+1)
+	if err := validatePackageUpload(map[string]any{
+		"name": "large-package.zip", "content_base64": base64.StdEncoding.EncodeToString(previouslyTooLarge),
+	}); err != nil {
+		t.Fatalf("package above the previous 8 MiB limit was rejected: %v", err)
+	}
 	for _, payload := range []map[string]any{
 		{"name": "../plugin.smx", "content_base64": "YQ=="},
 		{"name": "plugin.smx", "source": "https://example.test/p.smx", "content_base64": "YQ=="},

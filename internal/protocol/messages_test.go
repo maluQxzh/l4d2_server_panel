@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -8,6 +9,18 @@ import (
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
+
+func TestPackageUploadWireLimits(t *testing.T) {
+	if MaxPackageUploadBytes != 100<<20 {
+		t.Fatalf("package upload limit = %d, want 100 MiB", MaxPackageUploadBytes)
+	}
+	if MaxEncodedPackageUploadBytes != base64.StdEncoding.EncodedLen(MaxPackageUploadBytes) {
+		t.Fatalf("encoded package limit = %d, want %d", MaxEncodedPackageUploadBytes, base64.StdEncoding.EncodedLen(MaxPackageUploadBytes))
+	}
+	if MaxPackageUploadEnvelopeBytes <= MaxEncodedPackageUploadBytes {
+		t.Fatal("package envelope limit does not leave room for JSON metadata")
+	}
+}
 
 func TestNewEnvelope(t *testing.T) {
 	want := JobUpdate{Status: domain.JobRunning, Progress: 42, Message: "正在更新"}

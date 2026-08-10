@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
+	"github.com/l4d2-panel/l4d2panel/internal/protocol"
 )
 
 func (s *Server) handleInstancePlayers(w http.ResponseWriter, r *http.Request) {
@@ -292,12 +294,12 @@ func validatePackageUpload(payload map[string]any) error {
 	if name == "" || filepath.Base(name) != name || strings.ContainsAny(name, "\x00/\\") {
 		return errors.New("uploaded package name is invalid")
 	}
-	if base64.StdEncoding.DecodedLen(len(encoded)) > 8<<20 {
-		return errors.New("uploaded package exceeds 8 MiB")
+	if len(encoded) > protocol.MaxEncodedPackageUploadBytes {
+		return errors.New("uploaded package exceeds 100 MiB")
 	}
-	raw, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil || len(raw) == 0 || len(raw) > 8<<20 {
-		return errors.New("uploaded package is not valid Base64 or exceeds 8 MiB")
+	decoded, err := io.Copy(io.Discard, base64.NewDecoder(base64.StdEncoding.Strict(), strings.NewReader(encoded)))
+	if err != nil || decoded == 0 || decoded > protocol.MaxPackageUploadBytes {
+		return errors.New("uploaded package is not valid Base64 or exceeds 100 MiB")
 	}
 	return nil
 }

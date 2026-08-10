@@ -859,8 +859,8 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, onClos
   const accept = kind === "vpk_url" ? ".vpk" : kind === "plugin" || kind === "native" ? ".smx,.dll,.so" : ".zip,.tar,.gz,.bz2,.xz";
   const chooseUpload = async (file?: File) => {
     if (!file) return;
-    if (file.size === 0 || file.size > 8 * 1024 * 1024) {
-      toast.push("上传包必须大于 0 且不能超过 8 MiB", "error");
+    if (file.size === 0 || file.size > 100 * 1024 * 1024) {
+      toast.push("上传包必须大于 0 且不能超过 100 MiB", "error");
       return;
     }
     try {
@@ -905,7 +905,7 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, onClos
         <div className="form-note"><CloudDownload size={18} /><span><strong>仅接收经过校验的 VPK</strong><small>节点会先完整暂存分享，限制下载与解压总量，拒绝加密包、危险路径和任何非 VPK 文件。成功后每个 VPK 会单独出现在本页，可启停和删除。</small></span></div>
       </> : <>
         {official ? <div className="form-note"><ShieldCheck size={18} /><span><strong>自动解析官方稳定版</strong><small>Agent 只接受 AlliedModders 官方白名单地址，并按节点系统选择压缩包。</small></span></div> : <Field label={kind === "workshop" ? "项目或合集 ID" : "HTTPS 来源"} hint={canUpload ? "填写 URL，或在下方从本机选择一个文件" : undefined}><input value={source} onChange={(event) => { setSource(event.target.value); setUpload(null); }} placeholder={kind === "workshop" ? "例如：123456789" : "https://example.org/plugin.zip"} /></Field>}
-        {canUpload && <Field label="从本机上传" hint="单个文件上限 8 MiB；载荷会加密保存，并只发送给目标节点"><input type="file" accept={accept} onChange={(event) => { void chooseUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} /></Field>}
+        {canUpload && <Field label="从本机上传" hint="单个文件上限 100 MiB；载荷会加密保存，并只发送给目标节点"><input type="file" accept={accept} onChange={(event) => { void chooseUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} /></Field>}
         {upload && <div className="binary-file-note"><Upload size={20} /><div><strong>{upload.name}</strong><span>{bytes(upload.size)} · 已准备安全上传</span></div><Button variant="secondary" onClick={() => setUpload(null)}>移除</Button></div>}
         {showRisk && <label className="risk-check"><input type="checkbox" checked={risk} onChange={(event) => setRisk(event.target.checked)} /><ShieldAlert size={19} /><span><strong>我了解第三方原生代码风险</strong><small>{needsRisk ? "此包可能包含或覆盖节点执行的二进制扩展，必须确认后安装。" : "普通 SMX 不要求确认；DLL/SO 原生扩展必须确认。"}</small></span></label>}
         <div className="form-note"><strong>自动回退</strong><span>组件升级前会创建快照；重启后的版本检测失败时，Agent 恢复上一版本。</span></div>

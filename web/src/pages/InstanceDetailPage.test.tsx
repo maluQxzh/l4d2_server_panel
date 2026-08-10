@@ -205,6 +205,7 @@ describe("服务端组件依赖", () => {
     renderPackagesPage(instance, "plugins");
 
     fireEvent.click(await screen.findByRole("button", { name: "安装插件" }));
+    expect(screen.getByText(/单个文件上限 100 MiB/)).toBeVisible();
     fireEvent.change(screen.getByLabelText("类型"), { target: { value: "sourcemod" } });
 
     expect(screen.getByText("请先安装 Metamod:Source")).toBeVisible();

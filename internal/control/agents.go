@@ -40,7 +40,11 @@ func (c *agentConnection) writeJSON(value any) error {
 }
 
 func (c *agentConnection) writeJSONLocked(value any) error {
-	_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	writeTimeout := 10 * time.Second
+	if envelope, ok := value.(protocol.Envelope); ok && envelope.Type == protocol.TypeJob && len(envelope.Payload) > 16<<20 {
+		writeTimeout = 10 * time.Minute
+	}
+	_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	return c.conn.WriteJSON(value)
 }
 

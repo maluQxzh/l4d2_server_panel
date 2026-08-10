@@ -198,7 +198,9 @@ func (a *Agent) runSession(ctx context.Context) error {
 		return err
 	}
 	defer conn.Close()
-	conn.SetReadLimit(16 << 20)
+	// Large browser-uploaded packages are Base64 job payloads, so the Agent's
+	// inbound ceiling must include their JSON envelope overhead.
+	conn.SetReadLimit(protocol.MaxPackageUploadEnvelopeBytes)
 	hello, err := protocol.NewEnvelope(protocol.TypeHello, a.config.NodeID, "", protocol.Hello{Name: a.config.NodeName, OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.Version, InstanceRoot: a.config.InstanceRoots[0], Capabilities: []string{"absolute_game_paths", "backup_upload", "check_update", "discover_instances", "game_installation_delete_v1", "map_hot_reload_v1", "map_library_v1", "package_delete_v1", "package_scan_v1", "purge_quarantine", "qq_flash_file_v1", "qq_flash_package_v1", "qq_flash_vpk_packages_v2", "runtime_environment_v1", "server_cfg_native"}})
 	if err != nil {
 		return err

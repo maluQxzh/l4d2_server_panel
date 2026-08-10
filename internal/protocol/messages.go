@@ -35,6 +35,12 @@ const (
 
 const MaxJobUpdateMessageBytes = 2 << 10
 
+const (
+	MaxPackageUploadBytes         = 100 << 20
+	MaxEncodedPackageUploadBytes  = ((MaxPackageUploadBytes + 2) / 3) * 4
+	MaxPackageUploadEnvelopeBytes = 136 << 20
+)
+
 // TruncateJobUpdateMessage keeps Agent messages within the wire limit without
 // splitting a UTF-8 sequence. Invalid input is normalized before truncation so
 // JSON replacement characters cannot expand a nominally bounded message past

@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
+	"github.com/l4d2-panel/l4d2panel/internal/protocol"
 )
 
 func (s *Server) handleAgentEnroll(w http.ResponseWriter, r *http.Request) {
@@ -510,7 +512,21 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		Type    string         `json:"type"`
 		Payload map[string]any `json:"payload,omitempty"`
 	}
-	if !decodeJSONWithLimit(w, r, &request, 12<<20) {
+	if !decodeJSONWithLimit(w, r, &request, protocol.MaxPackageUploadEnvelopeBytes) {
+		return
+	}
+	requestJSON, err := json.Marshal(request)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	const ordinaryActionRequestLimit = 12 << 20
+	const packageUploadMetadataLimit = 64 << 10
+	encodedUpload := stringFromAny(request.Payload["content_base64"])
+	largeUploadRequest := request.Type == "install_package" && encodedUpload != ""
+	if (!largeUploadRequest && len(requestJSON) > ordinaryActionRequestLimit) ||
+		(largeUploadRequest && len(requestJSON) > len(encodedUpload)+packageUploadMetadataLimit) {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body is invalid or too large")
 		return
 	}
 	principal := principalFromContext(r.Context())
@@ -694,8 +710,8 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		}
 		request.Type, request.Payload = "rcon", map[string]any{"command": command}
 	case "install_package":
-		if err := validatePackageUpload(request.Payload); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_package_upload", err.Error())
+		if uploadErr := validatePackageUpload(request.Payload); uploadErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid_package_upload", uploadErr.Error())
 			return
 		}
 		request.Type = "install_mod"

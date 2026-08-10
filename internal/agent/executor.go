@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
+	"github.com/l4d2-panel/l4d2panel/internal/protocol"
 )
 
 type ProgressFunc func(progress int, message string)
@@ -1850,12 +1851,12 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 		if payload.Name == "" || filepath.Base(payload.Name) != payload.Name || strings.ContainsAny(payload.Name, "\x00/\\") {
 			return nil, errors.New("uploaded package name is invalid")
 		}
-		if base64.StdEncoding.DecodedLen(len(uploadedContent)) > maxManagedFileSize {
-			return nil, errors.New("uploaded package exceeds 8 MiB")
+		if len(uploadedContent) > protocol.MaxEncodedPackageUploadBytes {
+			return nil, errors.New("uploaded package exceeds 100 MiB")
 		}
 		raw, decodeErr := base64.StdEncoding.DecodeString(uploadedContent)
-		if decodeErr != nil || len(raw) == 0 || len(raw) > maxManagedFileSize {
-			return nil, errors.New("uploaded package is not valid Base64 or exceeds 8 MiB")
+		if decodeErr != nil || len(raw) == 0 || len(raw) > protocol.MaxPackageUploadBytes {
+			return nil, errors.New("uploaded package is not valid Base64 or exceeds 100 MiB")
 		}
 		stagingDir, stagingErr := ensureDataSubdirectory(e.config.DataDir, "staging")
 		if stagingErr != nil {
