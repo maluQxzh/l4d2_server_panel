@@ -49,6 +49,48 @@ func TestStartHealthUsesRCONOnRespondingA2SAddress(t *testing.T) {
 	}
 }
 
+func TestExecuteRCONOnA2SHostSkipsUnresponsiveAddress(t *testing.T) {
+	t.Parallel()
+	tcpListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcpListener.Close()
+	port := tcpListener.Addr().(*net.TCPAddr).Port
+	udpListener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpListener.Close()
+
+	serverErrors := make(chan error, 2)
+	go serveTestA2SInfo(udpListener, serverErrors)
+	go serveTestRCON(tcpListener, serverErrors)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	response, err := executeRCONOnA2SHost(
+		ctx,
+		[]string{"192.0.2.1", "127.0.0.1"},
+		port,
+		"secret",
+		"meta version",
+		time.Second,
+		time.Second,
+	)
+	if err != nil {
+		t.Fatalf("execute RCON on responding A2S address: %v", err)
+	}
+	if response != "hostname: test" {
+		t.Fatalf("response = %q", response)
+	}
+	for range 2 {
+		if err := <-serverErrors; err != nil {
+			t.Fatalf("mock game server: %v", err)
+		}
+	}
+}
+
 func serveTestA2SInfo(listener *net.UDPConn, result chan<- error) {
 	request := make([]byte, 1024)
 	_ = listener.SetDeadline(time.Now().Add(3 * time.Second))

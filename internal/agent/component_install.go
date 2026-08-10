@@ -117,8 +117,8 @@ func (e *Executor) verifyServerExtension(ctx context.Context, record InstanceRec
 	deadline := time.Now().Add(30 * time.Second)
 	var lastErr error
 	for {
-		attemptCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
-		response, err := executeLocalRCON(attemptCtx, record, payload, payload.RCONPassword, command, 4*time.Second)
+		attemptCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		response, err := executeLocalRCONOnA2SHost(attemptCtx, record, payload, payload.RCONPassword, command, 2*time.Second, 4*time.Second)
 		cancel()
 		if err == nil {
 			lower := strings.ToLower(response)

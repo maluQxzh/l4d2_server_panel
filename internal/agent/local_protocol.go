@@ -174,6 +174,31 @@ func executeLocalRCON(ctx context.Context, record InstanceRecord, payload operat
 	return executeRCONOnLocalHosts(ctx, localGameEndpointHosts(payload.RCONHost, record.RCONHost), port, password, command, timeout)
 }
 
+func executeLocalRCONOnA2SHost(ctx context.Context, record InstanceRecord, payload operationPayload, password, command string, a2sTimeout, rconTimeout time.Duration) (string, error) {
+	port := gameEndpointPort(record, payload)
+	if port <= 0 || port > 65535 {
+		return "", errors.New("invalid RCON port")
+	}
+	hosts := localGameEndpointHosts(payload.RCONHost, record.RCONHost)
+	return executeRCONOnA2SHost(ctx, hosts, port, password, command, a2sTimeout, rconTimeout)
+}
+
+func executeRCONOnA2SHost(ctx context.Context, hosts []string, port int, password, command string, a2sTimeout, rconTimeout time.Duration) (string, error) {
+	infoCtx, infoCancel := context.WithTimeout(ctx, a2sTimeout)
+	_, host, err := queryA2SInfoOnLocalHosts(infoCtx, hosts, port, a2sTimeout)
+	infoCancel()
+	if err != nil {
+		return "", fmt.Errorf("find responding local game address through A2S: %w", err)
+	}
+	rconCtx, rconCancel := context.WithTimeout(ctx, rconTimeout)
+	defer rconCancel()
+	response, err := (RCONClient{Timeout: rconTimeout}).Execute(rconCtx, net.JoinHostPort(host, strconv.Itoa(port)), password, command)
+	if err != nil {
+		return "", fmt.Errorf("RCON on responding A2S address %s: %w", host, err)
+	}
+	return response, nil
+}
+
 func executeRCONOnLocalHosts(ctx context.Context, hosts []string, port int, password, command string, timeout time.Duration) (string, error) {
 	var lastErr error
 	for _, host := range hosts {

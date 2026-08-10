@@ -417,7 +417,7 @@ func (e *Executor) verifySourceModAvailable(ctx context.Context, job domain.Job,
 	if port := gameEndpointPort(record, payload); port <= 0 || port > 65535 {
 		return errors.New("invalid RCON port for SourceMod verification")
 	}
-	response, err := executeLocalRCON(ctx, record, payload, payload.RCONPassword, "sm plugins list", 8*time.Second)
+	response, err := executeLocalRCONOnA2SHost(ctx, record, payload, payload.RCONPassword, "sm plugins list", 2*time.Second, 8*time.Second)
 	if err != nil {
 		return err
 	}
