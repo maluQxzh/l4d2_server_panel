@@ -714,6 +714,17 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		}
 		request.Payload["instance"] = instance
 	}
+	if request.Type == "install_mod" && strings.TrimSuffix(strings.ToLower(strings.TrimSpace(stringFromAny(request.Payload["kind"]))), "_url") == "sourcemod" {
+		metamodInstalled, dependencyErr := s.store.HasEnabledPackageKind(r.Context(), instanceID, "metamod")
+		if dependencyErr != nil {
+			s.fail(w, dependencyErr)
+			return
+		}
+		if !metamodInstalled {
+			writeError(w, http.StatusConflict, "metamod_required", "安装 SourceMod 前必须先安装并启用 Metamod:Source")
+			return
+		}
+	}
 	if request.Type == "restart" && instance.Status == domain.InstanceExternal {
 		// The Agent needs the current structured configuration when it stops
 		// the verified external PID and starts the server under process-tree

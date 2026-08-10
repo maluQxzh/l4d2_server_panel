@@ -61,12 +61,12 @@ function renderConfigPage(item: InstanceRecord) {
   );
 }
 
-function renderPackagesPage(item: InstanceRecord) {
+function renderPackagesPage(item: InstanceRecord, tab = "mods") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   vi.spyOn(api, "instance").mockResolvedValue(item);
   const router = createMemoryRouter(
     [{ path: "/instances/:instanceId", element: <InstanceDetailPage /> }],
-    { initialEntries: [`/instances/${item.id}?tab=mods`] },
+    { initialEntries: [`/instances/${item.id}?tab=${tab}`] },
   );
   return render(
     <QueryClientProvider client={client}>
@@ -193,5 +193,21 @@ describe("游戏实例模组扫描", () => {
     fireEvent.change(screen.getByLabelText("按名称搜索模组"), { target: { value: "beta" } });
     expect(screen.queryByText("Alpha.vpk", { exact: true })).not.toBeInTheDocument();
     expect(screen.getByText("Beta.vpk", { exact: true })).toBeVisible();
+  });
+});
+
+describe("服务端组件依赖", () => {
+  beforeEach(() => { authState.user = { role: "owner" }; });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("未安装 Metamod 时阻止提交 SourceMod 安装", async () => {
+    vi.spyOn(api, "packages").mockResolvedValue({ items: [] });
+    renderPackagesPage(instance, "plugins");
+
+    fireEvent.click(await screen.findByRole("button", { name: "安装插件" }));
+    fireEvent.change(screen.getByLabelText("类型"), { target: { value: "sourcemod" } });
+
+    expect(screen.getByText("请先安装 Metamod:Source")).toBeVisible();
+    expect(screen.getByRole("button", { name: "提交安装" })).toBeDisabled();
   });
 });

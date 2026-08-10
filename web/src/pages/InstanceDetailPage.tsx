@@ -755,6 +755,7 @@ function PackagesTab({ instance, section }: { instance: InstanceRecord; section:
   const pluginSection = section === "plugins";
   const sectionItems = packages.data?.items.filter((item) => pluginSection ? item.kind !== "vpk" && item.kind !== "workshop" : item.kind === "vpk" || item.kind === "workshop") || [];
   const items = filterAndSortPackages(sectionItems, search, sort);
+  const metamodInstalled = packages.data ? packages.data.items.some((item) => item.kind === "metamod" && item.enabled) : undefined;
   const noun = pluginSection ? "插件" : "模组";
   const disablingBlocked = canToggle && instance.status !== "stopped" && sectionItems.some((item) => item.enabled && /\.(?:vpk|smx)$/i.test(item.path || ""));
   const scan = useMutation({
@@ -769,7 +770,7 @@ function PackagesTab({ instance, section }: { instance: InstanceRecord; section:
   const description = pluginSection ? "支持 SourceMod 插件、SourceMod/Metamod 整包与第三方原生扩展。" : "支持 VPK、Workshop 项目与合集、QQ闪传批量导入，以及扫描 left4dead2/addons 中已有的 VPK。";
   const installButton = canInstall ? <Button onClick={() => setOpen(true)}><Plus size={16} />安装{noun}</Button> : undefined;
   const headingActions = canInstall ? <div className="package-heading-actions">{!pluginSection && <Button variant="secondary" loading={scan.isPending} onClick={() => scan.mutate()} title="扫描 left4dead2/addons 直属目录中的 VPK"><Search size={16} />扫描已安装</Button>}{installButton}</div> : undefined;
-  return <Card><div className="card-heading"><div><span className="eyebrow">{pluginSection ? "SERVER PLUGINS" : "ADD-ONS"}</span><h2>{pluginSection ? "插件与服务端组件" : "模组"}</h2></div>{headingActions}</div>{canRead && !packages.isPending && !packages.error && sectionItems.length > 0 && <div className="package-toolbar"><div className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`按名称搜索${noun}`} aria-label={`按名称搜索${noun}`} /></div><div className="filter-select"><select value={sort} onChange={(event) => setSort(event.target.value as PackageSort)} aria-label={`${noun}排序`}><option value="installed_desc">添加时间：最新优先</option><option value="installed_asc">添加时间：最早优先</option><option value="name_asc">名称：升序</option><option value="name_desc">名称：降序</option></select></div><span className="toolbar-count">{items.length} / {sectionItems.length}</span></div>}{disablingBlocked && <div className="package-runtime-warning" role="status"><ShieldAlert size={16} /><span>当前实例未停止，不能停用已启用的{noun}；请先停止实例。</span></div>}{!canRead ? <EmptyState title={`${noun}清单已隐藏`} description={`当前账号没有查看${noun}清单的权限，但仍可执行上方单独授予的安装操作。`} /> : packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title={`${noun}清单尚不可用`} description={`当前控制端未开放${noun}清单接口；安装任务仍可通过面板提交。`} /> : items.length ? <div className="package-grid">{items.map((item) => <PackageCard key={item.id} item={item} instance={instance} />)}</div> : sectionItems.length ? <EmptyState title={`没有匹配的${noun}`} description={`请更换搜索名称，当前共纳管 ${sectionItems.length} 个${noun}。`} /> : <EmptyState title={`还没有安装${noun}`} description={description} />}<InstallPackageModal open={canInstall && open} instance={instance} section={section} onClose={() => setOpen(false)} /></Card>;
+  return <Card><div className="card-heading"><div><span className="eyebrow">{pluginSection ? "SERVER PLUGINS" : "ADD-ONS"}</span><h2>{pluginSection ? "插件与服务端组件" : "模组"}</h2></div>{headingActions}</div>{canRead && !packages.isPending && !packages.error && sectionItems.length > 0 && <div className="package-toolbar"><div className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`按名称搜索${noun}`} aria-label={`按名称搜索${noun}`} /></div><div className="filter-select"><select value={sort} onChange={(event) => setSort(event.target.value as PackageSort)} aria-label={`${noun}排序`}><option value="installed_desc">添加时间：最新优先</option><option value="installed_asc">添加时间：最早优先</option><option value="name_asc">名称：升序</option><option value="name_desc">名称：降序</option></select></div><span className="toolbar-count">{items.length} / {sectionItems.length}</span></div>}{disablingBlocked && <div className="package-runtime-warning" role="status"><ShieldAlert size={16} /><span>当前实例未停止，不能停用已启用的{noun}；请先停止实例。</span></div>}{!canRead ? <EmptyState title={`${noun}清单已隐藏`} description={`当前账号没有查看${noun}清单的权限，但仍可执行上方单独授予的安装操作。`} /> : packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title={`${noun}清单尚不可用`} description={`当前控制端未开放${noun}清单接口；安装任务仍可通过面板提交。`} /> : items.length ? <div className="package-grid">{items.map((item) => <PackageCard key={item.id} item={item} instance={instance} />)}</div> : sectionItems.length ? <EmptyState title={`没有匹配的${noun}`} description={`请更换搜索名称，当前共纳管 ${sectionItems.length} 个${noun}。`} /> : <EmptyState title={`还没有安装${noun}`} description={description} />}<InstallPackageModal open={canInstall && open} instance={instance} section={section} metamodInstalled={metamodInstalled} onClose={() => setOpen(false)} /></Card>;
 }
 
 function PackageCard({ item, instance }: { item: PackageRecord; instance: InstanceRecord }) {
@@ -838,7 +839,7 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
   </div>;
 }
 
-function InstallPackageModal({ open, instance, section, onClose }: { open: boolean; instance: InstanceRecord; section: PackageSection; onClose: () => void }) {
+function InstallPackageModal({ open, instance, section, metamodInstalled, onClose }: { open: boolean; instance: InstanceRecord; section: PackageSection; metamodInstalled?: boolean; onClose: () => void }) {
   const pluginSection = section === "plugins";
   const [kind, setKind] = useState(pluginSection ? "plugin" : "workshop");
   const [source, setSource] = useState("");
@@ -852,6 +853,7 @@ function InstallPackageModal({ open, instance, section, onClose }: { open: boole
   const showRisk = riskRequired || kind === "plugin";
   const nativePlugin = kind === "plugin" && /\.(?:dll|so)(?:$|\?)/i.test(upload?.name || source.trim());
   const needsRisk = riskRequired || nativePlugin;
+  const sourceModBlocked = (kind === "sourcemod" || kind === "sourcemod_url") && metamodInstalled === false;
   const canUpload = !official && kind !== "workshop" && !qqFlash;
   const hasSource = Boolean(source.trim() || upload);
   const accept = kind === "vpk_url" ? ".vpk" : kind === "plugin" || kind === "native" ? ".smx,.dll,.so" : ".zip,.tar,.gz,.bz2,.xz";
@@ -893,9 +895,10 @@ function InstallPackageModal({ open, instance, section, onClose }: { open: boole
     },
     onError: (error) => toast.push(error.message, "error"),
   });
-  return <Modal open={open} onClose={resetAndClose} title={pluginSection ? "安装插件或服务端组件" : "安装模组"} description={qqFlash ? "供玩家通过 QQ闪传提交 VPK；节点暂存并检查完整分享，安全解压后再安装，不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose}>取消</Button><Button onClick={() => install.mutate()} loading={install.isPending} disabled={(!official && !hasSource) || (needsRisk && !risk)}>{qqFlash ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlash ? "导入 VPK" : "提交安装"}</Button></>}>
+  return <Modal open={open} onClose={resetAndClose} title={pluginSection ? "安装插件或服务端组件" : "安装模组"} description={qqFlash ? "供玩家通过 QQ闪传提交 VPK；节点暂存并检查完整分享，安全解压后再安装，不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose}>取消</Button><Button onClick={() => install.mutate()} loading={install.isPending} disabled={sourceModBlocked || (!official && !hasSource) || (needsRisk && !risk)}>{qqFlash ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlash ? "导入 VPK" : "提交安装"}</Button></>}>
     <div className="form-stack">
       <Field label="类型"><select value={kind} onChange={(event) => { setKind(event.target.value); setSource(""); setUpload(null); setRisk(false); }}>{pluginSection ? <><option value="plugin">SourceMod 插件文件</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option><option value="native">第三方原生扩展</option></> : <><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="qq_flash">QQ闪传（玩家上传 VPK）</option></>}</select></Field>
+      {sourceModBlocked && <div className="form-note"><ShieldAlert size={18} /><span><strong>请先安装 Metamod:Source</strong><small>SourceMod 依赖 Metamod；Metamod 安装并验证成功后才能提交 SourceMod 安装。</small></span></div>}
       {qqFlash ? <>
         <Field label="固定目标目录"><input value="left4dead2/addons" readOnly /></Field>
         <Field label="QQ闪传分享链接" hint="可直接粘贴 QQ 分享文本；支持直接 VPK，以及最多嵌套 3 层的 ZIP、7Z、RAR 压缩包。"><textarea rows={4} value={source} onChange={(event) => setSource(event.target.value)} placeholder="链接：https://qfile.qq.com/q/Example123" spellCheck={false} /></Field>

@@ -37,6 +37,14 @@ func (s *Store) ListPackages(ctx context.Context, instanceID string) ([]domain.A
 	return items, rows.Err()
 }
 
+func (s *Store) HasEnabledPackageKind(ctx context.Context, instanceID, kind string) (bool, error) {
+	var present bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM addon_packages WHERE instance_id=?1 AND lower(kind)=lower(?2) AND enabled=true
+	)`, instanceID, kind).Scan(&present)
+	return present, err
+}
+
 func (s *Store) SetPackageEnabled(ctx context.Context, instanceID, packageID string, enabled bool) error {
 	tag, err := s.db.ExecContext(ctx, `UPDATE addon_packages SET enabled=?3 WHERE id=?1 AND instance_id=?2`, packageID, instanceID, enabled)
 	if err == nil && resultRowsAffected(tag) == 0 {

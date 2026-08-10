@@ -1782,6 +1782,12 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 		return nil, err
 	}
 	kind := strings.ToLower(strings.TrimSpace(payload.Kind))
+	componentKind := strings.TrimSuffix(kind, "_url")
+	if componentKind == "sourcemod" {
+		if err := requireMetamodInstalled(instancePath); err != nil {
+			return nil, err
+		}
+	}
 	source := firstNonEmpty(payload.SourcePath, payload.Source, payload.SourceID)
 	uploadedContent := strings.TrimSpace(payload.ContentBase64)
 	if uploadedContent != "" && source != "" {
@@ -1831,7 +1837,6 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 		officialExpectedSize = resolved.ExpectedSize
 	}
 	allowNative := payload.RiskConfirmed || payload.AcknowledgeRisk
-	componentKind := strings.TrimSuffix(kind, "_url")
 	if (componentKind == "sourcemod" || componentKind == "metamod") && !official && !allowNative {
 		return nil, errors.New("third-party server extension packages require acknowledge_native_risk")
 	}

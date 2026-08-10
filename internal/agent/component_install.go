@@ -4,11 +4,35 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
+
+const metamodDependencyError = "SourceMod requires an installed Metamod:Source; install and verify Metamod:Source first"
+
+func requireMetamodInstalled(instancePath string) error {
+	vdf, err := readRegularFileWithinNoFollow(instancePath, "left4dead2/addons/metamod.vdf", 64<<10)
+	if err != nil || !strings.Contains(strings.ToLower(string(vdf)), "metamod/bin/server") {
+		return errors.New(metamodDependencyError)
+	}
+	binary := "left4dead2/addons/metamod/bin/server.so"
+	if runtime.GOOS == "windows" {
+		binary = "left4dead2/addons/metamod/bin/server.dll"
+	}
+	file, err := openManagedFileNoFollow(instancePath, binary)
+	if err != nil {
+		return errors.New(metamodDependencyError)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		return errors.New(metamodDependencyError)
+	}
+	return nil
+}
 
 func (e *Executor) installServerExtension(ctx context.Context, job domain.Job, payload operationPayload, record InstanceRecord, instancePath, componentKind, localSource, downloadedHash string, downloadedSize int64, version string, progress ProgressFunc) (map[string]any, error) {
 	if payload.RCONPassword == "" {
@@ -109,7 +133,7 @@ func (e *Executor) verifyServerExtension(ctx context.Context, record InstanceRec
 		}
 		lastErr = err
 		if time.Now().After(deadline) {
-			return lastErr
+			return fmt.Errorf("%s did not verify %s within 30 seconds: %w", command, kind, lastErr)
 		}
 		select {
 		case <-ctx.Done():

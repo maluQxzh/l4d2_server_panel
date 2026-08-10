@@ -74,7 +74,7 @@ func TestExecutionCompletionUsesExecutorErrorOnly(t *testing.T) {
 	}{
 		{name: "success", want: domain.JobSucceeded},
 		{name: "canceled", err: context.Canceled, want: domain.JobCanceled},
-		{name: "wrapped deadline", err: fmt.Errorf("executor stopped: %w", context.DeadlineExceeded), want: domain.JobCanceled},
+		{name: "wrapped deadline", err: fmt.Errorf("executor stopped: %w", context.DeadlineExceeded), want: domain.JobFailed},
 		{name: "ordinary failure", err: errors.New("steamcmd failed"), want: domain.JobFailed},
 	}
 	for _, test := range tests {

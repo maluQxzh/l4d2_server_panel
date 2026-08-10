@@ -834,7 +834,8 @@ paths:
         游戏文件的 update、validate 使用运行环境专用端点，不属于实例通用动作。
         创建、导入、配置、文件、日志传输、备份下载和状态探测使用各自的专用端点，不能把对应内部任务类型提交到此通用端点。
         `delete` 与 `detach` 不属于通用动作，必须调用 `DELETE /instances/{instanceId}?mode=quarantine|detach`，
-        以执行节点在线和隔离清理能力门控。
+        以执行节点在线和隔离清理能力门控。提交 `kind=sourcemod` 或 `kind=sourcemod_url` 的包安装前，
+        实例必须已有成功纳管且启用的 Metamod:Source，否则返回 409 `metamod_required`；Agent 还会复核实际加载文件。
       parameters:
         - { $ref: "#/components/parameters/InstanceID" }
         - { $ref: "#/components/parameters/CSRF" }
@@ -3174,6 +3175,7 @@ components:
         `rcon` 传 command；`broadcast` 传 message；`change_map` 传 map；`backup` 可传 kind、
         retention_daily、retention_weekly；`restore` 推荐传 backup_id，其内部归档定位符会加密持久化，server.cfg 作为普通可移植配置恢复，中心端 RCON 凭据不会写入文件；`toggle_package` 传 package_id 和布尔 enabled，enabled=false 只允许实例处于 stopped 状态，Control 与 Agent 都会拒绝运行中停用；
         `install_package` 传 kind，以及 source、source_id 或 name + content_base64（原始文件最大 8 MiB），
+        安装 SourceMod（官方或第三方整包）前必须先成功安装并启用 Metamod:Source，
         VPK 安装、回退及 `toggle_package` 重新启用不会扫描其他 VPK，模组之间的覆盖由 L4D2 挂载顺序决定。Workshop 下载载荷不执行 VPK 内容格式校验，只核对普通文件、SHA-256 和安全写入。第三方原生包另传 acknowledge_native_risk=true；`stop` 可传 maintenance 和
         warning_seconds；`restart` 不接受维护广播参数，只接受 `running`、`degraded` 或 `external` 实例，停止状态返回 409；仅 external 实例的直接 restart 可选传一次性 existing_rcon_password，用于让旧进程优雅退出。
         广播使用 Agent 固定安全文案。`create_schedule` 传 name、cron、timezone、action、enabled 和嵌套 payload；

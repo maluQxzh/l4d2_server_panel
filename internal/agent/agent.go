@@ -502,13 +502,14 @@ func (a *Agent) handleClaimedJob(job domain.Job, execute executeJobFunc) {
 // executionCompletion deliberately classifies the Executor's return value,
 // not the context's state. A cancellation can arrive after an operation has
 // committed and returned success; in that case the durable result must remain
-// succeeded. Only a cancellation/deadline error returned by Execute is a
-// canceled job. Every other execution error is a failure.
+// succeeded. Only an explicit cancellation returned by Execute is a canceled
+// job. Operation-specific deadlines are failures: treating them as user
+// cancellations hides the actual timeout and makes the task center misleading.
 func executionCompletion(executeErr error) (domain.JobStatus, string) {
 	if executeErr == nil {
 		return domain.JobSucceeded, "operation completed"
 	}
-	if errors.Is(executeErr, context.Canceled) || errors.Is(executeErr, context.DeadlineExceeded) {
+	if errors.Is(executeErr, context.Canceled) {
 		return domain.JobCanceled, "operation canceled"
 	}
 	return domain.JobFailed, sanitizeJobError(executeErr)

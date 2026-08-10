@@ -3,10 +3,12 @@ package agent
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -76,9 +78,11 @@ func TestRestoreCheckpointExactRejectsOtherInstanceBeforeWriting(t *testing.T) {
 
 func TestThirdPartyServerExtensionRequiresNativeRiskConfirmation(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "instance"), 0o750); err != nil {
+	instancePath := filepath.Join(root, "instance")
+	if err := os.MkdirAll(instancePath, 0o750); err != nil {
 		t.Fatal(err)
 	}
+	writeTestMetamodLoader(t, instancePath)
 	paths, err := NewPathGuard([]string{root})
 	if err != nil {
 		t.Fatal(err)
@@ -97,6 +101,90 @@ func TestThirdPartyServerExtensionRequiresNativeRiskConfirmation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "acknowledge_native_risk") {
 		t.Fatalf("expected high-risk confirmation failure, got %v", err)
 	}
+}
+
+func TestSourceModRequiresInstalledMetamodBeforeResolvingPackage(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "instance"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := NewPathGuard([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := OpenRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Put(InstanceRecord{ID: "instance", RootIndex: 0, RelativePath: "instance"}); err != nil {
+		t.Fatal(err)
+	}
+	resolverCalled := false
+	executor := &Executor{
+		paths: paths, registry: registry, logger: log.New(io.Discard, "", 0),
+		officialPackageResolver: func(context.Context, string) (OfficialPackage, error) {
+			resolverCalled = true
+			return OfficialPackage{}, errors.New("resolver should not be called")
+		},
+	}
+	_, err = executor.installMod(context.Background(), domain.Job{
+		ID: "job", InstanceID: "instance", Payload: map[string]any{"kind": "sourcemod", "rcon_password": "secret"},
+	}, func(int, string) {})
+	if err == nil || !strings.Contains(err.Error(), "requires an installed Metamod:Source") {
+		t.Fatalf("expected Metamod dependency failure, got %v", err)
+	}
+	if resolverCalled {
+		t.Fatal("SourceMod package was resolved before checking the Metamod dependency")
+	}
+}
+
+func TestMetamodDependencyRequiresTrustedLoaderFiles(t *testing.T) {
+	instancePath := t.TempDir()
+	vdfPath := filepath.Join(instancePath, "left4dead2", "addons", "metamod.vdf")
+	if err := os.MkdirAll(filepath.Dir(vdfPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(vdfPath, []byte(`"Plugin" { "file" "../addons/metamod/bin/server" }`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireMetamodInstalled(instancePath); err == nil {
+		t.Fatal("Metamod dependency accepted a loader descriptor without its native binary")
+	}
+	binaryPath := filepath.Join(instancePath, "left4dead2", "addons", "metamod", "bin", testMetamodBinaryName())
+	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binaryPath, []byte("metamod"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireMetamodInstalled(instancePath); err != nil {
+		t.Fatalf("valid Metamod loader files were rejected: %v", err)
+	}
+}
+
+func writeTestMetamodLoader(t *testing.T, instancePath string) {
+	t.Helper()
+	vdfPath := filepath.Join(instancePath, "left4dead2", "addons", "metamod.vdf")
+	if err := os.MkdirAll(filepath.Dir(vdfPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(vdfPath, []byte(`"Plugin" { "file" "../addons/metamod/bin/server" }`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	binaryPath := filepath.Join(instancePath, "left4dead2", "addons", "metamod", "bin", testMetamodBinaryName())
+	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binaryPath, []byte("metamod"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testMetamodBinaryName() string {
+	if runtime.GOOS == "windows" {
+		return "server.dll"
+	}
+	return "server.so"
 }
 
 func TestTrustedPackageArchiveCanInstallNativeFiles(t *testing.T) {

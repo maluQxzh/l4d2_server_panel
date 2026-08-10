@@ -339,6 +339,64 @@ func TestInternalJobsCannotBeSubmittedThroughGenericActions(t *testing.T) {
 	}
 }
 
+func TestSourceModInstallRequiresManagedMetamod(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "sourcemod-dependency.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	owner, created, err := store.BootstrapOwner(ctx, "owner", "Owner", "hash")
+	if err != nil || !created {
+		t.Fatalf("bootstrap owner: created=%v err=%v", created, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online')`); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: "node", Name: "dependency", Port: 27015})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(Config{MasterKey: []byte("0123456789abcdef0123456789abcdef")}, store, nil)
+	defer server.Close()
+
+	submit := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+instance.ID+"/actions",
+			strings.NewReader(`{"type":"install_package","payload":{"kind":"sourcemod"}}`))
+		routeContext := chi.NewRouteContext()
+		routeContext.URLParams.Add("instanceID", instance.ID)
+		request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
+		request = request.WithContext(context.WithValue(request.Context(), principalContextKey, Principal{User: owner}))
+		response := httptest.NewRecorder()
+		server.handleInstanceAction(response, request)
+		return response
+	}
+
+	response := submit()
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "metamod_required") {
+		t.Fatalf("SourceMod without Metamod returned %d: %s", response.Code, response.Body.String())
+	}
+	var jobs int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE instance_id=?1`, instance.ID).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 {
+		t.Fatalf("blocked SourceMod request queued %d jobs", jobs)
+	}
+
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,enabled)
+		VALUES('metamod',?1,'Metamod:Source','metamod',true)`, instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	response = submit()
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("SourceMod with Metamod returned %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestDeleteCannotBeSubmittedOrScheduledThroughGenericActions(t *testing.T) {
 	for _, action := range []string{"delete", "detach"} {
 		t.Run(action, func(t *testing.T) {
