@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { apiBaseURL } from "../lib/api";
 import { removeCachedInstance, setCachedInstance } from "../lib/instance-cache";
-import type { InstanceRecord, RealtimeEvent } from "../lib/types";
+import type { InstanceRecord, Job, RealtimeEvent } from "../lib/types";
 
 type ConnectionState = "connecting" | "live" | "polling";
 type Listener = (event: RealtimeEvent) => void;
@@ -80,6 +80,10 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
           }
           if (event.resource_type === "job" || event.type.startsWith("job")) {
             void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+            const job = event.data?.job as Job | undefined;
+            if (job?.instance_id && ["install_mod", "install_package", "qq_flash_import", "scan_packages", "toggle_package", "rollback_package", "delete_package"].includes(job.type)) {
+              void queryClient.invalidateQueries({ queryKey: ["instances", job.instance_id, "packages"] });
+            }
             // 实例投影由同一事务随后发布的 instance.updated 权威事件更新；
             // 不在这里重复 refetch，避免旧请求覆盖启动/停止终态。
             void queryClient.invalidateQueries({ queryKey: ["environments"] });

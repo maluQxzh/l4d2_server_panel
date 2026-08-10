@@ -556,6 +556,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, legacyQQFlashPackageSupported := client.capabilities["qq_flash_package_v1"]
 		_, qqFlashPackageSupported := client.capabilities["qq_flash_vpk_packages_v2"]
 		_, packageDeleteSupported := client.capabilities["package_delete_v1"]
+		_, packageScanSupported := client.capabilities["package_scan_v1"]
 		_, mapLibrarySupported := client.capabilities["map_library_v1"]
 		_, mapHotReloadSupported := client.capabilities["map_hot_reload_v1"]
 		client.mu.Unlock()
@@ -581,6 +582,9 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 			continue
 		}
 		if job.Type == "delete_package" && !packageDeleteSupported {
+			continue
+		}
+		if job.Type == "scan_packages" && !packageScanSupported {
 			continue
 		}
 		if strings.HasPrefix(job.Type, "map.") && !mapLibrarySupported {
@@ -728,7 +732,7 @@ func isTerminalJobStatus(status domain.JobStatus) bool {
 
 func jobChangesInstance(jobType string) bool {
 	switch jobType {
-	case "start", "stop", "restart", "install", "import", "restore", "configure", "update", "validate", "a2s.info", "delete", "detach", "install_mod", "toggle_package", "rollback_package", "delete_package", "qq_flash_import":
+	case "start", "stop", "restart", "install", "import", "restore", "configure", "update", "validate", "a2s.info", "delete", "detach", "install_mod", "toggle_package", "rollback_package", "delete_package", "qq_flash_import", "scan_packages":
 		return true
 	default:
 		return false

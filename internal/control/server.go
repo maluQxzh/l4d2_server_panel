@@ -230,6 +230,7 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requireInstancePermission(PermissionPlayersRead)).Get("/instances/{instanceID}/players", s.handleInstancePlayers)
 			r.With(s.requireInstancePermission(PermissionPlayersRead)).Get("/instances/{instanceID}/bans", s.handleInstanceBans)
 			r.With(s.requireInstancePermission(PermissionPackagesRead)).Get("/instances/{instanceID}/packages", s.handleInstancePackages)
+			r.With(s.requireInstancePermission(PermissionPackagesInstall)).Post("/instances/{instanceID}/packages/scan", s.handleScanInstalledPackages)
 			r.With(s.requireInstancePermission(PermissionPackagesDelete)).Delete("/instances/{instanceID}/packages/{packageID}", s.handleDeletePackage)
 			r.With(s.requireInstancePermission(PermissionPackagesRead)).Get("/instances/{instanceID}/packages/{packageID}/versions", s.handlePackageVersions)
 			r.With(s.requireInstancePermission(PermissionPackagesRollback)).Post("/instances/{instanceID}/packages/{packageID}/versions/{versionID}/rollback", s.handleRollbackPackageVersion)

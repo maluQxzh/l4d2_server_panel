@@ -137,3 +137,25 @@ describe("游戏实例配置中的端口", () => {
     expect(reconcileUpload).not.toHaveBeenCalled();
   });
 });
+
+describe("游戏实例模组扫描", () => {
+  beforeEach(() => { authState.user = { role: "owner" }; });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("从模组页一键提交固定目录扫描任务", async () => {
+    vi.spyOn(api, "instance").mockResolvedValue(instance);
+    vi.spyOn(api, "packages").mockResolvedValue({ items: [] });
+    const scan = vi.spyOn(api, "scanInstalledPackages").mockResolvedValue({ job_id: "scan-job" });
+    const router = createMemoryRouter(
+      [{ path: "/instances/:instanceId", element: <InstanceDetailPage /> }],
+      { initialEntries: [`/instances/${instance.id}?tab=mods`] },
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><RealtimeProvider enabled={false}><ToastProvider><RouterProvider router={router} /></ToastProvider></RealtimeProvider></QueryClientProvider>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "扫描已安装" }));
+
+    await waitFor(() => expect(scan).toHaveBeenCalledWith(instance.id));
+    expect(await screen.findByText(/扫描任务已提交/)).toBeInTheDocument();
+  });
+});

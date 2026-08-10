@@ -745,13 +745,25 @@ function PackagesTab({ instance, section }: { instance: InstanceRecord; section:
   const [open, setOpen] = useState(false);
   const canRead = hasInstancePermission(user, instance, "packages.read");
   const canInstall = hasInstancePermission(user, instance, "packages.install");
+  const toast = useToast();
+  const client = useQueryClient();
   const packages = useQuery({ queryKey: ["instances", instance.id, "packages"], queryFn: () => api.packages(instance.id), enabled: canRead, refetchInterval: canRead ? 15_000 : false });
   const pluginSection = section === "plugins";
   const items = packages.data?.items.filter((item) => pluginSection ? item.kind !== "vpk" && item.kind !== "workshop" : item.kind === "vpk" || item.kind === "workshop") || [];
   const noun = pluginSection ? "插件" : "模组";
-  const description = pluginSection ? "支持 SourceMod 插件、SourceMod/Metamod 整包与第三方原生扩展。" : "支持 VPK、Workshop 项目与合集，以及 QQ闪传 VPK 批量导入。";
+  const scan = useMutation({
+    mutationFn: () => api.scanInstalledPackages(instance.id),
+    onSuccess: () => {
+      toast.push("扫描任务已提交；有效的本地 VPK 完成校验后会自动纳入管理");
+      void client.invalidateQueries({ queryKey: ["jobs"] });
+      void client.invalidateQueries({ queryKey: ["instances", instance.id, "packages"] });
+    },
+    onError: (error) => toast.push(error.message, "error"),
+  });
+  const description = pluginSection ? "支持 SourceMod 插件、SourceMod/Metamod 整包与第三方原生扩展。" : "支持 VPK、Workshop 项目与合集、QQ闪传批量导入，以及扫描 left4dead2/addons 中已有的 VPK。";
   const installButton = canInstall ? <Button onClick={() => setOpen(true)}><Plus size={16} />安装{noun}</Button> : undefined;
-  return <Card><div className="card-heading"><div><span className="eyebrow">{pluginSection ? "SERVER PLUGINS" : "ADD-ONS"}</span><h2>{pluginSection ? "插件与服务端组件" : "模组"}</h2></div>{installButton}</div>{!canRead ? <EmptyState title={`${noun}清单已隐藏`} description={`当前账号没有查看${noun}清单的权限，但仍可执行上方单独授予的安装操作。`} /> : packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title={`${noun}清单尚不可用`} description={`当前控制端未开放${noun}清单接口；安装任务仍可通过面板提交。`} /> : items.length ? <div className="package-grid">{items.map((item) => <PackageCard key={item.id} item={item} instance={instance} />)}</div> : <EmptyState title={`还没有安装${noun}`} description={description} />}<InstallPackageModal open={canInstall && open} instance={instance} section={section} onClose={() => setOpen(false)} /></Card>;
+  const headingActions = canInstall ? <div className="package-heading-actions">{!pluginSection && <Button variant="secondary" loading={scan.isPending} onClick={() => scan.mutate()} title="扫描 left4dead2/addons 直属目录中的 VPK"><Search size={16} />扫描已安装</Button>}{installButton}</div> : undefined;
+  return <Card><div className="card-heading"><div><span className="eyebrow">{pluginSection ? "SERVER PLUGINS" : "ADD-ONS"}</span><h2>{pluginSection ? "插件与服务端组件" : "模组"}</h2></div>{headingActions}</div>{!canRead ? <EmptyState title={`${noun}清单已隐藏`} description={`当前账号没有查看${noun}清单的权限，但仍可执行上方单独授予的安装操作。`} /> : packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title={`${noun}清单尚不可用`} description={`当前控制端未开放${noun}清单接口；安装任务仍可通过面板提交。`} /> : items.length ? <div className="package-grid">{items.map((item) => <PackageCard key={item.id} item={item} instance={instance} />)}</div> : <EmptyState title={`还没有安装${noun}`} description={description} />}<InstallPackageModal open={canInstall && open} instance={instance} section={section} onClose={() => setOpen(false)} /></Card>;
 }
 
 function PackageCard({ item, instance }: { item: PackageRecord; instance: InstanceRecord }) {

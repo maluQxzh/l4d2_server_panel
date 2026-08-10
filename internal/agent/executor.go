@@ -190,6 +190,8 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 		return e.file(ctx, job, progress)
 	case "qq.flash.import":
 		return e.importQQFlashPackage(ctx, job, progress)
+	case "scan_packages":
+		return e.scanInstalledPackages(ctx, job, progress)
 	case "list":
 		return e.list(ctx, job, progress)
 	case "rcon":
@@ -250,13 +252,13 @@ func agentJobRequiresInstanceLock(action string, payload map[string]any) bool {
 	// update replaces. It therefore participates in the instance lock even
 	// though it does not mutate files. A2S/RCON status and bounded file/log
 	// reads remain concurrent with lifecycle work.
-	readOnly := action == "discover_instances" || action == "list" || action == "a2s.info" || action == "a2s.players" || action == "rcon.players" || action == "logs.search" || action == "logs.chunk" || action == "backup.chunk" || action == "backup.upload.abort" || (action == "file" && payloadString(payload, "operation") == "read")
+	readOnly := action == "discover_instances" || action == "scan_packages" || action == "list" || action == "a2s.info" || action == "a2s.players" || action == "rcon.players" || action == "logs.search" || action == "logs.chunk" || action == "backup.chunk" || action == "backup.upload.abort" || (action == "file" && payloadString(payload, "operation") == "read")
 	return !readOnly
 }
 
 func externalAgentJobAllowed(action string, payload map[string]any) bool {
 	switch action {
-	case "restart", "a2s.info", "a2s.players", "rcon.players", "list", "logs.search", "logs.chunk", "backup", "backup.chunk", "backup.upload.chunk", "backup.upload.abort", "check_update", "detach":
+	case "restart", "a2s.info", "a2s.players", "rcon.players", "list", "scan_packages", "logs.search", "logs.chunk", "backup", "backup.chunk", "backup.upload.chunk", "backup.upload.abort", "check_update", "detach":
 		return true
 	case "file":
 		operation := strings.ToLower(strings.TrimSpace(payloadString(payload, "operation")))
@@ -289,6 +291,8 @@ func normalizeJobType(value string) string {
 		return "delete_package"
 	case "package.rollback", "rollback.package":
 		return "rollback_package"
+	case "package.scan", "scan.packages":
+		return "scan_packages"
 	case "player.kick", "kick", "kick.player":
 		return "kick_player"
 	case "player.ban", "ban", "ban.player":

@@ -207,7 +207,7 @@ func TestGenericInstanceActionContractIsSeparateFromInternalJobs(t *testing.T) {
 
 	internalOnly := []string{
 		"a2s.info", "a2s.players", "backup.chunk", "backup.upload.abort", "configure", "create", "delete", "detach", "file", "game.import",
-		"import", "install", "install_mod", "list", "logs.chunk", "logs.search", "rcon.players", "rollback_package", "update", "validate",
+		"import", "install", "install_mod", "list", "logs.chunk", "logs.search", "rcon.players", "rollback_package", "scan_packages", "update", "validate",
 	}
 	for _, action := range internalOnly {
 		if genericInstanceActionAllowed(action) {

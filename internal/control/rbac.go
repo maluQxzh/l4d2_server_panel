@@ -251,6 +251,7 @@ var instanceJobPermissions = map[string]Permission{
 	"install":             PermissionEnvironmentsManage,
 	"install_mod":         PermissionPackagesInstall,
 	"qq_flash_import":     PermissionPackagesInstall,
+	"scan_packages":       PermissionPackagesInstall,
 	"kick_player":         PermissionPlayersKick,
 	"list":                PermissionFilesList,
 	"map.assign":          PermissionMapsAssign,

@@ -23,6 +23,8 @@ type packageVersionMetadata struct {
 	CreatedAt   time.Time
 }
 
+const maxScannedPackageBytes = 512 << 20
+
 func (s *Store) ListPackageVersions(ctx context.Context, instanceID, packageID string) ([]domain.AddonPackageVersion, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,package_id,instance_id,version,sha256,size,target_path,storage_path,created_at
 		FROM addon_package_versions WHERE instance_id=?1 AND package_id=?2 ORDER BY created_at DESC,id DESC`, instanceID, packageID)
@@ -142,6 +144,85 @@ func (s *Store) applyQQFlashPackageResult(ctx context.Context, job domain.Job) e
 		if err != nil {
 			return err
 		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) applyInstalledPackageScanResult(ctx context.Context, job domain.Job) error {
+	if stringFromAny(job.Result["kind"]) != "installed_vpk_scan" || stringFromAny(job.Result["directory"]) != "left4dead2/addons" {
+		return errors.New("installed package scan returned invalid result metadata")
+	}
+	rawPackages, ok := job.Result["packages"].([]any)
+	if !ok || len(rawPackages) > 1000 || intFromAny(job.Result["valid_count"]) != len(rawPackages) {
+		return errors.New("installed package scan returned an invalid package list")
+	}
+	rawRejected, ok := job.Result["rejected"].([]any)
+	if !ok || len(rawPackages)+len(rawRejected) > 1000 || intFromAny(job.Result["rejected_count"]) != len(rawRejected) ||
+		intFromAny(job.Result["discovered_count"]) != len(rawPackages)+len(rawRejected) {
+		return errors.New("installed package scan returned invalid scan counts")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT path FROM addon_packages WHERE instance_id=?1`, job.InstanceID)
+	if err != nil {
+		return err
+	}
+	existing := make(map[string]struct{})
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[strings.ToLower(filepath.ToSlash(path))] = struct{}{}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	seen := make(map[string]struct{}, len(rawPackages))
+	for _, raw := range rawPackages {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			return errors.New("installed package scan returned invalid package metadata")
+		}
+		path := filepath.ToSlash(filepath.Clean(filepath.FromSlash(stringFromAny(item["path"]))))
+		if err := validateVersionedPackageResultPath("vpk", path); err != nil {
+			return err
+		}
+		base := filepath.Base(filepath.FromSlash(path))
+		if strings.HasPrefix(strings.ToLower(base), "l4d2panel-map-") {
+			return errors.New("installed package scan returned a reserved map-library VPK")
+		}
+		name := strings.TrimSpace(stringFromAny(item["name"]))
+		if name != base || name != filepath.Base(name) || len(name) > 255 {
+			return errors.New("installed package scan returned an invalid package name")
+		}
+		sha := strings.ToLower(stringFromAny(item["sha256"]))
+		version := intFromAny(item["vpk_version"])
+		size := int64FromAny(item["size"])
+		if !validPackageSHA(sha) || (version != 1 && version != 2) || size <= 0 || size > maxScannedPackageBytes {
+			return errors.New("installed package scan returned invalid VPK verification metadata")
+		}
+		key := strings.ToLower(path)
+		if _, duplicate := seen[key]; duplicate {
+			return errors.New("installed package scan returned duplicate package paths")
+		}
+		seen[key] = struct{}{}
+		if _, registered := existing[key]; registered {
+			continue
+		}
+		packageID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("installed-vpk:"+job.InstanceID+":"+key)).String()
+		if _, err := tx.ExecContext(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,installed_by,last_job_id)
+			VALUES(?1,?2,?3,'vpk',?4,'local_scan','',?5,?6,true,'normal',?7,?8) ON CONFLICT(id) DO NOTHING`,
+			packageID, job.InstanceID, name, fmt.Sprintf("v%d", version), sha, path, nullableUUID(job.RequestedBy), job.ID); err != nil {
+			return err
+		}
+		existing[key] = struct{}{}
 	}
 	return tx.Commit()
 }

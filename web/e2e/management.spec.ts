@@ -538,6 +538,11 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
     target_path: "left4dead2/addons/campaign.vpk", created_at: "2026-07-30T01:00:00Z",
   }] }));
   await page.route("**/api/v1/instances/instance-1/packages/package-2/versions", (route) => json(route, { items: [] }));
+  let packageScan = false;
+  await page.route("**/api/v1/instances/instance-1/packages/scan", (route) => {
+    packageScan = route.request().method() === "POST" && route.request().postData() === null && Boolean(route.request().headers()["idempotency-key"]);
+    return json(route, { job_id: "job-package-scan" }, 202);
+  });
   await page.route("**/api/v1/instances/instance-1/backups", (route) => json(route, { items: [] }));
   await page.route("**/api/v1/instances/instance-1/schedules", (route) => json(route, { items: [{
     id: "schedule-1", name: "每周维护", cron: "0 4 * * 1", action: "restart", enabled: true,
@@ -634,6 +639,9 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
   await expect(page.getByLabel("RCON 密码")).toHaveAttribute("placeholder", "尚未设置");
 
   await page.getByRole("button", { name: "模组" }).click();
+  await page.getByRole("button", { name: "扫描已安装" }).click();
+  await expect.poll(() => packageScan).toBeTruthy();
+  await expect(page.getByText(/扫描任务已提交/)).toBeVisible();
   await expect(page.getByLabel("campaign.vpk 可回退版本")).toBeVisible();
   await expect(page.getByText("admin-tools.smx", { exact: true })).toHaveCount(0);
   page.once("dialog", (dialog) => dialog.accept());

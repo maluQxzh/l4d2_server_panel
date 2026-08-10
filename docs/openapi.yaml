@@ -918,6 +918,30 @@ paths:
                       items: { $ref: "#/components/schemas/AddonPackage" },
                     }
 
+  /instances/{instanceId}/packages/scan:
+    post:
+      tags: [Packages]
+      summary: 扫描并纳管实例中已安装的 VPK
+      description: |
+        需要 packages.install 和 package_scan_v1 Agent。调用方不能指定路径；Agent 只扫描
+        left4dead2/addons 的直属 .vpk 普通文件，跳过地图库保留名称和所有子目录。每次最多处理
+        1000 个候选，并通过 no-follow 文件句柄执行 512 MiB、VPK v1/v2 结构、边界、逐项 CRC、
+        大小和 SHA-256 校验。有效且尚未按路径登记的文件会幂等投影为可启停、可删除的普通 VPK 包；
+        无效文件只在任务结果中报告，不会被改写或删除。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "202":
+          description: 扫描任务已排队
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /instances/{instanceId}/packages/{packageId}/versions:
     get:
       tags: [Instances]

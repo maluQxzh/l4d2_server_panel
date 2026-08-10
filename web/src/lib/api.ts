@@ -339,6 +339,10 @@ export const api = {
   players: (instanceId: string) => list<Player>(`/instances/${encodeURIComponent(instanceId)}/players`),
   bans: (instanceId: string) => list<PlayerBan>(`/instances/${encodeURIComponent(instanceId)}/bans`),
   packages: (instanceId: string) => list<PackageRecord>(`/instances/${encodeURIComponent(instanceId)}/packages`),
+  scanInstalledPackages: (instanceId: string) => request<{ job_id: string; idempotent_replay?: boolean }>(
+    `/instances/${encodeURIComponent(instanceId)}/packages/scan`,
+    { method: "POST" },
+  ),
   packageVersions: (instanceId: string, packageId: string) => list<PackageVersionRecord>(
     `/instances/${encodeURIComponent(instanceId)}/packages/${encodeURIComponent(packageId)}/versions`,
   ),

@@ -2,7 +2,9 @@ package agent
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -45,6 +47,13 @@ func validateVPKDetailed(path string) (int, string, []string, error) {
 		return 0, "", nil, err
 	}
 	defer f.Close()
+	return validateVPKFile(f)
+}
+
+// validateVPKFile validates and hashes an already-open file handle. Callers
+// that obtained the handle through the managed no-follow path helpers can use
+// this form without reopening an attacker-replaceable absolute path.
+func validateVPKFile(f *os.File) (int, string, []string, error) {
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		return 0, "", nil, errors.New("VPK must be a regular file")
@@ -103,10 +112,14 @@ func validateVPKDetailed(path string) (int, string, []string, error) {
 			return 0, "", nil, err
 		}
 	}
-	hash, _, err := hashFile(path)
-	if err != nil {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return 0, "", nil, err
 	}
+	digest := sha256.New()
+	if _, err := io.Copy(digest, f); err != nil {
+		return 0, "", nil, err
+	}
+	hash := hex.EncodeToString(digest.Sum(nil))
 	paths := make([]string, len(entries))
 	for index, entry := range entries {
 		paths[index] = entry.path

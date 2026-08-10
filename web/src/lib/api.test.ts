@@ -141,6 +141,17 @@ describe("API 客户端", () => {
     expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
   });
 
+	it("扫描已安装 VPK 使用固定的资源化端点", async () => {
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ job_id: "job-scan" }), { status: 202, headers: { "Content-Type": "application/json" } }));
+
+		await api.scanInstalledPackages("实例/一");
+
+		const [url, init] = fetchMock.mock.calls[0];
+		expect(url).toBe("/api/v1/instances/%E5%AE%9E%E4%BE%8B%2F%E4%B8%80/packages/scan");
+		expect(init?.method).toBe("POST");
+		expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
+	});
+
   it("计划启停与删除使用资源化端点", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ schedule: { id: "schedule-1", enabled: false } }), { status: 200, headers: { "Content-Type": "application/json" } }))

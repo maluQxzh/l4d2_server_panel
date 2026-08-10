@@ -93,6 +93,16 @@ func TestGenericPackageRollbackEndpointIsRejected(t *testing.T) {
 	}
 }
 
+func TestInstalledPackageScanEndpointRejectsCallerPath(t *testing.T) {
+	server := &Server{}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/instances/example/packages/scan", strings.NewReader(`{"path":"../../outside"}`))
+	response := httptest.NewRecorder()
+	server.handleScanInstalledPackages(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_package_scan") {
+		t.Fatalf("scan with caller path returned %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestQQFlashPackageProjectionCreatesManagedPackagesAndDeleteRemovesOne(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "qq-packages.sqlite3"))
@@ -160,5 +170,75 @@ func TestQQFlashPackageProjectionRejectsNonVPKPath(t *testing.T) {
 	}}
 	if err := store.applyQQFlashPackageResult(ctx, job); err == nil {
 		t.Fatal("non-VPK QQ flash projection was accepted")
+	}
+}
+
+func TestInstalledPackageScanProjectionIsPathIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "scanned-packages.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online');
+		INSERT INTO instances(id,node_id,name,status,path,port,config) VALUES('instance','node','Server','stopped','C:\server',27015,'{}');
+		INSERT INTO addon_packages(id,instance_id,name,kind,source,sha256,path,enabled,risk)
+		VALUES('existing','instance','existing.vpk','vpk','upload',?1,'left4dead2/addons/existing.vpk',1,'normal')`, strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+	result := map[string]any{
+		"kind": "installed_vpk_scan", "directory": "left4dead2/addons",
+		"packages": []any{
+			map[string]any{"name": "existing.vpk", "path": "left4dead2/addons/existing.vpk", "sha256": strings.Repeat("a", 64), "size": float64(100), "vpk_version": float64(1)},
+			map[string]any{"name": "local.vpk", "path": "left4dead2/addons/local.vpk", "sha256": strings.Repeat("b", 64), "size": float64(200), "vpk_version": float64(2)},
+		},
+		"rejected": []any{}, "discovered_count": float64(2), "valid_count": float64(2), "rejected_count": float64(0),
+	}
+	job := domain.Job{ID: "scan-job", InstanceID: "instance", Type: "scan_packages", Status: domain.JobSucceeded, RequestedBy: "", Result: result}
+	if err := store.ApplyJobResult(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ApplyJobResult(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ListPackages(ctx, "instance")
+	if err != nil || len(items) != 2 {
+		t.Fatalf("projected packages = %#v, err %v", items, err)
+	}
+	var scanned domain.AddonPackage
+	for _, item := range items {
+		if item.Name == "local.vpk" {
+			scanned = item
+		}
+	}
+	if scanned.ID == "" || scanned.Source != "local_scan" || scanned.Version != "v2" || scanned.SHA256 != strings.Repeat("b", 64) || !scanned.Enabled {
+		t.Fatalf("unexpected scanned package: %#v", scanned)
+	}
+}
+
+func TestInstalledPackageScanProjectionRejectsReservedMapName(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "reserved-scanned-package.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online');
+		INSERT INTO instances(id,node_id,name,status,path,port,config) VALUES('instance','node','Server','stopped','C:\server',27015,'{}')`); err != nil {
+		t.Fatal(err)
+	}
+	job := domain.Job{InstanceID: "instance", Result: map[string]any{
+		"kind": "installed_vpk_scan", "directory": "left4dead2/addons",
+		"packages": []any{map[string]any{"name": "l4d2panel-map-one-1.vpk", "path": "left4dead2/addons/l4d2panel-map-one-1.vpk", "sha256": strings.Repeat("a", 64), "size": float64(100), "vpk_version": float64(1)}},
+		"rejected": []any{}, "discovered_count": float64(1), "valid_count": float64(1), "rejected_count": float64(0),
+	}}
+	if err := store.applyInstalledPackageScanResult(ctx, job); err == nil {
+		t.Fatal("reserved map-library VPK was accepted by scan projection")
 	}
 }

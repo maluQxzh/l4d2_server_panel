@@ -610,6 +610,8 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 			return s.applyQQFlashPackageResult(ctx, job)
 		}
 		return nil
+	case "scan_packages":
+		return s.applyInstalledPackageScanResult(ctx, job)
 	case "rollback_package":
 		return s.applyPackageRollbackResult(ctx, job)
 	case "toggle_package":

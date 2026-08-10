@@ -89,6 +89,7 @@ export const jobLabels: Record<string, string> = {
   install_package: "安装模组",
   install_mod: "安装模组",
   qq_flash_import: "QQ闪传 VPK 导入",
+  scan_packages: "扫描已安装 VPK",
   toggle_package: "启停模组",
   rollback_package: "回退模组版本",
   import: "导入实例",

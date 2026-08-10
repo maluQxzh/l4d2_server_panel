@@ -68,6 +68,32 @@ describe("实时节点事件", () => {
     expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["instances"] });
   });
 
+  it("模组扫描终态刷新实例包清单", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    render(
+      <QueryClientProvider client={client}>
+        <RealtimeProvider><span>ready</span></RealtimeProvider>
+      </QueryClientProvider>,
+    );
+
+    act(() => {
+      FakeWebSocket.instances[0].onmessage?.({
+        data: JSON.stringify({
+          id: 3,
+          type: "job.updated",
+          resource_type: "job",
+          resource_id: "scan-job",
+          data: { job: { id: "scan-job", instance_id: "instance-a", type: "scan_packages", status: "succeeded" } },
+          created_at: "2026-08-10T00:00:00Z",
+        }),
+      } as MessageEvent);
+    });
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["instances", "instance-a", "packages"] });
+  });
+
   it("实例终态事件直接同步详情与列表缓存", async () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     const client = new QueryClient();
