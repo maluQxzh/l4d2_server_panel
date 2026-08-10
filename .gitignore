@@ -36,3 +36,6 @@ Thumbs.db
 
 # Local map tools
 /l4d2_Map_Tools/
+
+# Local plugin recognition corpus
+/pluginshow/
