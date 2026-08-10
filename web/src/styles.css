@@ -369,12 +369,12 @@ h1, h2, h3, p { margin-top: 0; }
 .instance-card__foot-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 
 .modal-backdrop { position: fixed; z-index: 100; inset: 0; padding: 20px; display: grid; place-items: center; background: rgba(1,3,2,.78); backdrop-filter: blur(8px); }
-.modal { width: min(620px, 100%); max-height: calc(100vh - 40px); overflow: auto; background: var(--panel-2); border: 1px solid #314039; border-radius: 13px; box-shadow: 0 30px 90px rgba(0,0,0,.6); }
-.modal__header { padding: 20px 22px; display: flex; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); }
+.modal { width: min(620px, 100%); max-height: calc(100vh - 40px); display: flex; overflow: hidden; flex-direction: column; background: var(--panel-2); border: 1px solid #314039; border-radius: 13px; box-shadow: 0 30px 90px rgba(0,0,0,.6); }
+.modal__header { padding: 20px 22px; display: flex; flex: 0 0 auto; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); }
 .modal__header h2 { margin-bottom: 5px; font-size: 17px; }
 .modal__header p { margin: 0; color: var(--text-faint); font-size: 11px; line-height: 1.6; }
-.modal__body { padding: 22px; }
-.modal__footer { padding: 14px 22px; display: flex; justify-content: flex-end; gap: 9px; background: rgba(0,0,0,.12); border-top: 1px solid var(--line); }
+.modal__body { min-height: 0; padding: 22px; overflow: auto; flex: 1 1 auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.modal__footer { padding: 14px 22px; display: flex; flex: 0 0 auto; justify-content: flex-end; gap: 9px; background: rgba(0,0,0,.12); border-top: 1px solid var(--line); }
 .field { display: flex; flex-direction: column; gap: 7px; color: #c5cec9; font-size: 11px; font-weight: 650; }
 .field input, .field select, .field textarea { width: 100%; min-height: 40px; padding: 0 11px; color: var(--text); background: #0d1311; border: 1px solid var(--line); border-radius: 7px; outline: none; font-size: 12px; font-weight: 450; transition: border .15s, box-shadow .15s; }
 .field textarea { padding: 10px 11px; resize: vertical; line-height: 1.55; }
@@ -611,7 +611,7 @@ h1, h2, h3, p { margin-top: 0; }
 .risk-check strong { color: #efb6ae; font-size: 10px; }
 .risk-check small { color: #ac7b75; font-size: 9px; line-height: 1.5; }
 .package-restart-required { color: var(--yellow) !important; }
-.smart-plugin-plan { max-height: 48vh; padding: 10px; display: flex; overflow: auto; flex-direction: column; gap: 8px; background: rgba(0,0,0,.18); border: 1px solid var(--line-soft); border-radius: 8px; }
+.smart-plugin-plan { padding: 10px; display: flex; flex-direction: column; gap: 8px; background: rgba(0,0,0,.18); border: 1px solid var(--line-soft); border-radius: 8px; }
 .smart-plugin-plan__summary { display: flex; flex-direction: column; gap: 3px; }
 .smart-plugin-plan__summary strong { color: var(--green); font-size: 11px; }
 .smart-plugin-plan__summary span { color: var(--text-faint); font-size: 9px; }
