@@ -3172,7 +3172,7 @@ components:
         `kick_player` 传 name；`ban_player` 传 steam_id、可选 duration_minutes（0–525600，0 为永久）
         和最多 200 字符单行 reason；`unban_player` 传 steam_id。常用动作约定：
         `rcon` 传 command；`broadcast` 传 message；`change_map` 传 map；`backup` 可传 kind、
-        retention_daily、retention_weekly；`restore` 推荐传 backup_id，其内部归档定位符会加密持久化，server.cfg 作为普通可移植配置恢复，中心端 RCON 凭据不会写入文件；`toggle_package` 传 package_id 和 enabled；
+        retention_daily、retention_weekly；`restore` 推荐传 backup_id，其内部归档定位符会加密持久化，server.cfg 作为普通可移植配置恢复，中心端 RCON 凭据不会写入文件；`toggle_package` 传 package_id 和布尔 enabled，enabled=false 只允许实例处于 stopped 状态，Control 与 Agent 都会拒绝运行中停用；
         `install_package` 传 kind，以及 source、source_id 或 name + content_base64（原始文件最大 8 MiB），
         VPK 安装、回退及 `toggle_package` 重新启用不会扫描其他 VPK，模组之间的覆盖由 L4D2 挂载顺序决定。Workshop 下载载荷不执行 VPK 内容格式校验，只核对普通文件、SHA-256 和安全写入。第三方原生包另传 acknowledge_native_risk=true；`stop` 可传 maintenance 和
         warning_seconds；`restart` 不接受维护广播参数，只接受 `running`、`degraded` 或 `external` 实例，停止状态返回 409；仅 external 实例的直接 restart 可选传一次性 existing_rcon_password，用于让旧进程优雅退出。

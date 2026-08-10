@@ -61,6 +61,24 @@ function renderConfigPage(item: InstanceRecord) {
   );
 }
 
+function renderPackagesPage(item: InstanceRecord) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  vi.spyOn(api, "instance").mockResolvedValue(item);
+  const router = createMemoryRouter(
+    [{ path: "/instances/:instanceId", element: <InstanceDetailPage /> }],
+    { initialEntries: [`/instances/${item.id}?tab=mods`] },
+  );
+  return render(
+    <QueryClientProvider client={client}>
+      <RealtimeProvider enabled={false}>
+        <ToastProvider>
+          <RouterProvider router={router} />
+        </ToastProvider>
+      </RealtimeProvider>
+    </QueryClientProvider>,
+  );
+}
+
 describe("游戏实例配置中的端口", () => {
   beforeEach(() => { authState.user = { role: "owner" }; });
   afterEach(() => {
@@ -157,5 +175,23 @@ describe("游戏实例模组扫描", () => {
 
     await waitFor(() => expect(scan).toHaveBeenCalledWith(instance.id));
     expect(await screen.findByText(/扫描任务已提交/)).toBeInTheDocument();
+  });
+
+  it("可按名称搜索和排序，并阻止运行中停用模组", async () => {
+    vi.spyOn(api, "packages").mockResolvedValue({ items: [
+      { id: "alpha", name: "Alpha.vpk", kind: "vpk", enabled: true, path: "left4dead2/addons/Alpha.vpk", installed_at: "2026-08-01T00:00:00Z" },
+      { id: "beta", name: "Beta.vpk", kind: "vpk", enabled: false, path: "left4dead2/addons/panel-disabled/Beta.vpk", installed_at: "2026-08-02T00:00:00Z" },
+    ] });
+    vi.spyOn(api, "packageVersions").mockResolvedValue({ items: [] });
+    renderPackagesPage({ ...instance, status: "running" });
+
+    expect(await screen.findByText(/当前实例未停止，不能停用已启用的模组/)).toBeVisible();
+    expect(await screen.findByRole("button", { name: "停用 Alpha.vpk" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "启用 Beta.vpk" })).toBeEnabled();
+    expect(screen.getByLabelText("模组排序")).toHaveValue("installed_desc");
+
+    fireEvent.change(screen.getByLabelText("按名称搜索模组"), { target: { value: "beta" } });
+    expect(screen.queryByText("Alpha.vpk", { exact: true })).not.toBeInTheDocument();
+    expect(screen.getByText("Beta.vpk", { exact: true })).toBeVisible();
   });
 });

@@ -124,6 +124,15 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 		}
 		return domain.Job{}, false, err
 	}
+	if action == "toggle_package" {
+		enabled, ok := payload["enabled"].(bool)
+		if !ok {
+			return domain.Job{}, false, errors.New("toggle_package enabled must be a boolean")
+		}
+		if !enabled && instanceStatus != domain.InstanceStopped {
+			return domain.Job{}, false, fmt.Errorf("instance must be stopped before disabling a package: %w", ErrConflict)
+		}
+	}
 	if instanceStatus == domain.InstanceExternal && !externalInstanceJobAllowed(action, payload) {
 		return domain.Job{}, false, fmt.Errorf("external instance is read-only until a controlled restart: %w", ErrConflict)
 	}

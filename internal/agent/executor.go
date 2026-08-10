@@ -1995,6 +1995,12 @@ func (e *Executor) togglePackage(_ context.Context, job domain.Job, progress Pro
 	if err != nil {
 		return nil, err
 	}
+	if e.processes == nil {
+		return nil, errors.New("process manager is unavailable")
+	}
+	if !payload.Enabled && packageProcessActive(e.processes.State(job.InstanceID).Status) {
+		return nil, errors.New("instance must be stopped before disabling a package")
+	}
 	record, ok := e.registry.Get(job.InstanceID)
 	if !ok {
 		return nil, errors.New("instance is not registered")

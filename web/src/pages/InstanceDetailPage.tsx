@@ -65,6 +65,7 @@ import { buildInstanceConfigUpdate, type RCONPasswordChange } from "../lib/insta
 import { setCachedInstanceStatus } from "../lib/instance-cache";
 import { buildStartupArgumentPreview, canAccessInstance, lifecycleActionAllowed } from "../lib/instance-lifecycle";
 import { defaultTickrate, gameDifficulties, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
+import { filterAndSortPackages, type PackageSort } from "../lib/package-list";
 import { summarizeRecentOperations } from "../lib/recent-operations";
 import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, PackageRecord, Permission, Player, PlayerBan, ScheduleRecord } from "../lib/types";
 
@@ -743,14 +744,19 @@ type PackageSection = "mods" | "plugins";
 function PackagesTab({ instance, section }: { instance: InstanceRecord; section: PackageSection }) {
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<PackageSort>("installed_desc");
   const canRead = hasInstancePermission(user, instance, "packages.read");
   const canInstall = hasInstancePermission(user, instance, "packages.install");
+  const canToggle = hasInstancePermission(user, instance, "packages.toggle");
   const toast = useToast();
   const client = useQueryClient();
   const packages = useQuery({ queryKey: ["instances", instance.id, "packages"], queryFn: () => api.packages(instance.id), enabled: canRead, refetchInterval: canRead ? 15_000 : false });
   const pluginSection = section === "plugins";
-  const items = packages.data?.items.filter((item) => pluginSection ? item.kind !== "vpk" && item.kind !== "workshop" : item.kind === "vpk" || item.kind === "workshop") || [];
+  const sectionItems = packages.data?.items.filter((item) => pluginSection ? item.kind !== "vpk" && item.kind !== "workshop" : item.kind === "vpk" || item.kind === "workshop") || [];
+  const items = filterAndSortPackages(sectionItems, search, sort);
   const noun = pluginSection ? "插件" : "模组";
+  const disablingBlocked = canToggle && instance.status !== "stopped" && sectionItems.some((item) => item.enabled && /\.(?:vpk|smx)$/i.test(item.path || ""));
   const scan = useMutation({
     mutationFn: () => api.scanInstalledPackages(instance.id),
     onSuccess: () => {
@@ -763,7 +769,7 @@ function PackagesTab({ instance, section }: { instance: InstanceRecord; section:
   const description = pluginSection ? "支持 SourceMod 插件、SourceMod/Metamod 整包与第三方原生扩展。" : "支持 VPK、Workshop 项目与合集、QQ闪传批量导入，以及扫描 left4dead2/addons 中已有的 VPK。";
   const installButton = canInstall ? <Button onClick={() => setOpen(true)}><Plus size={16} />安装{noun}</Button> : undefined;
   const headingActions = canInstall ? <div className="package-heading-actions">{!pluginSection && <Button variant="secondary" loading={scan.isPending} onClick={() => scan.mutate()} title="扫描 left4dead2/addons 直属目录中的 VPK"><Search size={16} />扫描已安装</Button>}{installButton}</div> : undefined;
-  return <Card><div className="card-heading"><div><span className="eyebrow">{pluginSection ? "SERVER PLUGINS" : "ADD-ONS"}</span><h2>{pluginSection ? "插件与服务端组件" : "模组"}</h2></div>{headingActions}</div>{!canRead ? <EmptyState title={`${noun}清单已隐藏`} description={`当前账号没有查看${noun}清单的权限，但仍可执行上方单独授予的安装操作。`} /> : packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title={`${noun}清单尚不可用`} description={`当前控制端未开放${noun}清单接口；安装任务仍可通过面板提交。`} /> : items.length ? <div className="package-grid">{items.map((item) => <PackageCard key={item.id} item={item} instance={instance} />)}</div> : <EmptyState title={`还没有安装${noun}`} description={description} />}<InstallPackageModal open={canInstall && open} instance={instance} section={section} onClose={() => setOpen(false)} /></Card>;
+  return <Card><div className="card-heading"><div><span className="eyebrow">{pluginSection ? "SERVER PLUGINS" : "ADD-ONS"}</span><h2>{pluginSection ? "插件与服务端组件" : "模组"}</h2></div>{headingActions}</div>{canRead && !packages.isPending && !packages.error && sectionItems.length > 0 && <div className="package-toolbar"><div className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`按名称搜索${noun}`} aria-label={`按名称搜索${noun}`} /></div><div className="filter-select"><select value={sort} onChange={(event) => setSort(event.target.value as PackageSort)} aria-label={`${noun}排序`}><option value="installed_desc">添加时间：最新优先</option><option value="installed_asc">添加时间：最早优先</option><option value="name_asc">名称：升序</option><option value="name_desc">名称：降序</option></select></div><span className="toolbar-count">{items.length} / {sectionItems.length}</span></div>}{disablingBlocked && <div className="package-runtime-warning" role="status"><ShieldAlert size={16} /><span>当前实例未停止，不能停用已启用的{noun}；请先停止实例。</span></div>}{!canRead ? <EmptyState title={`${noun}清单已隐藏`} description={`当前账号没有查看${noun}清单的权限，但仍可执行上方单独授予的安装操作。`} /> : packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title={`${noun}清单尚不可用`} description={`当前控制端未开放${noun}清单接口；安装任务仍可通过面板提交。`} /> : items.length ? <div className="package-grid">{items.map((item) => <PackageCard key={item.id} item={item} instance={instance} />)}</div> : sectionItems.length ? <EmptyState title={`没有匹配的${noun}`} description={`请更换搜索名称，当前共纳管 ${sectionItems.length} 个${noun}。`} /> : <EmptyState title={`还没有安装${noun}`} description={description} />}<InstallPackageModal open={canInstall && open} instance={instance} section={section} onClose={() => setOpen(false)} /></Card>;
 }
 
 function PackageCard({ item, instance }: { item: PackageRecord; instance: InstanceRecord }) {
@@ -777,6 +783,7 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
   const [selectedVersion, setSelectedVersion] = useState("");
   const toggle = useMutation({ mutationFn: () => api.instanceAction(instanceId, "toggle_package", { package_id: item.id, enabled: !item.enabled }), onSuccess: () => { toast.push(item.enabled ? "组件停用任务已提交" : "组件启用任务已提交"); void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages"] }); }, onError: (error) => toast.push(error.message, "error") });
   const toggleable = /\.(?:vpk|smx)$/i.test(item.path || "");
+  const disablingBlocked = item.enabled && instance.status !== "stopped";
   const deletable = toggleable && Boolean(item.sha256);
   const remove = useMutation({
     mutationFn: () => api.deletePackage(instanceId, item.id),
@@ -814,7 +821,7 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
     <div className="package-card__identity"><strong>{item.name}</strong><span>{item.kind.toUpperCase()} · {item.version || "版本未知"}</span>{item.sha256 && <code>{item.sha256.slice(0, 16)}…</code>}</div>
     <div className="package-card__controls">
       <div className="package-card__actions">
-        {toggleable && canToggle ? <button className={`switch ${item.enabled ? "switch--on" : ""}`} disabled={toggle.isPending || remove.isPending} onClick={() => toggle.mutate()} aria-label={`${item.enabled ? "停用" : "启用"} ${item.name}`}><span /></button> : <span className="package-installed">{item.enabled ? "已启用" : "已停用"}</span>}
+        {toggleable && canToggle ? <button className={`switch ${item.enabled ? "switch--on" : ""}`} disabled={toggle.isPending || remove.isPending || disablingBlocked} title={disablingBlocked ? "请先停止实例，再停用组件" : undefined} onClick={() => toggle.mutate()} aria-label={`${item.enabled ? "停用" : "启用"} ${item.name}`}><span /></button> : <span className="package-installed">{item.enabled ? "已启用" : "已停用"}</span>}
         {deletable && canDelete && <button className="package-delete-button" disabled={remove.isPending || toggle.isPending} aria-label={`删除 ${item.name}`} title="删除组件" onClick={() => {
           if (window.confirm(`确认永久删除 ${item.name}？文件及面板中的版本历史会一并移除；运行中的服务器可能需要重启后才能完全卸载。`)) remove.mutate();
         }}><Trash2 size={14} /></button>}

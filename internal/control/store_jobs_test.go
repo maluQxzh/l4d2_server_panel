@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -205,6 +206,49 @@ func TestRestartRequiresAnActiveServer(t *testing.T) {
 		if restartableInstanceStatus(status) {
 			t.Fatalf("inactive status %s can restart", status)
 		}
+	}
+}
+
+func TestPackageDisableRequiresStoppedInstanceAndPreservesReplay(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "package-toggle.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online')`); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: "node", Name: "package-toggle", Port: 27015})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped' WHERE id=?1`, instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]any{"enabled": false, "package_id": "package", "path": "left4dead2/addons/campaign.vpk", "kind": "vpk"}
+	queued, reused, err := store.QueueInstanceJob(ctx, instance.ID, "toggle_package", payload, "", "disable-package")
+	if err != nil || reused {
+		t.Fatalf("queue stopped package disable: reused=%v err=%v", reused, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='running' WHERE id=?1`, instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	replay, reused, err := store.QueueInstanceJob(ctx, instance.ID, "toggle_package", payload, "", "disable-package")
+	if err != nil || !reused || replay.ID != queued.ID {
+		t.Fatalf("replay stopped package disable after status change: job=%q reused=%v err=%v", replay.ID, reused, err)
+	}
+	if _, _, err := store.QueueInstanceJob(ctx, instance.ID, "toggle_package", payload, "", "disable-package-running"); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "must be stopped") {
+		t.Fatalf("running instance package disable error = %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET status='succeeded' WHERE id=?1`, queued.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.QueueInstanceJob(ctx, instance.ID, "toggle_package", map[string]any{"enabled": true}, "", "enable-package-running"); err != nil {
+		t.Fatalf("running instance package enable was rejected: %v", err)
 	}
 }
 

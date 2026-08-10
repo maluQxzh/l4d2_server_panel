@@ -642,6 +642,10 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
   await page.getByRole("button", { name: "扫描已安装" }).click();
   await expect.poll(() => packageScan).toBeTruthy();
   await expect(page.getByText(/扫描任务已提交/)).toBeVisible();
+  await expect(page.getByText(/当前实例未停止，不能停用已启用的模组/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "停用 campaign.vpk" })).toBeDisabled();
+  await page.getByLabel("按名称搜索模组").fill("campaign");
+  await expect(page.getByLabel("模组排序")).toHaveValue("installed_desc");
   await expect(page.getByLabel("campaign.vpk 可回退版本")).toBeVisible();
   await expect(page.getByText("admin-tools.smx", { exact: true })).toHaveCount(0);
   page.once("dialog", (dialog) => dialog.accept());

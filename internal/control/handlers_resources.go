@@ -640,6 +640,10 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Type == "toggle_package" {
+		if _, ok := request.Payload["enabled"].(bool); !ok {
+			writeError(w, http.StatusBadRequest, "invalid_package_toggle", "enabled must be a boolean")
+			return
+		}
 		packageID, _ := request.Payload["package_id"].(string)
 		pkg, path, err := s.store.PackageForToggle(r.Context(), instanceID, packageID)
 		if err != nil {
