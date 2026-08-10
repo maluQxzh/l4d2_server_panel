@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,7 +21,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]domain.User, error) {
 
 func (s *Store) ListPackages(ctx context.Context, instanceID string) ([]domain.AddonPackage, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,
-		COALESCE(installed_by,''),installed_at FROM addon_packages WHERE instance_id=?1 ORDER BY installed_at DESC,id`, instanceID)
+		COALESCE(installed_by,''),installed_at,file_count,restart_required FROM addon_packages WHERE instance_id=?1 ORDER BY installed_at DESC,id`, instanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -29,10 +30,31 @@ func (s *Store) ListPackages(ctx context.Context, instanceID string) ([]domain.A
 	for rows.Next() {
 		var item domain.AddonPackage
 		if err := rows.Scan(&item.ID, &item.InstanceID, &item.Name, &item.Kind, &item.Version, &item.Source, &item.SourceID,
-			&item.SHA256, &item.Path, &item.Enabled, &item.Risk, &item.InstalledBy, &item.InstalledAt); err != nil {
+			&item.SHA256, &item.Path, &item.Enabled, &item.Risk, &item.InstalledBy, &item.InstalledAt, &item.FileCount, &item.RestartRequired); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) ManagedPackagePaths(ctx context.Context, instanceID string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id,path FROM addon_packages WHERE instance_id=?1 AND path<>''
+		UNION ALL
+		SELECT package_id,path FROM addon_package_files WHERE instance_id=?1
+		ORDER BY path,id`, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make(map[string]string)
+	for rows.Next() {
+		var packageID, path string
+		if err := rows.Scan(&packageID, &path); err != nil {
+			return nil, err
+		}
+		items[strings.ToLower(filepath.ToSlash(path))] = packageID
 	}
 	return items, rows.Err()
 }
@@ -472,6 +494,9 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE map_assignments SET restart_required=0,updated_at=?2 WHERE instance_id=?1`, job.InstanceID, startedAt); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `UPDATE addon_packages SET restart_required=0 WHERE instance_id=?1`, job.InstanceID); err != nil {
+			return err
+		}
 		err = tx.Commit()
 		return err
 	case "stop":
@@ -626,13 +651,15 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		packageID := stringFromAny(job.Payload["package_id"])
 		enabled, _ := job.Payload["enabled"].(bool)
 		path := stringFromAny(job.Result["path"])
-		_, err := s.db.ExecContext(ctx, `UPDATE addon_packages SET enabled=?3,path=COALESCE(NULLIF(?4,''),path)
-			WHERE id=?1 AND instance_id=?2`, packageID, job.InstanceID, enabled, path)
+		restartRequired, _ := job.Result["restart_required"].(bool)
+		_, err := s.db.ExecContext(ctx, `UPDATE addon_packages SET enabled=?3,path=COALESCE(NULLIF(?4,''),path),restart_required=?5
+			WHERE id=?1 AND instance_id=?2`, packageID, job.InstanceID, enabled, path, restartRequired)
 		return err
 	case "delete_package":
 		packageID := stringFromAny(job.Payload["package_id"])
-		if packageID == "" || stringFromAny(job.Result["path"]) != stringFromAny(job.Payload["package_path"]) ||
-			!strings.EqualFold(stringFromAny(job.Result["sha256"]), stringFromAny(job.Payload["expected_sha256"])) {
+		smart := strings.EqualFold(stringFromAny(job.Payload["kind"]), "smart")
+		pathMatches := smart || stringFromAny(job.Result["path"]) == stringFromAny(job.Payload["package_path"])
+		if packageID == "" || !pathMatches || !strings.EqualFold(stringFromAny(job.Result["sha256"]), stringFromAny(job.Payload["expected_sha256"])) {
 			return errors.New("package deletion result does not match the requested package")
 		}
 		result, err := s.db.ExecContext(ctx, `DELETE FROM addon_packages WHERE id=?1 AND instance_id=?2`, packageID, job.InstanceID)

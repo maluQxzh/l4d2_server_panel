@@ -27,6 +27,8 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
 			"/api/v1/instances/{instanceID}/backup-uploads/{uploadID}/chunks":         map[string]any{"post": map[string]any{"summary": "Queue one verified backup upload chunk"}},
 			"/api/v1/instances/{instanceID}/backup-uploads/{uploadID}/chunks/{jobID}": map[string]any{"get": map[string]any{"summary": "Get a backup upload chunk status"}},
 			"/api/v1/instances/{instanceID}/backup-uploads/{uploadID}/complete":       map[string]any{"post": map[string]any{"summary": "Complete an upload and queue restore"}},
+			"/api/v1/instances/{instanceID}/plugin-archives/inspections":              map[string]any{"post": map[string]any{"summary": "Inspect a local ZIP, 7Z, or RAR plugin archive"}},
+			"/api/v1/instances/{instanceID}/plugin-archives/inspections/{jobID}":      map[string]any{"get": map[string]any{"summary": "Get a plugin archive inspection"}},
 			"/api/v1/jobs":                                                        map[string]any{"get": map[string]any{"summary": "List jobs"}},
 			"/api/v1/metrics":                                                     map[string]any{"get": map[string]any{"summary": "Query raw, 1m, or 1h metrics"}},
 			"/api/v1/users":                                                       map[string]any{"get": map[string]any{"summary": "List administrator team"}, "post": map[string]any{"summary": "Create a team member"}},

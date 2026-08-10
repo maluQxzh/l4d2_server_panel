@@ -67,7 +67,7 @@ import { buildStartupArgumentPreview, canAccessInstance, lifecycleActionAllowed 
 import { defaultTickrate, gameDifficulties, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
 import { filterAndSortPackages, type PackageSort } from "../lib/package-list";
 import { summarizeRecentOperations } from "../lib/recent-operations";
-import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, PackageRecord, Permission, Player, PlayerBan, ScheduleRecord } from "../lib/types";
+import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, PackageRecord, Permission, Player, PlayerBan, ScheduleRecord, SmartPluginPlan, SmartPluginSelection } from "../lib/types";
 
 const tabs = [
   { id: "overview", label: "概览", icon: CircleDot, permissions: [] },
@@ -757,7 +757,7 @@ function PackagesTab({ instance, section }: { instance: InstanceRecord; section:
   const items = filterAndSortPackages(sectionItems, search, sort);
   const metamodInstalled = packages.data ? packages.data.items.some((item) => item.kind === "metamod" && item.enabled) : undefined;
   const noun = pluginSection ? "插件" : "模组";
-  const disablingBlocked = canToggle && instance.status !== "stopped" && sectionItems.some((item) => item.enabled && /\.(?:vpk|smx)$/i.test(item.path || ""));
+  const disablingBlocked = canToggle && instance.status !== "stopped" && sectionItems.some((item) => item.enabled && (item.kind === "smart" || /\.(?:vpk|smx)$/i.test(item.path || "")));
   const scan = useMutation({
     mutationFn: () => api.scanInstalledPackages(instance.id),
     onSuccess: () => {
@@ -767,10 +767,10 @@ function PackagesTab({ instance, section }: { instance: InstanceRecord; section:
     },
     onError: (error) => toast.push(error.message, "error"),
   });
-  const description = pluginSection ? "支持 SourceMod 插件、SourceMod/Metamod 整包与第三方原生扩展。" : "支持 VPK、Workshop 项目与合集、QQ闪传批量导入，以及扫描 left4dead2/addons 中已有的 VPK。";
+  const description = pluginSection ? "智能识别 ZIP、7Z、RAR 中的 SourceMod 插件、配置、脚本与原生扩展，也支持 SourceMod/Metamod 整包。" : "支持 VPK、Workshop 项目与合集、QQ闪传批量导入，以及扫描 left4dead2/addons 中已有的 VPK。";
   const installButton = canInstall ? <Button onClick={() => setOpen(true)}><Plus size={16} />安装{noun}</Button> : undefined;
   const headingActions = canInstall ? <div className="package-heading-actions">{!pluginSection && <Button variant="secondary" loading={scan.isPending} onClick={() => scan.mutate()} title="扫描 left4dead2/addons 直属目录中的 VPK"><Search size={16} />扫描已安装</Button>}{installButton}</div> : undefined;
-  return <Card><div className="card-heading"><div><span className="eyebrow">{pluginSection ? "SERVER PLUGINS" : "ADD-ONS"}</span><h2>{pluginSection ? "插件与服务端组件" : "模组"}</h2></div>{headingActions}</div>{canRead && !packages.isPending && !packages.error && sectionItems.length > 0 && <div className="package-toolbar"><div className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`按名称搜索${noun}`} aria-label={`按名称搜索${noun}`} /></div><div className="filter-select"><select value={sort} onChange={(event) => setSort(event.target.value as PackageSort)} aria-label={`${noun}排序`}><option value="installed_desc">添加时间：最新优先</option><option value="installed_asc">添加时间：最早优先</option><option value="name_asc">名称：升序</option><option value="name_desc">名称：降序</option></select></div><span className="toolbar-count">{items.length} / {sectionItems.length}</span></div>}{disablingBlocked && <div className="package-runtime-warning" role="status"><ShieldAlert size={16} /><span>当前实例未停止，不能停用已启用的{noun}；请先停止实例。</span></div>}{!canRead ? <EmptyState title={`${noun}清单已隐藏`} description={`当前账号没有查看${noun}清单的权限，但仍可执行上方单独授予的安装操作。`} /> : packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title={`${noun}清单尚不可用`} description={`当前控制端未开放${noun}清单接口；安装任务仍可通过面板提交。`} /> : items.length ? <div className="package-grid">{items.map((item) => <PackageCard key={item.id} item={item} instance={instance} />)}</div> : sectionItems.length ? <EmptyState title={`没有匹配的${noun}`} description={`请更换搜索名称，当前共纳管 ${sectionItems.length} 个${noun}。`} /> : <EmptyState title={`还没有安装${noun}`} description={description} />}<InstallPackageModal open={canInstall && open} instance={instance} section={section} metamodInstalled={metamodInstalled} onClose={() => setOpen(false)} /></Card>;
+  return <Card><div className="card-heading"><div><span className="eyebrow">{pluginSection ? "SERVER PLUGINS" : "ADD-ONS"}</span><h2>{pluginSection ? "插件与服务端组件" : "模组"}</h2></div>{headingActions}</div>{canRead && !packages.isPending && !packages.error && sectionItems.length > 0 && <div className="package-toolbar"><div className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`按名称搜索${noun}`} aria-label={`按名称搜索${noun}`} /></div><div className="filter-select"><select value={sort} onChange={(event) => setSort(event.target.value as PackageSort)} aria-label={`${noun}排序`}><option value="installed_desc">添加时间：最新优先</option><option value="installed_asc">添加时间：最早优先</option><option value="name_asc">名称：升序</option><option value="name_desc">名称：降序</option></select></div><span className="toolbar-count">{items.length} / {sectionItems.length}</span></div>}{disablingBlocked && <div className="package-runtime-warning" role="status"><ShieldAlert size={16} /><span>当前实例未停止，不能停用已启用的{noun}；请先停止实例。</span></div>}{!canRead ? <EmptyState title={`${noun}清单已隐藏`} description={`当前账号没有查看${noun}清单的权限，但仍可执行上方单独授予的安装操作。`} /> : packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title={`${noun}清单尚不可用`} description={`当前控制端未开放${noun}清单接口；安装任务仍可通过面板提交。`} /> : items.length ? <div className="package-grid">{items.map((item) => <PackageCard key={item.id} item={item} instance={instance} />)}</div> : sectionItems.length ? <EmptyState title={`没有匹配的${noun}`} description={`请更换搜索名称，当前共纳管 ${sectionItems.length} 个${noun}。`} /> : <EmptyState title={`还没有安装${noun}`} description={description} />}<InstallPackageModal open={canInstall && open} instance={instance} section={section} metamodInstalled={metamodInstalled} smartPackages={sectionItems.filter((item) => item.kind === "smart")} onClose={() => setOpen(false)} /></Card>;
 }
 
 function PackageCard({ item, instance }: { item: PackageRecord; instance: InstanceRecord }) {
@@ -782,10 +782,12 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
   const toast = useToast();
   const client = useQueryClient();
   const [selectedVersion, setSelectedVersion] = useState("");
-  const toggle = useMutation({ mutationFn: () => api.instanceAction(instanceId, "toggle_package", { package_id: item.id, enabled: !item.enabled }), onSuccess: () => { toast.push(item.enabled ? "组件停用任务已提交" : "组件启用任务已提交"); void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages"] }); }, onError: (error) => toast.push(error.message, "error") });
-  const toggleable = /\.(?:vpk|smx)$/i.test(item.path || "");
+  const toggle = useMutation({ mutationFn: (liveAcknowledged: boolean) => api.instanceAction(instanceId, "toggle_package", { package_id: item.id, enabled: !item.enabled, acknowledge_live_changes: liveAcknowledged, acknowledge_restart_required: liveAcknowledged }), onSuccess: () => { toast.push(item.enabled ? "组件停用任务已提交" : "组件启用任务已提交"); void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages"] }); }, onError: (error) => toast.push(error.message, "error") });
+  const toggleable = item.kind === "smart" || /\.(?:vpk|smx)$/i.test(item.path || "");
+  const rollbackable = item.kind !== "smart" && toggleable;
   const disablingBlocked = item.enabled && instance.status !== "stopped";
   const deletable = toggleable && Boolean(item.sha256);
+  const smartDeleteBlocked = item.kind === "smart" && instance.status !== "stopped";
   const remove = useMutation({
     mutationFn: () => api.deletePackage(instanceId, item.id),
     onSuccess: () => {
@@ -798,8 +800,8 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
   const versions = useQuery({
     queryKey: ["instances", instanceId, "packages", item.id, "versions"],
     queryFn: () => api.packageVersions(instanceId, item.id),
-    enabled: toggleable && canRollback,
-    refetchInterval: toggleable && canRollback ? 15_000 : false,
+    enabled: rollbackable && canRollback,
+    refetchInterval: rollbackable && canRollback ? 15_000 : false,
   });
   useEffect(() => {
     if (!versions.data?.items.length) {
@@ -819,44 +821,60 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
   const selected = versions.data?.items.find((version) => version.id === selectedVersion);
   return <div className="package-card">
     <div className={`package-icon package-icon--${item.kind}`}><PackageOpen size={20} /></div>
-    <div className="package-card__identity"><strong>{item.name}</strong><span>{item.kind.toUpperCase()} · {item.version || "版本未知"}</span>{item.sha256 && <code>{item.sha256.slice(0, 16)}…</code>}</div>
+    <div className="package-card__identity"><strong>{item.name}</strong><span>{item.kind === "smart" ? `智能识别 · ${item.file_count || 0} 个文件` : `${item.kind.toUpperCase()} · ${item.version || "版本未知"}`}</span>{item.sha256 && <code>{item.sha256.slice(0, 16)}…</code>}{item.restart_required && <span className="package-restart-required">需要重启实例完成加载</span>}</div>
     <div className="package-card__controls">
       <div className="package-card__actions">
-        {toggleable && canToggle ? <button className={`switch ${item.enabled ? "switch--on" : ""}`} disabled={toggle.isPending || remove.isPending || disablingBlocked} title={disablingBlocked ? "请先停止实例，再停用组件" : undefined} onClick={() => toggle.mutate()} aria-label={`${item.enabled ? "停用" : "启用"} ${item.name}`}><span /></button> : <span className="package-installed">{item.enabled ? "已启用" : "已停用"}</span>}
-        {deletable && canDelete && <button className="package-delete-button" disabled={remove.isPending || toggle.isPending} aria-label={`删除 ${item.name}`} title="删除组件" onClick={() => {
+        {toggleable && canToggle ? <button className={`switch ${item.enabled ? "switch--on" : ""}`} disabled={toggle.isPending || remove.isPending || disablingBlocked} title={disablingBlocked ? "请先停止实例，再停用组件" : undefined} onClick={() => {
+          if (item.kind === "smart" && !item.enabled && instance.status !== "stopped") {
+            if (!window.confirm("实例正在运行。现在启用只会移动插件入口文件，已加载模块不会立刻变化。仍要继续吗？")) return;
+            if (!window.confirm("请再次确认：本次变更需要重启实例才能完整生效。")) return;
+            toggle.mutate(true);
+            return;
+          }
+          toggle.mutate(false);
+        }} aria-label={`${item.enabled ? "停用" : "启用"} ${item.name}`}><span /></button> : <span className="package-installed">{item.enabled ? "已启用" : "已停用"}</span>}
+        {deletable && canDelete && <button className="package-delete-button" disabled={remove.isPending || toggle.isPending || smartDeleteBlocked} aria-label={`删除 ${item.name}`} title={smartDeleteBlocked ? "请先停止实例，再删除智能识别插件" : "删除组件"} onClick={() => {
           if (window.confirm(`确认永久删除 ${item.name}？文件及面板中的版本历史会一并移除；运行中的服务器可能需要重启后才能完全卸载。`)) remove.mutate();
         }}><Trash2 size={14} /></button>}
       </div>
-      {canRollback && toggleable && versions.data?.items.length ? <div className="package-version-rollback">
+      {canRollback && rollbackable && versions.data?.items.length ? <div className="package-version-rollback">
         <select value={selectedVersion} onChange={(event) => setSelectedVersion(event.target.value)} aria-label={`${item.name} 可回退版本`} disabled={!item.enabled || rollback.isPending}>
           {versions.data.items.map((version) => <option value={version.id} key={version.id}>{version.version || "未标记"} · {version.sha256.slice(0, 10)} · {dateTime(version.created_at)}</option>)}
         </select>
         <button className="package-rollback-button" disabled={!item.enabled || !selectedVersion || rollback.isPending} title={!item.enabled ? "请先启用组件" : `恢复 ${selected?.version || "选中版本"}`} onClick={() => {
           if (selected && window.confirm(`确认将 ${item.name} 回退到 ${selected.version || selected.sha256.slice(0, 12)}？当前文件会作为新的可回退版本保留。`)) rollback.mutate();
         }}><RotateCcw size={13} />{rollback.isPending ? "提交中" : "回退"}</button>
-      </div> : canRollback && toggleable && versions.error ? <small className="package-version-error">版本历史暂不可用</small> : null}
+      </div> : canRollback && rollbackable && versions.error ? <small className="package-version-error">版本历史暂不可用</small> : null}
     </div>
   </div>;
 }
 
-function InstallPackageModal({ open, instance, section, metamodInstalled, onClose }: { open: boolean; instance: InstanceRecord; section: PackageSection; metamodInstalled?: boolean; onClose: () => void }) {
+function InstallPackageModal({ open, instance, section, metamodInstalled, smartPackages, onClose }: { open: boolean; instance: InstanceRecord; section: PackageSection; metamodInstalled?: boolean; smartPackages: PackageRecord[]; onClose: () => void }) {
   const pluginSection = section === "plugins";
-  const [kind, setKind] = useState(pluginSection ? "plugin" : "workshop");
+  const [kind, setKind] = useState(pluginSection ? "smart" : "workshop");
   const [source, setSource] = useState("");
   const [upload, setUpload] = useState<{ name: string; size: number; contentBase64: string } | null>(null);
   const [risk, setRisk] = useState(false);
+  const [smartPlan, setSmartPlan] = useState<SmartPluginPlan | null>(null);
+  const [smartChoices, setSmartChoices] = useState<Record<string, { selected: boolean; packageId?: string; overrides: Record<string, string>; takeovers: string[] }>>({});
   const toast = useToast();
   const client = useQueryClient();
   const official = kind === "sourcemod" || kind === "metamod";
   const qqFlash = kind === "qq_flash";
+  const smart = kind === "smart";
   const riskRequired = ["native", "sourcemod_url", "metamod_url"].includes(kind);
-  const showRisk = riskRequired || kind === "plugin";
-  const nativePlugin = kind === "plugin" && /\.(?:dll|so)(?:$|\?)/i.test(upload?.name || source.trim());
-  const needsRisk = riskRequired || nativePlugin;
+  const smartNativeRisk = smartPlan?.folders.some((folder) => smartChoices[folder.id]?.selected && folder.native_risk) || false;
+  const showRisk = riskRequired || smartNativeRisk;
+  const needsRisk = riskRequired || smartNativeRisk;
   const sourceModBlocked = (kind === "sourcemod" || kind === "sourcemod_url") && metamodInstalled === false;
   const canUpload = !official && kind !== "workshop" && !qqFlash;
   const hasSource = Boolean(source.trim() || upload);
-  const accept = kind === "vpk_url" ? ".vpk" : kind === "plugin" || kind === "native" ? ".smx,.dll,.so" : ".zip,.tar,.gz,.bz2,.xz";
+  const accept = kind === "vpk_url" ? ".vpk" : smart ? ".zip,.7z,.rar" : kind === "native" ? ".dll,.so" : ".zip,.tar,.gz,.bz2,.xz";
+  const clearSmartPlan = () => {
+    setSmartPlan(null);
+    setSmartChoices({});
+    setRisk(false);
+  };
   const chooseUpload = async (file?: File) => {
     if (!file) return;
     if (file.size === 0 || file.size > 100 * 1024 * 1024) {
@@ -867,6 +885,7 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, onClos
       const contentBase64 = bytesToBase64(new Uint8Array(await file.arrayBuffer()));
       setUpload({ name: file.name, size: file.size, contentBase64 });
       setSource("");
+      clearSmartPlan();
     } catch {
       toast.push("无法读取所选文件", "error");
     }
@@ -875,10 +894,43 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, onClos
     setSource("");
     setUpload(null);
     setRisk(false);
+    setSmartPlan(null);
+    setSmartChoices({});
     onClose();
   };
+  const inspection = useMutation({
+    mutationFn: () => {
+      if (!upload) throw new ApiError("请先选择 ZIP、7Z 或 RAR 压缩包", 400, "archive_required");
+      return api.inspectPluginArchive(instance.id, { name: upload.name, content_base64: upload.contentBase64 });
+    },
+    onSuccess: (plan) => {
+      const choices: typeof smartChoices = {};
+      for (const folder of plan.folders) {
+        const overrides: Record<string, string> = {};
+        for (const file of folder.files) if (file.ambiguous && file.suggested_path) overrides[file.id] = file.suggested_path;
+        const existing = smartPackages.find((item) => item.name.localeCompare(folder.name, undefined, { sensitivity: "accent" }) === 0);
+        choices[folder.id] = { selected: true, packageId: existing?.id, overrides, takeovers: [] };
+      }
+      setSmartPlan(plan);
+      setSmartChoices(choices);
+      setRisk(false);
+      toast.push(`已识别 ${plan.folders.length} 个插件文件夹、${plan.file_count} 个文件`);
+    },
+    onError: (error) => toast.push(error.message, "error"),
+  });
+  const selectedSmartFolders = smartPlan?.folders.filter((folder) => smartChoices[folder.id]?.selected) || [];
+  const smartReady = selectedSmartFolders.length > 0 && selectedSmartFolders.every((folder) => {
+    const choice = smartChoices[folder.id];
+    return folder.files.every((file) => {
+      const target = file.ambiguous ? choice.overrides[file.id]?.trim() : file.target_path || file.suggested_path || "";
+      const pathState = file.path_states?.[target];
+      const existing = pathState?.existing ?? file.existing;
+      const owner = pathState?.managed_package_id ?? file.managed_package_id;
+      return (!file.ambiguous || Boolean(target)) && (!existing || Boolean(owner) || choice.takeovers.includes(file.id)) && (!owner || owner === choice.packageId);
+    });
+  });
   const install = useMutation({
-    mutationFn: () => qqFlash
+    mutationFn: (liveAcknowledged: boolean) => qqFlash
       ? api.importQQFlashFile(instance.id, source)
       : api.instanceAction(instance.id, "install_package", {
         kind,
@@ -886,6 +938,15 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, onClos
         name: upload?.name,
         content_base64: upload?.contentBase64,
         acknowledge_native_risk: risk,
+        inspection_fingerprint: smartPlan?.fingerprint,
+        smart_packages: smartPlan ? selectedSmartFolders.map((folder): SmartPluginSelection => ({
+          folder_id: folder.id,
+          package_id: smartChoices[folder.id].packageId,
+          overrides: smartChoices[folder.id].overrides,
+          takeovers: smartChoices[folder.id].takeovers,
+        })) : undefined,
+        acknowledge_live_changes: liveAcknowledged,
+        acknowledge_restart_required: liveAcknowledged,
       }),
     onSuccess: () => {
       toast.push(qqFlash ? "QQ闪传 VPK 导入任务已提交" : `${pluginSection ? "插件" : "模组"}安装任务已提交`);
@@ -895,20 +956,53 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, onClos
     },
     onError: (error) => toast.push(error.message, "error"),
   });
-  return <Modal open={open} onClose={resetAndClose} title={pluginSection ? "安装插件或服务端组件" : "安装模组"} description={qqFlash ? "供玩家通过 QQ闪传提交 VPK；节点暂存并检查完整分享，安全解压后再安装，不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose}>取消</Button><Button onClick={() => install.mutate()} loading={install.isPending} disabled={sourceModBlocked || (!official && !hasSource) || (needsRisk && !risk)}>{qqFlash ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlash ? "导入 VPK" : "提交安装"}</Button></>}>
+  const submitInstall = () => {
+    if (smart && instance.status !== "stopped") {
+      if (!window.confirm("实例正在运行。文件可以安全写入，但当前已加载的插件或扩展不会立即替换。仍要继续吗？")) return;
+      if (!window.confirm("请再次确认：安装完成后会标记“需要重启”，请稍后重启实例使全部变更生效。")) return;
+      install.mutate(true);
+      return;
+    }
+    install.mutate(false);
+  };
+  const primaryDisabled = sourceModBlocked || (smart ? !upload || !smartPlan || !smartReady : (!official && !hasSource)) || (needsRisk && !risk);
+  return <Modal open={open} onClose={resetAndClose} title={pluginSection ? "安装插件或服务端组件" : "安装模组"} description={smart ? "上传 ZIP、7Z 或 RAR；目标 Agent 会先识别每个插件文件夹和目标路径，确认预览后再整批安装。" : qqFlash ? "供玩家通过 QQ闪传提交 VPK；节点暂存并检查完整分享，安全解压后再安装，不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose}>取消</Button>{smart && !smartPlan ? <Button onClick={() => inspection.mutate()} loading={inspection.isPending} disabled={!upload}><Search size={16} />开始识别</Button> : <Button onClick={submitInstall} loading={install.isPending} disabled={primaryDisabled}>{qqFlash ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlash ? "导入 VPK" : smart ? `安装 ${selectedSmartFolders.length} 个插件` : "提交安装"}</Button>}</>}>
     <div className="form-stack">
-      <Field label="类型"><select value={kind} onChange={(event) => { setKind(event.target.value); setSource(""); setUpload(null); setRisk(false); }}>{pluginSection ? <><option value="plugin">SourceMod 插件文件</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option><option value="native">第三方原生扩展</option></> : <><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="qq_flash">QQ闪传（玩家上传 VPK）</option></>}</select></Field>
+      <Field label="类型"><select value={kind} onChange={(event) => { setKind(event.target.value); setSource(""); setUpload(null); clearSmartPlan(); }}>{pluginSection ? <><option value="smart">智能识别</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option></> : <><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="qq_flash">QQ闪传（玩家上传 VPK）</option></>}</select></Field>
       {sourceModBlocked && <div className="form-note"><ShieldAlert size={18} /><span><strong>请先安装 Metamod:Source</strong><small>SourceMod 依赖 Metamod；Metamod 安装并验证成功后才能提交 SourceMod 安装。</small></span></div>}
       {qqFlash ? <>
         <Field label="固定目标目录"><input value="left4dead2/addons" readOnly /></Field>
         <Field label="QQ闪传分享链接" hint="可直接粘贴 QQ 分享文本；支持直接 VPK，以及最多嵌套 3 层的 ZIP、7Z、RAR 压缩包。"><textarea rows={4} value={source} onChange={(event) => setSource(event.target.value)} placeholder="链接：https://qfile.qq.com/q/Example123" spellCheck={false} /></Field>
         <div className="form-note"><CloudDownload size={18} /><span><strong>仅接收经过校验的 VPK</strong><small>节点会先完整暂存分享，限制下载与解压总量，拒绝加密包、危险路径和任何非 VPK 文件。成功后每个 VPK 会单独出现在本页，可启停和删除。</small></span></div>
       </> : <>
-        {official ? <div className="form-note"><ShieldCheck size={18} /><span><strong>自动解析官方稳定版</strong><small>Agent 只接受 AlliedModders 官方白名单地址，并按节点系统选择压缩包。</small></span></div> : <Field label={kind === "workshop" ? "项目或合集 ID" : "HTTPS 来源"} hint={canUpload ? "填写 URL，或在下方从本机选择一个文件" : undefined}><input value={source} onChange={(event) => { setSource(event.target.value); setUpload(null); }} placeholder={kind === "workshop" ? "例如：123456789" : "https://example.org/plugin.zip"} /></Field>}
-        {canUpload && <Field label="从本机上传" hint="单个文件上限 100 MiB；载荷会加密保存，并只发送给目标节点"><input type="file" accept={accept} onChange={(event) => { void chooseUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} /></Field>}
-        {upload && <div className="binary-file-note"><Upload size={20} /><div><strong>{upload.name}</strong><span>{bytes(upload.size)} · 已准备安全上传</span></div><Button variant="secondary" onClick={() => setUpload(null)}>移除</Button></div>}
+        {official ? <div className="form-note"><ShieldCheck size={18} /><span><strong>自动解析官方稳定版</strong><small>Agent 只接受 AlliedModders 官方白名单地址，并按节点系统选择压缩包。</small></span></div> : !smart && <Field label={kind === "workshop" ? "项目或合集 ID" : "HTTPS 来源"} hint={canUpload ? "填写 URL，或在下方从本机选择一个文件" : undefined}><input value={source} onChange={(event) => { setSource(event.target.value); setUpload(null); clearSmartPlan(); }} placeholder={kind === "workshop" ? "例如：123456789" : "https://example.org/plugin.zip"} /></Field>}
+        {canUpload && <Field label={smart ? "插件压缩包" : "从本机上传"} hint={smart ? "支持 ZIP、7Z、RAR；单个文件上限 100 MiB。可包含多个顶层插件文件夹" : "单个文件上限 100 MiB；载荷会加密保存，并只发送给目标节点"}><input type="file" accept={accept} onChange={(event) => { void chooseUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} /></Field>}
+        {upload && <div className="binary-file-note"><Upload size={20} /><div><strong>{upload.name}</strong><span>{bytes(upload.size)} · 已准备安全上传</span></div><Button variant="secondary" onClick={() => { setUpload(null); clearSmartPlan(); }}>移除</Button></div>}
+        {smartPlan && <div className="smart-plugin-plan">
+          <div className="smart-plugin-plan__summary"><strong>识别完成</strong><span>{smartPlan.format.toUpperCase()} · {smartPlan.folders.length} 个插件文件夹 · {smartPlan.file_count} 个文件 · 解压后 {bytes(smartPlan.expanded_bytes)}</span></div>
+          {smartPlan.folders.map((folder) => {
+            const choice = smartChoices[folder.id];
+            if (!choice) return null;
+            return <details className="smart-plugin-folder" open={folder.ambiguous_files > 0 || folder.existing_files > 0} key={folder.id}>
+              <summary><label onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={choice.selected} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], selected: event.target.checked } }))} /><strong>{folder.name}</strong></label><span>{choice.packageId ? "更新已有插件 · " : ""}{folder.files.length} 个文件{folder.native_risk ? " · 含原生扩展" : ""}{folder.ambiguous_files ? ` · ${folder.ambiguous_files} 项待确认` : ""}</span></summary>
+              <div className="smart-plugin-files">
+                {folder.files.map((file) => {
+                  const target = file.ambiguous ? choice.overrides[file.id] || "" : file.target_path || file.suggested_path || "";
+                  const pathState = file.path_states?.[target];
+                  const existing = pathState?.existing ?? file.existing;
+                  const managedPackageID = pathState?.managed_package_id ?? file.managed_package_id;
+                  return <div className={`smart-plugin-file ${file.ambiguous || existing ? "smart-plugin-file--attention" : ""}`} key={file.id}>
+                    <div><code>{file.source_path}</code><span>{file.reason}{file.entrypoint ? " · 加载入口" : ""}</span></div>
+                    {file.ambiguous ? <Field label="安装路径"><input list={`smart-paths-${file.id}`} value={target} disabled={!choice.selected} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], overrides: { ...current[folder.id].overrides, [file.id]: event.target.value } } }))} /><datalist id={`smart-paths-${file.id}`}>{file.choices?.map((path) => <option value={path} key={path} />)}</datalist></Field> : <code className="smart-plugin-target">→ {target}</code>}
+                    {managedPackageID && managedPackageID !== choice.packageId ? <div className="smart-plugin-managed-conflict">该路径已由另一个面板包管理，不能覆盖。请取消选择此插件或调整歧义路径。</div> : existing && managedPackageID === choice.packageId ? <div className="smart-plugin-update-path">已登记为此插件的文件，将作为更新替换。</div> : existing && <label className="smart-plugin-takeover"><input type="checkbox" disabled={!choice.selected} checked={choice.takeovers.includes(file.id)} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], takeovers: event.target.checked ? [...current[folder.id].takeovers, file.id] : current[folder.id].takeovers.filter((id) => id !== file.id) } }))} />接管并覆盖实例中的已有文件（删除插件时会恢复原文件）</label>}
+                  </div>;
+                })}
+              </div>
+            </details>;
+          })}
+        </div>}
         {showRisk && <label className="risk-check"><input type="checkbox" checked={risk} onChange={(event) => setRisk(event.target.checked)} /><ShieldAlert size={19} /><span><strong>我了解第三方原生代码风险</strong><small>{needsRisk ? "此包可能包含或覆盖节点执行的二进制扩展，必须确认后安装。" : "普通 SMX 不要求确认；DLL/SO 原生扩展必须确认。"}</small></span></label>}
-        <div className="form-note"><strong>自动回退</strong><span>组件升级前会创建快照；重启后的版本检测失败时，Agent 恢复上一版本。</span></div>
+        <div className="form-note"><strong>{smart ? "整批原子安装" : "自动回退"}</strong><span>{smart ? "任一插件文件写入失败会回滚整批；停用只移动 SMX、DLL、SO、VDF、AUTOLOAD 等加载入口，配置和翻译等支持文件保留。" : "组件升级前会创建快照；重启后的版本检测失败时，Agent 恢复上一版本。"}</span></div>
       </>}
     </div>
   </Modal>;

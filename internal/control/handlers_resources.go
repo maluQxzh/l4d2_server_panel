@@ -668,6 +668,18 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		}
 		request.Payload["path"] = path
 		request.Payload["kind"] = pkg.Kind
+		if pkg.Kind == "smart" && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "smart_plugin_archive_v1") {
+			writeError(w, http.StatusConflict, "agent_upgrade_required", "target Agent does not support smart plugin enable or disable")
+			return
+		}
+		if pkg.Kind == "smart" && request.Payload["enabled"] == true && (instance.Status == domain.InstanceRunning || instance.Status == domain.InstanceDegraded || instance.Status == domain.InstanceExternal) {
+			live, _ := request.Payload["acknowledge_live_changes"].(bool)
+			restart, _ := request.Payload["acknowledge_restart_required"].(bool)
+			if !live || !restart {
+				writeError(w, http.StatusBadRequest, "smart_plugin_live_confirmation_required", "运行中启用智能插件需要完成两次风险确认")
+				return
+			}
+		}
 	}
 	originalType := request.Type
 	if isLifecycleAction(request.Type) {
@@ -713,6 +725,22 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		if uploadErr := validatePackageUpload(request.Payload); uploadErr != nil {
 			writeError(w, http.StatusBadRequest, "invalid_package_upload", uploadErr.Error())
 			return
+		}
+		if smartErr := validateSmartPluginInstallPayload(instance, request.Payload); smartErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid_smart_plugin_install", smartErr.Error())
+			return
+		}
+		if strings.EqualFold(stringFromAny(request.Payload["kind"]), "smart") && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "smart_plugin_archive_v1") {
+			writeError(w, http.StatusConflict, "agent_upgrade_required", "target Agent does not support smart plugin archives")
+			return
+		}
+		if strings.EqualFold(stringFromAny(request.Payload["kind"]), "smart") {
+			managedPaths, managedErr := s.store.ManagedPackagePaths(r.Context(), instanceID)
+			if managedErr != nil {
+				s.fail(w, managedErr)
+				return
+			}
+			request.Payload["registered_paths"] = managedPaths
 		}
 		request.Type = "install_mod"
 		request.Payload["risk_confirmed"], _ = request.Payload["acknowledge_native_risk"].(bool)

@@ -943,6 +943,60 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /instances/{instanceId}/plugin-archives/inspections:
+    post:
+      tags: [Packages]
+      summary: 识别本机上传的插件压缩包
+      description: |
+        需要 packages.install 和 smart_plugin_archive_v1 Agent。仅接受不超过 100 MiB 的 ZIP、7Z 或
+        单卷 RAR。Agent 在实例根之外安全展开并返回按顶层插件文件夹分组的逐文件目标路径预览；
+        不写入实例。TXT、CFG 和无法确定类别的裸 DLL/SO 会标为歧义项并给出受限候选路径。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, content_base64]
+              properties:
+                name: { type: string, description: 仅文件名 }
+                content_base64: { type: string, format: byte, writeOnly: true }
+      responses:
+        "202":
+          description: 识别任务已排队
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/plugin-archives/inspections/{jobId}:
+    get:
+      tags: [Packages]
+      summary: 获取插件压缩包识别结果
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/JobID" }
+      responses:
+        "200":
+          description: 识别任务状态；成功时包含 plan
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job_id, status, progress]
+                properties:
+                  job_id: { type: string, format: uuid }
+                  status: { type: string }
+                  progress: { type: integer }
+                  message: { type: string }
+                  error: { type: string }
+                  plan: { $ref: "#/components/schemas/SmartPluginPlan" }
+
   /instances/{instanceId}/packages/{packageId}/versions:
     get:
       tags: [Instances]
@@ -973,10 +1027,10 @@ paths:
   /instances/{instanceId}/packages/{packageId}:
     delete:
       tags: [Packages]
-      summary: 删除一个受管单文件模组
+      summary: 删除一个受管模组或智能插件
       description: |
-        需要 packages.delete。仅支持面板登记且路径位于标准目录的 VPK 或 SourceMod SMX。
-        Agent 删除前复核记录的 SHA-256，成功后移除包记录及版本历史；运行中的服务器可能仍需重启才能完全卸载。
+        需要 packages.delete。单文件包仅支持面板登记且路径位于标准目录的 VPK 或 SourceMod SMX。
+        智能插件必须先停止实例；Agent 逐文件复核 SHA-256，恢复接管前基线或删除自身文件，再移除整包记录。
       parameters:
         - { $ref: "#/components/parameters/InstanceID" }
         - { $ref: "#/components/parameters/PackageID" }
@@ -3174,7 +3228,10 @@ components:
         和最多 200 字符单行 reason；`unban_player` 传 steam_id。常用动作约定：
         `rcon` 传 command；`broadcast` 传 message；`change_map` 传 map；`backup` 可传 kind、
         retention_daily、retention_weekly；`restore` 推荐传 backup_id，其内部归档定位符会加密持久化，server.cfg 作为普通可移植配置恢复，中心端 RCON 凭据不会写入文件；`toggle_package` 传 package_id 和布尔 enabled，enabled=false 只允许实例处于 stopped 状态，Control 与 Agent 都会拒绝运行中停用；
-        `install_package` 传 kind，以及 source、source_id 或 name + content_base64（原始文件最大 100 MiB），
+        `install_package` 传 kind，以及 source、source_id 或 name + content_base64（原始文件最大 100 MiB）。
+        kind=smart 仅接受已经识别的本机 ZIP/7Z/RAR，还必须传 inspection_fingerprint 和 smart_packages；
+        每个选择项含 folder_id、可选 package_id（同名已纳管智能插件更新）、歧义路径 overrides 和已有未纳管文件 takeovers。
+        运行中安装或启用智能插件必须同时传 acknowledge_live_changes=true 与 acknowledge_restart_required=true；停用和删除必须先停服。
         安装 SourceMod（官方或第三方整包）前必须先成功安装并启用 Metamod:Source，
         VPK 安装、回退及 `toggle_package` 重新启用不会扫描其他 VPK，模组之间的覆盖由 L4D2 挂载顺序决定。Workshop 下载载荷不执行 VPK 内容格式校验，只核对普通文件、SHA-256 和安全写入。第三方原生包另传 acknowledge_native_risk=true；`stop` 可传 maintenance 和
         warning_seconds；`restart` 不接受维护广播参数，只接受 `running`、`degraded` 或 `external` 实例，停止状态返回 409；仅 external 实例的直接 restart 可选传一次性 existing_rcon_password，用于让旧进程优雅退出。
@@ -3198,6 +3255,14 @@ components:
           { type: integer, minimum: 0, maximum: 525600, default: 0 }
         reason: { type: string, maxLength: 200 }
         kind: { type: string }
+        inspection_fingerprint: { type: string, pattern: "^[a-f0-9]{64}$" }
+        smart_packages:
+          type: array
+          minItems: 1
+          maxItems: 256
+          items: { $ref: "#/components/schemas/SmartPluginSelection" }
+        acknowledge_live_changes: { type: boolean }
+        acknowledge_restart_required: { type: boolean }
         source: { type: string }
         source_id: { type: string }
         content_base64:
@@ -3332,6 +3397,75 @@ components:
         risk: { type: string }
         installed_by: { type: string, format: uuid }
         installed_at: { type: string, format: date-time }
+        file_count: { type: integer, minimum: 0 }
+        restart_required: { type: boolean }
+
+    SmartPluginSelection:
+      type: object
+      required: [folder_id]
+      properties:
+        folder_id: { type: string }
+        package_id: { type: string, format: uuid, description: 更新同一实例中已有的智能插件 }
+        overrides:
+          type: object
+          additionalProperties: { type: string }
+        takeovers:
+          type: array
+          items: { type: string }
+
+    SmartPluginFilePlan:
+      type: object
+      required: [id, source_path, reason, ambiguous, native, entrypoint, existing, size, sha256]
+      properties:
+        id: { type: string }
+        source_path: { type: string }
+        target_path: { type: string }
+        suggested_path: { type: string }
+        choices: { type: array, items: { type: string } }
+        reason: { type: string }
+        ambiguous: { type: boolean }
+        native: { type: boolean }
+        entrypoint: { type: boolean }
+        existing: { type: boolean }
+        existing_sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+        managed_package_id: { type: string, format: uuid }
+        path_states:
+          type: object
+          description: 建议路径和各候选路径在识别时的占用状态
+          additionalProperties:
+            type: object
+            required: [existing]
+            properties:
+              existing: { type: boolean }
+              existing_sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+              managed_package_id: { type: string, format: uuid }
+        size: { type: integer, format: int64, minimum: 0 }
+        sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+
+    SmartPluginFolderPlan:
+      type: object
+      required: [id, name, files, native_risk, ambiguous_files, existing_files]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        source_prefix: { type: string }
+        files: { type: array, items: { $ref: "#/components/schemas/SmartPluginFilePlan" } }
+        native_risk: { type: boolean }
+        ambiguous_files: { type: integer, minimum: 0 }
+        existing_files: { type: integer, minimum: 0 }
+
+    SmartPluginPlan:
+      type: object
+      required: [version, archive_name, archive_sha256, fingerprint, folders, file_count, expanded_bytes, format]
+      properties:
+        version: { type: integer }
+        archive_name: { type: string }
+        archive_sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+        fingerprint: { type: string, pattern: "^[a-f0-9]{64}$" }
+        folders: { type: array, items: { $ref: "#/components/schemas/SmartPluginFolderPlan" } }
+        file_count: { type: integer, minimum: 0 }
+        expanded_bytes: { type: integer, format: int64, minimum: 0 }
+        format: { type: string, enum: [zip, 7z, rar] }
 
     AddonPackageVersion:
       type: object

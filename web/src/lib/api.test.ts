@@ -141,6 +141,23 @@ describe("API 客户端", () => {
     expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
   });
 
+  it("智能插件压缩包通过实例端点识别并返回预览", async () => {
+    const plan = {
+      version: 1, archive_name: "plugins.7z", archive_sha256: "a".repeat(64), fingerprint: "b".repeat(64),
+      folders: [], file_count: 0, expanded_bytes: 0, format: "7z",
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ job_id: "inspect-1" }), { status: 202, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ job_id: "inspect-1", status: "succeeded", progress: 100, plan }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    await expect(api.inspectPluginArchive("实例/一", { name: "plugins.7z", content_base64: "YWJj" })).resolves.toEqual(plan);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/instances/%E5%AE%9E%E4%BE%8B%2F%E4%B8%80/plugin-archives/inspections",
+      "/api/v1/instances/%E5%AE%9E%E4%BE%8B%2F%E4%B8%80/plugin-archives/inspections/inspect-1",
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ name: "plugins.7z", content_base64: "YWJj" });
+  });
+
 	it("扫描已安装 VPK 使用固定的资源化端点", async () => {
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ job_id: "job-scan" }), { status: 202, headers: { "Content-Type": "application/json" } }));
 

@@ -33,6 +33,7 @@ import type {
   RuntimeEnvironmentRecord,
   GameInstallationRecord,
   MapRecord,
+  SmartPluginPlan,
 } from "./types";
 
 const baseURL = (import.meta.env.VITE_API_BASE || "/api/v1").replace(/\/$/, "");
@@ -296,6 +297,24 @@ export const api = {
     `/instances/${encodeURIComponent(id)}/actions`,
     { method: "POST", body: JSON.stringify({ type, payload }) },
   ),
+  inspectPluginArchive: async (instanceId: string, payload: { name: string; content_base64: string }): Promise<SmartPluginPlan> => {
+    const encodedID = encodeURIComponent(instanceId);
+    const created = await request<{ job_id: string }>(`/instances/${encodedID}/plugin-archives/inspections`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const response = await request<{ status: JobStatus; progress: number; message?: string; error?: string; plan?: SmartPluginPlan }>(
+        `/instances/${encodedID}/plugin-archives/inspections/${encodeURIComponent(created.job_id)}`,
+      );
+      if (response.status === "succeeded" && response.plan) return response.plan;
+      if (["failed", "canceled"].includes(response.status)) {
+        throw new ApiError(response.error || response.message || "插件压缩包识别失败", 409, "plugin_inspection_failed");
+      }
+      await delay(750);
+    }
+    throw new ApiError("插件压缩包识别等待超时", 408, "plugin_inspection_timeout");
+  },
 
   maps: (nodeId?: string) => list<MapRecord>(`/maps${nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : ""}`),
   map: (id: string) => request<{ map: MapRecord }>(`/maps/${encodeURIComponent(id)}`).then((result) => result.map),

@@ -193,6 +193,8 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 		return e.importQQFlashPackage(ctx, job, progress)
 	case "scan_packages":
 		return e.scanInstalledPackages(ctx, job, progress)
+	case "inspect_plugin_archive":
+		return e.inspectSmartPluginArchive(ctx, job, progress)
 	case "list":
 		return e.list(ctx, job, progress)
 	case "rcon":
@@ -253,13 +255,13 @@ func agentJobRequiresInstanceLock(action string, payload map[string]any) bool {
 	// update replaces. It therefore participates in the instance lock even
 	// though it does not mutate files. A2S/RCON status and bounded file/log
 	// reads remain concurrent with lifecycle work.
-	readOnly := action == "discover_instances" || action == "scan_packages" || action == "list" || action == "a2s.info" || action == "a2s.players" || action == "rcon.players" || action == "logs.search" || action == "logs.chunk" || action == "backup.chunk" || action == "backup.upload.abort" || (action == "file" && payloadString(payload, "operation") == "read")
+	readOnly := action == "discover_instances" || action == "scan_packages" || action == "inspect_plugin_archive" || action == "list" || action == "a2s.info" || action == "a2s.players" || action == "rcon.players" || action == "logs.search" || action == "logs.chunk" || action == "backup.chunk" || action == "backup.upload.abort" || (action == "file" && payloadString(payload, "operation") == "read")
 	return !readOnly
 }
 
 func externalAgentJobAllowed(action string, payload map[string]any) bool {
 	switch action {
-	case "restart", "a2s.info", "a2s.players", "rcon.players", "list", "scan_packages", "logs.search", "logs.chunk", "backup", "backup.chunk", "backup.upload.chunk", "backup.upload.abort", "check_update", "detach":
+	case "restart", "a2s.info", "a2s.players", "rcon.players", "list", "scan_packages", "inspect_plugin_archive", "logs.search", "logs.chunk", "backup", "backup.chunk", "backup.upload.chunk", "backup.upload.abort", "check_update", "detach":
 		return true
 	case "file":
 		operation := strings.ToLower(strings.TrimSpace(payloadString(payload, "operation")))
@@ -294,6 +296,8 @@ func normalizeJobType(value string) string {
 		return "rollback_package"
 	case "package.scan", "scan.packages":
 		return "scan_packages"
+	case "plugin.archive.inspect", "inspect.plugin.archive":
+		return "inspect_plugin_archive"
 	case "player.kick", "kick", "kick.player":
 		return "kick_player"
 	case "player.ban", "ban", "ban.player":
@@ -317,75 +321,80 @@ func normalizeJobType(value string) string {
 }
 
 type operationPayload struct {
-	Operation            string            `json:"operation,omitempty"`
-	Instance             domain.Instance   `json:"instance,omitempty"`
-	RootIndex            int               `json:"root_index,omitempty"`
-	Path                 string            `json:"path,omitempty"`
-	Name                 string            `json:"name,omitempty"`
-	Executable           string            `json:"executable,omitempty"`
-	Args                 []string          `json:"args,omitempty"`
-	Env                  map[string]string `json:"env,omitempty"`
-	AutoRestart          *bool             `json:"auto_restart,omitempty"`
-	Port                 int               `json:"port,omitempty"`
-	TVPort               int               `json:"tv_port,omitempty"`
-	MaxPlayers           int               `json:"max_players,omitempty"`
-	Map                  string            `json:"map,omitempty"`
-	MapID                string            `json:"map_id,omitempty"`
-	Mode                 string            `json:"mode,omitempty"`
-	ConfigFile           string            `json:"config_file,omitempty"`
-	ExtraArgs            []string          `json:"extra_args,omitempty"`
-	Validate             bool              `json:"validate,omitempty"`
-	AppID                int               `json:"app_id,omitempty"`
-	RCONHost             string            `json:"rcon_host,omitempty"`
-	RCONPort             int               `json:"rcon_port,omitempty"`
-	RCONPassword         string            `json:"rcon_password,omitempty"`
-	ExistingRCONPassword string            `json:"existing_rcon_password,omitempty"`
-	ServerPassword       string            `json:"server_password,omitempty"`
-	Command              string            `json:"command,omitempty"`
-	TimeoutSeconds       int               `json:"timeout_seconds,omitempty"`
-	Relative             string            `json:"relative_path,omitempty"`
-	Content              string            `json:"content,omitempty"`
-	ContentBase64        string            `json:"content_base64,omitempty"`
-	Archive              string            `json:"archive,omitempty"`
-	SourcePath           string            `json:"source_path,omitempty"`
-	Source               string            `json:"source,omitempty"`
-	ShareURL             string            `json:"share_url,omitempty"`
-	Kind                 string            `json:"kind,omitempty"`
-	SourceID             string            `json:"source_id,omitempty"`
-	PackagePath          string            `json:"package_path,omitempty"`
-	SnapshotPath         string            `json:"snapshot_path,omitempty"`
-	SnapshotPaths        []string          `json:"snapshot_paths,omitempty"`
-	RestoreVersion       string            `json:"restore_version,omitempty"`
-	Enabled              bool              `json:"enabled,omitempty"`
-	RiskConfirmed        bool              `json:"risk_confirmed,omitempty"`
-	AcknowledgeRisk      bool              `json:"acknowledge_native_risk,omitempty"`
-	SteamID              string            `json:"steam_id,omitempty"`
-	Reason               string            `json:"reason,omitempty"`
-	DurationMinutes      int               `json:"duration_minutes,omitempty"`
-	RetentionDaily       int               `json:"retention_daily,omitempty"`
-	RetentionWeekly      int               `json:"retention_weekly,omitempty"`
-	Maintenance          bool              `json:"maintenance,omitempty"`
-	WarningSeconds       []int             `json:"warning_seconds,omitempty"`
-	BroadcastMessage     string            `json:"broadcast_message,omitempty"`
-	HealthTimeoutSeconds int               `json:"health_timeout_seconds,omitempty"`
-	VerifyStart          bool              `json:"verify_start,omitempty"`
-	ExpectedSHA256       string            `json:"expected_sha256,omitempty"`
-	ExpectedSize         int64             `json:"expected_size,omitempty"`
-	BackupID             string            `json:"backup_id,omitempty"`
-	UploadID             string            `json:"upload_id,omitempty"`
-	ChunkSHA256          string            `json:"chunk_sha256,omitempty"`
-	ExpiresAt            string            `json:"expires_at,omitempty"`
-	Keyword              string            `json:"keyword,omitempty"`
-	Since                string            `json:"since,omitempty"`
-	Until                string            `json:"until,omitempty"`
-	Limit                int               `json:"limit,omitempty"`
-	Segment              int               `json:"segment,omitempty"`
-	Offset               int64             `json:"offset,omitempty"`
-	Length               int               `json:"length,omitempty"`
-	MaxDepth             int               `json:"max_depth,omitempty"`
-	MaxEntries           int               `json:"max_entries,omitempty"`
-	QuarantineID         string            `json:"quarantine_entry_id,omitempty"`
-	QuarantineEntry      string            `json:"quarantine_entry,omitempty"`
+	Operation                  string                 `json:"operation,omitempty"`
+	Instance                   domain.Instance        `json:"instance,omitempty"`
+	RootIndex                  int                    `json:"root_index,omitempty"`
+	Path                       string                 `json:"path,omitempty"`
+	Name                       string                 `json:"name,omitempty"`
+	Executable                 string                 `json:"executable,omitempty"`
+	Args                       []string               `json:"args,omitempty"`
+	Env                        map[string]string      `json:"env,omitempty"`
+	AutoRestart                *bool                  `json:"auto_restart,omitempty"`
+	Port                       int                    `json:"port,omitempty"`
+	TVPort                     int                    `json:"tv_port,omitempty"`
+	MaxPlayers                 int                    `json:"max_players,omitempty"`
+	Map                        string                 `json:"map,omitempty"`
+	MapID                      string                 `json:"map_id,omitempty"`
+	Mode                       string                 `json:"mode,omitempty"`
+	ConfigFile                 string                 `json:"config_file,omitempty"`
+	ExtraArgs                  []string               `json:"extra_args,omitempty"`
+	Validate                   bool                   `json:"validate,omitempty"`
+	AppID                      int                    `json:"app_id,omitempty"`
+	RCONHost                   string                 `json:"rcon_host,omitempty"`
+	RCONPort                   int                    `json:"rcon_port,omitempty"`
+	RCONPassword               string                 `json:"rcon_password,omitempty"`
+	ExistingRCONPassword       string                 `json:"existing_rcon_password,omitempty"`
+	ServerPassword             string                 `json:"server_password,omitempty"`
+	Command                    string                 `json:"command,omitempty"`
+	TimeoutSeconds             int                    `json:"timeout_seconds,omitempty"`
+	Relative                   string                 `json:"relative_path,omitempty"`
+	Content                    string                 `json:"content,omitempty"`
+	ContentBase64              string                 `json:"content_base64,omitempty"`
+	Archive                    string                 `json:"archive,omitempty"`
+	SourcePath                 string                 `json:"source_path,omitempty"`
+	Source                     string                 `json:"source,omitempty"`
+	ShareURL                   string                 `json:"share_url,omitempty"`
+	Kind                       string                 `json:"kind,omitempty"`
+	SourceID                   string                 `json:"source_id,omitempty"`
+	PackagePath                string                 `json:"package_path,omitempty"`
+	SnapshotPath               string                 `json:"snapshot_path,omitempty"`
+	SnapshotPaths              []string               `json:"snapshot_paths,omitempty"`
+	RestoreVersion             string                 `json:"restore_version,omitempty"`
+	Enabled                    bool                   `json:"enabled,omitempty"`
+	RiskConfirmed              bool                   `json:"risk_confirmed,omitempty"`
+	AcknowledgeRisk            bool                   `json:"acknowledge_native_risk,omitempty"`
+	SteamID                    string                 `json:"steam_id,omitempty"`
+	Reason                     string                 `json:"reason,omitempty"`
+	DurationMinutes            int                    `json:"duration_minutes,omitempty"`
+	RetentionDaily             int                    `json:"retention_daily,omitempty"`
+	RetentionWeekly            int                    `json:"retention_weekly,omitempty"`
+	Maintenance                bool                   `json:"maintenance,omitempty"`
+	WarningSeconds             []int                  `json:"warning_seconds,omitempty"`
+	BroadcastMessage           string                 `json:"broadcast_message,omitempty"`
+	HealthTimeoutSeconds       int                    `json:"health_timeout_seconds,omitempty"`
+	VerifyStart                bool                   `json:"verify_start,omitempty"`
+	ExpectedSHA256             string                 `json:"expected_sha256,omitempty"`
+	ExpectedSize               int64                  `json:"expected_size,omitempty"`
+	BackupID                   string                 `json:"backup_id,omitempty"`
+	UploadID                   string                 `json:"upload_id,omitempty"`
+	ChunkSHA256                string                 `json:"chunk_sha256,omitempty"`
+	ExpiresAt                  string                 `json:"expires_at,omitempty"`
+	Keyword                    string                 `json:"keyword,omitempty"`
+	Since                      string                 `json:"since,omitempty"`
+	Until                      string                 `json:"until,omitempty"`
+	Limit                      int                    `json:"limit,omitempty"`
+	Segment                    int                    `json:"segment,omitempty"`
+	Offset                     int64                  `json:"offset,omitempty"`
+	Length                     int                    `json:"length,omitempty"`
+	MaxDepth                   int                    `json:"max_depth,omitempty"`
+	MaxEntries                 int                    `json:"max_entries,omitempty"`
+	QuarantineID               string                 `json:"quarantine_entry_id,omitempty"`
+	QuarantineEntry            string                 `json:"quarantine_entry,omitempty"`
+	InspectionFingerprint      string                 `json:"inspection_fingerprint,omitempty"`
+	SmartPackages              []smartPluginSelection `json:"smart_packages,omitempty"`
+	RegisteredPaths            map[string]string      `json:"registered_paths,omitempty"`
+	AcknowledgeLiveChanges     bool                   `json:"acknowledge_live_changes,omitempty"`
+	AcknowledgeRestartRequired bool                   `json:"acknowledge_restart_required,omitempty"`
 }
 
 func decodeOperation(job domain.Job) (operationPayload, error) {
@@ -1913,6 +1922,12 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 			return nil, errors.New("uploaded package escapes data_dir through its path or a link")
 		}
 	}
+	if kind == "smart" {
+		if uploadedContent == "" {
+			return nil, errors.New("smart plugin installation requires a local archive upload")
+		}
+		return e.installSmartPluginArchive(ctx, job, payload, localSource, downloadedHash, instancePath, progress)
+	}
 	if kind == "" {
 		if strings.EqualFold(filepath.Ext(localSource), ".vpk") {
 			kind = "vpk"
@@ -2011,6 +2026,9 @@ func (e *Executor) togglePackage(_ context.Context, job domain.Job, progress Pro
 	payload, err := decodeOperation(job)
 	if err != nil {
 		return nil, err
+	}
+	if strings.EqualFold(payload.Kind, "smart") {
+		return e.toggleSmartPlugin(job, payload, progress)
 	}
 	if e.processes == nil {
 		return nil, errors.New("process manager is unavailable")

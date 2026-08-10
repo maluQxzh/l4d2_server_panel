@@ -17,6 +17,9 @@ func (e *Executor) deletePackage(_ context.Context, job domain.Job, progress Pro
 	if err != nil {
 		return nil, err
 	}
+	if strings.EqualFold(payload.Kind, "smart") {
+		return e.deleteSmartPlugin(job, progress)
+	}
 	record, ok := e.registry.Get(job.InstanceID)
 	if !ok {
 		return nil, errors.New("instance is not registered")

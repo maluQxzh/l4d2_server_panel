@@ -51,13 +51,23 @@ func (s *Server) handleDeletePackage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "package_hash_missing", "the package has no verified SHA-256 and cannot be deleted safely")
 		return
 	}
-	if err := validateDeletablePackagePath(pkg.Kind, path); err != nil {
-		writeError(w, http.StatusBadRequest, "unsupported_package_delete", err.Error())
-		return
+	if !strings.EqualFold(pkg.Kind, "smart") {
+		if err := validateDeletablePackagePath(pkg.Kind, path); err != nil {
+			writeError(w, http.StatusBadRequest, "unsupported_package_delete", err.Error())
+			return
+		}
 	}
 	instance, err := s.store.GetInstance(r.Context(), instanceID)
 	if err != nil {
 		s.fail(w, err)
+		return
+	}
+	if strings.EqualFold(pkg.Kind, "smart") && instance.Status != "stopped" {
+		writeError(w, http.StatusConflict, "instance_must_be_stopped", "智能插件整包删除前必须先停止实例")
+		return
+	}
+	if strings.EqualFold(pkg.Kind, "smart") && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "smart_plugin_archive_v1") {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "target Agent does not support smart plugin deletion")
 		return
 	}
 	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "package_delete_v1") {

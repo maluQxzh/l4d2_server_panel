@@ -228,6 +228,9 @@ func (s *Store) applyInstalledPackageScanResult(ctx context.Context, job domain.
 }
 
 func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error {
+	if strings.EqualFold(stringFromAny(job.Result["kind"]), "smart") {
+		return s.applySmartPluginInstallResult(ctx, job)
+	}
 	if files, ok := job.Result["files"].([]any); stringFromAny(job.Result["kind"]) == "workshop" && ok && len(files) > 0 {
 		for _, raw := range files {
 			file, _ := raw.(map[string]any)
@@ -350,6 +353,92 @@ func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) applySmartPluginInstallResult(ctx context.Context, job domain.Job) error {
+	rawPackages, ok := job.Result["packages"].([]any)
+	if !ok || len(rawPackages) == 0 || len(rawPackages) > 256 {
+		return errors.New("smart plugin installation returned an invalid package list")
+	}
+	restartRequired, _ := job.Result["restart_required"].(bool)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	seenPackages := make(map[string]bool, len(rawPackages))
+	seenPaths := make(map[string]bool)
+	for _, raw := range rawPackages {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			return errors.New("smart plugin installation returned invalid package metadata")
+		}
+		packageID := strings.TrimSpace(stringFromAny(item["package_id"]))
+		name := strings.TrimSpace(stringFromAny(item["name"]))
+		sha := strings.ToLower(stringFromAny(item["sha256"]))
+		files, ok := item["files"].([]any)
+		if uuid.Validate(packageID) != nil || seenPackages[packageID] || name == "" || len(name) > 255 || !validPackageSHA(sha) || !ok || len(files) == 0 || len(files) > 5000 {
+			return errors.New("smart plugin installation returned invalid package metadata")
+		}
+		seenPackages[packageID] = true
+		var existingInstance, existingKind string
+		lookupErr := tx.QueryRowContext(ctx, `SELECT instance_id,kind FROM addon_packages WHERE id=?1`, packageID).Scan(&existingInstance, &existingKind)
+		if lookupErr == nil && (existingInstance != job.InstanceID || !strings.EqualFold(existingKind, "smart")) {
+			return errors.New("smart plugin update targets a different or incompatible package")
+		}
+		if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+			return lookupErr
+		}
+		nativeRisk, _ := item["native_risk"].(bool)
+		risk := "normal"
+		if nativeRisk {
+			risk = "confirmed_native"
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,source,sha256,path,enabled,risk,installed_by,last_job_id,file_count,restart_required)
+			VALUES(?1,?2,?3,'smart',?4,?5,'',true,?6,?7,?8,?9,?10)
+			ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,source=EXCLUDED.source,sha256=EXCLUDED.sha256,enabled=true,risk=EXCLUDED.risk,
+			installed_by=EXCLUDED.installed_by,installed_at=unixepoch('subsec')*1000000,last_job_id=EXCLUDED.last_job_id,file_count=EXCLUDED.file_count,restart_required=EXCLUDED.restart_required`,
+			packageID, job.InstanceID, name, stringFromAny(job.Payload["name"]), sha, risk, nullableUUID(job.RequestedBy), job.ID, len(files), restartRequired)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM addon_package_files WHERE package_id=?1 AND instance_id=?2`, packageID, job.InstanceID); err != nil {
+			return err
+		}
+		for _, rawFile := range files {
+			file, ok := rawFile.(map[string]any)
+			path := filepath.ToSlash(stringFromAny(file["path"]))
+			fileSHA := strings.ToLower(stringFromAny(file["sha256"]))
+			size := int64FromAny(file["size"])
+			entrypoint, _ := file["entrypoint"].(bool)
+			if !ok || validateSmartPluginResultPath(path) != nil || !validPackageSHA(fileSHA) || size < 0 || seenPaths[strings.ToLower(path)] {
+				return errors.New("smart plugin installation returned an invalid or duplicate file")
+			}
+			seenPaths[strings.ToLower(path)] = true
+			if _, err := tx.ExecContext(ctx, `INSERT INTO addon_package_files(package_id,instance_id,path,sha256,size,entrypoint)
+				VALUES(?1,?2,?3,?4,?5,?6)`, packageID, job.InstanceID, path, fileSHA, size, entrypoint); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+func validateSmartPluginResultPath(value string) error {
+	cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(value))))
+	if cleaned != value || filepath.IsAbs(filepath.FromSlash(cleaned)) || strings.HasPrefix(cleaned, "../") || strings.Contains(cleaned, `\`) {
+		return errors.New("invalid smart plugin path")
+	}
+	lower := strings.ToLower(cleaned)
+	if !strings.HasPrefix(lower, "left4dead2/addons/") && !strings.HasPrefix(lower, "left4dead2/cfg/") && !strings.HasPrefix(lower, "left4dead2/modes/") && !strings.HasPrefix(lower, "left4dead2/scripts/vscripts/") {
+		return errors.New("smart plugin path is outside approved directories")
+	}
+	switch strings.ToLower(filepath.Ext(cleaned)) {
+	case ".smx", ".sp", ".inc", ".txt", ".cfg", ".nut", ".dll", ".so", ".vdf", ".autoload":
+		return nil
+	default:
+		return errors.New("smart plugin file type is unsupported")
+	}
 }
 
 func (s *Store) applyPackageRollbackResult(ctx context.Context, job domain.Job) error {

@@ -667,12 +667,12 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
   await expect(page.getByText("campaign.vpk", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "安装插件" }).click();
   await expect(page.getByLabel("类型").locator("option")).toHaveText([
-    "SourceMod 插件文件", "官方 SourceMod 稳定版", "官方 Metamod:Source 稳定版",
-    "第三方 SourceMod 整包", "第三方 Metamod 整包", "第三方原生扩展",
+    "智能识别", "官方 SourceMod 稳定版", "官方 Metamod:Source 稳定版",
+    "第三方 SourceMod 整包", "第三方 Metamod 整包",
   ]);
-  await page.getByLabel("HTTPS 来源").fill("https://example.org/admin-tools.smx");
+  await page.getByLabel("类型").selectOption("metamod");
   await page.getByRole("button", { name: "提交安装" }).click();
-  await expect.poll(() => actions.some((item) => item.type === "install_package" && item.payload?.kind === "plugin")).toBeTruthy();
+  await expect.poll(() => actions.some((item) => item.type === "install_package" && item.payload?.kind === "metamod")).toBeTruthy();
 
   await page.getByRole("button", { name: "文件", exact: true }).click();
   await expect(page.getByRole("button", { name: "cfg", exact: true })).toHaveCount(0);

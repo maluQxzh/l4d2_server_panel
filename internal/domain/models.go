@@ -355,19 +355,21 @@ type PlayerBan struct {
 }
 
 type AddonPackage struct {
-	ID          string    `json:"id"`
-	InstanceID  string    `json:"instance_id"`
-	Name        string    `json:"name"`
-	Kind        string    `json:"kind"`
-	Version     string    `json:"version,omitempty"`
-	Source      string    `json:"source"`
-	SourceID    string    `json:"source_id,omitempty"`
-	SHA256      string    `json:"sha256"`
-	Path        string    `json:"path,omitempty"`
-	Enabled     bool      `json:"enabled"`
-	Risk        string    `json:"risk"`
-	InstalledBy string    `json:"installed_by,omitempty"`
-	InstalledAt time.Time `json:"installed_at"`
+	ID              string    `json:"id"`
+	InstanceID      string    `json:"instance_id"`
+	Name            string    `json:"name"`
+	Kind            string    `json:"kind"`
+	Version         string    `json:"version,omitempty"`
+	Source          string    `json:"source"`
+	SourceID        string    `json:"source_id,omitempty"`
+	SHA256          string    `json:"sha256"`
+	Path            string    `json:"path,omitempty"`
+	Enabled         bool      `json:"enabled"`
+	Risk            string    `json:"risk"`
+	InstalledBy     string    `json:"installed_by,omitempty"`
+	InstalledAt     time.Time `json:"installed_at"`
+	FileCount       int       `json:"file_count,omitempty"`
+	RestartRequired bool      `json:"restart_required,omitempty"`
 }
 
 type AddonPackageVersion struct {

@@ -376,13 +376,61 @@ export interface PlayerBan {
 export interface PackageRecord {
   id: string;
   name: string;
-  kind: "vpk" | "plugin" | "smx" | "native" | "sourcemod" | "metamod" | "workshop";
+  kind: "vpk" | "plugin" | "smx" | "native" | "sourcemod" | "metamod" | "workshop" | "smart";
   version?: string;
   enabled: boolean;
   source?: string;
   sha256?: string;
   path?: string;
   installed_at?: string;
+  file_count?: number;
+  restart_required?: boolean;
+}
+
+export interface SmartPluginFilePlan {
+  id: string;
+  source_path: string;
+  target_path?: string;
+  suggested_path?: string;
+  choices?: string[];
+  reason: string;
+  ambiguous: boolean;
+  native: boolean;
+  entrypoint: boolean;
+  existing: boolean;
+  existing_sha256?: string;
+  managed_package_id?: string;
+  path_states?: Record<string, { existing: boolean; existing_sha256?: string; managed_package_id?: string }>;
+  size: number;
+  sha256: string;
+}
+
+export interface SmartPluginFolderPlan {
+  id: string;
+  name: string;
+  source_prefix?: string;
+  files: SmartPluginFilePlan[];
+  native_risk: boolean;
+  ambiguous_files: number;
+  existing_files: number;
+}
+
+export interface SmartPluginPlan {
+  version: number;
+  archive_name: string;
+  archive_sha256: string;
+  fingerprint: string;
+  folders: SmartPluginFolderPlan[];
+  file_count: number;
+  expanded_bytes: number;
+  format: string;
+}
+
+export interface SmartPluginSelection {
+  folder_id: string;
+  package_id?: string;
+  overrides?: Record<string, string>;
+  takeovers?: string[];
 }
 
 export interface PackageVersionRecord {
