@@ -1800,6 +1800,8 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 	official := false
 	officialVersion := ""
 	var officialFallbackURLs []string
+	officialExpectedSHA256 := ""
+	officialExpectedSize := int64(0)
 	if source == "" && uploadedContent == "" {
 		if kind != "sourcemod" && kind != "metamod" {
 			return nil, errors.New("package source is required")
@@ -1821,6 +1823,9 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 		}
 		source, official, officialVersion = resolved.URL, true, resolved.Version
 		officialFallbackURLs = append(officialFallbackURLs, resolved.FallbackURLs...)
+		officialFallbackURLs = append(officialFallbackURLs, resolved.MirrorURLs...)
+		officialExpectedSHA256 = resolved.ExpectedSHA256
+		officialExpectedSize = resolved.ExpectedSize
 	}
 	allowNative := payload.RiskConfirmed || payload.AcknowledgeRisk
 	componentKind := strings.TrimSuffix(kind, "_url")
@@ -1886,7 +1891,7 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 			}
 		}
 		sources := append([]string{source}, officialFallbackURLs...)
-		downloadedHash, downloadedSize, source, err = downloadPackageFromSources(ctx, sources, localSource, official, downloader, progress)
+		downloadedHash, downloadedSize, source, err = downloadPackageFromSources(ctx, sources, localSource, official, officialExpectedSHA256, officialExpectedSize, downloader, progress)
 		if err != nil {
 			return nil, err
 		}

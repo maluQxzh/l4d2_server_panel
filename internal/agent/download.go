@@ -21,8 +21,31 @@ import (
 
 const maxPackageDownload = int64(512 << 20)
 
+const packageDownloadIdleTimeout = 30 * time.Second
+
 var carrierGradeNAT = netip.MustParsePrefix("100.64.0.0/10")
 var embeddedHTTPSURL = regexp.MustCompile(`https?://[^\s"'<>]+`)
+var errPackageDownloadStalled = errors.New("package download stalled")
+
+type packageDownloadIdleTimeoutConn struct {
+	net.Conn
+	idleTimeout time.Duration
+}
+
+func (c *packageDownloadIdleTimeoutConn) Read(buffer []byte) (int, error) {
+	if err := c.SetReadDeadline(time.Now().Add(c.idleTimeout)); err != nil {
+		return 0, err
+	}
+	read, err := c.Conn.Read(buffer)
+	if read > 0 {
+		return read, nil
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return 0, fmt.Errorf("%w after %s without receiving data: %v", errPackageDownloadStalled, c.idleTimeout, err)
+	}
+	return 0, err
+}
 
 func DownloadHTTPS(ctx context.Context, rawURL, destination string) (string, int64, error) {
 	return downloadHTTPS(ctx, rawURL, destination, validateDownloadURL)
@@ -32,25 +55,43 @@ func DownloadOfficialHTTPS(ctx context.Context, rawURL, destination string) (str
 	return downloadHTTPS(ctx, rawURL, destination, validateOfficialAssetURL)
 }
 
-func downloadPackageFromSources(ctx context.Context, sources []string, destination string, official bool,
+func downloadPackageFromSources(ctx context.Context, sources []string, destination string, official bool, expectedSHA256 string, expectedSize int64,
 	downloader func(context.Context, string, string, bool) (string, int64, error), progress ProgressFunc,
 ) (string, int64, string, error) {
 	var failures []error
 	for index, source := range sources {
+		parsed, _ := url.Parse(source)
+		host := strings.ToLower(parsed.Hostname())
+		mirror := officialMirrorHosts()[host]
 		if official {
 			if err := validateOfficialAssetURL(source); err != nil {
 				failures = append(failures, err)
 				continue
 			}
+			if mirror && (expectedSHA256 == "" || expectedSize <= 0) {
+				failures = append(failures, fmt.Errorf("%s: verified GitHub asset digest is unavailable", host))
+				continue
+			}
 			if index > 0 {
-				progress(10, "retrying official package from trusted AlliedModders fallback")
+				if mirror {
+					progress(10, "retrying official package through verified GitHub mirror "+host)
+				} else {
+					progress(10, "retrying official package from trusted AlliedModders fallback")
+				}
 			}
 		}
 		hash, size, err := downloader(ctx, source, destination, official)
+		if err == nil && expectedSHA256 != "" && (!strings.EqualFold(hash, expectedSHA256) || (expectedSize > 0 && size != expectedSize)) {
+			removeErr := os.Remove(destination)
+			if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				err = fmt.Errorf("downloaded package integrity mismatch; remove rejected package: %w", removeErr)
+			} else {
+				err = errors.New("downloaded package does not match GitHub release digest and size")
+			}
+		}
 		if err == nil {
 			return hash, size, source, nil
 		}
-		parsed, _ := url.Parse(source)
 		failures = append(failures, fmt.Errorf("%s: %w", parsed.Hostname(), err))
 		if ctx.Err() != nil {
 			return "", 0, "", ctx.Err()
@@ -85,7 +126,11 @@ func downloadHTTPS(ctx context.Context, rawURL, destination string, validateURL 
 				if !publicDownloadIP(ip) {
 					continue
 				}
-				return dialer.DialContext(dialCtx, network, net.JoinHostPort(ip.String(), port))
+				connection, err := dialer.DialContext(dialCtx, network, net.JoinHostPort(ip.String(), port))
+				if err != nil {
+					return nil, err
+				}
+				return &packageDownloadIdleTimeoutConn{Conn: connection, idleTimeout: packageDownloadIdleTimeout}, nil
 			}
 			return nil, errors.New("download host resolves only to blocked network addresses")
 		},
@@ -136,6 +181,9 @@ func downloadHTTPS(ctx context.Context, rawURL, destination string, validateURL 
 		err = closeErr
 	}
 	if err != nil {
+		if errors.Is(err, errPackageDownloadStalled) {
+			return "", 0, fmt.Errorf("package download received no data for %s", packageDownloadIdleTimeout)
+		}
 		return "", 0, err
 	}
 	if written > maxPackageDownload {
