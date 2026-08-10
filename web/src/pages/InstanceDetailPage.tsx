@@ -782,6 +782,8 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
   const toast = useToast();
   const client = useQueryClient();
   const [selectedVersion, setSelectedVersion] = useState("");
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [editor, setEditor] = useState<FileEditorTarget | null>(null);
   const toggle = useMutation({ mutationFn: (liveAcknowledged: boolean) => api.instanceAction(instanceId, "toggle_package", { package_id: item.id, enabled: !item.enabled, acknowledge_live_changes: liveAcknowledged, acknowledge_restart_required: liveAcknowledged }), onSuccess: () => { toast.push(item.enabled ? "组件停用任务已提交" : "组件启用任务已提交"); void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages"] }); }, onError: (error) => toast.push(error.message, "error") });
   const toggleable = item.kind === "smart" || /\.(?:vpk|smx)$/i.test(item.path || "");
   const rollbackable = item.kind !== "smart" && toggleable;
@@ -819,9 +821,9 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
     onError: (error) => toast.push(error.message, "error"),
   });
   const selected = versions.data?.items.find((version) => version.id === selectedVersion);
-  return <div className="package-card">
+  return <><div className="package-card">
     <div className={`package-icon package-icon--${item.kind}`}><PackageOpen size={20} /></div>
-    <div className="package-card__identity"><strong>{item.name}</strong><span>{item.kind === "smart" ? `智能识别 · ${item.file_count || 0} 个文件` : `${item.kind.toUpperCase()} · ${item.version || "版本未知"}`}</span>{item.sha256 && <code>{item.sha256.slice(0, 16)}…</code>}{item.restart_required && <span className="package-restart-required">需要重启实例完成加载</span>}</div>
+    <button type="button" className="package-card__identity" onClick={() => setDetailsOpen(true)} aria-label={`查看 ${item.name} 详情`}><strong>{item.name}</strong><span>{item.kind === "smart" ? `智能识别 · ${item.file_count || 0} 个文件` : `${item.kind.toUpperCase()} · ${item.version || "版本未知"}`}</span>{item.sha256 && <code>{item.sha256.slice(0, 16)}…</code>}{item.restart_required && <span className="package-restart-required">需要重启实例完成加载</span>}<span className="package-card__detail-hint">查看详情 <ChevronRight size={12} /></span></button>
     <div className="package-card__controls">
       <div className="package-card__actions">
         {toggleable && canToggle ? <button className={`switch ${item.enabled ? "switch--on" : ""}`} disabled={toggle.isPending || remove.isPending || disablingBlocked} title={disablingBlocked ? "请先停止实例，再停用组件" : undefined} onClick={() => {
@@ -846,7 +848,34 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
         }}><RotateCcw size={13} />{rollback.isPending ? "提交中" : "回退"}</button>
       </div> : canRollback && rollbackable && versions.error ? <small className="package-version-error">版本历史暂不可用</small> : null}
     </div>
-  </div>;
+  </div><PackageDetailsModal open={detailsOpen} item={item} instance={instance} onClose={() => setDetailsOpen(false)} onEdit={(file) => {
+    setDetailsOpen(false);
+    setEditor({ path: file.path, isNew: false, packageId: item.id, packageName: item.name });
+  }} /><FileEditorModal instance={instance} editor={editor} onClose={() => {
+    setEditor(null);
+    void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages"] });
+    void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages", item.id, "details"] });
+  }} /></>;
+}
+
+function PackageDetailsModal({ open, item, instance, onClose, onEdit }: { open: boolean; item: PackageRecord; instance: InstanceRecord; onClose: () => void; onEdit: (file: { path: string }) => void }) {
+  const { user } = useAuth();
+  const canEdit = hasInstancePermission(user, instance, "files.read") && hasInstancePermission(user, instance, "files.write");
+  const details = useQuery({
+    queryKey: ["instances", instance.id, "packages", item.id, "details"],
+    queryFn: () => api.packageDetails(instance.id, item.id),
+    enabled: open,
+  });
+  return <Modal open={open} onClose={onClose} title={item.name} description="显示该组件由面板记录的所有实例内文件位置。" footer={<Button variant="secondary" onClick={onClose}>关闭</Button>}>
+    {details.isPending ? <LoadingBlock label="正在读取插件文件清单…" /> : details.error ? <ErrorState error={details.error} retry={() => void details.refetch()} /> : <div className="package-details">
+      <div className="package-details__summary"><span>{item.kind === "smart" ? "智能识别插件" : item.kind.toUpperCase()}</span><span>{details.data?.files.length || 0} 个已记录文件</span>{item.sha256 && <code>{item.sha256}</code>}</div>
+      {details.data?.files.length ? <div className="package-file-list">{details.data.files.map((file) => <div className="package-file-row" key={file.path}>
+        <div className={`file-type file-type--file`}><FileCode2 size={17} /></div>
+        <div><strong>{file.path.split("/").pop()}</strong><code>{file.path}</code><span>{file.entrypoint ? "加载入口" : "随附文件"} · {file.size > 0 ? bytes(file.size) : "大小未记录"}</span></div>
+        {file.editable && canEdit ? <Button variant="secondary" onClick={() => onEdit(file)}><FileCode2 size={14} />编辑</Button> : <span className="package-file-row__state">{file.entrypoint ? "受包管理保护" : file.editable ? "无编辑权限" : "只读"}</span>}
+      </div>)}</div> : <EmptyState title="没有逐文件清单" description="该组件由旧版整包或单文件流程安装，面板没有保存可枚举的文件清单。" />}
+    </div>}
+  </Modal>;
 }
 
 function InstallPackageModal({ open, instance, section, metamodInstalled, smartPackages, onClose }: { open: boolean; instance: InstanceRecord; section: PackageSection; metamodInstalled?: boolean; smartPackages: PackageRecord[]; onClose: () => void }) {
@@ -1034,7 +1063,9 @@ function FilesTab({ instance }: { instance: InstanceRecord }) {
   return <><Card><div className="card-heading"><div><span className="eyebrow">SANDBOXED FILES</span><h2>文件管理</h2></div>{createButton}</div>{!canList ? <EmptyState title="文件目录已隐藏" description="当前账号没有浏览目录权限，但仍可向已知安全路径执行单独授予的写入操作。" action={createButton} /> : <div className="file-browser"><aside><button disabled={!canOpenFile && !canWrite} onClick={() => { setServerShortcut(true); setPath("left4dead2/cfg"); }}><FileCode2 size={15} />server.cfg</button>{allowedRoots.map((root) => <button className={path === root ? "active" : ""} onClick={() => setPath(root)} key={root}><Folder size={15} />{root}</button>)}</aside><div className="file-list"><div className="file-path"><button onClick={() => setPath("")}>实例目录</button>{path.split("/").filter(Boolean).map((part, index, all) => <span key={`${part}-${index}`}><ChevronRight size={13} /><button onClick={() => setPath(all.slice(0, index + 1).join("/"))}>{part}</button></span>)}</div>{files.data?.items.length ? files.data.items.map((item) => <button className="file-row" key={item.path} disabled={item.type === "file" && !canOpenFile} onClick={() => item.type === "directory" ? setPath(item.path) : setEditor({ path: item.path, isNew: false })}><span className={`file-type file-type--${item.type}`}>{item.type === "directory" ? <Folder size={18} /> : <File size={18} />}</span><strong>{item.name}</strong><span>{item.type === "file" ? bytes(item.size) : "文件夹"}</span><time>{dateTime(item.modified_at)}</time><ChevronRight size={15} /></button>) : <EmptyState title="目录为空" description="这个受限目录中还没有文件。" />}</div></div>}</Card><FileEditorModal instance={instance} editor={editor} onClose={() => { setEditor(null); if (canList) void files.refetch(); }} /></>;
 }
 
-function FileEditorModal({ instance, editor, onClose }: { instance: InstanceRecord; editor: { path: string; isNew: boolean } | null; onClose: () => void }) {
+type FileEditorTarget = { path: string; isNew: boolean; packageId?: string; packageName?: string };
+
+function FileEditorModal({ instance, editor, onClose }: { instance: InstanceRecord; editor: FileEditorTarget | null; onClose: () => void }) {
   const { user } = useAuth();
   const toast = useToast();
   const client = useQueryClient();
@@ -1043,10 +1074,12 @@ function FileEditorModal({ instance, editor, onClose }: { instance: InstanceReco
   const [binary, setBinary] = useState<string | null>(null);
   const canRead = hasInstancePermission(user, instance, "files.read");
   const canWrite = hasInstancePermission(user, instance, "files.write");
-  const canDelete = hasInstancePermission(user, instance, "files.delete");
+  const canDelete = hasInstancePermission(user, instance, "files.delete") && !editor?.packageId;
   const file = useQuery({
     queryKey: ["instances", instance.id, "file-content", editor?.path],
-    queryFn: () => api.fileContent(instance.id, editor?.path || ""),
+    queryFn: () => editor?.packageId
+      ? api.packageFileContent(instance.id, editor.packageId, editor.path)
+      : api.fileContent(instance.id, editor?.path || ""),
     enabled: canRead && Boolean(editor && !editor.isNew),
     refetchInterval: (query) => query.state.data?.status === "loading" ? 1_000 : false,
   });
@@ -1066,9 +1099,11 @@ function FileEditorModal({ instance, editor, onClose }: { instance: InstanceReco
     }
   }, [file.data]);
   const save = useMutation({
-    mutationFn: () => api.writeFile(instance.id, relative, content, editor?.isNew ? undefined : file.data?.sha256, binary || undefined),
+    mutationFn: () => editor?.packageId
+      ? api.writePackageFile(instance.id, editor.packageId, relative, content, file.data?.sha256 || "")
+      : api.writeFile(instance.id, relative, content, editor?.isNew ? undefined : file.data?.sha256, binary || undefined),
     onSuccess: (result) => {
-      toast.push("文件写入任务已提交");
+      toast.push(editor?.packageId ? "插件文件更新任务已提交" : "文件写入任务已提交");
       void client.invalidateQueries({ queryKey: ["jobs"] });
       onClose();
       return result;
@@ -1098,7 +1133,7 @@ function FileEditorModal({ instance, editor, onClose }: { instance: InstanceReco
     URL.revokeObjectURL(url);
   };
   const loading = Boolean(canRead && editor && !editor.isNew && (file.isPending || file.data?.status === "loading"));
-  return <Modal open={Boolean(editor)} onClose={onClose} title={editor?.isNew ? "上传或新建文件" : canWrite ? "编辑受限文件" : "查看受限文件"} description="Agent 会再次校验实例边界、重解析点和 8 MiB 大小限制。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button>{!editor?.isNew && canDelete && <Button variant="danger" onClick={() => { if (window.confirm(`确认删除 ${relative}？`)) remove.mutate(); }} loading={remove.isPending}><Trash2 size={15} />删除</Button>}{canWrite && <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!relative || loading}><Save size={16} />提交写入</Button>}</>}>
+  return <Modal open={Boolean(editor)} onClose={onClose} title={editor?.packageId ? `编辑 ${editor.packageName || "插件"} 文件` : editor?.isNew ? "上传或新建文件" : canWrite ? "编辑受限文件" : "查看受限文件"} description={editor?.packageId ? "保存时会同步智能插件清单与校验哈希，入口文件和原生二进制保持只读。" : "Agent 会再次校验实例边界、重解析点和 8 MiB 大小限制。"} footer={<><Button variant="secondary" onClick={onClose}>取消</Button>{!editor?.isNew && canDelete && <Button variant="danger" onClick={() => { if (window.confirm(`确认删除 ${relative}？`)) remove.mutate(); }} loading={remove.isPending}><Trash2 size={15} />删除</Button>}{canWrite && <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!relative || loading || Boolean(editor?.packageId && binary != null)}><Save size={16} />提交写入</Button>}</>}>
     {loading ? <LoadingBlock label="正在从节点安全读取文件…" /> : canRead && file.error ? <ErrorState error={file.error} retry={() => void file.refetch()} /> : <div className="form-stack"><Field label="实例内相对路径"><input value={relative} onChange={(event) => setRelative(event.target.value)} disabled={!editor?.isNew} /></Field>{!canRead && !editor?.isNew && <div className="form-note"><ShieldAlert size={17} />当前权限不允许读取文件内容；仍可执行单独授予的写入或删除操作。</div>}{editor?.isNew && canWrite && <Field label="从本机选择文件" hint="文本文件可继续编辑；二进制文件会以 Base64 安全传输"><input type="file" onChange={(event) => { const selected = event.target.files?.[0]; if (selected) void loadUpload(selected); }} /></Field>}{canRead || editor?.isNew ? binary != null ? <div className="binary-file-note"><File size={20} /><div><strong>二进制文件</strong><span>{binary.length ? `Base64 载荷约 ${bytes(Math.floor(binary.length * 0.75))}` : "空文件"}</span></div>{!editor?.isNew && <Button variant="secondary" onClick={download}><Download size={15} />下载</Button>}</div> : <Field label="文件内容" hint="保存使用读取时的 SHA-256 做并发保护，文件被外部修改时会拒绝覆盖。"><textarea className="file-editor" rows={18} value={content} onChange={(event) => setContent(event.target.value)} readOnly={!canWrite} spellCheck={false} /></Field> : null}{file.data?.sha256 && <div className="file-digest"><span>SHA-256</span><code>{file.data.sha256}</code></div>}</div>}
   </Modal>;
 }

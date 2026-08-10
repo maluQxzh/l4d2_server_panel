@@ -1025,6 +1025,25 @@ paths:
                     }
 
   /instances/{instanceId}/packages/{packageId}:
+    get:
+      tags: [Packages]
+      summary: 查看受管包及其逐文件清单
+      description: 需要 packages.read。智能识别包返回安装时登记的所有实例相对路径；旧式单文件包返回其目标路径，未记录逐文件信息的旧式整包返回空清单。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/PackageID" }
+      responses:
+        "200":
+          description: 包详情和文件清单
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [package, files]
+                properties:
+                  package: { $ref: "#/components/schemas/AddonPackage" }
+                  files: { type: array, items: { $ref: "#/components/schemas/AddonPackageFile" } }
+        "404": { $ref: "#/components/responses/NotFound" }
     delete:
       tags: [Packages]
       summary: 删除一个受管模组或智能插件
@@ -1042,6 +1061,56 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/packages/{packageId}/files/content:
+    get:
+      tags: [Packages]
+      summary: 读取智能插件的受管文本文件
+      description: 需要 files.read 以及 smart_plugin_file_edit_v1 Agent。只读取逐文件清单内标记为可编辑的 UTF-8 文本，并复核清单与磁盘 SHA-256。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/PackageID" }
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: 文件正文和 SHA-256 }
+        "202": { description: 节点读取任务正在执行 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    put:
+      tags: [Packages]
+      summary: 编辑智能插件的受管文本文件
+      description: |
+        需要 files.write 以及 smart_plugin_file_edit_v1 Agent。仅允许智能插件清单内的非入口 `.cfg`、`.txt`、
+        `.sp`、`.inc`、`.nut` UTF-8 文本，最大 8 MiB。Agent 以读取时 SHA-256 做并发保护，原子写入后同步
+        智能插件清单与聚合哈希；SMX、DLL、SO、VDF、autoload 等加载入口保持只读。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/PackageID" }
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content, expected_sha256]
+              properties:
+                content: { type: string, maxLength: 8388608, writeOnly: true }
+                expected_sha256: { type: string, pattern: "^[a-fA-F0-9]{64}$" }
+      responses:
+        "202": { description: 文件编辑任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -3399,6 +3468,18 @@ components:
         installed_at: { type: string, format: date-time }
         file_count: { type: integer, minimum: 0 }
         restart_required: { type: boolean }
+
+    AddonPackageFile:
+      type: object
+      required: [package_id, instance_id, path, sha256, size, entrypoint, editable]
+      properties:
+        package_id: { type: string, format: uuid }
+        instance_id: { type: string, format: uuid }
+        path: { type: string, description: 实例目录内的完整相对位置 }
+        sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+        size: { type: integer, format: int64, minimum: 0 }
+        entrypoint: { type: boolean, description: 是否为服务器或 SourceMod 的加载入口 }
+        editable: { type: boolean, description: 是否可通过智能插件受管文本编辑接口修改 }
 
     SmartPluginSelection:
       type: object

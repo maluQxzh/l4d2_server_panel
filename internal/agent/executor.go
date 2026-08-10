@@ -265,7 +265,7 @@ func externalAgentJobAllowed(action string, payload map[string]any) bool {
 		return true
 	case "file":
 		operation := strings.ToLower(strings.TrimSpace(payloadString(payload, "operation")))
-		return operation == "" || operation == "read"
+		return operation == "" || operation == "read" || operation == "smart_plugin_read"
 	case "delete":
 		return strings.EqualFold(payloadString(payload, "mode"), "detach")
 	default:
@@ -1450,6 +1450,10 @@ func (e *Executor) file(ctx context.Context, job domain.Job, progress ProgressFu
 		}
 		progress(100, "file written")
 		return map[string]any{"path": relative, "size": size, "sha256": digest}, nil
+	case "smart_plugin_edit":
+		return e.editSmartPluginFile(job, path, relative, payload.Content, payload.ContentBase64, payload.ExpectedSHA256, progress)
+	case "smart_plugin_read":
+		return e.readSmartPluginFile(job, path, relative, progress)
 	case "qq_flash":
 		return importQQFlashFiles(ctx, path, payload.ShareURL, progress, e.safeDownloadLimiter())
 	case "delete":
@@ -1462,7 +1466,7 @@ func (e *Executor) file(ctx context.Context, job domain.Job, progress ProgressFu
 		progress(100, "file deleted")
 		return map[string]any{"path": relative}, nil
 	default:
-		return nil, errors.New("file operation must be read, write, qq_flash, or delete")
+		return nil, errors.New("file operation must be read, write, smart_plugin_read, smart_plugin_edit, qq_flash, or delete")
 	}
 }
 

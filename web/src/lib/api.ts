@@ -9,6 +9,7 @@ import type {
   NodeRecord,
   NotificationRecord,
   PackageRecord,
+  PackageFileRecord,
   PackageVersionRecord,
   Player,
   PlayerBan,
@@ -358,6 +359,9 @@ export const api = {
   players: (instanceId: string) => list<Player>(`/instances/${encodeURIComponent(instanceId)}/players`),
   bans: (instanceId: string) => list<PlayerBan>(`/instances/${encodeURIComponent(instanceId)}/bans`),
   packages: (instanceId: string) => list<PackageRecord>(`/instances/${encodeURIComponent(instanceId)}/packages`),
+  packageDetails: (instanceId: string, packageId: string) => request<{ package: PackageRecord; files: PackageFileRecord[] }>(
+    `/instances/${encodeURIComponent(instanceId)}/packages/${encodeURIComponent(packageId)}`,
+  ),
   scanInstalledPackages: (instanceId: string) => request<{ job_id: string; idempotent_replay?: boolean }>(
     `/instances/${encodeURIComponent(instanceId)}/packages/scan`,
     { method: "POST" },
@@ -445,6 +449,13 @@ export const api = {
   writeFile: (instanceId: string, path: string, content: string, expectedSha256?: string, contentBase64?: string) => request<{ job_id: string }>(
     `/instances/${encodeURIComponent(instanceId)}/files/content?path=${encodeURIComponent(path)}`,
     { method: "PUT", body: JSON.stringify(contentBase64 != null ? { content_base64: contentBase64, expected_sha256: expectedSha256 } : { content, expected_sha256: expectedSha256 }) },
+  ),
+  writePackageFile: (instanceId: string, packageId: string, path: string, content: string, expectedSha256: string) => request<{ job_id: string }>(
+    `/instances/${encodeURIComponent(instanceId)}/packages/${encodeURIComponent(packageId)}/files/content?path=${encodeURIComponent(path)}`,
+    { method: "PUT", body: JSON.stringify({ content, expected_sha256: expectedSha256 }) },
+  ),
+  packageFileContent: (instanceId: string, packageId: string, path: string) => request<ManagedFileContent>(
+    `/instances/${encodeURIComponent(instanceId)}/packages/${encodeURIComponent(packageId)}/files/content?path=${encodeURIComponent(path)}`,
   ),
   importQQFlashFile: (instanceId: string, shareUrl: string) => request<{ job_id: string }>(
     `/instances/${encodeURIComponent(instanceId)}/packages/qq-flash`,

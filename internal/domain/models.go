@@ -372,6 +372,16 @@ type AddonPackage struct {
 	RestartRequired bool      `json:"restart_required,omitempty"`
 }
 
+type AddonPackageFile struct {
+	PackageID  string `json:"package_id"`
+	InstanceID string `json:"instance_id"`
+	Path       string `json:"path"`
+	SHA256     string `json:"sha256"`
+	Size       int64  `json:"size"`
+	Entrypoint bool   `json:"entrypoint"`
+	Editable   bool   `json:"editable"`
+}
+
 type AddonPackageVersion struct {
 	ID          string    `json:"id"`
 	PackageID   string    `json:"package_id"`

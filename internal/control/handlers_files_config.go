@@ -27,6 +27,8 @@ var blockedManagedFileAPIExtensions = map[string]bool{
 
 var qqFlashShareURLPattern = regexp.MustCompile(`https://qfile\.qq\.com/q/[A-Za-z0-9_-]+`)
 
+const maxManagedFileAPIContentSize = 8 << 20
+
 func validateManagedFileAPIPath(value string) (string, error) {
 	value = strings.ReplaceAll(strings.TrimSpace(value), "\\", "/")
 	if value == "" || strings.ContainsRune(value, '\x00') || strings.Contains(value, ":") || strings.HasPrefix(value, "/") {
@@ -159,6 +161,148 @@ func (s *Server) handleWriteInstanceFile(w http.ResponseWriter, r *http.Request)
 	s.audit(r, "instance.file.write_requested", "instance", instanceID, map[string]any{"path": relative, "job_id": job.ID})
 	s.dispatchSoon(job.NodeID)
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "idempotent_replay": reused})
+}
+
+func (s *Server) handleWritePackageFile(w http.ResponseWriter, r *http.Request) {
+	instanceID := chi.URLParam(r, "instanceID")
+	packageID := chi.URLParam(r, "packageID")
+	relative := strings.ReplaceAll(strings.TrimSpace(r.URL.Query().Get("path")), "\\", "/")
+	if validateSmartPluginResultPath(relative) != nil {
+		writeError(w, http.StatusBadRequest, "invalid_file_path", "智能插件文件路径无效")
+		return
+	}
+	var request struct {
+		Content        string `json:"content"`
+		ExpectedSHA256 string `json:"expected_sha256"`
+	}
+	if !decodeJSONWithLimit(w, r, &request, 12<<20) {
+		return
+	}
+	if len(request.Content) > maxManagedFileAPIContentSize || strings.ContainsRune(request.Content, '\x00') {
+		writeError(w, http.StatusBadRequest, "invalid_file_content", "可编辑文本文件不能超过 8 MiB 或包含 NUL 字节")
+		return
+	}
+	if request.ExpectedSHA256 == "" || validateSHA256(request.ExpectedSHA256) != nil {
+		writeError(w, http.StatusBadRequest, "invalid_file_precondition", "必须提供读取时的 SHA-256")
+		return
+	}
+	pkg, files, err := s.store.PackageDetails(r.Context(), instanceID, packageID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	var managedSHA string
+	for _, file := range files {
+		if file.Path == relative && file.Editable {
+			managedSHA = file.SHA256
+			break
+		}
+	}
+	if !strings.EqualFold(pkg.Kind, "smart") || managedSHA == "" {
+		writeError(w, http.StatusBadRequest, "package_file_not_editable", "该文件不是智能插件清单中的可编辑文本文件")
+		return
+	}
+	if !strings.EqualFold(managedSHA, request.ExpectedSHA256) {
+		writeError(w, http.StatusConflict, "package_file_changed", "文件清单已变化，请重新打开详情后再编辑")
+		return
+	}
+	instance, err := s.store.GetInstance(r.Context(), instanceID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "smart_plugin_file_edit_v1") {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "目标 Agent 尚不支持智能插件文件编辑")
+		return
+	}
+	payload := map[string]any{"operation": "smart_plugin_edit", "package_id": packageID, "relative_path": relative,
+		"content": request.Content, "expected_sha256": strings.ToLower(request.ExpectedSHA256)}
+	fingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "package-file", instanceID, packageID, payload)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if err := sealJobPayloadSecrets(s.config.MasterKey, "file", payload); err != nil {
+		s.fail(w, err)
+		return
+	}
+	principal := principalFromContext(r.Context())
+	job, reused, err := s.store.QueueInstanceJobWithFingerprint(r.Context(), instanceID, "file", payload, principal.User.ID,
+		r.Header.Get("Idempotency-Key"), fingerprint)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.audit(r, "package.file.write_requested", "package", packageID, map[string]any{"instance_id": instanceID, "path": relative, "job_id": job.ID})
+	s.dispatchSoon(job.NodeID)
+	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "idempotent_replay": reused})
+}
+
+func (s *Server) handlePackageFileContent(w http.ResponseWriter, r *http.Request) {
+	instanceID := chi.URLParam(r, "instanceID")
+	packageID := chi.URLParam(r, "packageID")
+	relative := strings.ReplaceAll(strings.TrimSpace(r.URL.Query().Get("path")), "\\", "/")
+	if validateSmartPluginResultPath(relative) != nil {
+		writeError(w, http.StatusBadRequest, "invalid_file_path", "智能插件文件路径无效")
+		return
+	}
+	pkg, files, err := s.store.PackageDetails(r.Context(), instanceID, packageID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	var managedSHA string
+	for _, file := range files {
+		if file.Path == relative && file.Editable {
+			managedSHA = file.SHA256
+			break
+		}
+	}
+	if !strings.EqualFold(pkg.Kind, "smart") || managedSHA == "" {
+		writeError(w, http.StatusBadRequest, "package_file_not_editable", "该文件不是智能插件清单中的可编辑文本文件")
+		return
+	}
+	instance, err := s.store.GetInstance(r.Context(), instanceID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "smart_plugin_file_edit_v1") {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "目标 Agent 尚不支持智能插件文件读取")
+		return
+	}
+	payload := map[string]any{"operation": "smart_plugin_read", "package_id": packageID, "relative_path": relative, "expected_sha256": strings.ToLower(managedSHA)}
+	latest, latestErr := s.store.LatestSuccessfulJob(r.Context(), instanceID, "file", payload)
+	refreshID := ""
+	if latestErr != nil || latest.FinishedAt == nil || time.Since(*latest.FinishedAt) > 5*time.Second {
+		principal := principalFromContext(r.Context())
+		key := "smart-plugin-file-read:" + packageID + ":" + relative + ":" + managedSHA + ":" + strconv.FormatInt(time.Now().Unix()/5, 10)
+		job, _, queueErr := s.store.QueueInstanceJob(r.Context(), instanceID, "file", payload, principal.User.ID, key)
+		if queueErr == nil {
+			refreshID = job.ID
+			s.dispatchSoon(job.NodeID)
+		} else if !errors.Is(queueErr, ErrConflict) && latestErr != nil {
+			s.fail(w, queueErr)
+			return
+		}
+	}
+	if latestErr != nil {
+		writeJSON(w, http.StatusAccepted, map[string]any{"job_id": refreshID, "path": relative, "status": "loading"})
+		return
+	}
+	result, err := unsealFileJobResult(s.config.MasterKey, latest.Result)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	encoded := stringFromAny(result["content_base64"])
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || !utf8.Valid(raw) || strings.ContainsRune(string(raw), '\x00') {
+		s.fail(w, errors.New("smart plugin file result is corrupted"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": relative, "content": string(raw), "size": intFromAny(result["size"]),
+		"sha256": stringFromAny(result["sha256"]), "fresh_at": latest.FinishedAt, "refresh_job_id": refreshID})
 }
 
 func (s *Server) handleImportQQFlashFile(w http.ResponseWriter, r *http.Request) {

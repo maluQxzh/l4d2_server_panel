@@ -269,7 +269,7 @@ func externalInstanceJobAllowed(action string, payload map[string]any) bool {
 		return true
 	case "file":
 		operation := strings.ToLower(strings.TrimSpace(stringFromAny(payload["operation"])))
-		return operation == "" || operation == "read"
+		return operation == "" || operation == "read" || operation == "smart_plugin_read"
 	case "delete", "detach":
 		return action == "detach" || strings.EqualFold(stringFromAny(payload["mode"]), "detach")
 	default:

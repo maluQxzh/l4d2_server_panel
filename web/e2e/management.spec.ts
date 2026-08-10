@@ -531,7 +531,27 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
     id: "package-2", name: "admin-tools.smx", kind: "plugin", version: "1.0.0", enabled: true,
     sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     path: "left4dead2/addons/sourcemod/plugins/admin-tools.smx", installed_at: "2026-07-31T01:05:00Z",
+  }, {
+    id: "package-smart", name: "Autoscar", kind: "smart", enabled: true, file_count: 2,
+    sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", installed_at: "2026-07-31T01:10:00Z",
+  }, {
+    id: "package-sourcemod", name: "SourceMod", kind: "sourcemod", version: "1.12", enabled: true, installed_at: "2026-07-31T01:15:00Z",
+  }, {
+    id: "package-metamod", name: "Metamod:Source", kind: "metamod", version: "1.12", enabled: true, installed_at: "2026-07-31T01:20:00Z",
   }] }));
+	let smartFileWrite: Record<string, unknown> | undefined;
+	await page.route("**/api/v1/instances/instance-1/packages/package-smart", (route) => json(route, {
+		package: { id: "package-smart", name: "Autoscar", kind: "smart", enabled: true, file_count: 2 },
+		files: [{ package_id: "package-smart", instance_id: "instance-1", path: "left4dead2/cfg/sourcemod/autoscar.cfg", sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", size: 12, entrypoint: false, editable: true },
+			{ package_id: "package-smart", instance_id: "instance-1", path: "left4dead2/addons/sourcemod/plugins/autoscar.smx", sha256: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", size: 20, entrypoint: true, editable: false }],
+	}));
+	await page.route("**/api/v1/instances/instance-1/packages/package-smart/files/content**", async (route) => {
+		if (route.request().method() === "PUT") {
+			smartFileWrite = route.request().postDataJSON() as Record<string, unknown>;
+			return json(route, { job_id: "job-smart-file-write" }, 202);
+		}
+		return json(route, { path: "left4dead2/cfg/sourcemod/autoscar.cfg", content: "enabled = 1", size: 11, sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" });
+	});
   await page.route("**/api/v1/instances/instance-1/packages/package-1/versions", (route) => json(route, { items: [{
     id: "package-version-1", package_id: "package-1", instance_id: "instance-1", version: "v2",
     sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", size: 1024,
@@ -665,6 +685,15 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
   await page.getByRole("button", { name: "插件", exact: true }).click();
   await expect(page.getByText("admin-tools.smx", { exact: true })).toBeVisible();
   await expect(page.getByText("campaign.vpk", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^查看 .* 详情$/ }).first()).toHaveAttribute("aria-label", "查看 Metamod:Source 详情");
+  await expect(page.getByRole("button", { name: /^查看 .* 详情$/ }).nth(1)).toHaveAttribute("aria-label", "查看 SourceMod 详情");
+  await page.getByRole("button", { name: "查看 Autoscar 详情" }).click();
+  await expect(page.getByText("left4dead2/cfg/sourcemod/autoscar.cfg")).toBeVisible();
+  await expect(page.getByText("left4dead2/addons/sourcemod/plugins/autoscar.smx")).toBeVisible();
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.getByLabel("文件内容").fill("enabled = 0");
+  await page.getByRole("button", { name: "提交写入" }).click();
+  await expect.poll(() => smartFileWrite).toMatchObject({ content: "enabled = 0", expected_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" });
   await page.getByRole("button", { name: "安装插件" }).click();
   await expect(page.getByLabel("类型").locator("option")).toHaveText([
     "智能识别", "官方 SourceMod 稳定版", "官方 Metamod:Source 稳定版",

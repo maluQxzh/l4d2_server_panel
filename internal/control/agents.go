@@ -562,6 +562,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, packageDeleteSupported := client.capabilities["package_delete_v1"]
 		_, packageScanSupported := client.capabilities["package_scan_v1"]
 		_, smartPluginArchiveSupported := client.capabilities["smart_plugin_archive_v1"]
+		_, smartPluginFileEditSupported := client.capabilities["smart_plugin_file_edit_v1"]
 		_, mapLibrarySupported := client.capabilities["map_library_v1"]
 		_, mapHotReloadSupported := client.capabilities["map_hot_reload_v1"]
 		client.mu.Unlock()
@@ -595,6 +596,9 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		smartPluginTask := job.Type == "inspect_plugin_archive" ||
 			((job.Type == "install_mod" || job.Type == "toggle_package" || job.Type == "delete_package") && strings.EqualFold(stringFromAny(job.Payload["kind"]), "smart"))
 		if smartPluginTask && !smartPluginArchiveSupported {
+			continue
+		}
+		if job.Type == "file" && strings.HasPrefix(strings.ToLower(stringFromAny(job.Payload["operation"])), "smart_plugin_") && !smartPluginFileEditSupported {
 			continue
 		}
 		if strings.HasPrefix(job.Type, "map.") && !mapLibrarySupported {

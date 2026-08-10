@@ -387,6 +387,16 @@ export interface PackageRecord {
   restart_required?: boolean;
 }
 
+export interface PackageFileRecord {
+  package_id: string;
+  instance_id: string;
+  path: string;
+  sha256?: string;
+  size: number;
+  entrypoint: boolean;
+  editable: boolean;
+}
+
 export interface SmartPluginFilePlan {
   id: string;
   source_path: string;
