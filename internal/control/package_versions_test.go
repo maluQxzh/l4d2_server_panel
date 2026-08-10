@@ -242,3 +242,54 @@ func TestInstalledPackageScanProjectionRejectsReservedMapName(t *testing.T) {
 		t.Fatal("reserved map-library VPK was accepted by scan projection")
 	}
 }
+
+func TestSmartPluginDetailsAndFileEditProjection(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "smart-file-edit.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	packageID := "11111111-1111-4111-8111-111111111111"
+	oldSHA, newSHA, aggregate := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online');
+		INSERT INTO instances(id,node_id,name,status,path,port,config) VALUES('instance','node','Server','stopped','C:\server',27015,'{}');
+		INSERT INTO addon_packages(id,instance_id,name,kind,source,sha256,path,enabled,risk,file_count)
+		VALUES(?1,'instance','Sample','smart','sample.zip',?2,'',1,'normal',2);
+		INSERT INTO addon_package_files(package_id,instance_id,path,sha256,size,entrypoint) VALUES
+		(?1,'instance','left4dead2/cfg/sourcemod/sample.cfg',?2,10,0),
+		(?1,'instance','left4dead2/addons/sourcemod/plugins/sample.smx',?2,10,1)`, packageID, oldSHA); err != nil {
+		t.Fatal(err)
+	}
+	pkg, files, err := store.PackageDetails(ctx, "instance", packageID)
+	if err != nil || pkg.Name != "Sample" || len(files) != 2 || !files[1].Editable && !files[0].Editable {
+		t.Fatalf("unexpected package details: pkg=%#v files=%#v err=%v", pkg, files, err)
+	}
+	for _, file := range files {
+		if file.Entrypoint && file.Editable {
+			t.Fatal("smart plugin entrypoint was exposed as editable")
+		}
+	}
+	job := domain.Job{ID: "edit-job", InstanceID: "instance", Type: "file", Status: domain.JobSucceeded,
+		Payload: map[string]any{"operation": "smart_plugin_edit", "package_id": packageID, "relative_path": "left4dead2/cfg/sourcemod/sample.cfg", "expected_sha256": oldSHA},
+		Result: map[string]any{"package_id": packageID, "path": "left4dead2/cfg/sourcemod/sample.cfg", "previous_sha256": oldSHA,
+			"sha256": newSHA, "size": float64(15), "aggregate_sha256": aggregate}}
+	if err := store.ApplyJobResult(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ApplyJobResult(ctx, job); err != nil {
+		t.Fatalf("replayed projection failed: %v", err)
+	}
+	pkg, files, err = store.PackageDetails(ctx, "instance", packageID)
+	if err != nil || pkg.SHA256 != aggregate {
+		t.Fatalf("package aggregate was not projected: pkg=%#v err=%v", pkg, err)
+	}
+	for _, file := range files {
+		if file.Path == "left4dead2/cfg/sourcemod/sample.cfg" && (file.SHA256 != newSHA || file.Size != 15) {
+			t.Fatalf("file edit was not projected: %#v", file)
+		}
+	}
+}

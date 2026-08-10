@@ -61,6 +61,35 @@ func TestSmartPluginInstallToggleDeleteRestoresTakeover(t *testing.T) {
 	assertFileContent(t, existingConfig, "new config")
 	smx := filepath.Join(instancePath, "left4dead2", "addons", "sourcemod", "plugins", "sample.smx")
 	assertFileContent(t, smx, "smx-v1")
+	state, _, err := executor.readSmartPluginState("instance", packageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configSHA string
+	for _, file := range state.Files {
+		if file.TargetPath == "left4dead2/cfg/sourcemod/sample.cfg" {
+			configSHA = file.SHA256
+		}
+	}
+	editResult, err := executor.file(context.Background(), domain.Job{InstanceID: "instance", Payload: map[string]any{
+		"operation": "smart_plugin_edit", "package_id": packageID, "relative_path": "left4dead2/cfg/sourcemod/sample.cfg",
+		"content": "operator config", "expected_sha256": configSHA,
+	}}, func(int, string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, existingConfig, "operator config")
+	readResult, err := executor.file(context.Background(), domain.Job{InstanceID: "instance", Payload: map[string]any{
+		"operation": "smart_plugin_read", "package_id": packageID, "relative_path": "left4dead2/cfg/sourcemod/sample.cfg",
+		"expected_sha256": editResult["sha256"],
+	}}, func(int, string) {})
+	if err != nil || readResult["content_base64"] != base64.StdEncoding.EncodeToString([]byte("operator config")) {
+		t.Fatalf("smart file read failed: result=%#v err=%v", readResult, err)
+	}
+	updatedState, _, err := executor.readSmartPluginState("instance", packageID)
+	if err != nil || editResult["aggregate_sha256"] != updatedState.AggregateSHA || updatedState.AggregateSHA == state.AggregateSHA {
+		t.Fatalf("smart file edit did not update the manifest: result=%#v state=%#v err=%v", editResult, updatedState, err)
+	}
 	archiveV2 := smartTestZIP(t, map[string]string{
 		"Sample/left4dead2/addons/sourcemod/plugins/sample.smx": "smx-v2",
 		"Sample/left4dead2/cfg/sourcemod/sample.cfg":            "updated config",

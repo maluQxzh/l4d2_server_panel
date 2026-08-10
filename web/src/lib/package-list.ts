@@ -12,11 +12,19 @@ function installedAt(item: PackageRecord) {
   return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
+function fixedPluginRank(item: PackageRecord) {
+  if (item.kind === "metamod") return 0;
+  if (item.kind === "sourcemod") return 1;
+  return 2;
+}
+
 export function filterAndSortPackages(items: PackageRecord[], query: string, sort: PackageSort) {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   return items
     .filter((item) => !normalizedQuery || item.name.toLocaleLowerCase().includes(normalizedQuery))
     .sort((left, right) => {
+      const rankDifference = fixedPluginRank(left) - fixedPluginRank(right);
+      if (rankDifference !== 0) return rankDifference;
       if (sort === "name_asc") return compareNames(left, right);
       if (sort === "name_desc") return -compareNames(left, right);
       const leftTime = installedAt(left);

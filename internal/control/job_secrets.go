@@ -84,7 +84,7 @@ func sealJobPayloadSecrets(masterKey []byte, jobType string, payload map[string]
 			payload["share_url"] = encryptedValuePlaceholder
 			return nil
 		}
-		if !strings.EqualFold(operation, "write") {
+		if !strings.EqualFold(operation, "write") && !strings.EqualFold(operation, "smart_plugin_edit") {
 			return nil
 		}
 		for _, field := range []string{"content", "content_base64"} {

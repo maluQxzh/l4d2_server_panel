@@ -38,6 +38,54 @@ func (s *Store) ListPackages(ctx context.Context, instanceID string) ([]domain.A
 	return items, rows.Err()
 }
 
+func (s *Store) PackageDetails(ctx context.Context, instanceID, packageID string) (domain.AddonPackage, []domain.AddonPackageFile, error) {
+	var item domain.AddonPackage
+	err := s.db.QueryRowContext(ctx, `SELECT id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,
+		COALESCE(installed_by,''),installed_at,file_count,restart_required FROM addon_packages WHERE id=?1 AND instance_id=?2`, packageID, instanceID).Scan(
+		&item.ID, &item.InstanceID, &item.Name, &item.Kind, &item.Version, &item.Source, &item.SourceID, &item.SHA256,
+		&item.Path, &item.Enabled, &item.Risk, &item.InstalledBy, &item.InstalledAt, &item.FileCount, &item.RestartRequired)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.AddonPackage{}, nil, ErrNotFound
+	}
+	if err != nil {
+		return domain.AddonPackage{}, nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT package_id,instance_id,path,sha256,size,entrypoint
+		FROM addon_package_files WHERE package_id=?1 AND instance_id=?2 ORDER BY lower(path),path`, packageID, instanceID)
+	if err != nil {
+		return domain.AddonPackage{}, nil, err
+	}
+	defer rows.Close()
+	files := make([]domain.AddonPackageFile, 0, item.FileCount)
+	for rows.Next() {
+		var file domain.AddonPackageFile
+		if err := rows.Scan(&file.PackageID, &file.InstanceID, &file.Path, &file.SHA256, &file.Size, &file.Entrypoint); err != nil {
+			return domain.AddonPackage{}, nil, err
+		}
+		file.Editable = smartPluginFileEditable(item.Kind, file.Path, file.Entrypoint)
+		files = append(files, file)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.AddonPackage{}, nil, err
+	}
+	if len(files) == 0 && item.Path != "" {
+		files = append(files, domain.AddonPackageFile{PackageID: item.ID, InstanceID: item.InstanceID, Path: item.Path, SHA256: item.SHA256})
+	}
+	return item, files, nil
+}
+
+func smartPluginFileEditable(kind, path string, entrypoint bool) bool {
+	if !strings.EqualFold(kind, "smart") || entrypoint {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".cfg", ".txt", ".sp", ".inc", ".nut":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Store) ManagedPackagePaths(ctx context.Context, instanceID string) (map[string]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id,path FROM addon_packages WHERE instance_id=?1 AND path<>''
@@ -638,6 +686,11 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		return tx.Commit()
 	case "install_mod":
 		return s.applyInstallModResult(ctx, job)
+	case "file":
+		if strings.EqualFold(stringFromAny(job.Payload["operation"]), "smart_plugin_edit") {
+			return s.applySmartPluginFileEditResult(ctx, job)
+		}
+		return nil
 	case "qq_flash_import":
 		if stringFromAny(job.Payload["mode"]) == "managed_vpk_v2" {
 			return s.applyQQFlashPackageResult(ctx, job)

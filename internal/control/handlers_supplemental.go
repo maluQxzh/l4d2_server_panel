@@ -130,6 +130,15 @@ func (s *Server) handleInstancePackages(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+func (s *Server) handlePackageDetails(w http.ResponseWriter, r *http.Request) {
+	item, files, err := s.store.PackageDetails(r.Context(), chi.URLParam(r, "instanceID"), chi.URLParam(r, "packageID"))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"package": item, "files": files})
+}
+
 func (s *Server) handleInstanceBackups(w http.ResponseWriter, r *http.Request) {
 	items, err := s.store.ListBackups(r.Context(), chi.URLParam(r, "instanceID"))
 	if err != nil {

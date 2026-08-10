@@ -211,4 +211,36 @@ describe("服务端组件依赖", () => {
     expect(screen.getByText("请先安装 Metamod:Source")).toBeVisible();
     expect(screen.getByRole("button", { name: "提交安装" })).toBeDisabled();
   });
+
+  it("固定核心组件排序并从详情查看和编辑智能插件文件", async () => {
+    const smart = { id: "smart", name: "Autoscar", kind: "smart" as const, enabled: true, sha256: "a".repeat(64), file_count: 2, installed_at: "2026-08-04T00:00:00Z" };
+    vi.spyOn(api, "packages").mockResolvedValue({ items: [
+      smart,
+      { id: "sm", name: "SourceMod", kind: "sourcemod", enabled: true, installed_at: "2026-08-02T00:00:00Z" },
+      { id: "mm", name: "Metamod:Source", kind: "metamod", enabled: true, installed_at: "2026-08-01T00:00:00Z" },
+    ] });
+    vi.spyOn(api, "packageDetails").mockResolvedValue({ package: smart, files: [
+      { package_id: "smart", instance_id: instance.id, path: "left4dead2/cfg/sourcemod/autoscar.cfg", sha256: "b".repeat(64), size: 12, entrypoint: false, editable: true },
+      { package_id: "smart", instance_id: instance.id, path: "left4dead2/addons/sourcemod/plugins/autoscar.smx", sha256: "c".repeat(64), size: 20, entrypoint: true, editable: false },
+    ] });
+    vi.spyOn(api, "packageFileContent").mockResolvedValue({ path: "left4dead2/cfg/sourcemod/autoscar.cfg", content: "enabled = 1", size: 11, sha256: "b".repeat(64) });
+    renderPackagesPage(instance, "plugins");
+
+    const detailButtons = await screen.findAllByRole("button", { name: /^查看 .* 详情$/ });
+    expect(detailButtons.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "查看 Metamod:Source 详情", "查看 SourceMod 详情", "查看 Autoscar 详情",
+    ]);
+    fireEvent.change(screen.getByLabelText("插件排序"), { target: { value: "name_desc" } });
+    expect(screen.getAllByRole("button", { name: /^查看 .* 详情$/ }).map((button) => button.getAttribute("aria-label"))).toEqual([
+      "查看 Metamod:Source 详情", "查看 SourceMod 详情", "查看 Autoscar 详情",
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "查看 Autoscar 详情" }));
+    expect(await screen.findByText("left4dead2/cfg/sourcemod/autoscar.cfg")).toBeVisible();
+    expect(screen.getByText("left4dead2/addons/sourcemod/plugins/autoscar.smx")).toBeVisible();
+    expect(screen.getByText("受包管理保护")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    expect(await screen.findByText("编辑 Autoscar 文件")).toBeVisible();
+    expect(await screen.findByDisplayValue("enabled = 1")).toBeVisible();
+  });
 });

@@ -441,6 +441,52 @@ func validateSmartPluginResultPath(value string) error {
 	}
 }
 
+func (s *Store) applySmartPluginFileEditResult(ctx context.Context, job domain.Job) error {
+	packageID := strings.TrimSpace(stringFromAny(job.Payload["package_id"]))
+	path := filepath.ToSlash(stringFromAny(job.Result["path"]))
+	expected := strings.ToLower(stringFromAny(job.Payload["expected_sha256"]))
+	previous := strings.ToLower(stringFromAny(job.Result["previous_sha256"]))
+	sha := strings.ToLower(stringFromAny(job.Result["sha256"]))
+	aggregate := strings.ToLower(stringFromAny(job.Result["aggregate_sha256"]))
+	size := int64FromAny(job.Result["size"])
+	if uuid.Validate(packageID) != nil || packageID != stringFromAny(job.Result["package_id"]) || path != stringFromAny(job.Payload["relative_path"]) ||
+		validateSmartPluginResultPath(path) != nil || !smartPluginFileEditable("smart", path, false) || !validPackageSHA(expected) ||
+		previous != expected || !validPackageSHA(sha) || !validPackageSHA(aggregate) || size < 0 || size > 8<<20 {
+		return errors.New("smart plugin file edit returned invalid metadata")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var currentSHA string
+	var entrypoint bool
+	err = tx.QueryRowContext(ctx, `SELECT sha256,entrypoint FROM addon_package_files
+		WHERE package_id=?1 AND instance_id=?2 AND path=?3`, packageID, job.InstanceID, path).Scan(&currentSHA, &entrypoint)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if entrypoint || (!strings.EqualFold(currentSHA, expected) && !strings.EqualFold(currentSHA, sha)) {
+		return ErrConflict
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE addon_package_files SET sha256=?4,size=?5
+		WHERE package_id=?1 AND instance_id=?2 AND path=?3`, packageID, job.InstanceID, path, sha, size); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE addon_packages SET sha256=?3,last_job_id=?4
+		WHERE id=?1 AND instance_id=?2 AND lower(kind)='smart'`, packageID, job.InstanceID, aggregate, job.ID)
+	if err != nil {
+		return err
+	}
+	if resultRowsAffected(result) == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
+}
+
 func (s *Store) applyPackageRollbackResult(ctx context.Context, job domain.Job) error {
 	packageID := stringFromAny(job.Payload["package_id"])
 	versionID := stringFromAny(job.Payload["version_id"])

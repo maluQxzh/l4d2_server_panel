@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
@@ -31,6 +33,10 @@ const (
 var smartPluginExtensions = map[string]bool{
 	".smx": true, ".sp": true, ".inc": true, ".txt": true, ".cfg": true,
 	".nut": true, ".dll": true, ".so": true, ".vdf": true, ".autoload": true,
+}
+
+var editableSmartPluginExtensions = map[string]bool{
+	".cfg": true, ".txt": true, ".sp": true, ".inc": true, ".nut": true,
 }
 
 type smartPluginFile struct {
@@ -891,6 +897,106 @@ func (e *Executor) updateSmartPluginManifest(root string, state smartPluginState
 	}
 	_, err = writeFileWithinNoFollow(root, "manifest.json", strings.NewReader(string(raw)), secureWriteOptions{Mode: 0o600, ExpectedSize: int64(len(raw)), Replace: true, RejectExistingLink: true})
 	return err
+}
+
+func (e *Executor) editSmartPluginFile(job domain.Job, instancePath, relative, content, contentBase64, expectedSHA256 string, progress ProgressFunc) (map[string]any, error) {
+	packageID := stringFromPayload(job.Payload, "package_id")
+	state, stateRoot, err := e.readSmartPluginState(job.InstanceID, packageID)
+	if err != nil {
+		return nil, fmt.Errorf("load smart plugin state: %w", err)
+	}
+	fileIndex := -1
+	for index, file := range state.Files {
+		if file.TargetPath == relative {
+			fileIndex = index
+			break
+		}
+	}
+	if fileIndex < 0 || state.Files[fileIndex].Entrypoint || !editableSmartPluginExtensions[strings.ToLower(filepath.Ext(relative))] {
+		return nil, errors.New("smart plugin file is not an editable managed text file")
+	}
+	managed := state.Files[fileIndex]
+	if len(expectedSHA256) != sha256.Size*2 || !strings.EqualFold(expectedSHA256, managed.SHA256) {
+		return nil, errors.New("smart plugin file precondition does not match its manifest")
+	}
+	if _, err := hex.DecodeString(expectedSHA256); err != nil {
+		return nil, errors.New("expected_sha256 must contain 64 hexadecimal characters")
+	}
+	oldRaw, err := readRegularFileWithinNoFollow(instancePath, relative, maxManagedFileSize)
+	if err != nil {
+		return nil, err
+	}
+	oldDigest := sha256.Sum256(oldRaw)
+	if !strings.EqualFold(hex.EncodeToString(oldDigest[:]), managed.SHA256) {
+		return nil, errors.New("smart plugin file changed since its manifest was committed")
+	}
+	raw := []byte(content)
+	if contentBase64 != "" {
+		raw, err = base64.StdEncoding.DecodeString(contentBase64)
+		if err != nil {
+			return nil, errors.New("invalid base64 file content")
+		}
+	}
+	if len(raw) > maxManagedFileSize || bytes.IndexByte(raw, 0) >= 0 || !utf8.Valid(raw) {
+		return nil, errors.New("editable smart plugin text must be valid UTF-8 without NUL bytes and no larger than 8 MiB")
+	}
+	newDigest := sha256.Sum256(raw)
+	newSHA := hex.EncodeToString(newDigest[:])
+	if err := writeRawFileWithinNoFollow(instancePath, relative, raw, 0o640, true); err != nil {
+		return nil, err
+	}
+	state.Files[fileIndex].SHA256 = newSHA
+	state.Files[fileIndex].Size = int64(len(raw))
+	aggregate := sha256.New()
+	for _, file := range state.Files {
+		_, _ = io.WriteString(aggregate, file.TargetPath+"\x00"+file.SHA256+"\n")
+	}
+	state.AggregateSHA = hex.EncodeToString(aggregate.Sum(nil))
+	if err := e.updateSmartPluginManifest(stateRoot, state); err != nil {
+		if rollbackErr := writeRawFileWithinNoFollow(instancePath, relative, oldRaw, 0o640, true); rollbackErr != nil {
+			return nil, fmt.Errorf("update smart plugin manifest: %w; restore edited file: %v", err, rollbackErr)
+		}
+		return nil, fmt.Errorf("update smart plugin manifest and restored edited file: %w", err)
+	}
+	progress(100, "smart plugin text file updated")
+	return map[string]any{"package_id": packageID, "path": relative, "previous_sha256": managed.SHA256,
+		"sha256": newSHA, "size": len(raw), "aggregate_sha256": state.AggregateSHA}, nil
+}
+
+func (e *Executor) readSmartPluginFile(job domain.Job, instancePath, relative string, progress ProgressFunc) (map[string]any, error) {
+	packageID := stringFromPayload(job.Payload, "package_id")
+	state, _, err := e.readSmartPluginState(job.InstanceID, packageID)
+	if err != nil {
+		return nil, fmt.Errorf("load smart plugin state: %w", err)
+	}
+	var managed *smartPluginStateFile
+	for index := range state.Files {
+		if state.Files[index].TargetPath == relative {
+			managed = &state.Files[index]
+			break
+		}
+	}
+	if managed == nil || managed.Entrypoint || !editableSmartPluginExtensions[strings.ToLower(filepath.Ext(relative))] {
+		return nil, errors.New("smart plugin file is not an editable managed text file")
+	}
+	expectedSHA256 := stringFromPayload(job.Payload, "expected_sha256")
+	if len(expectedSHA256) != sha256.Size*2 || !strings.EqualFold(expectedSHA256, managed.SHA256) {
+		return nil, errors.New("smart plugin file precondition does not match its manifest")
+	}
+	raw, err := readRegularFileWithinNoFollow(instancePath, relative, maxManagedFileSize)
+	if err != nil {
+		return nil, err
+	}
+	if bytes.IndexByte(raw, 0) >= 0 || !utf8.Valid(raw) {
+		return nil, errors.New("managed smart plugin file is not valid UTF-8 text")
+	}
+	digest := sha256.Sum256(raw)
+	sha := hex.EncodeToString(digest[:])
+	if !strings.EqualFold(sha, managed.SHA256) {
+		return nil, errors.New("smart plugin file changed since its manifest was committed")
+	}
+	progress(100, "smart plugin text file read")
+	return map[string]any{"package_id": packageID, "path": relative, "content_base64": base64.StdEncoding.EncodeToString(raw), "size": len(raw), "sha256": sha}, nil
 }
 
 func (e *Executor) toggleSmartPlugin(job domain.Job, payload operationPayload, progress ProgressFunc) (map[string]any, error) {
