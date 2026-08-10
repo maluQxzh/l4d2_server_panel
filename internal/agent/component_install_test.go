@@ -220,6 +220,162 @@ func TestTrustedPackageArchiveCanInstallNativeFiles(t *testing.T) {
 	}
 }
 
+func TestSourceModArchivePreservesAdminsSimpleAndRejectsOtherPackageTargets(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "sourcemod.zip")
+	file, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(file)
+	for name, content := range map[string]string{
+		"addons/sourcemod/configs/admins_simple.ini": "archive admins",
+		"addons/sourcemod/bin/sourcemod.logic.dll":   "core binary",
+		"cfg/sourcemod/sourcemod.cfg":                "component config",
+	} {
+		entry, createErr := writer.Create(name)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, writeErr := entry.Write([]byte(content)); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := t.TempDir()
+	adminsPath := filepath.Join(instancePath, filepath.FromSlash(sourceModAdminsSimplePath))
+	if err := os.MkdirAll(filepath.Dir(adminsPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(adminsPath, []byte("operator admins"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	files, preserved, err := installPackageArchive(instancePath, archivePath, t.TempDir(), packageArchiveInstallOptions{
+		AllowNative: true, PreserveExisting: map[string]bool{sourceModAdminsSimplePath: true},
+		ValidateTarget: func(value string) error { return validateServerExtensionInstallTarget("sourcemod", value) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 3 || len(preserved) != 1 || preserved[0] != sourceModAdminsSimplePath {
+		t.Fatalf("unexpected install inventory: files=%#v preserved=%#v", files, preserved)
+	}
+	assertFileContent(t, adminsPath, "operator admins")
+	assertFileContent(t, filepath.Join(instancePath, "left4dead2", "addons", "sourcemod", "bin", "sourcemod.logic.dll"), "core binary")
+	assertFileContent(t, filepath.Join(instancePath, "left4dead2", "cfg", "sourcemod", "sourcemod.cfg"), "component config")
+
+	freshInstance := t.TempDir()
+	_, freshPreserved, err := installPackageArchive(freshInstance, archivePath, t.TempDir(), packageArchiveInstallOptions{
+		AllowNative: true, PreserveExisting: map[string]bool{sourceModAdminsSimplePath: true},
+		ValidateTarget: func(value string) error { return validateServerExtensionInstallTarget("sourcemod", value) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(freshPreserved) != 0 {
+		t.Fatalf("missing admins_simple.ini was unexpectedly treated as preserved: %#v", freshPreserved)
+	}
+	assertFileContent(t, filepath.Join(freshInstance, filepath.FromSlash(sourceModAdminsSimplePath)), "archive admins")
+
+	otherInstance := t.TempDir()
+	_, _, err = installPackageArchive(otherInstance, archivePath, t.TempDir(), packageArchiveInstallOptions{
+		AllowNative: true, PackageID: "component", RegisteredPaths: map[string]string{
+			"left4dead2/addons/sourcemod/bin/sourcemod.logic.dll": "other-package",
+		}, PreserveExisting: map[string]bool{sourceModAdminsSimplePath: true},
+		ValidateTarget: func(value string) error { return validateServerExtensionInstallTarget("sourcemod", value) },
+	})
+	if err == nil || !strings.Contains(err.Error(), "managed by another package") {
+		t.Fatalf("cross-package overwrite was not rejected: %v", err)
+	}
+}
+
+func TestServerExtensionArchiveRejectsOutsideComponentDirectoryBeforeWrite(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "invalid-sourcemod.zip")
+	file, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(file)
+	for _, name := range []string{"addons/sourcemod/bin/sourcemod.logic.dll", "cfg/server.cfg"} {
+		entry, createErr := writer.Create(name)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, writeErr := entry.Write([]byte(name)); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := t.TempDir()
+	_, _, err = installPackageArchive(instancePath, archivePath, t.TempDir(), packageArchiveInstallOptions{
+		AllowNative:    true,
+		ValidateTarget: func(value string) error { return validateServerExtensionInstallTarget("sourcemod", value) },
+	})
+	if err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("outside SourceMod target was not rejected: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(instancePath, "left4dead2", "addons", "sourcemod", "bin", "sourcemod.logic.dll")); !os.IsNotExist(statErr) {
+		t.Fatalf("archive preflight wrote files before rejecting an invalid target: %v", statErr)
+	}
+}
+
+func TestDeleteSourceModPackageKeepsAdminsAndUnmanagedPlugin(t *testing.T) {
+	executor, _, instancePath := uploadedPackageExecutor(t)
+	record, _ := executor.registry.Get("instance")
+	record.Config = domain.InstanceConfig{Mode: "coop", StartMap: "c1m1_hotel", MaxPlayers: 8}
+	if err := executor.registry.Put(record); err != nil {
+		t.Fatal(err)
+	}
+	coreRelative := "left4dead2/addons/sourcemod/bin/sourcemod.logic.dll"
+	corePath := filepath.Join(instancePath, filepath.FromSlash(coreRelative))
+	adminsPath := filepath.Join(instancePath, filepath.FromSlash(sourceModAdminsSimplePath))
+	unmanagedPath := filepath.Join(instancePath, "left4dead2", "addons", "sourcemod", "plugins", "custom.smx")
+	for path, content := range map[string]string{corePath: "core", adminsPath: "operator admins", unmanagedPath: "custom plugin"} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	coreSHA, coreSize, err := hashRegularFileWithinNoFollow(instancePath, coreRelative, maxPackageExpanded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := executor.deletePackage(context.Background(), domain.Job{ID: "delete-component", InstanceID: "instance", Payload: map[string]any{
+		"package_id": "component", "kind": "sourcemod", "expected_sha256": strings.Repeat("a", 64),
+		"managed_files": []any{map[string]any{"path": coreRelative, "sha256": coreSHA, "size": coreSize}},
+	}}, func(int, string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["package_id"] != "component" {
+		t.Fatalf("unexpected deletion result: %#v", result)
+	}
+	if _, err := os.Stat(corePath); !os.IsNotExist(err) {
+		t.Fatalf("managed SourceMod file still exists: %v", err)
+	}
+	assertFileContent(t, adminsPath, "operator admins")
+	assertFileContent(t, unmanagedPath, "custom plugin")
+
+	if _, err := executor.deletePackage(context.Background(), domain.Job{ID: "delete-protected", InstanceID: "instance", Payload: map[string]any{
+		"package_id": "component", "kind": "sourcemod", "expected_sha256": strings.Repeat("a", 64),
+		"managed_files": []any{map[string]any{"path": sourceModAdminsSimplePath, "sha256": strings.Repeat("b", 64), "size": int64(15)}},
+	}}, func(int, string) {}); err == nil {
+		t.Fatal("protected admins_simple.ini was accepted as a deletion target")
+	}
+	assertFileContent(t, adminsPath, "operator admins")
+}
+
 func TestExtensionVerificationCommands(t *testing.T) {
 	if extensionVerificationCommand("metamod") != "meta version" || extensionVerificationCommand("sourcemod") != "sm version" {
 		t.Fatal("extension verification commands changed")

@@ -115,6 +115,24 @@ func (s *Store) HasEnabledPackageKind(ctx context.Context, instanceID, kind stri
 	return present, err
 }
 
+func (s *Store) HasPackageKind(ctx context.Context, instanceID, kind string) (bool, error) {
+	var present bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM addon_packages WHERE instance_id=?1 AND lower(kind)=lower(?2)
+	)`, instanceID, kind).Scan(&present)
+	return present, err
+}
+
+func (s *Store) ComponentPackageID(ctx context.Context, instanceID, kind string) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM addon_packages WHERE instance_id=?1 AND lower(kind)=lower(?2)
+		ORDER BY installed_at DESC,id DESC LIMIT 1`, instanceID, kind).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
 func (s *Store) SetPackageEnabled(ctx context.Context, instanceID, packageID string, enabled bool) error {
 	tag, err := s.db.ExecContext(ctx, `UPDATE addon_packages SET enabled=?3 WHERE id=?1 AND instance_id=?2`, packageID, instanceID, enabled)
 	if err == nil && resultRowsAffected(tag) == 0 {

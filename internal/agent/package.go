@@ -19,41 +19,86 @@ const (
 )
 
 func InstallPackageArchive(instancePath, archivePath, stagingParent string, allowNative bool) ([]string, error) {
+	files, _, err := installPackageArchive(instancePath, archivePath, stagingParent, packageArchiveInstallOptions{AllowNative: allowNative})
+	return files, err
+}
+
+type packageArchiveInstallOptions struct {
+	AllowNative      bool
+	PackageID        string
+	RegisteredPaths  map[string]string
+	PreserveExisting map[string]bool
+	ValidateTarget   func(string) error
+}
+
+func installPackageArchive(instancePath, archivePath, stagingParent string, options packageArchiveInstallOptions) ([]string, []string, error) {
 	if err := os.MkdirAll(stagingParent, 0o700); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	staging, err := os.MkdirTemp(stagingParent, "package-*")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer os.RemoveAll(staging)
 	f, err := os.Open(archivePath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	reader := bufio.NewReader(f)
 	magic, _ := reader.Peek(4)
 	f.Close()
 	var files []string
 	if len(magic) >= 2 && magic[0] == 'P' && magic[1] == 'K' {
-		files, err = stageZIPArchive(archivePath, staging, allowNative)
+		files, err = stageZIPArchive(archivePath, staging, options.AllowNative)
 	} else if len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b {
-		files, err = stageTarGZArchive(archivePath, staging, allowNative)
+		files, err = stageTarGZArchive(archivePath, staging, options.AllowNative)
 	} else {
-		return nil, errors.New("package must be a ZIP or tar.gz archive")
+		return nil, nil, errors.New("package must be a ZIP or tar.gz archive")
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	preserved := make([]string, 0, len(options.PreserveExisting))
+	for _, rel := range files {
+		if options.ValidateTarget != nil {
+			if validateErr := options.ValidateTarget(rel); validateErr != nil {
+				return nil, nil, fmt.Errorf("package target %q is not allowed: %w", rel, validateErr)
+			}
+		}
+		key := strings.ToLower(filepath.ToSlash(rel))
+		if options.PreserveExisting[key] {
+			if _, _, hashErr := hashRegularFileWithinNoFollow(instancePath, rel, maxPackageExpanded); hashErr == nil {
+				preserved = append(preserved, rel)
+				continue
+			} else if !errors.Is(hashErr, os.ErrNotExist) {
+				return nil, nil, fmt.Errorf("inspect preserved package target %q: %w", rel, hashErr)
+			}
+		}
+		if owner := options.RegisteredPaths[key]; owner != "" && owner != options.PackageID {
+			return nil, nil, fmt.Errorf("package target %q is managed by another package", rel)
+		}
 	}
 	for _, rel := range files {
+		if containsStringFold(preserved, rel) {
+			continue
+		}
 		source := filepath.Join(staging, filepath.FromSlash(rel))
 		if err := copyRegularFileToRootNoFollow(source, instancePath, rel, secureWriteOptions{
 			Mode: 0o640, Replace: true, RejectExistingLink: true,
 		}); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return files, nil
+	return files, preserved, nil
+}
+
+func containsStringFold(values []string, candidate string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func stageZIPArchive(path, staging string, allowNative bool) ([]string, error) {

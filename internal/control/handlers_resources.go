@@ -769,6 +769,36 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if request.Type == "install_mod" {
+		componentKind := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(stringFromAny(request.Payload["kind"]))), "_url")
+		if componentKind == "sourcemod" || componentKind == "metamod" {
+			packageID, packageErr := s.store.ComponentPackageID(r.Context(), instanceID, componentKind)
+			if packageErr != nil {
+				s.fail(w, packageErr)
+				return
+			}
+			managedPaths, managedErr := s.store.ManagedPackagePaths(r.Context(), instanceID)
+			if managedErr != nil {
+				s.fail(w, managedErr)
+				return
+			}
+			request.Payload["package_id"] = packageID
+			request.Payload["registered_paths"] = managedPaths
+			request.Payload["managed_files"] = []map[string]any{}
+			if packageID != "" {
+				_, currentFiles, detailsErr := s.store.PackageDetails(r.Context(), instanceID, packageID)
+				if detailsErr != nil {
+					s.fail(w, detailsErr)
+					return
+				}
+				managedFiles := make([]map[string]any, 0, len(currentFiles))
+				for _, file := range currentFiles {
+					managedFiles = append(managedFiles, map[string]any{"path": file.Path, "sha256": file.SHA256, "size": file.Size})
+				}
+				request.Payload["managed_files"] = managedFiles
+			}
+		}
+	}
 	if request.Type == "restart" && instance.Status == domain.InstanceExternal {
 		// The Agent needs the current structured configuration when it stops
 		// the verified external PID and starts the server under process-tree

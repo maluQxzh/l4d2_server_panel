@@ -1028,7 +1028,7 @@ paths:
     get:
       tags: [Packages]
       summary: 查看受管包及其逐文件清单
-      description: 需要 packages.read。智能识别包返回安装时登记的所有实例相对路径；旧式单文件包返回其目标路径，未记录逐文件信息的旧式整包返回空清单。
+      description: 需要 packages.read。智能识别包和新版 SourceMod/Metamod 整套组件返回安装时登记的所有实例相对路径；旧式单文件包返回其目标路径，未记录逐文件信息的旧式整包返回空清单。
       parameters:
         - { $ref: "#/components/parameters/InstanceID" }
         - { $ref: "#/components/parameters/PackageID" }
@@ -1046,10 +1046,13 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
     delete:
       tags: [Packages]
-      summary: 删除一个受管模组或智能插件
+      summary: 删除一个受管模组、智能插件或整套服务端组件
       description: |
         需要 packages.delete。单文件包仅支持面板登记且路径位于标准目录的 VPK 或 SourceMod SMX。
         智能插件必须先停止实例；Agent 逐文件复核 SHA-256，恢复接管前基线或删除自身文件，再移除整包记录。
+        SourceMod/Metamod 整套组件也必须先停止实例，并要求 component_package_delete_v1 Agent 和安装后生成的非空逐文件清单；
+        Agent 复核固定组件目录、大小和 SHA-256，创建检查点后只删除清单文件。SourceMod 的
+        left4dead2/addons/sourcemod/configs/admins_simple.ini 始终保留；SourceMod 记录存在时不能删除 Metamod。
       parameters:
         - { $ref: "#/components/parameters/InstanceID" }
         - { $ref: "#/components/parameters/PackageID" }
@@ -3301,7 +3304,8 @@ components:
         kind=smart 仅接受已经识别的本机 ZIP/7Z/RAR，还必须传 inspection_fingerprint 和 smart_packages；
         每个选择项含 folder_id、可选 package_id（同名已纳管智能插件更新）、歧义路径 overrides 和已有未纳管文件 takeovers。
         运行中安装或启用智能插件必须同时传 acknowledge_live_changes=true 与 acknowledge_restart_required=true；停用和删除必须先停服。
-        安装 SourceMod（官方或第三方整包）前必须先成功安装并启用 Metamod:Source，
+        安装 SourceMod（官方或第三方整包）前必须先成功安装并启用 Metamod:Source；已有的
+        left4dead2/addons/sourcemod/configs/admins_simple.ini 不会被覆盖，首次安装创建的同名文件也会在后续更新和卸载中保留。
         VPK 安装、回退及 `toggle_package` 重新启用不会扫描其他 VPK，模组之间的覆盖由 L4D2 挂载顺序决定。Workshop 下载载荷不执行 VPK 内容格式校验，只核对普通文件、SHA-256 和安全写入。第三方原生包另传 acknowledge_native_risk=true；`stop` 可传 maintenance 和
         warning_seconds；`restart` 不接受维护广播参数，只接受 `running`、`degraded` 或 `external` 实例，停止状态返回 409；仅 external 实例的直接 restart 可选传一次性 existing_rcon_password，用于让旧进程优雅退出。
         广播使用 Agent 固定安全文案。`create_schedule` 传 name、cron、timezone、action、enabled 和嵌套 payload；

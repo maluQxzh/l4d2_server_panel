@@ -393,8 +393,15 @@ type operationPayload struct {
 	InspectionFingerprint      string                 `json:"inspection_fingerprint,omitempty"`
 	SmartPackages              []smartPluginSelection `json:"smart_packages,omitempty"`
 	RegisteredPaths            map[string]string      `json:"registered_paths,omitempty"`
+	ManagedFiles               []managedPackageFile   `json:"managed_files,omitempty"`
 	AcknowledgeLiveChanges     bool                   `json:"acknowledge_live_changes,omitempty"`
 	AcknowledgeRestartRequired bool                   `json:"acknowledge_restart_required,omitempty"`
+}
+
+type managedPackageFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
 }
 
 func decodeOperation(job domain.Job) (operationPayload, error) {

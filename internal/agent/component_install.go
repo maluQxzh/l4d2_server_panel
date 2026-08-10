@@ -2,9 +2,13 @@ package agent
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +16,8 @@ import (
 )
 
 const metamodDependencyError = "SourceMod requires an installed Metamod:Source; install and verify Metamod:Source first"
+
+const sourceModAdminsSimplePath = "left4dead2/addons/sourcemod/configs/admins_simple.ini"
 
 func requireMetamodInstalled(instancePath string) error {
 	vdf, err := readRegularFileWithinNoFollow(instancePath, "left4dead2/addons/metamod.vdf", 64<<10)
@@ -37,6 +43,25 @@ func requireMetamodInstalled(instancePath string) error {
 func (e *Executor) installServerExtension(ctx context.Context, job domain.Job, payload operationPayload, record InstanceRecord, instancePath, componentKind, localSource, downloadedHash string, downloadedSize int64, version string, progress ProgressFunc) (map[string]any, error) {
 	if payload.RCONPassword == "" {
 		return nil, errors.New("RCON password is required to verify a server extension installation")
+	}
+	if len(payload.ManagedFiles) > maxPackageFiles {
+		return nil, errors.New("existing server extension inventory contains too many files")
+	}
+	packageID := stringFromPayload(job.Payload, "package_id")
+	if packageID == "" {
+		payload.ManagedFiles = nil
+	} else {
+		seen := make(map[string]bool, len(payload.ManagedFiles))
+		for _, file := range payload.ManagedFiles {
+			key := strings.ToLower(filepath.ToSlash(file.Path))
+			if seen[key] || validateServerExtensionManagedTarget(componentKind, file.Path) != nil || len(file.SHA256) != 64 || file.Size < 0 {
+				return nil, errors.New("existing server extension inventory contains an invalid managed file")
+			}
+			if _, err := hex.DecodeString(file.SHA256); err != nil {
+				return nil, errors.New("existing server extension inventory contains an invalid file SHA-256")
+			}
+			seen[key] = true
+		}
 	}
 	wasRunning := packageProcessActive(e.processes.State(job.InstanceID).Status)
 	if wasRunning {
@@ -70,9 +95,16 @@ func (e *Executor) installServerExtension(ctx context.Context, job domain.Job, p
 
 	progress(45, "extracting extension package safely")
 	stagingDir, installErr := ensureDataSubdirectory(e.config.DataDir, "staging")
-	var files []string
+	var files, preserved []string
 	if installErr == nil {
-		files, installErr = InstallPackageArchive(instancePath, localSource, stagingDir, true)
+		options := packageArchiveInstallOptions{
+			AllowNative: true, PackageID: packageID, RegisteredPaths: payload.RegisteredPaths,
+			ValidateTarget: func(value string) error { return validateServerExtensionInstallTarget(componentKind, value) },
+		}
+		if componentKind == "sourcemod" {
+			options.PreserveExisting = map[string]bool{sourceModAdminsSimplePath: true}
+		}
+		files, preserved, installErr = installPackageArchive(instancePath, localSource, stagingDir, options)
 	}
 	if installErr == nil {
 		progress(65, "starting server for extension verification")
@@ -94,11 +126,66 @@ func (e *Executor) installServerExtension(ctx context.Context, job domain.Job, p
 		return nil, fmt.Errorf("extension installation failed and was rolled back: %w", installErr)
 	}
 
+	progress(95, "inventorying installed server extension")
+	managedFiles := make([]map[string]any, 0, len(files)+len(payload.ManagedFiles))
+	managedPaths := make(map[string]bool, len(files))
+	for _, file := range files {
+		if strings.EqualFold(file, sourceModAdminsSimplePath) {
+			continue
+		}
+		managedPaths[strings.ToLower(filepath.ToSlash(file))] = true
+		sha, size, hashErr := hashRegularFileWithinNoFollow(instancePath, file, maxPackageExpanded)
+		if hashErr != nil {
+			rollbackErr := e.rollbackServerExtension(job, checkpointPath, wasRunning)
+			if rollbackErr != nil {
+				return nil, fmt.Errorf("inventory installed extension file %q: %w; rollback/recovery also failed: %v", file, hashErr, rollbackErr)
+			}
+			return nil, fmt.Errorf("inventory installed extension file %q and rolled back: %w", file, hashErr)
+		}
+		managedFiles = append(managedFiles, map[string]any{"path": file, "sha256": sha, "size": size})
+	}
+	for _, previous := range payload.ManagedFiles {
+		key := strings.ToLower(filepath.ToSlash(previous.Path))
+		if managedPaths[key] || validateServerExtensionManagedTarget(componentKind, previous.Path) != nil {
+			continue
+		}
+		sha, size, hashErr := hashRegularFileWithinNoFollow(instancePath, previous.Path, maxPackageExpanded)
+		if hashErr != nil {
+			if errors.Is(hashErr, os.ErrNotExist) {
+				preserved = append(preserved, previous.Path)
+				continue
+			}
+			rollbackErr := e.rollbackServerExtension(job, checkpointPath, wasRunning)
+			if rollbackErr != nil {
+				return nil, fmt.Errorf("inventory existing extension file %q: %w; rollback/recovery also failed: %v", previous.Path, hashErr, rollbackErr)
+			}
+			return nil, fmt.Errorf("inventory existing extension file %q and rolled back: %w", previous.Path, hashErr)
+		}
+		if !strings.EqualFold(sha, previous.SHA256) || size != previous.Size {
+			preserved = append(preserved, previous.Path)
+			continue
+		}
+		managedPaths[key] = true
+		managedFiles = append(managedFiles, map[string]any{"path": previous.Path, "sha256": sha, "size": size})
+	}
+	sort.Slice(managedFiles, func(i, j int) bool {
+		return strings.ToLower(stringFromMap(managedFiles[i], "path")) < strings.ToLower(stringFromMap(managedFiles[j], "path"))
+	})
+	if len(managedFiles) == 0 {
+		rollbackErr := e.rollbackServerExtension(job, checkpointPath, wasRunning)
+		if rollbackErr != nil {
+			return nil, fmt.Errorf("server extension produced no managed files; rollback/recovery also failed: %v", rollbackErr)
+		}
+		return nil, errors.New("server extension produced no managed files and was rolled back")
+	}
 	progress(100, "server extension installed and verified")
 	result := map[string]any{
 		"kind": componentKind, "files": files, "sha256": downloadedHash, "size": downloadedSize,
 		"checkpoint": checkpoint, "verified": true, "verification_command": extensionVerificationCommand(componentKind),
-		"running": wasRunning,
+		"running": wasRunning, "managed_files": managedFiles, "file_count": len(managedFiles), "package_id": packageID,
+	}
+	if len(preserved) > 0 {
+		result["preserved_files"] = preserved
 	}
 	if version != "" {
 		result["version"] = version

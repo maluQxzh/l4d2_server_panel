@@ -535,9 +535,11 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
     id: "package-smart", name: "Autoscar", kind: "smart", enabled: true, file_count: 2,
     sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", installed_at: "2026-07-31T01:10:00Z",
   }, {
-    id: "package-sourcemod", name: "SourceMod", kind: "sourcemod", version: "1.12", enabled: true, installed_at: "2026-07-31T01:15:00Z",
+    id: "package-sourcemod", name: "SourceMod", kind: "sourcemod", version: "1.12", enabled: true, file_count: 120,
+    sha256: "1111111111111111111111111111111111111111111111111111111111111111", installed_at: "2026-07-31T01:15:00Z",
   }, {
-    id: "package-metamod", name: "Metamod:Source", kind: "metamod", version: "1.12", enabled: true, installed_at: "2026-07-31T01:20:00Z",
+    id: "package-metamod", name: "Metamod:Source", kind: "metamod", version: "1.12", enabled: true, file_count: 8,
+    sha256: "2222222222222222222222222222222222222222222222222222222222222222", installed_at: "2026-07-31T01:20:00Z",
   }] }));
 	let smartFileWrite: Record<string, unknown> | undefined;
 	await page.route("**/api/v1/instances/instance-1/packages/package-smart", (route) => json(route, {
@@ -687,6 +689,8 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
   await expect(page.getByText("campaign.vpk", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^查看 .* 详情$/ }).first()).toHaveAttribute("aria-label", "查看 Metamod:Source 详情");
   await expect(page.getByRole("button", { name: /^查看 .* 详情$/ }).nth(1)).toHaveAttribute("aria-label", "查看 SourceMod 详情");
+  await expect(page.getByRole("button", { name: "删除 Metamod:Source" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "删除 SourceMod" })).toBeDisabled();
   await page.getByRole("button", { name: "查看 Autoscar 详情" }).click();
   await expect(page.getByText("left4dead2/cfg/sourcemod/autoscar.cfg")).toBeVisible();
   await expect(page.getByText("left4dead2/addons/sourcemod/plugins/autoscar.smx")).toBeVisible();

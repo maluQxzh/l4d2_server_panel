@@ -231,6 +231,9 @@ func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error
 	if strings.EqualFold(stringFromAny(job.Result["kind"]), "smart") {
 		return s.applySmartPluginInstallResult(ctx, job)
 	}
+	if kind := strings.ToLower(stringFromAny(job.Result["kind"])); kind == "sourcemod" || kind == "metamod" {
+		return s.applyServerExtensionInstallResult(ctx, job, kind)
+	}
 	if files, ok := job.Result["files"].([]any); stringFromAny(job.Result["kind"]) == "workshop" && ok && len(files) > 0 {
 		for _, raw := range files {
 			file, _ := raw.(map[string]any)
@@ -353,6 +356,108 @@ func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) applyServerExtensionInstallResult(ctx context.Context, job domain.Job, kind string) error {
+	rawFiles, ok := job.Result["managed_files"].([]any)
+	if !ok || len(rawFiles) == 0 || len(rawFiles) > 50000 || !validPackageSHA(strings.ToLower(stringFromAny(job.Result["sha256"]))) {
+		return errors.New("server extension installation returned an invalid managed file list")
+	}
+	type managedFile struct {
+		path, sha string
+		size      int64
+	}
+	files := make([]managedFile, 0, len(rawFiles))
+	seen := make(map[string]bool, len(rawFiles))
+	for _, raw := range rawFiles {
+		item, ok := raw.(map[string]any)
+		path := filepath.ToSlash(stringFromAny(item["path"]))
+		sha := strings.ToLower(stringFromAny(item["sha256"]))
+		size := int64FromAny(item["size"])
+		key := strings.ToLower(path)
+		if !ok || validateServerExtensionManagedPath(kind, path) != nil || !validPackageSHA(sha) || size < 0 || seen[key] {
+			return errors.New("server extension installation returned an invalid managed file")
+		}
+		seen[key] = true
+		files = append(files, managedFile{path: path, sha: sha, size: size})
+	}
+	packageID := strings.TrimSpace(stringFromAny(job.Result["package_id"]))
+	if packageID == "" {
+		packageID = strings.TrimSpace(stringFromAny(job.Payload["package_id"]))
+	}
+	if packageID != "" && uuid.Validate(packageID) != nil {
+		return errors.New("server extension installation returned an invalid package id")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if packageID == "" {
+		lookupErr := tx.QueryRowContext(ctx, `SELECT id FROM addon_packages WHERE instance_id=?1 AND lower(kind)=?2
+			ORDER BY installed_at DESC,id DESC LIMIT 1`, job.InstanceID, kind).Scan(&packageID)
+		if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+			return lookupErr
+		}
+	}
+	if packageID == "" {
+		packageID = job.ID
+	}
+	var existingInstance, existingKind string
+	lookupErr := tx.QueryRowContext(ctx, `SELECT instance_id,kind FROM addon_packages WHERE id=?1`, packageID).Scan(&existingInstance, &existingKind)
+	if lookupErr == nil && (existingInstance != job.InstanceID || !strings.EqualFold(existingKind, kind)) {
+		return errors.New("server extension update targets a different or incompatible package")
+	}
+	if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+		return lookupErr
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM addon_packages WHERE instance_id=?1 AND lower(kind)=?2 AND id<>?3`, job.InstanceID, kind, packageID); err != nil {
+		return err
+	}
+	name := "SourceMod"
+	if kind == "metamod" {
+		name = "Metamod:Source"
+	}
+	version := strings.TrimSpace(stringFromAny(job.Result["version"]))
+	sha := strings.ToLower(stringFromAny(job.Result["sha256"]))
+	source := firstNonEmptyString(stringFromAny(job.Result["source"]), stringFromAny(job.Payload["source"]))
+	risk := riskFromPayload(job.Payload)
+	_, err = tx.ExecContext(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,version,source,sha256,path,enabled,risk,installed_by,last_job_id,file_count,restart_required)
+		VALUES(?1,?2,?3,?4,?5,?6,?7,'',true,?8,?9,?10,?11,false)
+		ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,kind=EXCLUDED.kind,version=EXCLUDED.version,source=EXCLUDED.source,
+		sha256=EXCLUDED.sha256,path='',enabled=true,risk=EXCLUDED.risk,installed_by=EXCLUDED.installed_by,
+		installed_at=unixepoch('subsec')*1000000,last_job_id=EXCLUDED.last_job_id,file_count=EXCLUDED.file_count,restart_required=false
+		WHERE addon_packages.instance_id=EXCLUDED.instance_id AND lower(addon_packages.kind)=lower(EXCLUDED.kind)`, packageID, job.InstanceID,
+		name, kind, version, source, sha, risk, nullableUUID(job.RequestedBy), job.ID, len(files))
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM addon_package_files WHERE package_id=?1 AND instance_id=?2`, packageID, job.InstanceID); err != nil {
+		return err
+	}
+	for _, file := range files {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO addon_package_files(package_id,instance_id,path,sha256,size,entrypoint)
+			VALUES(?1,?2,?3,?4,?5,true)`, packageID, job.InstanceID, file.path, file.sha, file.size); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func validateServerExtensionManagedPath(kind, value string) error {
+	cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(value))))
+	if cleaned != value || filepath.IsAbs(filepath.FromSlash(cleaned)) || strings.HasPrefix(cleaned, "../") || strings.Contains(cleaned, `\`) {
+		return errors.New("invalid server extension path")
+	}
+	lower := strings.ToLower(cleaned)
+	if kind == "metamod" && (lower == "left4dead2/addons/metamod.vdf" || strings.HasPrefix(lower, "left4dead2/addons/metamod/")) {
+		return nil
+	}
+	if kind == "sourcemod" && (strings.HasPrefix(lower, "left4dead2/cfg/sourcemod/") ||
+		(strings.HasPrefix(lower, "left4dead2/addons/sourcemod/") && !strings.EqualFold(lower, "left4dead2/addons/sourcemod/configs/admins_simple.ini"))) {
+		return nil
+	}
+	return errors.New("server extension path is outside its fixed component directory")
 }
 
 func (s *Store) applySmartPluginInstallResult(ctx context.Context, job domain.Job) error {

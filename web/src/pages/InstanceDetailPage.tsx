@@ -786,10 +786,12 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
   const [editor, setEditor] = useState<FileEditorTarget | null>(null);
   const toggle = useMutation({ mutationFn: (liveAcknowledged: boolean) => api.instanceAction(instanceId, "toggle_package", { package_id: item.id, enabled: !item.enabled, acknowledge_live_changes: liveAcknowledged, acknowledge_restart_required: liveAcknowledged }), onSuccess: () => { toast.push(item.enabled ? "组件停用任务已提交" : "组件启用任务已提交"); void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages"] }); }, onError: (error) => toast.push(error.message, "error") });
   const toggleable = item.kind === "smart" || /\.(?:vpk|smx)$/i.test(item.path || "");
+  const serverComponent = item.kind === "sourcemod" || item.kind === "metamod";
   const rollbackable = item.kind !== "smart" && toggleable;
   const disablingBlocked = item.enabled && instance.status !== "stopped";
-  const deletable = toggleable && Boolean(item.sha256);
-  const smartDeleteBlocked = item.kind === "smart" && instance.status !== "stopped";
+  const deletable = serverComponent || (toggleable && Boolean(item.sha256));
+  const componentInventoryMissing = serverComponent && (!item.sha256 || !item.file_count);
+  const managedDeleteBlocked = (item.kind === "smart" || serverComponent) && instance.status !== "stopped";
   const remove = useMutation({
     mutationFn: () => api.deletePackage(instanceId, item.id),
     onSuccess: () => {
@@ -835,8 +837,9 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
           }
           toggle.mutate(false);
         }} aria-label={`${item.enabled ? "停用" : "启用"} ${item.name}`}><span /></button> : <span className="package-installed">{item.enabled ? "已启用" : "已停用"}</span>}
-        {deletable && canDelete && <button className="package-delete-button" disabled={remove.isPending || toggle.isPending || smartDeleteBlocked} aria-label={`删除 ${item.name}`} title={smartDeleteBlocked ? "请先停止实例，再删除智能识别插件" : "删除组件"} onClick={() => {
-          if (window.confirm(`确认永久删除 ${item.name}？文件及面板中的版本历史会一并移除；运行中的服务器可能需要重启后才能完全卸载。`)) remove.mutate();
+        {deletable && canDelete && <button className="package-delete-button" disabled={remove.isPending || toggle.isPending || managedDeleteBlocked || componentInventoryMissing} aria-label={`删除 ${item.name}`} title={componentInventoryMissing ? "请先重新安装一次该组件，以建立安全卸载清单" : managedDeleteBlocked ? "请先停止实例，再删除该组件" : "删除组件"} onClick={() => {
+          const componentNotice = item.kind === "sourcemod" ? "admins_simple.ini 和由其他插件包纳管的文件会保留。" : item.kind === "metamod" ? "如果仍安装 SourceMod，必须先删除 SourceMod。" : "";
+          if (window.confirm(`确认永久删除 ${item.name}？${componentNotice}文件及面板中的版本历史会一并移除。`)) remove.mutate();
         }}><Trash2 size={14} /></button>}
       </div>
       {canRollback && rollbackable && versions.data?.items.length ? <div className="package-version-rollback">

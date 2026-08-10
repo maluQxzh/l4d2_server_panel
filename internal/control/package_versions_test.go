@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
@@ -291,5 +292,149 @@ func TestSmartPluginDetailsAndFileEditProjection(t *testing.T) {
 		if file.Path == "left4dead2/cfg/sourcemod/sample.cfg" && (file.SHA256 != newSHA || file.Size != 15) {
 			t.Fatalf("file edit was not projected: %#v", file)
 		}
+	}
+}
+
+func TestServerExtensionProjectionKeepsOneManagedComponentRecord(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "server-extension.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online');
+		INSERT INTO instances(id,node_id,name,status,path,port,config) VALUES('instance','node','Server','stopped','C:\server',27015,'{}');
+		INSERT INTO addon_packages(id,instance_id,name,kind,source,sha256,path,enabled,risk)
+		VALUES('11111111-1111-4111-8111-111111111111','instance','Old SourceMod','sourcemod','upload',?1,'',1,'normal'),
+		('22222222-2222-4222-8222-222222222222','instance','Duplicate SourceMod','sourcemod','upload',?1,'',1,'normal')`, strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+	packageID := "11111111-1111-4111-8111-111111111111"
+	first := domain.Job{ID: "33333333-3333-4333-8333-333333333333", InstanceID: "instance", Type: "install_mod", Status: domain.JobSucceeded,
+		Payload: map[string]any{"kind": "sourcemod", "package_id": packageID, "source": "sourcemod.zip"},
+		Result: map[string]any{"kind": "sourcemod", "package_id": packageID, "version": "1.12", "source": "sourcemod.zip", "sha256": strings.Repeat("b", 64),
+			"managed_files": []any{
+				map[string]any{"path": "left4dead2/addons/sourcemod/bin/sourcemod_mm.dll", "sha256": strings.Repeat("c", 64), "size": float64(100)},
+				map[string]any{"path": "left4dead2/addons/sourcemod/plugins/basecommands.smx", "sha256": strings.Repeat("d", 64), "size": float64(200)},
+			}},
+	}
+	if err := store.ApplyJobResult(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ListPackages(ctx, "instance")
+	if err != nil || len(items) != 1 || items[0].ID != packageID || items[0].Name != "SourceMod" || items[0].FileCount != 2 {
+		t.Fatalf("unexpected projected SourceMod component: %#v, err %v", items, err)
+	}
+	_, files, err := store.PackageDetails(ctx, "instance", packageID)
+	if err != nil || len(files) != 2 {
+		t.Fatalf("unexpected SourceMod inventory: %#v, err %v", files, err)
+	}
+
+	second := first
+	second.ID = "44444444-4444-4444-8444-444444444444"
+	second.Result = map[string]any{"kind": "sourcemod", "package_id": packageID, "version": "1.13", "source": "sourcemod-new.zip", "sha256": strings.Repeat("e", 64),
+		"managed_files": []any{map[string]any{
+			"path": "left4dead2/addons/sourcemod/bin/sourcemod_mm.dll", "sha256": strings.Repeat("f", 64), "size": float64(120),
+		}},
+	}
+	if err := store.ApplyJobResult(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	items, err = store.ListPackages(ctx, "instance")
+	if err != nil || len(items) != 1 || items[0].ID != packageID || items[0].Version != "1.13" || items[0].FileCount != 1 {
+		t.Fatalf("SourceMod update was not canonicalized: %#v, err %v", items, err)
+	}
+	_, files, err = store.PackageDetails(ctx, "instance", packageID)
+	if err != nil || len(files) != 1 || files[0].SHA256 != strings.Repeat("f", 64) {
+		t.Fatalf("SourceMod inventory was not replaced: %#v, err %v", files, err)
+	}
+}
+
+func TestServerExtensionProjectionRejectsProtectedAdminsFile(t *testing.T) {
+	if err := validateServerExtensionManagedPath("sourcemod", "left4dead2/cfg/sourcemod/sourcemod.cfg"); err != nil {
+		t.Fatalf("fixed SourceMod cfg path was rejected: %v", err)
+	}
+	job := domain.Job{ID: "11111111-1111-4111-8111-111111111111", InstanceID: "instance", Result: map[string]any{
+		"kind": "sourcemod", "sha256": strings.Repeat("a", 64),
+		"managed_files": []any{map[string]any{
+			"path": "left4dead2/addons/sourcemod/configs/admins_simple.ini", "sha256": strings.Repeat("b", 64), "size": float64(1),
+		}},
+	}}
+	store := &Store{}
+	if err := store.applyServerExtensionInstallResult(context.Background(), job, "sourcemod"); err == nil {
+		t.Fatal("protected admins_simple.ini was accepted into the managed deletion inventory")
+	}
+}
+
+func TestServerExtensionDeleteRequiresInventoryAndPreservesDependencyOrder(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "server-extension-delete.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := store.BootstrapOwner(ctx, "owner", "Owner", "password-hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const instanceID = "11111111-1111-4111-8111-111111111111"
+	const sourceModID = "22222222-2222-4222-8222-222222222222"
+	const metamodID = "33333333-3333-4333-8333-333333333333"
+	sha := strings.Repeat("a", 64)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online');
+		INSERT INTO instances(id,node_id,name,status,path,port,config) VALUES(?1,'node','Server','stopped','C:\server',27015,'{}');
+		INSERT INTO addon_packages(id,instance_id,name,kind,source,sha256,path,enabled,risk,file_count) VALUES
+		(?2,?1,'SourceMod','sourcemod','upload',?4,'',false,'normal',0),
+		(?3,?1,'Metamod:Source','metamod','upload',?4,'',true,'normal',1);
+		INSERT INTO addon_package_files(package_id,instance_id,path,sha256,size,entrypoint)
+		VALUES(?3,?1,'left4dead2/addons/metamod.vdf',?4,10,true)`, instanceID, sourceModID, metamodID, sha); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(Config{MasterKey: []byte("0123456789abcdef0123456789abcdef")}, store, nil)
+	defer server.Close()
+	requestDelete := func(packageID string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodDelete, "/api/v1/instances/"+instanceID+"/packages/"+packageID, nil)
+		route := chi.NewRouteContext()
+		route.URLParams.Add("instanceID", instanceID)
+		route.URLParams.Add("packageID", packageID)
+		request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, route))
+		request = request.WithContext(context.WithValue(request.Context(), principalContextKey, Principal{User: owner}))
+		response := httptest.NewRecorder()
+		server.handleDeletePackage(response, request)
+		return response
+	}
+
+	response := requestDelete(sourceModID)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "component_inventory_required") {
+		t.Fatalf("legacy SourceMod delete returned %d: %s", response.Code, response.Body.String())
+	}
+	response = requestDelete(metamodID)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "sourcemod_depends_on_metamod") {
+		t.Fatalf("Metamod dependency delete returned %d: %s", response.Code, response.Body.String())
+	}
+
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM addon_packages WHERE id=?1;
+		INSERT INTO addon_packages(id,instance_id,name,kind,source,sha256,path,enabled,risk,file_count)
+		VALUES(?1,?2,'SourceMod','sourcemod','upload',?3,'',true,'normal',1);
+		INSERT INTO addon_package_files(package_id,instance_id,path,sha256,size,entrypoint)
+		VALUES(?1,?2,'left4dead2/addons/sourcemod/bin/sourcemod_mm.dll',?3,20,true)`, sourceModID, instanceID, sha); err != nil {
+		t.Fatal(err)
+	}
+	response = requestDelete(sourceModID)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("managed SourceMod delete returned %d: %s", response.Code, response.Body.String())
+	}
+	var payload string
+	if err := store.db.QueryRowContext(ctx, `SELECT payload FROM jobs WHERE instance_id=?1 AND type='delete_package' ORDER BY created_at DESC LIMIT 1`, instanceID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, "left4dead2/addons/sourcemod/bin/sourcemod_mm.dll") || strings.Contains(payload, "admins_simple.ini") {
+		t.Fatalf("unexpected SourceMod deletion payload: %s", payload)
 	}
 }

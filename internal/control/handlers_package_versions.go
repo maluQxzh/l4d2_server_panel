@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
 func (s *Server) handlePackageVersions(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +52,19 @@ func (s *Server) handleDeletePackage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "package_hash_missing", "the package has no verified SHA-256 and cannot be deleted safely")
 		return
 	}
-	if !strings.EqualFold(pkg.Kind, "smart") {
+	component := strings.EqualFold(pkg.Kind, "sourcemod") || strings.EqualFold(pkg.Kind, "metamod")
+	var componentFiles []domain.AddonPackageFile
+	if component {
+		_, componentFiles, err = s.store.PackageDetails(r.Context(), instanceID, packageID)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		if len(componentFiles) == 0 {
+			writeError(w, http.StatusConflict, "component_inventory_required", "该整套组件是旧版记录，请先重新安装一次以建立安全卸载清单")
+			return
+		}
+	} else if !strings.EqualFold(pkg.Kind, "smart") {
 		if err := validateDeletablePackagePath(pkg.Kind, path); err != nil {
 			writeError(w, http.StatusBadRequest, "unsupported_package_delete", err.Error())
 			return
@@ -62,9 +75,20 @@ func (s *Server) handleDeletePackage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	if strings.EqualFold(pkg.Kind, "smart") && instance.Status != "stopped" {
-		writeError(w, http.StatusConflict, "instance_must_be_stopped", "智能插件整包删除前必须先停止实例")
+	if (strings.EqualFold(pkg.Kind, "smart") || component) && instance.Status != "stopped" {
+		writeError(w, http.StatusConflict, "instance_must_be_stopped", "智能插件或服务端整套组件删除前必须先停止实例")
 		return
+	}
+	if strings.EqualFold(pkg.Kind, "metamod") {
+		sourceModInstalled, dependencyErr := s.store.HasPackageKind(r.Context(), instanceID, "sourcemod")
+		if dependencyErr != nil {
+			s.fail(w, dependencyErr)
+			return
+		}
+		if sourceModInstalled {
+			writeError(w, http.StatusConflict, "sourcemod_depends_on_metamod", "请先删除 SourceMod，再删除 Metamod:Source")
+			return
+		}
 	}
 	if strings.EqualFold(pkg.Kind, "smart") && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "smart_plugin_archive_v1") {
 		writeError(w, http.StatusConflict, "agent_upgrade_required", "target Agent does not support smart plugin deletion")
@@ -74,9 +98,20 @@ func (s *Server) handleDeletePackage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "package_delete_not_supported", "target node Agent does not support managed package deletion")
 		return
 	}
+	if component && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "component_package_delete_v1") {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "目标 Agent 尚不支持整套服务端组件删除")
+		return
+	}
 	payload := map[string]any{
 		"package_id": packageID, "kind": pkg.Kind, "package_path": path,
 		"expected_sha256": strings.ToLower(pkg.SHA256), "snapshot_paths": snapshots,
+	}
+	if component {
+		managedFiles := make([]map[string]any, 0, len(componentFiles))
+		for _, file := range componentFiles {
+			managedFiles = append(managedFiles, map[string]any{"path": file.Path, "sha256": file.SHA256, "size": file.Size})
+		}
+		payload["managed_files"] = managedFiles
 	}
 	job, reused, err := s.store.QueueInstanceJobWithFingerprint(r.Context(), instanceID, "delete_package", payload,
 		principal.User.ID, idempotencyKey, requestFingerprint)

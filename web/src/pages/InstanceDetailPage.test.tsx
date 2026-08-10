@@ -214,10 +214,12 @@ describe("服务端组件依赖", () => {
 
   it("固定核心组件排序并从详情查看和编辑智能插件文件", async () => {
     const smart = { id: "smart", name: "Autoscar", kind: "smart" as const, enabled: true, sha256: "a".repeat(64), file_count: 2, installed_at: "2026-08-04T00:00:00Z" };
+	const remove = vi.spyOn(api, "deletePackage").mockResolvedValue({ job_id: "delete-component" });
+	vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.spyOn(api, "packages").mockResolvedValue({ items: [
       smart,
-      { id: "sm", name: "SourceMod", kind: "sourcemod", enabled: true, installed_at: "2026-08-02T00:00:00Z" },
-      { id: "mm", name: "Metamod:Source", kind: "metamod", enabled: true, installed_at: "2026-08-01T00:00:00Z" },
+      { id: "sm", name: "SourceMod", kind: "sourcemod", enabled: true, sha256: "d".repeat(64), file_count: 120, installed_at: "2026-08-02T00:00:00Z" },
+      { id: "mm", name: "Metamod:Source", kind: "metamod", enabled: true, sha256: "e".repeat(64), file_count: 8, installed_at: "2026-08-01T00:00:00Z" },
     ] });
     vi.spyOn(api, "packageDetails").mockResolvedValue({ package: smart, files: [
       { package_id: "smart", instance_id: instance.id, path: "left4dead2/cfg/sourcemod/autoscar.cfg", sha256: "b".repeat(64), size: 12, entrypoint: false, editable: true },
@@ -234,6 +236,11 @@ describe("服务端组件依赖", () => {
     expect(screen.getAllByRole("button", { name: /^查看 .* 详情$/ }).map((button) => button.getAttribute("aria-label"))).toEqual([
       "查看 Metamod:Source 详情", "查看 SourceMod 详情", "查看 Autoscar 详情",
     ]);
+	expect(screen.getByRole("button", { name: "删除 Metamod:Source" })).toBeEnabled();
+	expect(screen.getByRole("button", { name: "删除 SourceMod" })).toBeEnabled();
+	fireEvent.click(screen.getByRole("button", { name: "删除 SourceMod" }));
+	await waitFor(() => expect(remove).toHaveBeenCalledWith(instance.id, "sm"));
+	expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("admins_simple.ini"));
 
     fireEvent.click(screen.getByRole("button", { name: "查看 Autoscar 详情" }));
     expect(await screen.findByText("left4dead2/cfg/sourcemod/autoscar.cfg")).toBeVisible();

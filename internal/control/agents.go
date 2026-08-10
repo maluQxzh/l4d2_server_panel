@@ -560,6 +560,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, legacyQQFlashPackageSupported := client.capabilities["qq_flash_package_v1"]
 		_, qqFlashPackageSupported := client.capabilities["qq_flash_vpk_packages_v2"]
 		_, packageDeleteSupported := client.capabilities["package_delete_v1"]
+		_, componentPackageDeleteSupported := client.capabilities["component_package_delete_v1"]
 		_, packageScanSupported := client.capabilities["package_scan_v1"]
 		_, smartPluginArchiveSupported := client.capabilities["smart_plugin_archive_v1"]
 		_, smartPluginFileEditSupported := client.capabilities["smart_plugin_file_edit_v1"]
@@ -588,6 +589,9 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 			continue
 		}
 		if job.Type == "delete_package" && !packageDeleteSupported {
+			continue
+		}
+		if job.Type == "delete_package" && (strings.EqualFold(stringFromAny(job.Payload["kind"]), "sourcemod") || strings.EqualFold(stringFromAny(job.Payload["kind"]), "metamod")) && !componentPackageDeleteSupported {
 			continue
 		}
 		if job.Type == "scan_packages" && !packageScanSupported {
