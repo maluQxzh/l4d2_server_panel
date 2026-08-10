@@ -22,6 +22,7 @@ import (
 const maxPackageDownload = int64(512 << 20)
 
 const packageDownloadIdleTimeout = 30 * time.Second
+const packageDownloadTotalTimeout = 10 * time.Minute
 
 var carrierGradeNAT = netip.MustParsePrefix("100.64.0.0/10")
 var embeddedHTTPSURL = regexp.MustCompile(`https?://[^\s"'<>]+`)
@@ -75,6 +76,8 @@ func downloadPackageFromSources(ctx context.Context, sources []string, destinati
 			if index > 0 {
 				if mirror {
 					progress(10, "retrying official package through verified GitHub mirror "+host)
+				} else if host == "github.com" {
+					progress(10, "retrying official package from GitHub")
 				} else {
 					progress(10, "retrying official package from trusted AlliedModders fallback")
 				}
@@ -135,7 +138,7 @@ func downloadHTTPS(ctx context.Context, rawURL, destination string, validateURL 
 			return nil, errors.New("download host resolves only to blocked network addresses")
 		},
 	}
-	client := &http.Client{Transport: transport, Timeout: 20 * time.Minute, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	client := &http.Client{Transport: transport, Timeout: packageDownloadTotalTimeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) > 3 {
 			return errors.New("download exceeded three redirects")
 		}

@@ -1821,9 +1821,12 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 		if err := validateOfficialAssetURL(resolved.URL); err != nil {
 			return nil, err
 		}
-		source, official, officialVersion = resolved.URL, true, resolved.Version
-		officialFallbackURLs = append(officialFallbackURLs, resolved.FallbackURLs...)
-		officialFallbackURLs = append(officialFallbackURLs, resolved.MirrorURLs...)
+		orderedSources := officialPackageDownloadSources(resolved)
+		if len(orderedSources) == 0 {
+			return nil, errors.New("official package resolver returned no download sources")
+		}
+		source, official, officialVersion = orderedSources[0], true, resolved.Version
+		officialFallbackURLs = append(officialFallbackURLs, orderedSources[1:]...)
 		officialExpectedSHA256 = resolved.ExpectedSHA256
 		officialExpectedSize = resolved.ExpectedSize
 	}

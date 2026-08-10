@@ -37,6 +37,7 @@ type OfficialPackage struct {
 	URL            string
 	FallbackURLs   []string
 	MirrorURLs     []string
+	PreferMirrors  bool
 	ExpectedSHA256 string
 	ExpectedSize   int64
 	Version        string
@@ -80,7 +81,28 @@ func ResolveOfficialPackage(ctx context.Context, kind string) (OfficialPackage, 
 	if err != nil {
 		return OfficialPackage{}, err
 	}
-	return addVerifiedGitHubMirrors(ctx, resolved, newRestrictedHTTPClient(githubAPIHosts(), 20*time.Second, 0)), nil
+	integrityResult := make(chan OfficialPackage, 1)
+	go func() {
+		integrityResult <- addVerifiedGitHubMirrors(ctx, resolved, newRestrictedHTTPClient(githubAPIHosts(), 20*time.Second, 0))
+	}()
+	preferMirrors := shouldPreferOfficialPackageMirrors(ctx, newRestrictedHTTPClient(publicIPCountryHosts(), 4*time.Second, 0))
+	resolved = <-integrityResult
+	resolved.PreferMirrors = preferMirrors && len(resolved.MirrorURLs) > 0
+	return resolved, nil
+}
+
+func officialPackageDownloadSources(resolved OfficialPackage) []string {
+	capacity := 1 + len(resolved.FallbackURLs) + len(resolved.MirrorURLs)
+	result := make([]string, 0, capacity)
+	if resolved.PreferMirrors {
+		result = append(result, resolved.MirrorURLs...)
+	}
+	result = append(result, resolved.URL)
+	result = append(result, resolved.FallbackURLs...)
+	if !resolved.PreferMirrors {
+		result = append(result, resolved.MirrorURLs...)
+	}
+	return result
 }
 
 func addVerifiedGitHubMirrors(ctx context.Context, resolved OfficialPackage, client *http.Client) OfficialPackage {
