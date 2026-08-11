@@ -450,10 +450,10 @@ func validateServerExtensionManagedPath(kind, value string) error {
 		return errors.New("invalid server extension path")
 	}
 	lower := strings.ToLower(cleaned)
-	if kind == "metamod" && (lower == "left4dead2/addons/metamod.vdf" || strings.HasPrefix(lower, "left4dead2/addons/metamod/")) {
+	if kind == "metamod" && (lower == "left4dead2/addons/metamod.vdf" || lower == "left4dead2/addons/metamod_x64.vdf" || strings.HasPrefix(lower, "left4dead2/addons/metamod/")) {
 		return nil
 	}
-	if kind == "sourcemod" && (strings.HasPrefix(lower, "left4dead2/cfg/sourcemod/") ||
+	if kind == "sourcemod" && (lower == "left4dead2/addons/metamod/sourcemod.vdf" || strings.HasPrefix(lower, "left4dead2/cfg/sourcemod/") ||
 		(strings.HasPrefix(lower, "left4dead2/addons/sourcemod/") && !strings.EqualFold(lower, "left4dead2/addons/sourcemod/configs/admins_simple.ini"))) {
 		return nil
 	}

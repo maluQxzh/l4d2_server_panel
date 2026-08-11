@@ -228,6 +228,7 @@ func TestSourceModArchivePreservesAdminsSimpleAndRejectsOtherPackageTargets(t *t
 	}
 	writer := zip.NewWriter(file)
 	for name, content := range map[string]string{
+		"addons/metamod/sourcemod.vdf":               "SourceMod loader",
 		"addons/sourcemod/configs/admins_simple.ini": "archive admins",
 		"addons/sourcemod/bin/sourcemod.logic.dll":   "core binary",
 		"cfg/sourcemod/sourcemod.cfg":                "component config",
@@ -261,10 +262,11 @@ func TestSourceModArchivePreservesAdminsSimpleAndRejectsOtherPackageTargets(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 3 || len(preserved) != 1 || preserved[0] != sourceModAdminsSimplePath {
+	if len(files) != 4 || len(preserved) != 1 || preserved[0] != sourceModAdminsSimplePath {
 		t.Fatalf("unexpected install inventory: files=%#v preserved=%#v", files, preserved)
 	}
 	assertFileContent(t, adminsPath, "operator admins")
+	assertFileContent(t, filepath.Join(instancePath, "left4dead2", "addons", "metamod", "sourcemod.vdf"), "SourceMod loader")
 	assertFileContent(t, filepath.Join(instancePath, "left4dead2", "addons", "sourcemod", "bin", "sourcemod.logic.dll"), "core binary")
 	assertFileContent(t, filepath.Join(instancePath, "left4dead2", "cfg", "sourcemod", "sourcemod.cfg"), "component config")
 
@@ -290,6 +292,41 @@ func TestSourceModArchivePreservesAdminsSimpleAndRejectsOtherPackageTargets(t *t
 	})
 	if err == nil || !strings.Contains(err.Error(), "managed by another package") {
 		t.Fatalf("cross-package overwrite was not rejected: %v", err)
+	}
+}
+
+func TestMetamodArchiveAllowsOfficialRootLoaders(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "metamod.zip")
+	file, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(file)
+	for _, name := range []string{"addons/metamod.vdf", "addons/metamod_x64.vdf", "addons/metamod/bin/server.dll"} {
+		entry, createErr := writer.Create(name)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, writeErr := entry.Write([]byte(name)); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := t.TempDir()
+	_, _, err = installPackageArchive(instancePath, archivePath, t.TempDir(), packageArchiveInstallOptions{
+		AllowNative:    true,
+		ValidateTarget: func(value string) error { return validateServerExtensionInstallTarget("metamod", value) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range []string{"left4dead2/addons/metamod.vdf", "left4dead2/addons/metamod_x64.vdf", "left4dead2/addons/metamod/bin/server.dll"} {
+		assertFileContent(t, filepath.Join(instancePath, filepath.FromSlash(relative)), strings.TrimPrefix(relative, "left4dead2/"))
 	}
 }
 
@@ -325,6 +362,94 @@ func TestServerExtensionArchiveRejectsOutsideComponentDirectoryBeforeWrite(t *te
 	}
 	if _, statErr := os.Stat(filepath.Join(instancePath, "left4dead2", "addons", "sourcemod", "bin", "sourcemod.logic.dll")); !os.IsNotExist(statErr) {
 		t.Fatalf("archive preflight wrote files before rejecting an invalid target: %v", statErr)
+	}
+}
+
+func TestServerExtensionManagedTargetsUseFixedComponentDirectories(t *testing.T) {
+	for _, candidate := range []struct{ kind, path string }{
+		{"metamod", "left4dead2/addons/metamod_x64.vdf"},
+		{"metamod", "left4dead2/addons/metamod/bin/server.dll"},
+		{"sourcemod", "left4dead2/addons/metamod/sourcemod.vdf"},
+		{"sourcemod", "left4dead2/cfg/sourcemod/sourcemod.cfg"},
+	} {
+		if err := validateServerExtensionManagedTarget(candidate.kind, candidate.path); err != nil {
+			t.Errorf("official component target was rejected: %#v: %v", candidate, err)
+		}
+	}
+	for _, candidate := range []struct{ kind, path string }{
+		{"metamod", "left4dead2/cfg/server.cfg"},
+		{"sourcemod", "left4dead2/addons/custom-component/file.txt"},
+		{"sourcemod", sourceModAdminsSimplePath},
+	} {
+		if err := validateServerExtensionManagedTarget(candidate.kind, candidate.path); err == nil {
+			t.Errorf("unsafe or protected package target was accepted: %#v", candidate)
+		}
+	}
+}
+
+func TestOfficialWindowsComponentArchiveFixtures(t *testing.T) {
+	fixtureDir := strings.TrimSpace(os.Getenv("L4D2PANEL_COMPONENT_FIXTURE_DIR"))
+	if fixtureDir == "" {
+		t.Skip("set L4D2PANEL_COMPONENT_FIXTURE_DIR to validate downloaded official component archives")
+	}
+	for _, fixture := range []struct{ kind, name string }{
+		{"metamod", "mmsource-1.12.0-git1225-windows.zip"},
+		{"sourcemod", "sourcemod-1.12.0-git7246-windows.zip"},
+	} {
+		t.Run(fixture.kind, func(t *testing.T) {
+			archivePath := filepath.Join(fixtureDir, fixture.name)
+			archive, err := zip.OpenReader(archivePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer archive.Close()
+			files := 0
+			for _, entry := range archive.File {
+				if entry.FileInfo().IsDir() {
+					continue
+				}
+				target, err := packageDestination(entry.Name, true)
+				if err != nil {
+					t.Fatalf("official entry %q has no safe package destination: %v", entry.Name, err)
+				}
+				if err := validateServerExtensionInstallTarget(fixture.kind, target); err != nil {
+					t.Fatalf("official entry %q maps to rejected target %q: %v", entry.Name, target, err)
+				}
+				files++
+			}
+			if files == 0 {
+				t.Fatal("official component fixture contains no files")
+			}
+
+			instancePath := t.TempDir()
+			options := packageArchiveInstallOptions{
+				AllowNative:    true,
+				ValidateTarget: func(value string) error { return validateServerExtensionInstallTarget(fixture.kind, value) },
+			}
+			if fixture.kind == "sourcemod" {
+				options.PreserveExisting = map[string]bool{sourceModAdminsSimplePath: true}
+				adminsPath := filepath.Join(instancePath, filepath.FromSlash(sourceModAdminsSimplePath))
+				if err := os.MkdirAll(filepath.Dir(adminsPath), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(adminsPath, []byte("fixture admins"), 0o640); err != nil {
+					t.Fatal(err)
+				}
+			}
+			installed, preserved, err := installPackageArchive(instancePath, archivePath, t.TempDir(), options)
+			if err != nil {
+				t.Fatalf("install official %s fixture: %v", fixture.kind, err)
+			}
+			if len(installed) != files {
+				t.Fatalf("installed %d files, archive contains %d", len(installed), files)
+			}
+			if fixture.kind == "sourcemod" {
+				if len(preserved) != 1 || preserved[0] != sourceModAdminsSimplePath {
+					t.Fatalf("unexpected protected SourceMod files: %#v", preserved)
+				}
+				assertFileContent(t, filepath.Join(instancePath, filepath.FromSlash(sourceModAdminsSimplePath)), "fixture admins")
+			}
+		})
 	}
 }
 

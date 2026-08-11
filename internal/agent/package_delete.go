@@ -163,11 +163,11 @@ func validateServerExtensionInstallTarget(kind, value string) error {
 	lower := strings.ToLower(cleaned)
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "metamod":
-		if lower == "left4dead2/addons/metamod.vdf" || strings.HasPrefix(lower, "left4dead2/addons/metamod/") {
+		if lower == "left4dead2/addons/metamod.vdf" || lower == "left4dead2/addons/metamod_x64.vdf" || strings.HasPrefix(lower, "left4dead2/addons/metamod/") {
 			return nil
 		}
 	case "sourcemod":
-		if strings.HasPrefix(lower, "left4dead2/addons/sourcemod/") || strings.HasPrefix(lower, "left4dead2/cfg/sourcemod/") {
+		if lower == "left4dead2/addons/metamod/sourcemod.vdf" || strings.HasPrefix(lower, "left4dead2/addons/sourcemod/") || strings.HasPrefix(lower, "left4dead2/cfg/sourcemod/") {
 			return nil
 		}
 	}

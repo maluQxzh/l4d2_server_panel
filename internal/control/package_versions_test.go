@@ -354,8 +354,14 @@ func TestServerExtensionProjectionKeepsOneManagedComponentRecord(t *testing.T) {
 }
 
 func TestServerExtensionProjectionRejectsProtectedAdminsFile(t *testing.T) {
-	if err := validateServerExtensionManagedPath("sourcemod", "left4dead2/cfg/sourcemod/sourcemod.cfg"); err != nil {
-		t.Fatalf("fixed SourceMod cfg path was rejected: %v", err)
+	for _, candidate := range []struct{ kind, path string }{
+		{"metamod", "left4dead2/addons/metamod_x64.vdf"},
+		{"sourcemod", "left4dead2/addons/metamod/sourcemod.vdf"},
+		{"sourcemod", "left4dead2/cfg/sourcemod/sourcemod.cfg"},
+	} {
+		if err := validateServerExtensionManagedPath(candidate.kind, candidate.path); err != nil {
+			t.Fatalf("official component path was rejected: %#v: %v", candidate, err)
+		}
 	}
 	job := domain.Job{ID: "11111111-1111-4111-8111-111111111111", InstanceID: "instance", Result: map[string]any{
 		"kind": "sourcemod", "sha256": strings.Repeat("a", 64),
