@@ -12,6 +12,7 @@ require (
 	github.com/pquerna/otp v1.5.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/shirou/gopsutil/v4 v4.25.5
+	github.com/ulikunitz/xz v0.5.15
 	golang.org/x/crypto v0.46.0
 	golang.org/x/image v0.44.0
 	golang.org/x/sys v0.46.0
@@ -38,7 +39,6 @@ require (
 	github.com/stangelandcl/ppmd v0.1.1 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
-	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
 	golang.org/x/text v0.40.0 // indirect

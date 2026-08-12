@@ -180,6 +180,36 @@ describe("游戏实例配置中的端口", () => {
     await waitFor(() => expect(remove).toHaveBeenCalledWith(instance.id, "backup-id", expect.any(String)));
     expect(await screen.findByText("备份删除任务已提交")).toBeVisible();
   });
+
+  it("创建插件备份时可选择精简路径布局", async () => {
+    vi.spyOn(api, "instance").mockResolvedValue(instance);
+    const backups = vi.spyOn(api, "backups").mockResolvedValue({ items: [{
+      id: "plugin-backup-id",
+      name: "plugin-20260812T120000Z-job.7z",
+      kind: "plugin_preserve",
+      platform: "linux/amd64",
+      size: 2048,
+      checksum: "b".repeat(64),
+      created_at: "2026-08-12T12:00:00Z",
+    }] });
+    const create = vi.spyOn(api, "createPluginBackup").mockResolvedValue({ job_id: "plugin-backup-job" });
+    const router = createMemoryRouter(
+      [{ path: "/instances/:instanceId", element: <InstanceDetailPage /> }],
+      { initialEntries: [`/instances/${instance.id}?tab=backups`] },
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><RealtimeProvider enabled={false}><ToastProvider><RouterProvider router={router} /></ToastProvider></RealtimeProvider></QueryClientProvider>);
+
+    expect(await screen.findByRole("heading", { name: "插件备份" })).toBeVisible();
+    await waitFor(() => expect(backups).toHaveBeenCalledWith(instance.id));
+    expect((await screen.findByText("plugin-20260812T120000Z-job.7z")).closest(".backup-row")).toHaveTextContent("保留完整游戏路径");
+    fireEvent.click(screen.getByRole("button", { name: "备份插件" }));
+    fireEvent.click(screen.getByRole("radio", { name: /不保留原路径/ }));
+    fireEvent.click(screen.getByRole("button", { name: "开始备份" }));
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith(instance.id, "compact"));
+    expect(await screen.findByText("插件备份任务已提交")).toBeVisible();
+  });
 });
 
 describe("实例文件管理", () => {

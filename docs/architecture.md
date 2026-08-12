@@ -97,7 +97,7 @@ SourceMod 安装具有强制的 Metamod:Source 前置依赖。Control 只在该�
 <agent-data-dir>/
   registry.json                       # Agent 实例注册资料
   journal/                            # 本地任务幂等日志
-  backups/<instance-id>/*.zip         # 节点本地备份
+  backups/<instance-id>/*.{zip,7z}    # 节点本地实例/插件备份
   package-versions/...                # 节点本地 VPK/SMX 历史快照
   maps/registry.json                  # 地图对象、副本与实例链接证明
   maps/objects/...                    # 默认卷的只读内容寻址 VPK
@@ -107,6 +107,8 @@ SourceMod 安装具有强制的 Metamod:Source 前置依赖。Control 只在该�
 ```
 
 常规手动/计划备份使用 v4 精简清单，只包含 `cfg`、`left4dead2/cfg`、两套 `addons/sourcemod/configs` 配置树和 Control 中仍有记录且来源不是本机扫描的精确包文件；Control 在每次排队时动态发送这些相对路径，Agent 再次规范化并要求文件实际存在。地图 VPK、本机手工文件、日志、SourceMod 运行数据、游戏本体和可能含密码的 `left4dead2/cfg/l4d2panel.cfg` 不入包。清单仍记录平台、实例 ID、无秘密启动快照、地图 ID/聚合 SHA-256/名称/BSP 引用以及逐文件 SHA-256。精简恢复精确同步配置树并覆盖清单中的包文件，但不删除目标实例上的其他 addons。恢复、更新和卸载等破坏性事务前由 Agent 内部创建的 v3 检查点仍包含四个完整可移植目录，以支撑失败回滚并按最多 3 个保留。默认新实例有每日 04:00 计划，保留 7 个日备份、4 个周备份；首次每日备份会按 ISO 周复制一份周备份。Control 在同一事务中投影日备份及新周副本，并按 Agent 返回的已清理路径删除过期元数据，因此日、周和检查点都能从备份列表下载或通过 `backups.delete` 排队永久删除；重放同一终态不会产生重复记录。
+
+插件备份是另一个仅由用户主动触发的 `plugin.backup` 写任务，要求 Agent 声明 `plugin_backup_7z_v1`。Control 从 `smart/plugin/smx/native` 插件记录及逐文件清单生成固定 payload，调用方只选择 `preserve` 或 `compact`，不能提交路径。Agent 对最多 1000 个插件、5000 个文件、单文件 512 MiB、总量 2 GiB 的清单逐项复核受限目标、no-follow 普通文件、大小和 SHA-256，并用内置 LZMA2 写入 7z；停用智能插件的入口从 Agent 私有状态目录读取，但归档名仍使用其正常目标路径。每个插件占一个经清理且消歧的顶层文件夹；`preserve` 保留 `left4dead2/...`，`compact` 去掉 `left4dead2/addons/sourcemod/` 或 `left4dead2/` 根前缀，保留 `plugins/gamedata/configs/cfg` 等结构。此类记录复用备份列表、分块下载与永久删除，但不进入定时保留轮换，也不能作为 restore 输入。
 
 恢复必须停服并先创建完整检查点。Agent 在隔离 staging 中验证格式版本、字段边界、条目边界、清单完整性和逐文件 SHA-256；解包、最终 overlay、extras 文件/空目录删除以及旧版遗留配置的回滚均使用句柄相对操作。带启动快照的归档恢复时，端口、回环地址及中心端 RCON 凭据继续取目标实例；带地图引用的归档先按地图 ID、再按聚合哈希匹配节点已有对象并恢复分配，缺失项只返回警告。若来源启动地图属于缺失对象，则保留目标实例当前启动地图。跨平台时 Agent 先按 Metamod → SourceMod 的依赖顺序安装、启动验证目标平台原生组件，再跳过来源平台二进制并应用可移植数据。成功结果把无秘密快照返回 Control 并做幂等投影。目录同步不是文件系统原子交换；任一步失败时 Agent 使用含地图引用的恢复前检查点，并同时恢复原 registry 与旧版遗留配置。恢复任务中的 Agent 本地归档定位符以部署主密钥加密持久化并只在派发时解封，任务/API/事件视图不返回备份、周副本或检查点路径。
 

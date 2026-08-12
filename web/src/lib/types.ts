@@ -458,6 +458,7 @@ export interface PackageVersionRecord {
 export interface BackupRecord {
   id: string;
   name: string;
+  kind?: string;
   size: number;
   platform?: string;
   checksum?: string;

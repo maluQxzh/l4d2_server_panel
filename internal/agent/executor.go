@@ -191,6 +191,8 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 		return e.importInstance(ctx, job, progress)
 	case "backup":
 		return e.backup(ctx, job, progress)
+	case "plugin.backup":
+		return e.pluginBackup(ctx, job, progress)
 	case "backup.delete":
 		return e.deleteBackup(job, progress)
 	case "restore":
@@ -269,7 +271,7 @@ func agentJobRequiresInstanceLock(action string, payload map[string]any) bool {
 
 func externalAgentJobAllowed(action string, payload map[string]any) bool {
 	switch action {
-	case "restart", "a2s.info", "a2s.players", "rcon.players", "list", "scan_packages", "inspect_plugin_archive", "logs.search", "logs.chunk", "backup", "backup.delete", "backup.chunk", "backup.upload.chunk", "backup.upload.abort", "check_update", "detach":
+	case "restart", "a2s.info", "a2s.players", "rcon.players", "list", "scan_packages", "inspect_plugin_archive", "logs.search", "logs.chunk", "backup", "plugin.backup", "backup.delete", "backup.chunk", "backup.upload.chunk", "backup.upload.abort", "check_update", "detach":
 		return true
 	case "file":
 		operation := strings.ToLower(strings.TrimSpace(payloadString(payload, "operation")))

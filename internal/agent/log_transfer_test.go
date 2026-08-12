@@ -98,6 +98,14 @@ func TestBackupChunkRequiresInstanceBoundaryAndChecksum(t *testing.T) {
 	if result["length"] != 5 || result["file_sha256"] != digest || result["backup_id"] != "backup-1" {
 		t.Fatalf("unexpected chunk result: %#v", result)
 	}
+	pluginArchive := filepath.Join(dir, "plugin-manual.7z")
+	if err := os.WriteFile(pluginArchive, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	job.Payload["archive"] = pluginArchive
+	if _, err := executor.backupChunk(context.Background(), job, transferTestProgress); err != nil {
+		t.Fatalf("plugin 7z download was rejected: %v", err)
+	}
 
 	outside := filepath.Join(data, "backups", "outside.zip")
 	if err := os.WriteFile(outside, content, 0o600); err != nil {

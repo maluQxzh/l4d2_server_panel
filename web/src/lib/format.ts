@@ -84,6 +84,7 @@ export const jobLabels: Record<string, string> = {
   update: "更新游戏",
   validate: "校验文件",
   backup: "创建备份",
+  "plugin.backup": "创建插件备份",
   "backup.delete": "永久删除备份",
   restore: "恢复备份",
   rcon: "执行 RCON",

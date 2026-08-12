@@ -504,7 +504,7 @@ test("RCON 玩家查询失败时显示节点返回的诊断", async ({ page }) =
 });
 
 test("实例控制台、玩家、配置、模组、插件、备份与计划任务", async ({ page }) => {
-  test.setTimeout(45_000);
+  test.setTimeout(60_000);
   await authenticated(page);
   const configWrites: Record<string, unknown>[] = [];
   let currentInstance = instance;
@@ -566,6 +566,11 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
     return json(route, { job_id: "job-package-scan" }, 202);
   });
   await page.route("**/api/v1/instances/instance-1/backups", (route) => json(route, { items: [] }));
+  let pluginBackupLayout = "";
+  await page.route("**/api/v1/instances/instance-1/plugin-backups", (route) => {
+    pluginBackupLayout = (route.request().postDataJSON() as { layout: string }).layout;
+    return json(route, { job_id: "job-plugin-backup" }, 202);
+  });
   await page.route("**/api/v1/instances/instance-1/schedules", (route) => json(route, { items: [{
     id: "schedule-1", name: "每周维护", cron: "0 4 * * 1", action: "restart", enabled: true,
     next_run_at: "2026-08-03T04:00:00Z",
@@ -719,6 +724,10 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
   await page.getByRole("button", { name: "备份" }).click();
   await page.getByRole("button", { name: "立即备份" }).click();
   await expect.poll(() => actions.some((item) => item.type === "backup")).toBeTruthy();
+  await page.getByRole("button", { name: "备份插件" }).click();
+  await page.getByRole("radio", { name: /不保留原路径/ }).click();
+  await page.getByRole("button", { name: "开始备份" }).click();
+  await expect.poll(() => pluginBackupLayout).toBe("compact");
 
   await page.getByRole("button", { name: "计划任务" }).click();
   await page.getByRole("button", { name: "停用 每周维护" }).click();

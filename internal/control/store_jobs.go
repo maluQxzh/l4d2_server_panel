@@ -305,7 +305,7 @@ func validateJobScopeInstanceTx(ctx context.Context, tx *sql.Tx, nodeID, instanc
 
 func externalInstanceJobAllowed(action string, payload map[string]any) bool {
 	switch action {
-	case "restart", "a2s.info", "a2s.players", "rcon.players", "list", "scan_packages", "logs.search", "logs.chunk", "backup", "backup.delete", "backup.chunk", "check_update":
+	case "restart", "a2s.info", "a2s.players", "rcon.players", "list", "scan_packages", "logs.search", "logs.chunk", "backup", "plugin.backup", "backup.delete", "backup.chunk", "check_update":
 		return true
 	case "file":
 		operation := strings.ToLower(strings.TrimSpace(stringFromAny(payload["operation"])))

@@ -239,6 +239,7 @@ var instanceJobPermissions = map[string]Permission{
 	"a2s.info":               PermissionInstancesRead,
 	"a2s.players":            PermissionPlayersRead,
 	"backup":                 PermissionBackupsCreate,
+	"plugin.backup":          PermissionBackupsCreate,
 	"backup.delete":          PermissionBackupsDelete,
 	"backup.chunk":           PermissionBackupsDownload,
 	"backup.upload.abort":    PermissionBackupsRestore,

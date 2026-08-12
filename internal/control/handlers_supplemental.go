@@ -184,7 +184,7 @@ func (s *Server) handleInstanceBackups(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		result = append(result, map[string]any{"id": item.ID, "name": item.Name, "size": item.Size, "platform": item.Platform,
+		result = append(result, map[string]any{"id": item.ID, "name": item.Name, "kind": item.Kind, "size": item.Size, "platform": item.Platform,
 			"checksum": item.SHA256, "created_at": item.CreatedAt})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": result})

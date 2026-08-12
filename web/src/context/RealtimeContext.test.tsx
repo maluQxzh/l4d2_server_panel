@@ -94,6 +94,32 @@ describe("实时节点事件", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["instances", "instance-a", "packages"] });
   });
 
+  it("插件备份任务更新时刷新实例备份清单", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    render(
+      <QueryClientProvider client={client}>
+        <RealtimeProvider><span>ready</span></RealtimeProvider>
+      </QueryClientProvider>,
+    );
+
+    act(() => {
+      FakeWebSocket.instances[0].onmessage?.({
+        data: JSON.stringify({
+          id: 4,
+          type: "job.updated",
+          resource_type: "job",
+          resource_id: "plugin-backup-job",
+          data: { job: { id: "plugin-backup-job", instance_id: "instance-a", type: "plugin.backup", status: "succeeded" } },
+          created_at: "2026-08-12T00:00:00Z",
+        }),
+      } as MessageEvent);
+    });
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["instances", "instance-a", "backups"] });
+  });
+
   it("实例终态事件直接同步详情与列表缓存", async () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     const client = new QueryClient();

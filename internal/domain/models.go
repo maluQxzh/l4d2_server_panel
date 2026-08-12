@@ -383,6 +383,23 @@ type AddonPackageFile struct {
 	Editable   bool   `json:"editable"`
 }
 
+// PluginBackupPackage is the server-derived inventory sent to an Agent when
+// creating a plugin-only archive. Callers never provide these paths.
+type PluginBackupPackage struct {
+	ID      string             `json:"package_id"`
+	Name    string             `json:"name"`
+	Kind    string             `json:"kind"`
+	Enabled bool               `json:"enabled"`
+	Files   []PluginBackupFile `json:"files"`
+}
+
+type PluginBackupFile struct {
+	Path       string `json:"path"`
+	SHA256     string `json:"sha256"`
+	Size       int64  `json:"size"`
+	Entrypoint bool   `json:"entrypoint"`
+}
+
 type AddonPackageVersion struct {
 	ID          string    `json:"id"`
 	PackageID   string    `json:"package_id"`

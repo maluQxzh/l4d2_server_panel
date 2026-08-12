@@ -74,6 +74,60 @@ func (s *Store) PackageDetails(ctx context.Context, instanceID, packageID string
 	return item, files, nil
 }
 
+func (s *Store) PluginBackupPackages(ctx context.Context, instanceID string) ([]domain.PluginBackupPackage, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,kind,enabled,path,sha256
+		FROM addon_packages WHERE instance_id=?1 AND lower(kind) IN ('smart','plugin','smx','native')
+		ORDER BY lower(name),name,id`, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	packages := make([]domain.PluginBackupPackage, 0)
+	legacyPaths := make([]string, 0)
+	legacyHashes := make([]string, 0)
+	for rows.Next() {
+		var item domain.PluginBackupPackage
+		var path, sha256 string
+		if err := rows.Scan(&item.ID, &item.Name, &item.Kind, &item.Enabled, &path, &sha256); err != nil {
+			return nil, err
+		}
+		packages = append(packages, item)
+		legacyPaths = append(legacyPaths, path)
+		legacyHashes = append(legacyHashes, sha256)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for index := range packages {
+		fileRows, err := s.db.QueryContext(ctx, `SELECT path,sha256,size,entrypoint FROM addon_package_files
+			WHERE package_id=?1 AND instance_id=?2 ORDER BY lower(path),path`, packages[index].ID, instanceID)
+		if err != nil {
+			return nil, err
+		}
+		for fileRows.Next() {
+			var file domain.PluginBackupFile
+			if err := fileRows.Scan(&file.Path, &file.SHA256, &file.Size, &file.Entrypoint); err != nil {
+				fileRows.Close()
+				return nil, err
+			}
+			packages[index].Files = append(packages[index].Files, file)
+		}
+		if err := fileRows.Err(); err != nil {
+			fileRows.Close()
+			return nil, err
+		}
+		if err := fileRows.Close(); err != nil {
+			return nil, err
+		}
+		if len(packages[index].Files) == 0 && legacyPaths[index] != "" {
+			packages[index].Files = append(packages[index].Files, domain.PluginBackupFile{
+				Path: legacyPaths[index], SHA256: legacyHashes[index],
+			})
+		}
+	}
+	return packages, nil
+}
+
 func smartPluginFileEditable(kind, path string, entrypoint bool) bool {
 	if !strings.EqualFold(kind, "smart") || entrypoint {
 		return false
@@ -689,7 +743,7 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		// UpdateJob. Re-applying them here would reopen a post-commit race with a
 		// newly queued configuration write.
 		return nil
-	case "backup":
+	case "backup", "plugin.backup":
 		name := stringFromAny(job.Result["name"])
 		path := stringFromAny(job.Result["path"])
 		if name == "" || path == "" {
@@ -708,6 +762,13 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		if kind == "" {
 			kind = "manual"
 		}
+		if job.Type == "plugin.backup" {
+			expectedKind := "plugin_" + stringFromAny(job.Payload["layout"])
+			if (expectedKind != "plugin_preserve" && expectedKind != "plugin_compact") || kind != expectedKind ||
+				!strings.HasPrefix(strings.ToLower(name), "plugin-") || !strings.HasSuffix(strings.ToLower(name), ".7z") || filepath.Base(path) != name {
+				return errors.New("plugin backup result does not match the requested layout")
+			}
+		}
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -718,7 +779,7 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 			stringFromAny(job.Result["platform"]), intFromAny(job.Result["size"]), stringFromAny(job.Result["sha256"]), createdAt); err != nil {
 			return err
 		}
-		if weekly, ok := job.Result["weekly"].(map[string]any); ok {
+		if weekly, ok := job.Result["weekly"].(map[string]any); ok && job.Type == "backup" {
 			weeklyPath := stringFromAny(weekly["path"])
 			weeklyName := stringFromAny(weekly["name"])
 			if weeklyPath != "" && weeklyName != "" {
@@ -731,7 +792,7 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 			}
 		}
 		prunedPaths := make([]string, 0)
-		if values, ok := job.Result["pruned_paths"].([]any); ok {
+		if values, ok := job.Result["pruned_paths"].([]any); ok && job.Type == "backup" {
 			for _, value := range values {
 				if candidate := stringFromAny(value); candidate != "" {
 					prunedPaths = append(prunedPaths, candidate)

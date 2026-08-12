@@ -84,6 +84,9 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
             if (job?.instance_id && ["install_mod", "install_package", "qq_flash_import", "scan_packages", "toggle_package", "rollback_package", "delete_package"].includes(job.type)) {
               void queryClient.invalidateQueries({ queryKey: ["instances", job.instance_id, "packages"] });
             }
+            if (job?.instance_id && ["backup", "plugin.backup", "backup.delete"].includes(job.type)) {
+              void queryClient.invalidateQueries({ queryKey: ["instances", job.instance_id, "backups"] });
+            }
             // 实例投影由同一事务随后发布的 instance.updated 权威事件更新；
             // 不在这里重复 refetch，避免旧请求覆盖启动/停止终态。
             void queryClient.invalidateQueries({ queryKey: ["environments"] });
