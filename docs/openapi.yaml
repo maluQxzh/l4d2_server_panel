@@ -1515,7 +1515,7 @@ paths:
     get:
       tags: [Files]
       summary: 列出白名单目录
-      description: 返回最近成功缓存并异步刷新；只列出 cfg、addons、logs 及其 left4dead2 对应目录。
+      description: 返回最近成功缓存并异步刷新；无缓存时以 202/loading 明确表示正在读取。只列出 cfg、addons、logs 及其 left4dead2 对应目录；shortcuts 仅在安全确认目标普通文件存在时返回。
       parameters:
         - { $ref: "#/components/parameters/InstanceID" }
         - { name: path, in: query, schema: { type: string, default: "" } }
@@ -1524,15 +1524,12 @@ paths:
           description: 文件列表
           content:
             application/json:
-              schema:
-                type: object
-                required: [items]
-                properties:
-                  items:
-                    {
-                      type: array,
-                      items: { $ref: "#/components/schemas/FileEntry" },
-                    }
+              schema: { $ref: "#/components/schemas/FileListResponse" }
+        "202":
+          description: 首次目录读取正在执行
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileListResponse" }
 
   /instances/{instanceId}/files/content:
     get:
@@ -3697,6 +3694,21 @@ components:
         type: { type: string, enum: [file, directory] }
         size: { type: integer, format: int64 }
         modified_at: { type: string, format: date-time }
+
+    FileListResponse:
+      type: object
+      required: [items, shortcuts, status]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/FileEntry" }
+        shortcuts:
+          type: array
+          description: 当前仅可能包含安全确认存在的 admins_simple.ini
+          items: { $ref: "#/components/schemas/FileEntry" }
+        status: { type: string, enum: [loading, ready] }
+        fresh_at: { type: string, format: date-time }
+        refresh_job_id: { type: string, format: uuid }
 
     FileContentResponse:
       type: object

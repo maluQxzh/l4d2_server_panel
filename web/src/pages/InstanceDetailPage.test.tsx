@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RealtimeProvider } from "../context/RealtimeContext";
@@ -179,6 +179,95 @@ describe("游戏实例配置中的端口", () => {
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("manual-20260812T120000Z-job.zip"));
     await waitFor(() => expect(remove).toHaveBeenCalledWith(instance.id, "backup-id", expect.any(String)));
     expect(await screen.findByText("备份删除任务已提交")).toBeVisible();
+  });
+});
+
+describe("实例文件管理", () => {
+  beforeEach(() => { authState.user = { role: "owner" }; });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("从根目录打开并在异步列表完成前保持加载状态", async () => {
+    vi.spyOn(api, "instance").mockResolvedValue(instance);
+    let addonsRequests = 0;
+    vi.spyOn(api, "files").mockImplementation(async (_instanceID, path = "") => {
+      if (path === "left4dead2/addons") {
+        addonsRequests += 1;
+        if (addonsRequests === 1) return { items: [], shortcuts: [], status: "loading", refresh_job_id: "list-job" };
+        return { items: [{ name: "sourcemod", path: "left4dead2/addons/sourcemod", type: "directory" }], shortcuts: [], status: "ready" };
+      }
+      return {
+        items: [],
+        shortcuts: [{ name: "admins_simple.ini", path: "left4dead2/addons/sourcemod/configs/admins_simple.ini", type: "file", size: 12 }],
+        status: "ready",
+      };
+    });
+    const router = createMemoryRouter(
+      [{ path: "/instances/:instanceId", element: <InstanceDetailPage /> }],
+      { initialEntries: [`/instances/${instance.id}?tab=files`] },
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><RealtimeProvider enabled={false}><ToastProvider><RouterProvider router={router} /></ToastProvider></RealtimeProvider></QueryClientProvider>);
+
+    expect(await screen.findByRole("button", { name: "根目录" })).toBeVisible();
+    const addons = screen.getByRole("button", { name: "addons" });
+    const sidebar = addons.parentElement!;
+    expect(within(sidebar).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "addons", "cfg", "server.cfg", "admins_simple.ini",
+    ]);
+
+    fireEvent.click(addons);
+    expect(await screen.findByText("正在读取目录内容…")).toBeVisible();
+    expect(screen.queryByText("目录为空")).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /sourcemod/ }, { timeout: 2_500 })).toBeVisible();
+    expect(addonsRequests).toBeGreaterThanOrEqual(2);
+  });
+
+  it("重新验证目录后动态显示后来创建的 admins_simple.ini", async () => {
+    vi.spyOn(api, "instance").mockResolvedValue(instance);
+    let adminsExists = false;
+    vi.spyOn(api, "files").mockImplementation(async () => ({
+      items: [],
+      shortcuts: adminsExists ? [{ name: "admins_simple.ini", path: "left4dead2/addons/sourcemod/configs/admins_simple.ini", type: "file" as const }] : [],
+      status: "ready" as const,
+    }));
+    const router = createMemoryRouter(
+      [{ path: "/instances/:instanceId", element: <InstanceDetailPage /> }],
+      { initialEntries: [`/instances/${instance.id}?tab=files`] },
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><RealtimeProvider enabled={false}><ToastProvider><RouterProvider router={router} /></ToastProvider></RealtimeProvider></QueryClientProvider>);
+
+    await screen.findByRole("button", { name: "根目录" });
+    expect(screen.queryByRole("button", { name: "admins_simple.ini" })).not.toBeInTheDocument();
+    adminsExists = true;
+    await client.invalidateQueries({ queryKey: ["instances", instance.id, "files"] });
+    expect(await screen.findByRole("button", { name: "admins_simple.ini" })).toBeVisible();
+  });
+
+  it("文件刷新任务完成后自动替换首次读取到的旧内容", async () => {
+    vi.spyOn(api, "instance").mockResolvedValue(instance);
+    vi.spyOn(api, "files").mockResolvedValue({
+      items: [{ name: "motd.txt", path: "cfg/motd.txt", type: "file", size: 0 }],
+      shortcuts: [],
+      status: "ready",
+    });
+    let reads = 0;
+    vi.spyOn(api, "fileContent").mockImplementation(async () => {
+      reads += 1;
+      if (reads === 1) return { path: "cfg/motd.txt", content: "", refresh_job_id: "read-job" };
+      return { path: "cfg/motd.txt", content: "hostname ready\n", sha256: "a".repeat(64) };
+    });
+    const router = createMemoryRouter(
+      [{ path: "/instances/:instanceId", element: <InstanceDetailPage /> }],
+      { initialEntries: [`/instances/${instance.id}?tab=files`] },
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><RealtimeProvider enabled={false}><ToastProvider><RouterProvider router={router} /></ToastProvider></RealtimeProvider></QueryClientProvider>);
+
+    fireEvent.click(await screen.findByRole("button", { name: /motd\.txt/ }));
+    expect(await screen.findByText("正在从节点安全读取文件…")).toBeVisible();
+    await waitFor(() => expect(reads).toBeGreaterThanOrEqual(2), { timeout: 2_500 });
+    await waitFor(() => expect(screen.getByRole("textbox", { name: /文件内容/ })).toHaveValue("hostname ready\n"));
   });
 });
 

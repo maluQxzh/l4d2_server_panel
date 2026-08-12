@@ -1428,8 +1428,12 @@ func (e *Executor) list(_ context.Context, job domain.Job, progress ProgressFunc
 	if err != nil {
 		return nil, err
 	}
+	shortcuts := make([]ManagedFile, 0, 1)
+	if admins, exists := optionalManagedFile(path, adminsSimpleRelativePath); exists {
+		shortcuts = append(shortcuts, admins)
+	}
 	progress(100, "files listed")
-	return map[string]any{"files": files}, nil
+	return map[string]any{"files": files, "shortcuts": shortcuts}, nil
 }
 
 func (e *Executor) file(ctx context.Context, job domain.Job, progress ProgressFunc) (map[string]any, error) {

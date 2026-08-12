@@ -29,6 +29,8 @@ type ManagedFile struct {
 
 var managedFileRoots = []string{"cfg", "addons", "logs", "left4dead2/cfg", "left4dead2/addons", "left4dead2/logs"}
 
+const adminsSimpleRelativePath = "left4dead2/addons/sourcemod/configs/admins_simple.ini"
+
 var blockedManagedFileExtensions = map[string]bool{
 	".bat": true, ".cmd": true, ".com": true, ".dll": true, ".dylib": true,
 	".exe": true, ".ps1": true, ".sh": true, ".smx": true, ".so": true,
@@ -86,6 +88,23 @@ func ListManagedFiles(instancePath, relative string) ([]ManagedFile, error) {
 		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
 	})
 	return result, nil
+}
+
+func optionalManagedFile(instancePath, relative string) (ManagedFile, bool) {
+	cleaned, err := cleanManagedRelative(relative)
+	if err != nil || cleaned == "" {
+		return ManagedFile{}, false
+	}
+	file, err := openManagedFileNoFollow(instancePath, cleaned)
+	if err != nil {
+		return ManagedFile{}, false
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return ManagedFile{}, false
+	}
+	return ManagedFile{Name: filepath.Base(filepath.FromSlash(cleaned)), Path: cleaned, Size: info.Size(), ModTime: info.ModTime()}, true
 }
 
 func ReadManagedFile(instancePath, relative string) (string, int64, string, error) {
