@@ -660,12 +660,14 @@ h1, h2, h3, p { margin-top: 0; }
 .file-type--directory { color: var(--orange) !important; }
 .backup-list { padding: 6px 17px; }
 .backup-heading-actions { display: flex; align-items: center; gap: 8px; }
-.backup-row { min-height: 62px; display: grid; grid-template-columns: 38px minmax(130px, 1fr) 80px 105px auto auto; align-items: center; gap: 10px; border-bottom: 1px solid var(--line-soft); }
+.backup-row { min-height: 62px; display: grid; grid-template-columns: 38px minmax(130px, 1fr) 80px 105px auto; align-items: center; gap: 10px; border-bottom: 1px solid var(--line-soft); }
 .backup-row:last-child { border: 0; }
 .backup-icon { width: 34px; height: 34px; display: grid; place-items: center; color: var(--green); background: var(--green-soft); border-radius: 8px; }
 .backup-row > div:nth-child(2) { display: flex; flex-direction: column; gap: 3px; }
 .backup-row strong { font-size: 10px; }
 .backup-row span, .backup-row code { color: var(--text-faint); font-size: 8px; }
+.backup-row__actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; white-space: nowrap; }
+.backup-row__actions .button { flex: 0 0 auto; }
 .backup-upload-file { padding: 11px 12px; display: flex; align-items: center; gap: 10px; background: #0d1311; border: 1px solid var(--line-soft); border-radius: 8px; }
 .backup-upload-file > svg { flex: 0 0 auto; color: var(--green); }
 .backup-upload-file > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
@@ -1063,7 +1065,7 @@ html[data-density="compact"] .data-table td { padding-top: 8px; padding-bottom: 
   .file-row time { display: none; }
   .backup-row { grid-template-columns: 36px 1fr auto; padding: 10px 0; }
   .backup-row > span, .backup-row > code { display: none; }
-  .backup-row .button { grid-column: span 1; }
+  .backup-row__actions { grid-column: 2 / -1; flex-wrap: wrap; justify-content: flex-start; }
   .backup-heading-actions { width: 100%; align-items: stretch; flex-direction: column; }
   .backup-heading-actions .button { width: 100%; }
   .quarantine-row { align-items: stretch; flex-direction: column; }
