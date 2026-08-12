@@ -507,6 +507,22 @@ export interface ManagedFileContent {
   status?: "loading";
 }
 
+export interface ManagedFileEntry {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  size?: number;
+  modified_at?: string;
+}
+
+export interface ManagedFileList {
+  items: ManagedFileEntry[];
+  shortcuts: ManagedFileEntry[];
+  status?: "loading" | "ready";
+  fresh_at?: string;
+  refresh_job_id?: string;
+}
+
 export interface NotificationChannelRecord {
   id: string;
   name: string;

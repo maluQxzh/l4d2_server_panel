@@ -17,6 +17,7 @@ import type {
   ScheduleRecord,
   User,
   ManagedFileContent,
+  ManagedFileList,
   NotificationChannelRecord,
   NotificationDeliveryRecord,
   MetricPoint,
@@ -444,9 +445,9 @@ export const api = {
     });
     return waitForTransfer(`/instances/${encodeURIComponent(instanceId)}/backups/${encodeURIComponent(backupId)}/downloads/${encodeURIComponent(created.job_id)}`);
   },
-  files: (instanceId: string, path = "") => request<{ items: Array<{ name: string; path: string; type: "file" | "directory"; size?: number; modified_at?: string }> }>(
+  files: (instanceId: string, path = "") => request<ManagedFileList>(
     `/instances/${encodeURIComponent(instanceId)}/files?path=${encodeURIComponent(path)}`,
-  ),
+  ).then((result) => ({ ...result, items: result.items || [], shortcuts: result.shortcuts || [] })),
   fileContent: (instanceId: string, path: string) => request<ManagedFileContent>(
     `/instances/${encodeURIComponent(instanceId)}/files/content?path=${encodeURIComponent(path)}`,
   ),

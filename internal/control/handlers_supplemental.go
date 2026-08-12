@@ -90,35 +90,72 @@ func (s *Server) handleInstanceFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	relative := r.URL.Query().Get("path")
 	payload := map[string]any{"relative_path": relative}
-	latest, _ := s.store.LatestSuccessfulJob(r.Context(), instanceID, "list", payload)
-	s.queueRefresh(r, instanceID, "list", payload)
-	items := make([]any, 0)
-	if raw, ok := latest.Result["files"].([]any); ok {
-		for _, entry := range raw {
-			file, _ := entry.(map[string]any)
-			kind := "file"
-			if isDir, _ := file["is_dir"].(bool); isDir {
-				kind = "directory"
-			}
-			items = append(items, map[string]any{"name": file["name"], "path": file["path"], "type": kind,
-				"size": file["size"], "modified_at": file["modified_at"]})
+	latest, latestErr := s.store.LatestSuccessfulJob(r.Context(), instanceID, "list", payload)
+	if latestErr != nil && !errors.Is(latestErr, ErrNotFound) {
+		s.fail(w, latestErr)
+		return
+	}
+	refreshID := ""
+	if latestErr != nil || latest.FinishedAt == nil || time.Since(*latest.FinishedAt) > 5*time.Second {
+		job, queueErr := s.queueRefresh(r, instanceID, "list", payload)
+		if queueErr == nil {
+			refreshID = job.ID
+		} else if latestErr != nil {
+			s.fail(w, queueErr)
+			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	if latestErr != nil {
+		response := map[string]any{"items": []any{}, "shortcuts": []any{}, "status": "loading"}
+		if refreshID != "" {
+			response["refresh_job_id"] = refreshID
+		}
+		writeJSON(w, http.StatusAccepted, response)
+		return
+	}
+	response := map[string]any{
+		"items":     managedFileResponseEntries(latest.Result["files"]),
+		"shortcuts": managedFileResponseEntries(latest.Result["shortcuts"]),
+		"status":    "ready",
+		"fresh_at":  latest.FinishedAt,
+	}
+	if refreshID != "" {
+		response["refresh_job_id"] = refreshID
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) queueRefresh(r *http.Request, instanceID, jobType string, payload map[string]any) {
+func managedFileResponseEntries(raw any) []any {
+	values, _ := raw.([]any)
+	items := make([]any, 0, len(values))
+	for _, entry := range values {
+		file, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		kind := "file"
+		if isDir, _ := file["is_dir"].(bool); isDir {
+			kind = "directory"
+		}
+		items = append(items, map[string]any{"name": file["name"], "path": file["path"], "type": kind,
+			"size": file["size"], "modified_at": file["modified_at"]})
+	}
+	return items
+}
+
+func (s *Server) queueRefresh(r *http.Request, instanceID, jobType string, payload map[string]any) (domain.Job, error) {
 	principal := principalFromContext(r.Context())
 	bucket := time.Now().Unix() / 10
 	key := fmt.Sprintf("refresh:%s:%s:%v:%d", instanceID, jobType, payload, bucket)
 	requestedBy := principal.User.ID
-	if jobType == "rcon.players" {
+	if jobType == "rcon.players" || jobType == "list" {
 		requestedBy = ""
 	}
 	job, _, err := s.store.QueueInstanceJob(r.Context(), instanceID, jobType, payload, requestedBy, key)
 	if err == nil {
 		s.dispatchSoon(job.NodeID)
 	}
+	return job, err
 }
 
 func (s *Server) handleInstancePackages(w http.ResponseWriter, r *http.Request) {

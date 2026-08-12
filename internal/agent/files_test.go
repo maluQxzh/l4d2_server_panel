@@ -148,3 +148,21 @@ func TestManagedDirectoryListingUsesSafeHandle(t *testing.T) {
 		t.Fatalf("unexpected managed directory listing: %#v", files)
 	}
 }
+
+func TestOptionalAdminsSimpleShortcutTracksFileExistence(t *testing.T) {
+	root := t.TempDir()
+	if _, exists := optionalManagedFile(root, adminsSimpleRelativePath); exists {
+		t.Fatal("missing admins_simple.ini was exposed as a shortcut")
+	}
+	fullPath := filepath.Join(root, filepath.FromSlash(adminsSimpleRelativePath))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("\"STEAM_1:1:1\" \"99:z\"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	item, exists := optionalManagedFile(root, adminsSimpleRelativePath)
+	if !exists || item.Name != "admins_simple.ini" || item.Path != adminsSimpleRelativePath || item.IsDir {
+		t.Fatalf("unexpected admins shortcut: exists=%v item=%#v", exists, item)
+	}
+}
