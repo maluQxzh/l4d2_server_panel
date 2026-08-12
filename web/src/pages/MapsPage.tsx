@@ -10,11 +10,16 @@ import { api } from "../lib/api";
 import { bytes, dateTime } from "../lib/format";
 import type { InstanceRecord, MapRecord, User } from "../lib/types";
 
+const UNASSIGNED_INSTANCE_FILTER = "__unassigned__";
+const UNKNOWN_UPLOADER_FILTER = "__unknown__";
+
 export function MapsPage() {
   const { user } = useAuth();
   const [importOpen, setImportOpen] = useState(false);
   const [assignmentMap, setAssignmentMap] = useState<MapRecord | null>(null);
   const [nodeFilter, setNodeFilter] = useState("");
+  const [uploaderFilter, setUploaderFilter] = useState("");
+  const [instanceFilter, setInstanceFilter] = useState("");
   const realtime = useRealtime();
   const canReadMaps = hasAnyPermission(user, "maps.read");
   const canReadNodes = hasAnyPermission(user, "nodes.read");
@@ -26,7 +31,34 @@ export function MapsPage() {
   const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: canReadInstances });
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, enabled: canReadJobs, refetchInterval: canReadJobs ? 2_000 : false });
   const mapJobs = (jobs.data?.items || []).filter((job) => job.type.startsWith("map.") && !["succeeded", "failed", "canceled"].includes(job.status));
-  const totals = useMemo(() => (maps.data?.items || []).reduce((value, item) => ({ size: value.size + item.total_size, assignments: value.assignments + (item.assignments?.length || 0) }), { size: 0, assignments: 0 }), [maps.data]);
+  const mapItems = useMemo(() => maps.data?.items || [], [maps.data]);
+  const totals = useMemo(() => mapItems.reduce((value, item) => ({ size: value.size + item.total_size, assignments: value.assignments + (item.assignments?.length || 0) }), { size: 0, assignments: 0 }), [mapItems]);
+  const uploaderOptions = useMemo(() => {
+    const uploaders = new Map<string, string>();
+    for (const item of mapItems) {
+      const value = mapUploaderValue(item);
+      if (!uploaders.has(value)) uploaders.set(value, item.created_by_display_name || "未知账号");
+    }
+    const duplicateLabels = new Map<string, number>();
+    for (const label of uploaders.values()) duplicateLabels.set(label, (duplicateLabels.get(label) || 0) + 1);
+    return [...uploaders].map(([value, label]) => ({
+      value,
+      label: value !== UNKNOWN_UPLOADER_FILTER && (duplicateLabels.get(label) || 0) > 1 ? `${label} · ${value.slice(0, 8)}` : label,
+    })).sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
+  }, [mapItems]);
+  const instanceOptions = useMemo(() => {
+    const visibleNodeIds = new Set(mapItems.map((item) => item.node_id));
+    return (instances.data?.items || [])
+      .filter((instance) => nodeFilter ? instance.node_id === nodeFilter : visibleNodeIds.has(instance.node_id))
+      .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
+  }, [instances.data, mapItems, nodeFilter]);
+  const filteredMaps = useMemo(() => mapItems.filter((item) => {
+    if (uploaderFilter && mapUploaderValue(item) !== uploaderFilter) return false;
+    if (instanceFilter === UNASSIGNED_INSTANCE_FILTER) return !item.assignments?.length;
+    if (instanceFilter && !item.assignments?.some((assignment) => assignment.instance_id === instanceFilter)) return false;
+    return true;
+  }), [instanceFilter, mapItems, uploaderFilter]);
+  const hasAdditionalFilters = Boolean(uploaderFilter || instanceFilter);
 
   return <div>
     <PageHeader eyebrow="SHARED MAP LIBRARY" title="地图管理" description="每个节点只保存一份地图对象，通过同卷硬链接安全分配给多个游戏实例。" actions={<>{canReadMaps && <Button variant="secondary" onClick={() => { void maps.refetch(); if (canReadJobs) void jobs.refetch(); }}><RefreshCw size={16} />刷新</Button>}{canImport && <Button onClick={() => setImportOpen(true)}><Plus size={17} />QQ 闪传导入</Button>}</>} />
@@ -36,13 +68,24 @@ export function MapsPage() {
       <Card><HardDrive size={19} /><div><span>地图占用空间</span><strong>{bytes(totals.size)}</strong></div></Card>
       <Card><Link2 size={19} /><div><span>实例分配</span><strong>{totals.assignments}</strong></div></Card>
     </div>
-    {canReadNodes && <Card className="toolbar-card map-toolbar"><Field label="节点筛选"><select value={nodeFilter} onChange={(event) => setNodeFilter(event.target.value)}><option value="">全部可见节点</option>{(nodes.data?.items || []).map((node) => <option value={node.id} key={node.id}>{node.name}</option>)}</select></Field><span className="toolbar-count">{maps.data?.items.length || 0} 张地图</span></Card>}
+    <Card className="toolbar-card map-toolbar">
+      <div className="map-toolbar__filters">
+        {canReadNodes && <Field label="节点筛选"><select value={nodeFilter} onChange={(event) => { setNodeFilter(event.target.value); setUploaderFilter(""); setInstanceFilter(""); }}><option value="">全部可见节点</option>{(nodes.data?.items || []).map((node) => <option value={node.id} key={node.id}>{node.name}</option>)}</select></Field>}
+        <Field label="上传者筛选"><select value={uploaderFilter} onChange={(event) => setUploaderFilter(event.target.value)}><option value="">全部上传者</option>{uploaderOptions.map((uploader) => <option value={uploader.value} key={uploader.value}>{uploader.label}</option>)}</select></Field>
+        {canReadInstances && <Field label="实例筛选"><select value={instanceFilter} onChange={(event) => setInstanceFilter(event.target.value)}><option value="">全部实例分配</option><option value={UNASSIGNED_INSTANCE_FILTER}>未分配</option>{instanceOptions.map((instance) => <option value={instance.id} key={instance.id}>{instance.name}</option>)}</select></Field>}
+      </div>
+      <span className="toolbar-count">{hasAdditionalFilters ? `${filteredMaps.length} / ${mapItems.length}` : mapItems.length} 张地图</span>
+    </Card>
     </>}
     {mapJobs.length > 0 && <Card className="map-processing"><div className="card-heading"><div><span className="eyebrow">PROCESSING</span><h2>正在处理</h2></div></div>{mapJobs.map((job) => <div className="map-job" key={job.id}><div><strong>{mapJobLabel(job.type)}</strong><span>{job.message || "等待节点接收任务"}</span></div><ProgressBar value={job.progress} /><code>{job.id.slice(0, 8)}</code></div>)}</Card>}
-    {!canReadMaps ? <Card><EmptyState title="地图库清单已隐藏" description="当前账号没有查看地图库的权限，但仍可向已授权节点执行单独授予的导入操作。" action={canImport ? <Button onClick={() => setImportOpen(true)}><Plus size={16} />QQ 闪传导入</Button> : undefined} /></Card> : maps.isPending ? <LoadingBlock label="正在读取地图对象库…" /> : maps.error ? <ErrorState error={maps.error} retry={() => void maps.refetch()} /> : !maps.data.items.length ? <Card><EmptyState title="地图对象库为空" description="提交一个 QQ 闪传链接，节点会安全解压、合并并清理其中的 VPK。" action={canImport ? <Button onClick={() => setImportOpen(true)}><Plus size={16} />导入第一张地图</Button> : undefined} /></Card> : <div className="map-list">{maps.data.items.map((item) => <MapCard key={item.id} item={item} instances={instances.data?.items || []} user={user} onAssignments={() => setAssignmentMap(item)} />)}</div>}
+    {!canReadMaps ? <Card><EmptyState title="地图库清单已隐藏" description="当前账号没有查看地图库的权限，但仍可向已授权节点执行单独授予的导入操作。" action={canImport ? <Button onClick={() => setImportOpen(true)}><Plus size={16} />QQ 闪传导入</Button> : undefined} /></Card> : maps.isPending ? <LoadingBlock label="正在读取地图对象库…" /> : maps.error ? <ErrorState error={maps.error} retry={() => void maps.refetch()} /> : !mapItems.length ? <Card><EmptyState title="地图对象库为空" description="提交一个 QQ 闪传链接，节点会安全解压、合并并清理其中的 VPK。" action={canImport ? <Button onClick={() => setImportOpen(true)}><Plus size={16} />导入第一张地图</Button> : undefined} /></Card> : !filteredMaps.length ? <Card><EmptyState title="没有符合筛选条件的地图" description="尝试选择其他上传者或实例，或者清除当前附加筛选。" action={<Button variant="secondary" onClick={() => { setUploaderFilter(""); setInstanceFilter(""); }}>清除筛选</Button>} /></Card> : <div className="map-list">{filteredMaps.map((item) => <MapCard key={item.id} item={item} instances={instances.data?.items || []} user={user} onAssignments={() => setAssignmentMap(item)} />)}</div>}
     <ImportMapModal open={canImport && importOpen} nodes={nodes.data?.items || []} instances={instances.data?.items || []} user={user} onClose={() => setImportOpen(false)} />
     <AssignmentModal item={assignmentMap} instances={instances.data?.items || []} user={user} onClose={() => setAssignmentMap(null)} />
   </div>;
+}
+
+function mapUploaderValue(item: MapRecord) {
+  return item.created_by || UNKNOWN_UPLOADER_FILTER;
 }
 
 function MapCard({ item, instances, user, onAssignments }: { item: MapRecord; instances: InstanceRecord[]; user: User | null; onAssignments: () => void }) {

@@ -88,14 +88,14 @@ describe("地图管理卡片", () => {
     expect(screen.queryByText("已清理文件")).not.toBeInTheDocument();
     expect(screen.getByText("Sean C. Wood")).toBeInTheDocument();
     expect(screen.getByText("上传者")).toBeInTheDocument();
-    expect(screen.getByText("地图管理员")).toBeInTheDocument();
+    expect(screen.getByText("地图管理员", { selector: ".map-card__uploader strong" })).toBeInTheDocument();
     expect(screen.getByText("1.2")).toBeInTheDocument();
     expect(screen.getByText("合作")).toBeInTheDocument();
     const assignedHeading = screen.getByText("已分配实例");
     expect(assignedHeading).toBeInTheDocument();
     expect(assignedHeading.closest(".map-card__profile")).not.toBeNull();
     expect(document.querySelector(".map-card__snapshot")).toBeNull();
-    expect(screen.getByText("专家战役 #1")).toBeInTheDocument();
+    expect(screen.getByText("专家战役 #1", { selector: ".map-assignment-list--summary strong" })).toBeInTheDocument();
     expect(screen.getByText("已生效")).toBeInTheDocument();
 
     const toggle = screen.getByRole("button", { name: "展开详情" });
@@ -103,6 +103,57 @@ describe("地图管理卡片", () => {
     fireEvent.click(toggle);
     expect(screen.getAllByText("claustrophobia1.bsp")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "收起详情" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("可按上传者、已分配实例和未分配状态筛选地图", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const unassignedMap = {
+      ...map,
+      id: "22345678-1234-1234-1234-123456789abc",
+      name: "No Mercy Remix",
+      created_by: "other-uploader",
+      created_by_display_name: "其他上传者",
+      assignments: [],
+    };
+    vi.spyOn(api, "maps").mockResolvedValue({ items: [map, unassignedMap] });
+    vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "instances").mockResolvedValue({ items: [assignedInstance] });
+    vi.spyOn(api, "jobs").mockResolvedValue({ items: [] });
+
+    render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <RealtimeProvider enabled={false}>
+            <MemoryRouter>
+              <MapsPage />
+            </MemoryRouter>
+          </RealtimeProvider>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Claustrophobia" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "No Mercy Remix" })).toBeInTheDocument();
+    const uploader = screen.getByRole("combobox", { name: "上传者筛选" });
+    const instance = screen.getByRole("combobox", { name: "实例筛选" });
+    expect(screen.getByRole("option", { name: "地图管理员" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "其他上传者" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "专家战役 #1" })).toBeInTheDocument();
+    const unassignedOption = screen.getByRole("option", { name: "未分配" }) as HTMLOptionElement;
+
+    fireEvent.change(uploader, { target: { value: "other-uploader" } });
+    expect(screen.queryByRole("heading", { name: "Claustrophobia" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "No Mercy Remix" })).toBeInTheDocument();
+    expect(screen.getByText("1 / 2 张地图")).toBeInTheDocument();
+
+    fireEvent.change(uploader, { target: { value: "" } });
+    fireEvent.change(instance, { target: { value: assignedInstance.id } });
+    expect(screen.getByRole("heading", { name: "Claustrophobia" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "No Mercy Remix" })).not.toBeInTheDocument();
+
+    fireEvent.change(instance, { target: { value: unassignedOption.value } });
+    expect(screen.queryByRole("heading", { name: "Claustrophobia" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "No Mercy Remix" })).toBeInTheDocument();
   });
 
   it("运行中实例未配置 RCON 时确认后仍继续分配", async () => {
