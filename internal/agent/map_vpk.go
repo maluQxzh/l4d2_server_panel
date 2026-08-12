@@ -302,7 +302,7 @@ func parseMapVPKTree(tree []byte, source *mapVPKSource) ([]mapVPKEntry, error) {
 				if filename == "" {
 					break
 				}
-				if !validVPKLeaf(filename) || validateQQFlashEntryName(filename) != nil || len(tree)-position < 18 {
+				if !validVPKLeaf(filename) || len(tree)-position < 18 {
 					return nil, errors.New("VPK contains an invalid or truncated directory entry")
 				}
 				header := tree[position : position+18]
@@ -400,15 +400,7 @@ func validateMapVPKRanges(entries []mapVPKEntry) error {
 }
 
 func validMapVirtualDirectory(directory string) bool {
-	if !validVPKDirectory(directory) {
-		return false
-	}
-	for _, component := range strings.Split(directory, "/") {
-		if component != "" && validateQQFlashEntryName(component) != nil {
-			return false
-		}
-	}
-	return true
+	return validVPKDirectory(directory)
 }
 
 func validMapVirtualPath(value string) bool {

@@ -115,6 +115,29 @@ func TestBuildMapVPKsProjectsMissionCampaignModesChaptersAndBSPCodes(t *testing.
 	}
 }
 
+func TestBuildMapVPKsPreservesWindowsUnsafeVirtualNames(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "campaign.vpk")
+	writeTestMapVPK(t, input, []testMapVPKEntry{
+		{path: "maps/campaign.bsp", data: []byte("stringtable_dictionary.dct")},
+		{path: "materials/models/trailing./name .vmt", data: []byte(`"LightmappedGeneric" { "$basetexture" "models/trailing./name " }`)},
+		{path: "scripts/name..txt", data: []byte("virtual path")},
+	})
+
+	result, err := buildMapVPKs(context.Background(), t.TempDir(), []mapVPKInput{{Path: input, SortKey: "campaign.vpk"}}, 0, "", "campaign.vpk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readMapVPKEntry(t, result.Outputs[0], "materials/models/trailing./name .vmt"); len(got) == 0 {
+		t.Fatal("VPK virtual path with trailing dots and spaces was not preserved")
+	}
+	if got := readMapVPKEntry(t, result.Outputs[0], "scripts/name..txt"); string(got) != "virtual path" {
+		t.Fatalf("VPK virtual filename with trailing dot was not preserved: %q", got)
+	}
+	if got := normalizeMaterialReference("models/trailing./name .vtf"); got != "models/trailing./name " {
+		t.Fatalf("material reference with Windows-unsafe virtual components = %q", got)
+	}
+}
+
 func testUTF16LE(value string) []byte {
 	units := utf16.Encode([]rune(value))
 	result := make([]byte, 2+len(units)*2)

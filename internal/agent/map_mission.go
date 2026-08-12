@@ -634,11 +634,6 @@ func normalizeMaterialReference(value string) string {
 	if value == "." || value == "" || strings.HasPrefix(value, "/") || strings.HasPrefix(value, "../") || strings.Contains(value, "//") || len(value) > 512 {
 		return ""
 	}
-	for _, component := range strings.Split(value, "/") {
-		if validateQQFlashEntryName(component) != nil {
-			return ""
-		}
-	}
 	return value
 }
 
