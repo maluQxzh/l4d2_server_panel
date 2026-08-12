@@ -41,6 +41,8 @@ const (
 	MaxPackageUploadEnvelopeBytes = 136 << 20
 )
 
+const BackupScopeConfigAndManagedPackages = "config_and_managed_packages"
+
 // TruncateJobUpdateMessage keeps Agent messages within the wire limit without
 // splitting a UTF-8 sequence. Invalid input is normalized before truncation so
 // JSON replacement characters cannot expand a nominally bounded message past

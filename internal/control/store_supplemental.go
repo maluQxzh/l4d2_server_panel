@@ -107,6 +107,30 @@ func (s *Store) ManagedPackagePaths(ctx context.Context, instanceID string) (map
 	return items, rows.Err()
 }
 
+func (s *Store) BackupManagedPackagePaths(ctx context.Context, instanceID string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT package.id,package.path FROM addon_packages package
+		WHERE package.instance_id=?1 AND package.path<>'' AND lower(package.source)<>'local_scan'
+		UNION ALL
+		SELECT file.package_id,file.path FROM addon_package_files file
+		JOIN addon_packages package ON package.id=file.package_id AND package.instance_id=file.instance_id
+		WHERE file.instance_id=?1 AND lower(package.source)<>'local_scan'
+		ORDER BY path,id`, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make(map[string]string)
+	for rows.Next() {
+		var packageID, path string
+		if err := rows.Scan(&packageID, &path); err != nil {
+			return nil, err
+		}
+		items[filepath.ToSlash(path)] = packageID
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) HasEnabledPackageKind(ctx context.Context, instanceID, kind string) (bool, error) {
 	var present bool
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
@@ -702,6 +726,14 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 			}
 		}
 		return tx.Commit()
+	case "backup.delete":
+		backupID := stringFromAny(job.Payload["backup_id"])
+		if backupID == "" || stringFromAny(job.Result["backup_id"]) != backupID ||
+			stringFromAny(job.Result["name"]) != stringFromAny(job.Payload["name"]) {
+			return errors.New("backup deletion result does not match the request")
+		}
+		_, err := s.db.ExecContext(ctx, `DELETE FROM backups WHERE id=?1 AND instance_id=?2`, backupID, job.InstanceID)
+		return err
 	case "install_mod":
 		return s.applyInstallModResult(ctx, job)
 	case "file":

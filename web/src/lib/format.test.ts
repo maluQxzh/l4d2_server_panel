@@ -20,6 +20,7 @@ describe("格式化工具", () => {
     expect(statusLabels.running).toBe("运行中");
     expect(statusLabels.failed).toBe("失败");
     expect(jobLabels["backup.upload.abort"]).toBe("清理上传暂存");
+    expect(jobLabels["backup.delete"]).toBe("永久删除备份");
   });
 
   it("按安全展示类型或包类型区分插件和模组安装", () => {

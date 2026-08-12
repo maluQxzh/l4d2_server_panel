@@ -8,7 +8,7 @@ export type Permission =
   | "players.read" | "players.kick" | "players.ban" | "players.unban" | "players.change_map" | "players.broadcast"
   | "rcon.execute" | "files.list" | "files.read" | "files.write" | "files.delete"
   | "packages.read" | "packages.install" | "packages.toggle" | "packages.delete" | "packages.rollback"
-  | "backups.read" | "backups.download" | "backups.create" | "backups.restore"
+  | "backups.read" | "backups.download" | "backups.create" | "backups.restore" | "backups.delete"
   | "schedules.read" | "schedules.manage" | "logs.read"
   | "maps.read" | "maps.import" | "maps.assign" | "maps.verify" | "maps.delete"
   | "jobs.read" | "jobs.details" | "jobs.cancel" | "audit.read" | "audit.read_global"

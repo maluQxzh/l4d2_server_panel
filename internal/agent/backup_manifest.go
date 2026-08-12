@@ -104,6 +104,7 @@ func validateBackupJSONFieldNames(raw []byte) error {
 	allowedRoot := map[string]bool{
 		"version": true, "instance_id": true, "os": true, "arch": true,
 		"created_at": true, "files": true, "launch": true, "maps": true,
+		"scope": true, "managed_files": true,
 	}
 	for key := range root {
 		if !allowedRoot[key] {
@@ -190,13 +191,14 @@ func rejectDuplicateJSONKeys(raw []byte) error {
 }
 
 func validateBackupManifest(manifest BackupManifest) error {
-	if manifest.Version != backupLegacyFormatVersion && manifest.Version != backupLaunchFormatVersion && manifest.Version != backupFormatVersion {
+	if manifest.Version != backupLegacyFormatVersion && manifest.Version != backupLaunchFormatVersion &&
+		manifest.Version != backupFormatVersion && manifest.Version != backupSelectiveVersion {
 		return errors.New("unsupported format version")
 	}
 	if manifest.Version == backupLegacyFormatVersion && manifest.Launch != nil {
 		return errors.New("legacy manifest cannot contain launch configuration")
 	}
-	if manifest.Version == backupLaunchFormatVersion || manifest.Version == backupFormatVersion {
+	if manifest.Version == backupLaunchFormatVersion || manifest.Version == backupFormatVersion || manifest.Version == backupSelectiveVersion {
 		if manifest.Launch == nil {
 			return errors.New("portable manifest is missing launch configuration")
 		}
@@ -207,7 +209,7 @@ func validateBackupManifest(manifest BackupManifest) error {
 	if manifest.Version < backupFormatVersion && len(manifest.Maps) != 0 {
 		return errors.New("legacy manifest cannot contain map references")
 	}
-	if manifest.Version == backupFormatVersion {
+	if manifest.Version == backupFormatVersion || manifest.Version == backupSelectiveVersion {
 		if len(manifest.Maps) > 10000 {
 			return errors.New("map reference count exceeds limit")
 		}
@@ -229,6 +231,13 @@ func validateBackupManifest(manifest BackupManifest) error {
 				seenBSPs[key] = true
 			}
 		}
+	}
+	if manifest.Version == backupSelectiveVersion {
+		if manifest.Scope != backupSelectiveScope {
+			return errors.New("selective manifest has an invalid scope")
+		}
+	} else if manifest.Scope != "" || len(manifest.Managed) != 0 {
+		return errors.New("legacy manifest cannot contain selective backup fields")
 	}
 	if err := validateManifestText("instance_id", manifest.InstanceID, 128, false); err != nil {
 		return err
@@ -264,6 +273,28 @@ func validateBackupManifest(manifest BackupManifest) error {
 		}
 		if _, err := hex.DecodeString(checksum); err != nil {
 			return fmt.Errorf("invalid SHA-256 for %q", cleaned)
+		}
+	}
+	if manifest.Version == backupSelectiveVersion {
+		if len(manifest.Managed) > len(manifest.Files) {
+			return errors.New("managed file list exceeds the file manifest")
+		}
+		managed := make(map[string]bool, len(manifest.Managed))
+		for _, relative := range manifest.Managed {
+			cleaned, err := cleanBackupRelative(relative)
+			key := strings.ToLower(cleaned)
+			if err != nil || cleaned != relative || managed[key] || isGeneratedSecretConfig(cleaned) || isReservedMapAddonPath(cleaned) {
+				return errors.New("selective manifest contains an invalid managed file")
+			}
+			if _, ok := portableNames[key]; !ok {
+				return errors.New("selective manifest managed file is missing from the file manifest")
+			}
+			managed[key] = true
+		}
+		for relative := range manifest.Files {
+			if !isBackupConfigPath(relative) && !managed[strings.ToLower(relative)] {
+				return errors.New("selective manifest contains a file outside configuration and managed package scope")
+			}
 		}
 	}
 	return nil

@@ -20,11 +20,15 @@ const (
 	backupLegacyFormatVersion = 1
 	backupLaunchFormatVersion = 2
 	backupFormatVersion       = 3
+	backupSelectiveVersion    = 4
 	maxBackupFiles            = 100000
 	maxRestoreBytes           = int64(20 << 30)
 )
 
 var backupRoots = []string{"cfg", "addons", "left4dead2/cfg", "left4dead2/addons"}
+var backupConfigRoots = []string{"cfg", "addons/sourcemod/configs", "left4dead2/cfg", "left4dead2/addons/sourcemod/configs"}
+
+const backupSelectiveScope = "config_and_managed_packages"
 
 type BackupManifest struct {
 	Version    int                  `json:"version"`
@@ -35,6 +39,8 @@ type BackupManifest struct {
 	Files      map[string]string    `json:"files"`
 	Launch     *BackupLaunchConfig  `json:"launch,omitempty"`
 	Maps       []BackupMapReference `json:"maps,omitempty"`
+	Scope      string               `json:"scope,omitempty"`
+	Managed    []string             `json:"managed_files,omitempty"`
 }
 
 type BackupMapReference struct {
@@ -56,7 +62,7 @@ func ReadBackupManifest(archivePath string) (BackupManifest, error) {
 func CreateBackup(instanceID, instancePath, destination string) (BackupManifest, error) {
 	// Kept for writing v1 compatibility fixtures. Production backups use
 	// CreateBackupWithMaps and always include the v3 portable launch snapshot.
-	return createBackup(instanceID, instancePath, destination, backupLegacyFormatVersion, nil, nil)
+	return createBackup(instanceID, instancePath, destination, backupLegacyFormatVersion, nil, nil, nil)
 }
 
 func CreateBackupWithLaunch(instanceID, instancePath, destination string, launch BackupLaunchConfig) (BackupManifest, error) {
@@ -65,17 +71,28 @@ func CreateBackupWithLaunch(instanceID, instancePath, destination string, launch
 	}
 	// Retained for v2 compatibility fixtures and callers that intentionally do
 	// not know about map references. The production Executor uses v3 below.
-	return createBackup(instanceID, instancePath, destination, backupLaunchFormatVersion, &launch, nil)
+	return createBackup(instanceID, instancePath, destination, backupLaunchFormatVersion, &launch, nil, nil)
 }
 
 func CreateBackupWithMaps(instanceID, instancePath, destination string, launch BackupLaunchConfig, maps []BackupMapReference) (BackupManifest, error) {
 	if err := validateBackupLaunchConfig(launch); err != nil {
 		return BackupManifest{}, fmt.Errorf("backup launch configuration: %w", err)
 	}
-	return createBackup(instanceID, instancePath, destination, backupFormatVersion, &launch, maps)
+	return createBackup(instanceID, instancePath, destination, backupFormatVersion, &launch, maps, nil)
 }
 
-func createBackup(instanceID, instancePath, destination string, version int, launch *BackupLaunchConfig, maps []BackupMapReference) (BackupManifest, error) {
+func CreateSelectiveBackupWithMaps(instanceID, instancePath, destination string, launch BackupLaunchConfig, maps []BackupMapReference, managedPaths map[string]string) (BackupManifest, error) {
+	if err := validateBackupLaunchConfig(launch); err != nil {
+		return BackupManifest{}, fmt.Errorf("backup launch configuration: %w", err)
+	}
+	selection, err := prepareBackupManagedPaths(managedPaths)
+	if err != nil {
+		return BackupManifest{}, err
+	}
+	return createBackup(instanceID, instancePath, destination, backupSelectiveVersion, &launch, maps, selection)
+}
+
+func createBackup(instanceID, instancePath, destination string, version int, launch *BackupLaunchConfig, maps []BackupMapReference, managedPaths map[string]string) (BackupManifest, error) {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
 		return BackupManifest{}, err
 	}
@@ -87,6 +104,10 @@ func createBackup(instanceID, instancePath, destination string, version int, lau
 	defer os.Remove(name)
 	zw := zip.NewWriter(tmp)
 	manifest := BackupManifest{Version: version, InstanceID: instanceID, OS: runtime.GOOS, Arch: runtime.GOARCH, CreatedAt: time.Now().UTC(), Files: make(map[string]string), Launch: launch, Maps: maps}
+	if version == backupSelectiveVersion {
+		manifest.Scope = backupSelectiveScope
+	}
+	foundManaged := make(map[string]string, len(managedPaths))
 	count := 0
 	var total int64
 	for _, root := range backupRoots {
@@ -103,11 +124,23 @@ func createBackup(instanceID, instancePath, destination string, version int, lau
 			if walkErr != nil {
 				return walkErr
 			}
+			if entry.IsDir() {
+				if entry.Type()&os.ModeSymlink != 0 {
+					return fmt.Errorf("backup refuses symlink %q", path)
+				}
+				return nil
+			}
+			rel, err := filepath.Rel(instancePath, path)
+			if err != nil {
+				return err
+			}
+			rel = filepath.ToSlash(rel)
+			managedKey, managed := backupManagedPathKey(rel, managedPaths)
+			if version == backupSelectiveVersion && !isBackupConfigPath(rel) && !managed {
+				return nil
+			}
 			if entry.Type()&os.ModeSymlink != 0 {
 				return fmt.Errorf("backup refuses symlink %q", path)
-			}
-			if entry.IsDir() {
-				return nil
 			}
 			info, err := entry.Info()
 			if err != nil {
@@ -116,18 +149,13 @@ func createBackup(instanceID, instancePath, destination string, version int, lau
 			if !info.Mode().IsRegular() {
 				return fmt.Errorf("backup refuses non-regular file %q", path)
 			}
+			if isGeneratedSecretConfig(rel) {
+				return nil
+			}
 			if info.Size() < 0 || info.Size() > maxRestoreBytes-total {
 				return errors.New("backup portable data exceeds 20 GiB limit")
 			}
 			total += info.Size()
-			rel, err := filepath.Rel(instancePath, path)
-			if err != nil {
-				return err
-			}
-			rel = filepath.ToSlash(rel)
-			if isGeneratedSecretConfig(rel) {
-				return nil
-			}
 			count++
 			if count > maxBackupFiles {
 				return errors.New("backup file count exceeds limit")
@@ -161,6 +189,9 @@ func createBackup(instanceID, instancePath, destination string, version int, lau
 				return fmt.Errorf("backup source file %q changed while reading", path)
 			}
 			manifest.Files[rel] = hex.EncodeToString(hash.Sum(nil))
+			if managed {
+				foundManaged[managedKey] = rel
+			}
 			return nil
 		})
 		if err != nil {
@@ -168,6 +199,27 @@ func createBackup(instanceID, instancePath, destination string, version int, lau
 			tmp.Close()
 			return BackupManifest{}, err
 		}
+	}
+	if version == backupSelectiveVersion {
+		if len(foundManaged) != len(managedPaths) {
+			missing := make([]string, 0, len(managedPaths)-len(foundManaged))
+			for key, path := range managedPaths {
+				if _, ok := foundManaged[key]; !ok {
+					missing = append(missing, path)
+				}
+			}
+			sort.Strings(missing)
+			_ = zw.Close()
+			_ = tmp.Close()
+			return BackupManifest{}, fmt.Errorf("managed package file is missing from the instance: %s", missing[0])
+		}
+		manifest.Managed = make([]string, 0, len(foundManaged))
+		for _, path := range foundManaged {
+			manifest.Managed = append(manifest.Managed, path)
+		}
+		sort.Slice(manifest.Managed, func(i, j int) bool {
+			return strings.ToLower(manifest.Managed[i]) < strings.ToLower(manifest.Managed[j])
+		})
 	}
 	if err := validateBackupManifest(manifest); err != nil {
 		_ = zw.Close()
@@ -200,6 +252,41 @@ func createBackup(instanceID, instancePath, destination string, version int, lau
 		return BackupManifest{}, err
 	}
 	return manifest, nil
+}
+
+func prepareBackupManagedPaths(paths map[string]string) (map[string]string, error) {
+	if len(paths) > maxBackupFiles {
+		return nil, errors.New("managed package file count exceeds limit")
+	}
+	result := make(map[string]string, len(paths))
+	for raw := range paths {
+		cleaned, err := cleanBackupRelative(filepath.ToSlash(raw))
+		if err != nil || cleaned != filepath.ToSlash(raw) || isGeneratedSecretConfig(cleaned) || isReservedMapAddonPath(cleaned) {
+			return nil, fmt.Errorf("managed package path %q is not backup-safe", raw)
+		}
+		key := strings.ToLower(cleaned)
+		if _, duplicate := result[key]; duplicate {
+			return nil, fmt.Errorf("managed package path %q is duplicated", raw)
+		}
+		result[key] = cleaned
+	}
+	return result, nil
+}
+
+func backupManagedPathKey(relative string, managed map[string]string) (string, bool) {
+	key := strings.ToLower(filepath.ToSlash(relative))
+	_, ok := managed[key]
+	return key, ok
+}
+
+func isBackupConfigPath(relative string) bool {
+	cleaned := filepath.ToSlash(relative)
+	for _, root := range backupConfigRoots {
+		if cleaned == root || strings.HasPrefix(cleaned, root+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func isGeneratedSecretConfig(relative string) bool {
@@ -332,7 +419,7 @@ func RestoreBackup(instancePath, archivePath, stagingDir string) (BackupManifest
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
-	if err := removeRestoreExtras(instancePath, restored, manifest.OS != runtime.GOOS); err != nil {
+	if err := removeRestoreExtras(instancePath, restored, manifest.OS != runtime.GOOS, manifest.Version == backupSelectiveVersion); err != nil {
 		return manifest, nil, err
 	}
 	for _, rel := range paths {
@@ -351,8 +438,12 @@ func RestoreBackup(instancePath, archivePath, stagingDir string) (BackupManifest
 	return manifest, skippedBinaries, nil
 }
 
-func removeRestoreExtras(instancePath string, desired map[string]bool, preserveTargetNative bool) error {
-	for _, root := range backupRoots {
+func removeRestoreExtras(instancePath string, desired map[string]bool, preserveTargetNative, selective bool) error {
+	roots := backupRoots
+	if selective {
+		roots = backupConfigRoots
+	}
+	for _, root := range roots {
 		base, err := ResolveWithin(instancePath, filepath.FromSlash(root))
 		if err != nil {
 			return err

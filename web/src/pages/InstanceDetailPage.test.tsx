@@ -154,6 +154,32 @@ describe("游戏实例配置中的端口", () => {
     expect(backups).not.toHaveBeenCalled();
     expect(reconcileUpload).not.toHaveBeenCalled();
   });
+
+  it("从备份列表确认后提交永久删除任务", async () => {
+    vi.spyOn(api, "instance").mockResolvedValue(instance);
+    vi.spyOn(api, "backups").mockResolvedValue({ items: [{
+      id: "backup-id",
+      name: "manual-20260812T120000Z-job.zip",
+      platform: "windows/amd64",
+      size: 1024,
+      checksum: "a".repeat(64),
+      created_at: "2026-08-12T12:00:00Z",
+    }] });
+    const remove = vi.spyOn(api, "deleteBackup").mockResolvedValue({ job_id: "delete-job" });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const router = createMemoryRouter(
+      [{ path: "/instances/:instanceId", element: <InstanceDetailPage /> }],
+      { initialEntries: [`/instances/${instance.id}?tab=backups`] },
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><RealtimeProvider enabled={false}><ToastProvider><RouterProvider router={router} /></ToastProvider></RealtimeProvider></QueryClientProvider>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
+
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("manual-20260812T120000Z-job.zip"));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(instance.id, "backup-id", expect.any(String)));
+    expect(await screen.findByText("备份删除任务已提交")).toBeVisible();
+  });
 });
 
 describe("游戏实例模组扫描", () => {

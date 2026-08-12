@@ -55,6 +55,7 @@ export const permissionCatalog: PermissionDefinition[] = [
   { id: "backups.download", label: "下载备份", group: "备份与计划", class: "operate", scope: "instance" },
   { id: "backups.create", label: "创建备份", group: "备份与计划", class: "operate", scope: "instance" },
   { id: "backups.restore", label: "上传及恢复备份", group: "备份与计划", class: "operate", scope: "instance", description: "会替换实例数据" },
+  { id: "backups.delete", label: "永久删除备份", group: "备份与计划", class: "manage", scope: "instance", description: "会删除节点上的备份文件且无法恢复" },
   { id: "schedules.read", label: "查看计划任务", group: "备份与计划", class: "read", scope: "instance" },
   { id: "schedules.manage", label: "管理计划任务", group: "备份与计划", class: "operate", scope: "instance" },
   { id: "logs.read", label: "搜索及下载日志", group: "备份与计划", class: "read", scope: "instance" },

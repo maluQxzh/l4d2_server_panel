@@ -152,6 +152,33 @@ func TestAbortBackupUploadValidatesKeyAndEmptyBodyBeforeStore(t *testing.T) {
 	}
 }
 
+func TestDeleteBackupValidatesKeyAndEmptyBodyBeforeStore(t *testing.T) {
+	server := &Server{}
+	tests := []struct {
+		name string
+		body string
+		key  string
+		code string
+	}{
+		{name: "missing key", code: "idempotency_key_required"},
+		{name: "oversized key", key: strings.Repeat("x", 201), code: "idempotency_key_required"},
+		{name: "unexpected body", key: "delete-key", body: `{}`, code: "invalid_backup_delete"},
+	}
+	for _, item := range tests {
+		t.Run(item.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodDelete, "/api/v1/instances/instance/backups/backup", strings.NewReader(item.body))
+			if item.key != "" {
+				request.Header.Set("Idempotency-Key", item.key)
+			}
+			response := httptest.NewRecorder()
+			server.handleDeleteBackup(response, request)
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), item.code) {
+				t.Fatalf("response = %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestOperatorCannotSubmitManageInstanceActions(t *testing.T) {
 	server := &Server{}
 	actions := []string{

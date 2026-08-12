@@ -693,6 +693,13 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		if _, ok := request.Payload["kind"]; !ok {
 			request.Payload["kind"] = "manual"
 		}
+		managedPaths, managedErr := s.store.BackupManagedPackagePaths(r.Context(), instanceID)
+		if managedErr != nil {
+			s.fail(w, managedErr)
+			return
+		}
+		request.Payload["backup_scope"] = protocol.BackupScopeConfigAndManagedPackages
+		request.Payload["registered_paths"] = managedPaths
 	}
 	switch request.Type {
 	case "kick_player", "ban_player":

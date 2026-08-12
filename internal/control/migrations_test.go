@@ -30,6 +30,7 @@ func TestSQLiteMigrationChecksums(t *testing.T) {
 		"012_instance_port_changes.sql":       "3f62ff7f344090a692b6f28f605eb1c514222b2c99a6bf7e8008f220a004ce22",
 		"013_retire_obsolete_permissions.sql": "10e51770bde143350a4b7ec03f325ed17d1f265c617bc049ff04c76f930508af",
 		"014_smart_plugin_archives.sql":       "6e8d4d7b4ddb58653759cd17872a76a8e854728c2a8e1d6a9c49a98b371c7929",
+		"015_backup_deletion_permission.sql":  "f08e9075c807888531d5faab099e83ee31eee031fd4488fa52aeeac5862960ce",
 	}
 	root := filepath.Join("..", "..", "migrations", "sqlite")
 	entries, err := os.ReadDir(root)
@@ -53,6 +54,48 @@ func TestSQLiteMigrationChecksums(t *testing.T) {
 	}
 	if actual != len(expected) {
 		t.Fatalf("SQLite migration count=%d checksum count=%d", actual, len(expected))
+	}
+}
+
+func TestBackupDeletionPermissionMigrationOnlyUpdatesGlobalOwners(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "backup-delete-permission.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	migrationsDir := filepath.Join("..", "..", "migrations", "sqlite")
+	if err := store.Migrate(ctx, migrationsDir); err != nil {
+		t.Fatal(err)
+	}
+	_, created, err := store.BootstrapOwner(ctx, "owner", "Owner", "hash")
+	if err != nil || !created {
+		t.Fatalf("bootstrap owner: created=%v err=%v", created, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO users(id,username,username_normalized,display_name,password_hash,role)
+		VALUES('legacy-admin','legacy-admin','legacy-admin','Legacy Admin','hash','admin');
+		INSERT INTO role_bindings(id,user_id,role,scope_type) VALUES('legacy-admin-binding','legacy-admin','admin','global');
+		DELETE FROM role_binding_permissions WHERE permission='backups.delete';
+		DELETE FROM schema_migrations WHERE version='015_backup_deletion_permission.sql'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx, migrationsDir); err != nil {
+		t.Fatal(err)
+	}
+	var ownerGrant, adminGrant int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM role_binding_permissions permission
+		JOIN role_bindings binding ON binding.id=permission.binding_id
+		WHERE binding.role='owner' AND binding.scope_type='global' AND permission.permission='backups.delete'`).Scan(&ownerGrant); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM role_binding_permissions
+		WHERE binding_id='legacy-admin-binding' AND permission='backups.delete'`).Scan(&adminGrant); err != nil {
+		t.Fatal(err)
+	}
+	if ownerGrant != 1 || adminGrant != 0 {
+		t.Fatalf("backup deletion migration grants: owner=%d admin=%d", ownerGrant, adminGrant)
 	}
 }
 

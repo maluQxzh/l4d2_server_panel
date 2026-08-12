@@ -1146,7 +1146,7 @@ paths:
     get:
       tags: [Instances]
       summary: 列出节点本地备份元数据
-      description: 需要目标实例 read 权限；归档排除旧版可能含秘密的 l4d2panel.cfg，用户维护的 server.cfg 正常包含。当前 v3 归档另含无秘密的来源启动快照和地图 ID/聚合哈希/BSP 引用，已分配地图 VPK 本身不入包；旧 v1/v2 归档继续可恢复。每日任务产生的新周副本会独立投影到列表，名称以 weekly- 开头并可单独下载；不返回节点路径。
+      description: 需要目标实例的 `backups.read`；不返回节点路径。常规 v4 归档只包含配置和 Control 登记且非本机扫描来源的包文件，并记录无秘密启动快照及地图引用；每日任务产生的新周副本会独立投影到列表。
       parameters: [{ $ref: "#/components/parameters/InstanceID" }]
       responses:
         "200":
@@ -1162,6 +1162,25 @@ paths:
                       type: array,
                       items: { $ref: "#/components/schemas/BackupSummary" },
                     }
+
+  /instances/{instanceId}/backups/{backupId}:
+    delete:
+      tags: [Instances]
+      summary: 永久删除节点本地备份
+      description: 需要目标实例的 `backups.delete`。不接受请求正文或 Agent 路径；Agent 会在固定实例备份目录中复核名称、大小和 SHA-256 后删除 ZIP，文件已经不存在时按幂等成功处理。Control 只在 Agent 成功后删除备份元数据。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/BackupID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "202":
+          description: 删除任务已排队
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /instances/{instanceId}/backups/{backupId}/downloads:
     post:
@@ -2617,7 +2636,7 @@ components:
          environments.read, environments.manage, instances.read, instances.create, instances.configure, instances.delete, instances.start, instances.stop,
          instances.restart, players.read, players.kick, players.ban, players.unban, players.change_map,
          players.broadcast, rcon.execute, files.list, files.read, files.write, files.delete, packages.read, packages.install,
-         packages.toggle, packages.delete, packages.rollback, backups.read, backups.download, backups.create, backups.restore, schedules.read, schedules.manage,
+         packages.toggle, packages.delete, packages.rollback, backups.read, backups.download, backups.create, backups.restore, backups.delete, schedules.read, schedules.manage,
          logs.read, maps.read, maps.import, maps.assign, maps.verify, maps.delete, jobs.read, jobs.details, jobs.cancel, audit.read,
          audit.read_global, notifications.read, notifications.manage, metrics.read, root_security]
 

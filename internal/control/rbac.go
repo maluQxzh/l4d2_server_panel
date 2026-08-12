@@ -52,6 +52,7 @@ const (
 	PermissionBackupsRead            Permission = "backups.read"
 	PermissionBackupsDownload        Permission = "backups.download"
 	PermissionBackupsCreate          Permission = "backups.create"
+	PermissionBackupsDelete          Permission = "backups.delete"
 	PermissionBackupsRestore         Permission = "backups.restore"
 	PermissionSchedulesRead          Permission = "schedules.read"
 	PermissionSchedulesManage        Permission = "schedules.manage"
@@ -122,6 +123,7 @@ var permissionDefinitions = map[Permission]permissionDefinition{
 	PermissionBackupsRead:            {PermissionRead, permissionScopeInstance},
 	PermissionBackupsDownload:        {PermissionOperate, permissionScopeInstance},
 	PermissionBackupsCreate:          {PermissionOperate, permissionScopeInstance},
+	PermissionBackupsDelete:          {PermissionManage, permissionScopeInstance},
 	PermissionBackupsRestore:         {PermissionOperate, permissionScopeInstance},
 	PermissionSchedulesRead:          {PermissionRead, permissionScopeInstance},
 	PermissionSchedulesManage:        {PermissionOperate, permissionScopeInstance},
@@ -237,6 +239,7 @@ var instanceJobPermissions = map[string]Permission{
 	"a2s.info":               PermissionInstancesRead,
 	"a2s.players":            PermissionPlayersRead,
 	"backup":                 PermissionBackupsCreate,
+	"backup.delete":          PermissionBackupsDelete,
 	"backup.chunk":           PermissionBackupsDownload,
 	"backup.upload.abort":    PermissionBackupsRestore,
 	"ban_player":             PermissionPlayersBan,

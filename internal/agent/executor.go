@@ -185,6 +185,8 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 		return e.importInstance(ctx, job, progress)
 	case "backup":
 		return e.backup(ctx, job, progress)
+	case "backup.delete":
+		return e.deleteBackup(job, progress)
 	case "restore":
 		return e.restore(ctx, job, progress)
 	case "file":
@@ -261,7 +263,7 @@ func agentJobRequiresInstanceLock(action string, payload map[string]any) bool {
 
 func externalAgentJobAllowed(action string, payload map[string]any) bool {
 	switch action {
-	case "restart", "a2s.info", "a2s.players", "rcon.players", "list", "scan_packages", "inspect_plugin_archive", "logs.search", "logs.chunk", "backup", "backup.chunk", "backup.upload.chunk", "backup.upload.abort", "check_update", "detach":
+	case "restart", "a2s.info", "a2s.players", "rcon.players", "list", "scan_packages", "inspect_plugin_archive", "logs.search", "logs.chunk", "backup", "backup.delete", "backup.chunk", "backup.upload.chunk", "backup.upload.abort", "check_update", "detach":
 		return true
 	case "file":
 		operation := strings.ToLower(strings.TrimSpace(payloadString(payload, "operation")))
@@ -368,6 +370,7 @@ type operationPayload struct {
 	DurationMinutes            int                    `json:"duration_minutes,omitempty"`
 	RetentionDaily             int                    `json:"retention_daily,omitempty"`
 	RetentionWeekly            int                    `json:"retention_weekly,omitempty"`
+	BackupScope                string                 `json:"backup_scope,omitempty"`
 	Maintenance                bool                   `json:"maintenance,omitempty"`
 	WarningSeconds             []int                  `json:"warning_seconds,omitempty"`
 	BroadcastMessage           string                 `json:"broadcast_message,omitempty"`
@@ -1170,7 +1173,14 @@ func (e *Executor) backup(_ context.Context, job domain.Job, progress ProgressFu
 			return nil, fmt.Errorf("capture map assignments: %w", err)
 		}
 	}
-	manifest, err := CreateBackupWithMaps(job.InstanceID, path, destination, launch, mapReferences)
+	var manifest BackupManifest
+	if payload.BackupScope == protocol.BackupScopeConfigAndManagedPackages {
+		manifest, err = CreateSelectiveBackupWithMaps(job.InstanceID, path, destination, launch, mapReferences, payload.RegisteredPaths)
+	} else if payload.BackupScope == "" {
+		manifest, err = CreateBackupWithMaps(job.InstanceID, path, destination, launch, mapReferences)
+	} else {
+		return nil, errors.New("unsupported backup scope")
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -378,6 +378,10 @@ export const api = {
     { method: "DELETE" },
   ),
   backups: (instanceId: string) => list<BackupRecord>(`/instances/${encodeURIComponent(instanceId)}/backups`),
+  deleteBackup: (instanceId: string, backupId: string, idempotencyKey: string) => request<{ job_id: string; idempotent_replay?: boolean }>(
+    `/instances/${encodeURIComponent(instanceId)}/backups/${encodeURIComponent(backupId)}`,
+    { method: "DELETE", headers: { "Idempotency-Key": idempotencyKey } },
+  ),
   createBackupUpload: (
     instanceId: string,
     payload: { name: string; platform: "windows/amd64" | "linux/amd64"; size: number; sha256: string },

@@ -20,6 +20,7 @@ import (
 	"github.com/l4d2-panel/l4d2panel/internal/containerupdate"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 	"github.com/l4d2-panel/l4d2panel/internal/portableupdate"
+	"github.com/l4d2-panel/l4d2panel/internal/protocol"
 	"github.com/l4d2-panel/l4d2panel/internal/version"
 )
 
@@ -147,6 +148,16 @@ func (s *Server) runDueSchedules(ctx context.Context) {
 				continue
 			}
 		}
+		if action == "backup" {
+			managedPaths, managedErr := s.store.BackupManagedPackagePaths(ctx, schedule.InstanceID)
+			if managedErr != nil {
+				s.logger.Error("load managed package paths for scheduled backup", "schedule_id", schedule.ID, "error", managedErr)
+				_ = s.store.AdvanceSchedule(ctx, schedule, ranAt)
+				continue
+			}
+			payload["backup_scope"] = protocol.BackupScopeConfigAndManagedPackages
+			payload["registered_paths"] = managedPaths
+		}
 		job, _, queueErr := s.store.QueueInstanceJob(ctx, schedule.InstanceID, action, payload, "", key)
 		if queueErr == nil {
 			if action == "start" || action == "stop" || action == "restart" {
@@ -238,6 +249,7 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requireInstancePermission(PermissionPackagesRead)).Get("/instances/{instanceID}/packages/{packageID}/versions", s.handlePackageVersions)
 			r.With(s.requireInstancePermission(PermissionPackagesRollback)).Post("/instances/{instanceID}/packages/{packageID}/versions/{versionID}/rollback", s.handleRollbackPackageVersion)
 			r.With(s.requireInstancePermission(PermissionBackupsRead)).Get("/instances/{instanceID}/backups", s.handleInstanceBackups)
+			r.With(s.requireInstancePermission(PermissionBackupsDelete)).Delete("/instances/{instanceID}/backups/{backupID}", s.handleDeleteBackup)
 			r.With(s.requireInstancePermission(PermissionBackupsDownload)).Post("/instances/{instanceID}/backups/{backupID}/downloads", s.handleCreateBackupDownload)
 			r.With(s.requireInstancePermission(PermissionBackupsDownload)).Get("/instances/{instanceID}/backups/{backupID}/downloads/{jobID}", s.handleGetBackupDownload)
 			r.With(s.requireInstancePermission(PermissionBackupsRestore)).Post("/instances/{instanceID}/backup-uploads", s.handleCreateBackupUpload)
