@@ -87,13 +87,26 @@ func osMkdirData(config *Config) error {
 func (a *Agent) Enroll(ctx context.Context) error { return Enroll(ctx, a.configPath, a.config) }
 
 func (a *Agent) Run(ctx context.Context) error {
+	a.logger.Printf("starting agent version=%s os=%s arch=%s", version.Version, runtime.GOOS, runtime.GOARCH)
+	defer a.logger.Printf("agent stopped")
 	a.ctx = ctx
 	a.recoveryOnce.Do(a.recoverInstances)
-	go a.runLogCleanup(ctx)
+	cleanupCtx, stopCleanup := context.WithCancel(ctx)
+	cleanupDone := make(chan struct{})
+	go func() {
+		defer close(cleanupDone)
+		a.runLogCleanup(cleanupCtx)
+	}()
+	defer func() {
+		stopCleanup()
+		<-cleanupDone
+	}()
 	if a.config.Credential == "" || a.config.NodeID == "" {
+		a.logger.Printf("enrolling agent with control plane")
 		if err := a.Enroll(ctx); err != nil {
 			return err
 		}
+		a.logger.Printf("agent enrollment completed")
 	}
 	minDelay, _ := a.config.reconnectMin()
 	maxDelay, _ := a.config.reconnectMax()
@@ -102,6 +115,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
+		a.logger.Printf("connecting to control plane")
 		err := a.runSession(ctx)
 		if ctx.Err() != nil {
 			return nil
@@ -209,6 +223,7 @@ func (a *Agent) runSession(ctx context.Context) error {
 	if err := conn.WriteJSON(hello); err != nil {
 		return err
 	}
+	a.logger.Printf("control connection established")
 	sender := make(chan protocol.Envelope, 512)
 	replayWake := make(chan struct{}, 1)
 	a.setSessionSender(sender, replayWake)
@@ -483,22 +498,28 @@ func (a *Agent) handleClaimedJob(job domain.Job, execute executeJobFunc) {
 	defer func() { cancel(); a.activeMu.Lock(); delete(a.activeJobs, job.ID); a.activeMu.Unlock() }()
 	if canceledBeforeStart {
 		const message = "operation canceled before execution"
-		_ = a.journal.Update(job.ID, domain.JobCanceled, 0, message, nil)
+		a.updateJournal(job.ID, domain.JobCanceled, 0, message, nil)
 		a.sendJobUpdate(job.ID, domain.JobCanceled, 0, message, nil)
 		return
 	}
-	_ = a.journal.Update(job.ID, domain.JobRunning, 0, "operation started", nil)
+	a.updateJournal(job.ID, domain.JobRunning, 0, "operation started", nil)
 	a.sendJobUpdate(job.ID, domain.JobRunning, 0, "operation started", nil)
 	progress := newJournalProgress(a, job.ID)
 	result, executeErr := execute(jobCtx, job, progress.Update)
 	status, message := executionCompletion(executeErr)
 	if status == domain.JobSucceeded {
-		_ = a.journal.Update(job.ID, status, 100, message, result)
+		a.updateJournal(job.ID, status, 100, message, result)
 		a.sendJobUpdate(job.ID, status, 100, message, result)
 		return
 	}
-	_ = a.journal.Update(job.ID, status, progress.Value(), message, nil)
+	a.updateJournal(job.ID, status, progress.Value(), message, nil)
 	a.sendJobUpdate(job.ID, status, progress.Value(), message, nil)
+}
+
+func (a *Agent) updateJournal(jobID string, status domain.JobStatus, progress int, message string, result map[string]any) {
+	if err := a.journal.Update(jobID, status, progress, message, result); err != nil {
+		a.logger.Printf("persist job journal update: job_id=%s status=%s: %v", jobID, status, err)
+	}
 }
 
 // executionCompletion deliberately classifies the Executor's return value,
@@ -642,7 +663,7 @@ func (p *journalProgress) Update(value int, message string) {
 		return
 	}
 	p.value, p.last = value, time.Now()
-	_ = p.agent.journal.Update(p.jobID, domain.JobRunning, value, message, nil)
+	p.agent.updateJournal(p.jobID, domain.JobRunning, value, message, nil)
 	p.agent.sendJobUpdate(p.jobID, domain.JobRunning, value, message, nil)
 }
 func (p *journalProgress) Value() int { p.mu.Lock(); defer p.mu.Unlock(); return p.value }

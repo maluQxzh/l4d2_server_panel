@@ -196,6 +196,7 @@ func (p *serviceProgram) Start(service.Service) error {
 	}
 	a, err := agent.New(p.configPath, cfg, logger)
 	if err != nil {
+		logger.Printf("agent initialization failed: %v", err)
 		closer.Close()
 		return err
 	}
