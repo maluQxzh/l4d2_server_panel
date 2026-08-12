@@ -113,7 +113,7 @@ func (s *Server) handleImportMap(w http.ResponseWriter, r *http.Request) {
 	}
 	nodeID := chi.URLParam(r, "nodeID")
 	principal := principalFromContext(r.Context())
-	allowed, err := s.allowsMapNodePermission(r.Context(), principal, nodeID, PermissionMapsImport)
+	scopeInstanceID, allowed, err := s.mapNodePermissionScope(r.Context(), principal, nodeID, PermissionMapsImport)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -136,6 +136,10 @@ func (s *Server) handleImportMap(w http.ResponseWriter, r *http.Request) {
 	if idempotencyKey != "" {
 		existing, lookupErr := s.store.JobByIdempotencyKeyMatching(r.Context(), principal.User.ID, idempotencyKey, requestFingerprint)
 		if lookupErr == nil {
+			if jobScopeInstanceID(existing) != scopeInstanceID {
+				writeError(w, http.StatusConflict, "idempotency_scope_conflict", "idempotency key belongs to a different authorization scope")
+				return
+			}
 			s.dispatchSoon(existing.NodeID)
 			writeJSON(w, http.StatusAccepted, map[string]any{"job_id": existing.ID, "idempotent_replay": true})
 			return
@@ -146,6 +150,9 @@ func (s *Server) handleImportMap(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	payload := map[string]any{"source": shareURL, "map_id": uuid.NewString()}
+	if scopeInstanceID != "" {
+		payload[jobScopeInstancePayloadField] = scopeInstanceID
+	}
 	if err := sealJobPayloadSecrets(s.config.MasterKey, "map.import.qq_flash", payload); err != nil {
 		s.fail(w, err)
 		return
@@ -154,6 +161,10 @@ func (s *Server) handleImportMap(w http.ResponseWriter, r *http.Request) {
 		principal.User.ID, idempotencyKey, requestFingerprint)
 	if err != nil {
 		s.fail(w, err)
+		return
+	}
+	if jobScopeInstanceID(job) != scopeInstanceID {
+		writeError(w, http.StatusConflict, "idempotency_scope_conflict", "idempotency key belongs to a different authorization scope")
 		return
 	}
 	s.audit(r, "map.import.requested", "node", nodeID, map[string]any{"job_id": job.ID})
@@ -228,7 +239,7 @@ func (s *Server) handleVerifyMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := principalFromContext(r.Context())
-	allowed, err := s.allowsMapNodePermission(r.Context(), principal, item.NodeID, PermissionMapsVerify)
+	scopeInstanceID, allowed, err := s.mapNodePermissionScope(r.Context(), principal, item.NodeID, PermissionMapsVerify)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -246,10 +257,14 @@ func (s *Server) handleVerifyMap(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	job, reused, err := s.store.QueueMapNodeJob(r.Context(), mapID, "map.verify", principal.User.ID,
+	job, reused, err := s.store.QueueMapNodeJob(r.Context(), mapID, "map.verify", scopeInstanceID, principal.User.ID,
 		r.Header.Get("Idempotency-Key"), fingerprint)
 	if err != nil {
 		s.fail(w, err)
+		return
+	}
+	if jobScopeInstanceID(job) != scopeInstanceID {
+		writeError(w, http.StatusConflict, "idempotency_scope_conflict", "idempotency key belongs to a different authorization scope")
 		return
 	}
 	s.audit(r, "map.verify.requested", "map", mapID, map[string]any{"job_id": job.ID})
@@ -265,7 +280,7 @@ func (s *Server) handleCreateMapDeleteConfirmation(w http.ResponseWriter, r *htt
 		return
 	}
 	principal := principalFromContext(r.Context())
-	allowed, err := s.allowsMapDelete(r.Context(), principal, item)
+	_, allowed, err := s.allowsMapDeleteScope(r.Context(), principal, item)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -302,7 +317,7 @@ func (s *Server) handleDeleteMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := principalFromContext(r.Context())
-	allowed, err := s.allowsMapDelete(r.Context(), principal, item)
+	scopeInstanceID, allowed, err := s.allowsMapDeleteScope(r.Context(), principal, item)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -321,10 +336,14 @@ func (s *Server) handleDeleteMap(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	job, reused, err := s.store.QueueMapDelete(r.Context(), mapID, principal.User.ID, request.ConfirmationToken,
+	job, reused, err := s.store.QueueMapDelete(r.Context(), mapID, scopeInstanceID, principal.User.ID, request.ConfirmationToken,
 		r.Header.Get("Idempotency-Key"), fingerprint)
 	if err != nil {
 		s.fail(w, err)
+		return
+	}
+	if jobScopeInstanceID(job) != scopeInstanceID {
+		writeError(w, http.StatusConflict, "idempotency_scope_conflict", "idempotency key belongs to a different authorization scope")
 		return
 	}
 	s.audit(r, "map.delete.requested", "map", mapID, map[string]any{"job_id": job.ID})
@@ -341,43 +360,33 @@ func (s *Server) publishMapJob(r *http.Request, job domain.Job) {
 // allowsMapNodePermission maps an instance-scoped shared-map grant to the
 // selected instance's node without granting general node-management access.
 func (s *Server) allowsMapNodePermission(ctx context.Context, principal Principal, nodeID string, permission Permission) (bool, error) {
+	_, allowed, err := s.mapNodePermissionScope(ctx, principal, nodeID, permission)
+	return allowed, err
+}
+
+func (s *Server) mapNodePermissionScope(ctx context.Context, principal Principal, nodeID string, permission Permission) (string, bool, error) {
 	if principal.AllowsNodePermission(nodeID, permission) {
-		return true, nil
+		return "", true, nil
 	}
-	return s.allowsInstanceScopedMapPermission(ctx, principal, nodeID, permission)
+	return s.instancePermissionScopeOnNode(ctx, principal, nodeID, permission)
 }
 
 func (s *Server) allowsInstanceScopedMapPermission(ctx context.Context, principal Principal, nodeID string, permission Permission) (bool, error) {
-	instanceIDs := make(map[string]struct{})
-	if principal.TokenInstanceID != "" {
-		instanceIDs[principal.TokenInstanceID] = struct{}{}
-	}
-	for _, binding := range principal.Bindings {
-		if binding.ScopeType == "instance" && bindingAllows(binding, permission) {
-			instanceIDs[binding.InstanceID] = struct{}{}
-		}
-	}
-	for instanceID := range instanceIDs {
-		instance, err := s.store.GetInstance(ctx, instanceID)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return false, err
-		}
-		if instance.NodeID == nodeID && principal.AllowsInstancePermission(instance, permission) {
-			return true, nil
-		}
-	}
-	return false, nil
+	_, allowed, err := s.instancePermissionScopeOnNode(ctx, principal, nodeID, permission)
+	return allowed, err
 }
 
 func (s *Server) allowsMapDelete(ctx context.Context, principal Principal, item domain.Map) (bool, error) {
+	_, allowed, err := s.allowsMapDeleteScope(ctx, principal, item)
+	return allowed, err
+}
+
+func (s *Server) allowsMapDeleteScope(ctx context.Context, principal Principal, item domain.Map) (string, bool, error) {
 	if principal.AllowsNodePermission(item.NodeID, PermissionMapsDelete) {
-		return true, nil
+		return "", true, nil
 	}
 	if item.CreatedBy == "" || item.CreatedBy != principal.User.ID {
-		return false, nil
+		return "", false, nil
 	}
-	return s.allowsInstanceScopedMapPermission(ctx, principal, item.NodeID, PermissionMapsDelete)
+	return s.instancePermissionScopeOnNode(ctx, principal, item.NodeID, PermissionMapsDelete)
 }

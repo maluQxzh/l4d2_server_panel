@@ -267,6 +267,7 @@ func stripEncryptedJobFields(jobPayload, jobResult map[string]any) {
 
 func stripJobFields(jobType string, jobPayload, jobResult map[string]any) {
 	stripEncryptedJobFields(jobPayload, jobResult)
+	delete(jobPayload, jobScopeInstancePayloadField)
 	switch jobType {
 	case "delete", "detach":
 		delete(jobResult, "quarantine_path")

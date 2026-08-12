@@ -2,13 +2,23 @@ package control
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
+
+const jobScopeInstancePayloadField = "_scope_instance_id"
+
+var instanceScopedNodeJobTypes = map[string]bool{
+	"map.import.qq_flash": true,
+	"map.verify":          true,
+	"map.delete":          true,
+}
 
 func (p Principal) HasTokenResourceRestriction() bool {
 	return p.IsAPIToken() && (p.TokenNodeID != "" || p.TokenInstanceID != "")
@@ -127,7 +137,126 @@ func (p Principal) AllowsJobPermission(job domain.Job, permission Permission) bo
 	if job.InstanceID != "" {
 		return p.AllowsInstancePermission(domain.Instance{ID: job.InstanceID, NodeID: job.NodeID}, permission)
 	}
+	if scopeInstanceID := jobScopeInstanceID(job); instanceScopedNodeJobTypes[job.Type] && scopeInstanceID != "" &&
+		p.AllowsInstancePermission(domain.Instance{ID: scopeInstanceID, NodeID: job.NodeID}, permission) {
+		return true
+	}
 	return p.AllowsNodePermission(job.NodeID, permission)
+}
+
+type jobVisibilityScope struct {
+	NodeIDs          []string
+	InstanceIDs      []string
+	LegacyOwnNodeIDs []string
+	RequestedBy      string
+}
+
+func (s *Server) jobVisibilityScope(ctx context.Context, principal Principal, permission Permission) (jobVisibilityScope, error) {
+	nodes := make(map[string]struct{})
+	instances := make(map[string]struct{})
+	legacyNodes := make(map[string]struct{})
+	if principal.TokenNodeID != "" && principal.AllowsNodePermission(principal.TokenNodeID, permission) {
+		nodes[principal.TokenNodeID] = struct{}{}
+	}
+	instanceIDs := make(map[string]struct{})
+	if principal.TokenInstanceID != "" {
+		instanceIDs[principal.TokenInstanceID] = struct{}{}
+	}
+	for _, binding := range principal.Bindings {
+		if !bindingAllows(binding, permission) {
+			continue
+		}
+		switch binding.ScopeType {
+		case "node":
+			if principal.AllowsNodePermission(binding.NodeID, permission) {
+				nodes[binding.NodeID] = struct{}{}
+			}
+		case "instance":
+			instanceIDs[binding.InstanceID] = struct{}{}
+		}
+	}
+	for instanceID := range instanceIDs {
+		instance, err := s.store.GetInstance(ctx, instanceID)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return jobVisibilityScope{}, err
+		}
+		if principal.AllowsInstancePermission(instance, permission) {
+			instances[instance.ID] = struct{}{}
+			legacyNodes[instance.NodeID] = struct{}{}
+		}
+	}
+	result := jobVisibilityScope{RequestedBy: principal.User.ID}
+	for nodeID := range nodes {
+		result.NodeIDs = append(result.NodeIDs, nodeID)
+	}
+	for instanceID := range instances {
+		result.InstanceIDs = append(result.InstanceIDs, instanceID)
+	}
+	for nodeID := range legacyNodes {
+		result.LegacyOwnNodeIDs = append(result.LegacyOwnNodeIDs, nodeID)
+	}
+	sort.Strings(result.NodeIDs)
+	sort.Strings(result.InstanceIDs)
+	sort.Strings(result.LegacyOwnNodeIDs)
+	return result, nil
+}
+
+func jobScopeInstanceID(job domain.Job) string {
+	if job.ScopeInstanceID != "" {
+		return job.ScopeInstanceID
+	}
+	return stringFromAny(job.Payload[jobScopeInstancePayloadField])
+}
+
+// instancePermissionScopeOnNode returns one concrete instance whose binding
+// authorizes a node-shared operation. The ID is persisted with the job so
+// list/detail/event authorization remains tied to the same narrow resource.
+func (s *Server) instancePermissionScopeOnNode(ctx context.Context, principal Principal, nodeID string, permission Permission) (string, bool, error) {
+	instanceIDs := make(map[string]struct{})
+	if principal.TokenInstanceID != "" {
+		instanceIDs[principal.TokenInstanceID] = struct{}{}
+	}
+	for _, binding := range principal.Bindings {
+		if binding.ScopeType == "instance" && bindingAllows(binding, permission) {
+			instanceIDs[binding.InstanceID] = struct{}{}
+		}
+	}
+	ordered := make([]string, 0, len(instanceIDs))
+	for instanceID := range instanceIDs {
+		ordered = append(ordered, instanceID)
+	}
+	sort.Strings(ordered)
+	for _, instanceID := range ordered {
+		instance, err := s.store.GetInstance(ctx, instanceID)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if instance.NodeID == nodeID && principal.AllowsInstancePermission(instance, permission) {
+			return instance.ID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// allowsJobPermission adds a compatibility path for node-level map jobs that
+// predate persisted scope_instance_id. Only the original requester may use an
+// instance-scoped jobs permission for such a legacy task.
+func (s *Server) allowsJobPermission(ctx context.Context, principal Principal, job domain.Job, permission Permission) (bool, string, error) {
+	if principal.AllowsJobPermission(job, permission) {
+		return true, jobScopeInstanceID(job), nil
+	}
+	if job.InstanceID != "" || jobScopeInstanceID(job) != "" || !instanceScopedNodeJobTypes[job.Type] ||
+		job.RequestedBy == "" || job.RequestedBy != principal.User.ID {
+		return false, "", nil
+	}
+	scopeInstanceID, allowed, err := s.instancePermissionScopeOnNode(ctx, principal, job.NodeID, permission)
+	return allowed, scopeInstanceID, err
 }
 
 func (p Principal) AllowsInstanceAction(action string) bool {
@@ -236,7 +365,8 @@ func eventJob(event Event) (domain.Job, bool) {
 	}
 	if values, ok := raw.(map[string]any); ok {
 		return domain.Job{ID: eventString(values, "id"), NodeID: eventString(values, "node_id"),
-			InstanceID: eventString(values, "instance_id")}, true
+			InstanceID: eventString(values, "instance_id"), ScopeInstanceID: eventString(values, "scope_instance_id"),
+			Type: eventString(values, "type"), RequestedBy: eventString(values, "requested_by")}, true
 	}
 	return domain.Job{}, false
 }
@@ -254,7 +384,8 @@ func (s *Server) tokenAllowsAuditResource(ctx context.Context, principal Princip
 		return principal.AllowsInstancePermission(instance, PermissionAuditRead)
 	}
 	if job, err := s.store.GetJob(ctx, resourceID); err == nil {
-		return principal.AllowsJobPermission(job, PermissionAuditRead)
+		allowed, _, permissionErr := s.allowsJobPermission(ctx, principal, job, PermissionAuditRead)
+		return permissionErr == nil && allowed
 	}
 	if _, err := uuid.Parse(resourceID); err != nil {
 		return false
@@ -281,7 +412,8 @@ func (s *Server) auditEventAllowed(ctx context.Context, principal Principal, eve
 		}
 	case "job":
 		if job, err := s.store.GetJob(ctx, event.ResourceID); err == nil {
-			return principal.AllowsJobPermission(job, PermissionAuditRead)
+			allowed, _, permissionErr := s.allowsJobPermission(ctx, principal, job, PermissionAuditRead)
+			return permissionErr == nil && allowed
 		}
 	}
 	if instanceID := stringFromAny(event.Metadata["instance_id"]); instanceID != "" {
@@ -336,7 +468,21 @@ func (s *Server) enforceTokenResourceScope(next http.Handler) http.Handler {
 				s.fail(w, err)
 				return
 			}
-			if !principal.AllowsJob(job) {
+			allowed := principal.AllowsJob(job)
+			if !allowed {
+				for _, permission := range []Permission{PermissionJobsRead, PermissionJobsDetails, PermissionJobsCancel} {
+					var permissionErr error
+					allowed, _, permissionErr = s.allowsJobPermission(r.Context(), principal, job, permission)
+					if permissionErr != nil {
+						s.fail(w, permissionErr)
+						return
+					}
+					if allowed {
+						break
+					}
+				}
+			}
+			if !allowed {
 				writeTokenScopeDenied(w)
 				return
 			}

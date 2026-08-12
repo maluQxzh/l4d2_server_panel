@@ -664,6 +664,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		}
 		outbound := job
 		outbound.Payload = cloneMap(job.Payload)
+		delete(outbound.Payload, jobScopeInstancePayloadField)
 		if err := unsealJobPayloadSecrets(h.masterKey, job.Type, outbound.Payload); err != nil {
 			h.log.Error("decrypt queued job payload", "job_id", job.ID, "error", err)
 			continue

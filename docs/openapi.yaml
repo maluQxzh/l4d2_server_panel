@@ -3768,6 +3768,10 @@ components:
         id: { type: string, format: uuid }
         node_id: { type: string, format: uuid }
         instance_id: { type: string, format: uuid }
+        scope_instance_id:
+          type: string
+          format: uuid
+          description: 节点共享任务由实例范围权限发起时的授权归属实例；不表示 Agent 在该实例内执行任务
         game_installation_id: { type: string, format: uuid }
         type: { type: string }
         display_type:

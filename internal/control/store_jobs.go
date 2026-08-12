@@ -44,6 +44,7 @@ func scanJobWithRequesterName(row scanner) (domain.Job, error) {
 		if err = json.Unmarshal(payload, &job.Payload); err == nil {
 			err = json.Unmarshal(result, &job.Result)
 		}
+		job.ScopeInstanceID = stringFromAny(job.Payload[jobScopeInstancePayloadField])
 	}
 	return job, err
 }
@@ -66,6 +67,7 @@ func scanJobWithOptionalFingerprint(row scanner, withFingerprint bool) (domain.J
 		if err = json.Unmarshal(payload, &job.Payload); err == nil {
 			err = json.Unmarshal(result, &job.Result)
 		}
+		job.ScopeInstanceID = stringFromAny(job.Payload[jobScopeInstancePayloadField])
 	}
 	if fingerprint == nil {
 		return job, "", err
@@ -183,8 +185,9 @@ func restartableInstanceStatus(status domain.InstanceStatus) bool {
 }
 
 // QueueNodeJob persists a node-scoped operation using the same idempotency and
-// reconnect semantics as instance jobs. Concurrent jobs of the same supported
-// node operation are coalesced.
+// reconnect semantics as instance jobs. Concurrent discovery scans are
+// coalesced; a distinct map import conflicts with the active per-node import
+// instead of returning another requester's task ID.
 func (s *Store) QueueNodeJob(ctx context.Context, nodeID, action string, payload map[string]any, requestedBy, idempotencyKey string) (domain.Job, bool, error) {
 	requestFingerprint, err := nodeJobRequestFingerprint(nodeID, action, payload)
 	if err != nil {
@@ -239,18 +242,27 @@ func (s *Store) QueueNodeJobWithFingerprint(ctx context.Context, nodeID, action 
 	if status == domain.NodeRevoked {
 		return domain.Job{}, false, ErrUnauthorized
 	}
-	if existing, lookupErr := scanJob(tx.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs
+	if action == "discover_instances" {
+		if existing, lookupErr := scanJob(tx.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs
 		WHERE node_id=?1 AND instance_id IS NULL AND type=?2 AND status IN ('queued','dispatched','running')
 		ORDER BY created_at,id LIMIT 1`, nodeID, action)); lookupErr == nil {
-		return existing, true, tx.Commit()
-	} else if !errors.Is(lookupErr, sql.ErrNoRows) {
-		return domain.Job{}, false, lookupErr
+			return existing, true, tx.Commit()
+		} else if !errors.Is(lookupErr, sql.ErrNoRows) {
+			return domain.Job{}, false, lookupErr
+		}
+	}
+	if action != "map.import.qq_flash" && stringFromAny(payload[jobScopeInstancePayloadField]) != "" {
+		return domain.Job{}, false, errors.New("node job instance scope is not supported for this action")
+	}
+	scopeInstanceID := stringFromAny(payload[jobScopeInstancePayloadField])
+	if err := validateJobScopeInstanceTx(ctx, tx, nodeID, scopeInstanceID); err != nil {
+		return domain.Job{}, false, err
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return domain.Job{}, false, err
 	}
-	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, Type: action, Status: domain.JobQueued, Payload: payload,
+	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, ScopeInstanceID: scopeInstanceID, Type: action, Status: domain.JobQueued, Payload: payload,
 		IdempotencyKey: idempotencyKey, RequestedBy: requestedBy, CreatedAt: time.Now().UTC()}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,node_id,instance_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
 		VALUES(?1,?2,NULL,?3,?4,?5,NULLIF(?6,''),?7,?8,NULLIF(?9,''))`, job.ID, job.NodeID, job.Type, job.Status, string(raw),
@@ -261,6 +273,25 @@ func (s *Store) QueueNodeJobWithFingerprint(ctx context.Context, nodeID, action 
 		return domain.Job{}, false, err
 	}
 	return job, false, tx.Commit()
+}
+
+func validateJobScopeInstanceTx(ctx context.Context, tx *sql.Tx, nodeID, instanceID string) error {
+	if instanceID == "" {
+		return nil
+	}
+	if uuid.Validate(instanceID) != nil {
+		return errors.New("job instance scope is invalid")
+	}
+	var actualNodeID string
+	if err := tx.QueryRowContext(ctx, `SELECT node_id FROM instances WHERE id=?1`, instanceID).Scan(&actualNodeID); errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if actualNodeID != nodeID {
+		return fmt.Errorf("job instance scope belongs to another node: %w", ErrConflict)
+	}
+	return nil
 }
 
 func externalInstanceJobAllowed(action string, payload map[string]any) bool {
@@ -340,6 +371,70 @@ func (s *Store) ListJobs(ctx context.Context, nodeID, instanceID string, backgro
 	query := `SELECT ` + jobColumnsWithRequesterName + ` FROM jobs WHERE (?1='' OR node_id=?1) AND (?2='' OR instance_id=?2)
 		` + backgroundClause + ` ORDER BY created_at DESC,id DESC LIMIT ?3`
 	rows, err := s.db.QueryContext(ctx, query, nodeID, instanceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]domain.Job, 0)
+	for rows.Next() {
+		job, err := scanJobWithRequesterName(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, job)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) ListVisibleJobs(ctx context.Context, nodeID, instanceID string, background jobBackgroundFilter, limit int, visibility jobVisibilityScope) ([]domain.Job, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	backgroundClause := ""
+	switch background {
+	case jobBackgroundExclude:
+		backgroundClause = " AND NOT (" + backgroundJobSQLPredicate + ")"
+	case jobBackgroundOnly:
+		backgroundClause = " AND (" + backgroundJobSQLPredicate + ")"
+	case jobBackgroundInclude:
+	default:
+		return nil, fmt.Errorf("invalid background job filter %q", background)
+	}
+	if len(visibility.NodeIDs) == 0 && len(visibility.InstanceIDs) == 0 && len(visibility.LegacyOwnNodeIDs) == 0 {
+		return []domain.Job{}, nil
+	}
+	nodeIDs, err := json.Marshal(visibility.NodeIDs)
+	if err != nil {
+		return nil, err
+	}
+	instanceIDs, err := json.Marshal(visibility.InstanceIDs)
+	if err != nil {
+		return nil, err
+	}
+	legacyNodeIDs, err := json.Marshal(visibility.LegacyOwnNodeIDs)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT ` + jobColumnsWithRequesterName + ` FROM jobs
+		WHERE (?1='' OR node_id=?1) AND (?2='' OR instance_id=?2)
+		AND (
+			node_id IN (SELECT value FROM json_each(?4))
+			OR instance_id IN (SELECT value FROM json_each(?5))
+			OR (
+				instance_id IS NULL
+				AND type IN ('map.import.qq_flash','map.verify','map.delete')
+				AND json_extract(payload,'$._scope_instance_id') IN (SELECT value FROM json_each(?5))
+			)
+			OR (
+				instance_id IS NULL
+				AND requested_by=?6
+				AND node_id IN (SELECT value FROM json_each(?7))
+				AND type IN ('map.import.qq_flash','map.verify','map.delete')
+				AND COALESCE(json_extract(payload,'$._scope_instance_id'),'')=''
+			)
+		)
+		` + backgroundClause + ` ORDER BY created_at DESC,id DESC LIMIT ?3`
+	rows, err := s.db.QueryContext(ctx, query, nodeID, instanceID, limit, string(nodeIDs), string(instanceIDs), visibility.RequestedBy, string(legacyNodeIDs))
 	if err != nil {
 		return nil, err
 	}

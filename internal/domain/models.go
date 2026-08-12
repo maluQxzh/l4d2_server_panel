@@ -148,6 +148,7 @@ type Job struct {
 	ID              string         `json:"id"`
 	NodeID          string         `json:"node_id"`
 	InstanceID      string         `json:"instance_id,omitempty"`
+	ScopeInstanceID string         `json:"scope_instance_id,omitempty"`
 	InstallationID  string         `json:"game_installation_id,omitempty"`
 	Type            string         `json:"type"`
 	DisplayType     string         `json:"display_type,omitempty"`

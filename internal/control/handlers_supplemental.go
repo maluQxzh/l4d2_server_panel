@@ -219,7 +219,11 @@ func (s *Server) principalAllowsNotification(r *http.Request, principal Principa
 		return err == nil && principal.AllowsInstancePermission(instance, PermissionNotificationsRead)
 	case strings.HasPrefix(item.Type, "job."):
 		job, err := s.store.GetJob(r.Context(), item.Resource)
-		return err == nil && principal.AllowsJobPermission(job, PermissionNotificationsRead)
+		if err != nil {
+			return false
+		}
+		allowed, _, permissionErr := s.allowsJobPermission(r.Context(), principal, job, PermissionNotificationsRead)
+		return permissionErr == nil && allowed
 	default:
 		return false
 	}

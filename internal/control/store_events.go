@@ -45,11 +45,11 @@ func compactPersistentEventData(data map[string]any) map[string]any {
 		}
 		switch job := value.(type) {
 		case domain.Job:
-			result[key] = map[string]any{"id": job.ID, "node_id": job.NodeID, "instance_id": job.InstanceID,
+			result[key] = map[string]any{"id": job.ID, "node_id": job.NodeID, "instance_id": job.InstanceID, "scope_instance_id": job.ScopeInstanceID,
 				"type": job.Type, "status": job.Status, "progress": job.Progress, "message": job.Message}
 		case map[string]any:
 			summary := make(map[string]any)
-			for _, field := range []string{"id", "node_id", "instance_id", "type", "status", "progress", "message"} {
+			for _, field := range []string{"id", "node_id", "instance_id", "scope_instance_id", "type", "status", "progress", "message"} {
 				if item, ok := job[field]; ok {
 					summary[field] = item
 				}

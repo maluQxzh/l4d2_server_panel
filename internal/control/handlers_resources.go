@@ -917,37 +917,61 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	limit := parseLimit(r, 100)
-	queryLimit := limit
-	if !principal.GlobalAllows(PermissionJobsRead) {
-		queryLimit = limit * 5
-		if queryLimit > 500 {
-			queryLimit = 500
+	globalRead := principal.GlobalAllows(PermissionJobsRead)
+	visibility := jobVisibilityScope{}
+	var err error
+	if !globalRead {
+		visibility, err = s.jobVisibilityScope(r.Context(), principal, PermissionJobsRead)
+		if err != nil {
+			s.fail(w, err)
+			return
 		}
 	}
-	items, err := s.store.ListJobs(r.Context(), nodeID, instanceID, background, queryLimit)
+	var items []domain.Job
+	if globalRead {
+		items, err = s.store.ListJobs(r.Context(), nodeID, instanceID, background, limit)
+	} else {
+		items, err = s.store.ListVisibleJobs(r.Context(), nodeID, instanceID, background, limit, visibility)
+	}
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 	filtered := make([]domain.Job, 0, min(limit, len(items)))
 	for _, item := range items {
-		if principal.AllowsJobPermission(item, PermissionJobsRead) {
-			filtered = append(filtered, redactJobForPrincipal(item, principal))
-			if len(filtered) == limit {
-				break
+		allowed, scopeInstanceID, permissionErr := s.allowsJobPermission(r.Context(), principal, item, PermissionJobsRead)
+		if permissionErr != nil {
+			s.fail(w, permissionErr)
+			return
+		}
+		if allowed {
+			if item.ScopeInstanceID == "" {
+				item.ScopeInstanceID = scopeInstanceID
 			}
+			filtered = append(filtered, redactJobForPrincipal(item, principal))
 		}
 	}
 	response := map[string]any{"items": filtered}
 	if r.URL.Query().Get("background_summary") == "true" {
-		backgroundItems, summaryErr := s.store.ListJobs(r.Context(), nodeID, instanceID, jobBackgroundOnly, 500)
+		var backgroundItems []domain.Job
+		var summaryErr error
+		if globalRead {
+			backgroundItems, summaryErr = s.store.ListJobs(r.Context(), nodeID, instanceID, jobBackgroundOnly, 500)
+		} else {
+			backgroundItems, summaryErr = s.store.ListVisibleJobs(r.Context(), nodeID, instanceID, jobBackgroundOnly, 500, visibility)
+		}
 		if summaryErr != nil {
 			s.fail(w, summaryErr)
 			return
 		}
 		visible := make([]domain.Job, 0, len(backgroundItems))
 		for _, item := range backgroundItems {
-			if principal.AllowsJobPermission(item, PermissionJobsRead) {
+			allowed, _, permissionErr := s.allowsJobPermission(r.Context(), principal, item, PermissionJobsRead)
+			if permissionErr != nil {
+				s.fail(w, permissionErr)
+				return
+			}
+			if allowed {
 				visible = append(visible, item)
 			}
 		}
@@ -997,9 +1021,26 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if !principal.AllowsJobPermission(job, PermissionJobsRead) && !principal.AllowsJobPermission(job, PermissionJobsDetails) {
+	readAllowed, readScope, readErr := s.allowsJobPermission(r.Context(), principal, job, PermissionJobsRead)
+	detailsAllowed, detailsScope, detailsErr := s.allowsJobPermission(r.Context(), principal, job, PermissionJobsDetails)
+	if readErr != nil {
+		s.fail(w, readErr)
+		return
+	}
+	if detailsErr != nil {
+		s.fail(w, detailsErr)
+		return
+	}
+	if !readAllowed && !detailsAllowed {
 		writeError(w, http.StatusForbidden, "forbidden", "job permission denied")
 		return
+	}
+	if job.ScopeInstanceID == "" {
+		if readScope != "" {
+			job.ScopeInstanceID = readScope
+		} else {
+			job.ScopeInstanceID = detailsScope
+		}
 	}
 	job = redactJobForPrincipal(job, principal)
 	writeJSON(w, http.StatusOK, map[string]any{"job": job})

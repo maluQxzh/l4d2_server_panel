@@ -259,9 +259,12 @@ func (s *Store) QueueMapInstanceJob(ctx context.Context, mapID, instanceID, acti
 	return job, false, tx.Commit()
 }
 
-func (s *Store) QueueMapNodeJob(ctx context.Context, mapID, action, requestedBy, idempotencyKey, requestFingerprint string) (domain.Job, bool, error) {
+func (s *Store) QueueMapNodeJob(ctx context.Context, mapID, action, scopeInstanceID, requestedBy, idempotencyKey, requestFingerprint string) (domain.Job, bool, error) {
 	if action != "map.verify" && action != "map.inventory" {
 		return domain.Job{}, false, fmt.Errorf("unsupported map node action %q", action)
+	}
+	if action != "map.verify" && scopeInstanceID != "" {
+		return domain.Job{}, false, errors.New("map job instance scope is not supported for this action")
 	}
 	if uuid.Validate(mapID) != nil {
 		return domain.Job{}, false, ErrNotFound
@@ -286,8 +289,14 @@ func (s *Store) QueueMapNodeJob(ctx context.Context, mapID, action, requestedBy,
 		return domain.Job{}, false, fmt.Errorf("map is being deleted: %w", ErrConflict)
 	}
 	payload := map[string]any{"map_id": mapID}
+	if err := validateJobScopeInstanceTx(ctx, tx, nodeID, scopeInstanceID); err != nil {
+		return domain.Job{}, false, err
+	}
+	if scopeInstanceID != "" {
+		payload[jobScopeInstancePayloadField] = scopeInstanceID
+	}
 	raw, _ := json.Marshal(payload)
-	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, Type: action, Status: domain.JobQueued, Payload: payload,
+	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, ScopeInstanceID: scopeInstanceID, Type: action, Status: domain.JobQueued, Payload: payload,
 		IdempotencyKey: idempotencyKey, RequestedBy: requestedBy, CreatedAt: time.Now().UTC()}
 	_, err = tx.ExecContext(ctx, `INSERT INTO jobs(id,node_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
 		VALUES(?1,?2,?3,?4,?5,NULLIF(?6,''),?7,?8,NULLIF(?9,''))`, job.ID, job.NodeID, job.Type, job.Status,
@@ -408,7 +417,7 @@ func (s *Store) CreateMapDeleteConfirmation(ctx context.Context, mapID, requeste
 	return raw, expiresAt, err
 }
 
-func (s *Store) QueueMapDelete(ctx context.Context, mapID, requestedBy, confirmationToken, idempotencyKey, requestFingerprint string) (domain.Job, bool, error) {
+func (s *Store) QueueMapDelete(ctx context.Context, mapID, scopeInstanceID, requestedBy, confirmationToken, idempotencyKey, requestFingerprint string) (domain.Job, bool, error) {
 	if !strings.HasPrefix(confirmationToken, "mdc_") || len(confirmationToken) > 128 {
 		return domain.Job{}, false, ErrUnauthorized
 	}
@@ -457,8 +466,14 @@ func (s *Store) QueueMapDelete(ctx context.Context, mapID, requestedBy, confirma
 		return domain.Job{}, false, fmt.Errorf("map has assignments or active operations: %w", ErrConflict)
 	}
 	payload := map[string]any{"map_id": mapID}
+	if err := validateJobScopeInstanceTx(ctx, tx, nodeID, scopeInstanceID); err != nil {
+		return domain.Job{}, false, err
+	}
+	if scopeInstanceID != "" {
+		payload[jobScopeInstancePayloadField] = scopeInstanceID
+	}
 	raw, _ := json.Marshal(payload)
-	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, Type: "map.delete", Status: domain.JobQueued, Payload: payload,
+	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, ScopeInstanceID: scopeInstanceID, Type: "map.delete", Status: domain.JobQueued, Payload: payload,
 		IdempotencyKey: idempotencyKey, RequestedBy: requestedBy, CreatedAt: time.Now().UTC()}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,node_id,type,status,payload,idempotency_key,requested_by,created_at,request_fingerprint)
 		VALUES(?1,?2,?3,?4,?5,NULLIF(?6,''),?7,?8,NULLIF(?9,''))`, job.ID, job.NodeID, job.Type, job.Status,

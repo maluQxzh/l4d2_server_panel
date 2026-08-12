@@ -63,6 +63,8 @@ describe("细粒度权限", () => {
     };
     expect(hasJobPermission(user, { node_id: "node-a", instance_id: "instance-a" }, "jobs.cancel")).toBe(true);
     expect(hasJobPermission(user, { node_id: "node-a", instance_id: "instance-b" }, "jobs.cancel")).toBe(false);
+    expect(hasJobPermission(user, { node_id: "node-a", scope_instance_id: "instance-a" }, "jobs.cancel")).toBe(true);
+    expect(hasJobPermission(user, { node_id: "node-a", scope_instance_id: "instance-b" }, "jobs.cancel")).toBe(false);
     expect(hasJobPermission(user, { node_id: "node-a" }, "jobs.cancel")).toBe(false);
   });
 

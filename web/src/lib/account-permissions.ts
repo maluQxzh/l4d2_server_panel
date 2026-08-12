@@ -167,8 +167,10 @@ export function hasAnyOfPermissions(user: PermissionUser | null | undefined, per
   return permissions.some((permission) => hasAnyPermission(user, permission));
 }
 
-export function hasJobPermission(user: PermissionUser | null | undefined, job: Pick<Job, "node_id" | "instance_id">, permission: Permission) {
+export function hasJobPermission(user: PermissionUser | null | undefined, job: Pick<Job, "node_id" | "instance_id" | "scope_instance_id">, permission: Permission) {
   if (job.instance_id) return hasInstancePermission(user, { id: job.instance_id, node_id: job.node_id }, permission);
+  if (job.scope_instance_id) return hasInstancePermission(user, { id: job.scope_instance_id, node_id: job.node_id }, permission)
+    || hasNodePermission(user, job.node_id, permission);
   if (job.node_id) return hasNodePermission(user, job.node_id, permission);
   return hasGlobalPermission(user, permission);
 }

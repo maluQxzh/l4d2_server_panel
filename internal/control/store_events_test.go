@@ -8,7 +8,7 @@ import (
 )
 
 func TestCompactPersistentEventDataDropsJobPayloadAndResult(t *testing.T) {
-	job := domain.Job{ID: "job", NodeID: "node", InstanceID: "instance", Type: "file", Status: domain.JobQueued,
+	job := domain.Job{ID: "job", NodeID: "node", InstanceID: "instance", ScopeInstanceID: "scope-instance", Type: "file", Status: domain.JobQueued,
 		Payload: map[string]any{"content_base64_ciphertext": strings.Repeat("x", 1024)}, Result: map[string]any{"secret": true}}
 	compact := compactPersistentEventData(map[string]any{"job": job})
 	stored, ok := compact["job"].(map[string]any)
@@ -17,6 +17,9 @@ func TestCompactPersistentEventDataDropsJobPayloadAndResult(t *testing.T) {
 	}
 	if stored["id"] != "job" || stored["status"] != domain.JobQueued {
 		t.Fatalf("job summary lost safe fields: %#v", stored)
+	}
+	if stored["scope_instance_id"] != "scope-instance" {
+		t.Fatalf("job summary lost authorization scope: %#v", stored)
 	}
 	if stored["payload"] != nil || stored["result"] != nil {
 		t.Fatalf("job payload or result survived compaction: %#v", stored)

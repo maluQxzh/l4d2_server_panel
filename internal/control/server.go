@@ -501,7 +501,12 @@ func (s *Server) requireJobPermission(permission Permission) func(http.Handler) 
 				s.fail(w, err)
 				return
 			}
-			if !principalFromContext(r.Context()).AllowsJobPermission(job, permission) {
+			allowed, _, permissionErr := s.allowsJobPermission(r.Context(), principalFromContext(r.Context()), job, permission)
+			if permissionErr != nil {
+				s.fail(w, permissionErr)
+				return
+			}
+			if !allowed {
 				writeError(w, http.StatusForbidden, "forbidden", "job permission denied")
 				return
 			}

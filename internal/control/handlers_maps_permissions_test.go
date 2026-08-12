@@ -40,7 +40,8 @@ func TestInstanceScopedSharedMapPermissionsEnforceDeleteOwnership(t *testing.T) 
 		INSERT INTO instances(id,node_id,name,status,port,config) VALUES(?4,?3,'Scoped instance','stopped',27015,'{}');
 		INSERT INTO role_bindings(id,user_id,role,scope_type,instance_id) VALUES(?5,?1,'admin','instance',?4);
 		INSERT INTO role_binding_permissions(binding_id,permission) VALUES
-			(?5,'instances.read'),(?5,'maps.read'),(?5,'maps.import'),(?5,'maps.assign'),(?5,'maps.verify'),(?5,'maps.delete');
+			(?5,'instances.read'),(?5,'maps.read'),(?5,'maps.import'),(?5,'maps.assign'),(?5,'maps.verify'),(?5,'maps.delete'),
+			(?5,'jobs.read'),(?5,'jobs.details'),(?5,'jobs.cancel');
 		INSERT INTO maps(id,node_id,name,aggregate_sha256,total_size,created_by) VALUES
 			(?6,?3,'Own map',?8,1,?1),
 			(?7,?3,'Other map',?9,1,?2);
@@ -80,6 +81,23 @@ func TestInstanceScopedSharedMapPermissionsEnforceDeleteOwnership(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
+	assertScopedJob := func(response *httptest.ResponseRecorder, wantType string) string {
+		t.Helper()
+		var reference struct {
+			JobID string `json:"job_id"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &reference); err != nil || reference.JobID == "" {
+			t.Fatalf("decode %s job reference: id=%q err=%v", wantType, reference.JobID, err)
+		}
+		job, err := store.GetJob(ctx, reference.JobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.Type != wantType || job.ScopeInstanceID != instanceID {
+			t.Fatalf("queued map job scope=%#v, want type=%s scope=%s", job, wantType, instanceID)
+		}
+		return reference.JobID
+	}
 
 	listResponse := request(http.MethodGet, "/api/v1/maps", "")
 	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), "Own map") || !strings.Contains(listResponse.Body.String(), "Other map") {
@@ -96,12 +114,18 @@ func TestInstanceScopedSharedMapPermissionsEnforceDeleteOwnership(t *testing.T) 
 	if importResponse.Code != http.StatusAccepted {
 		t.Fatalf("instance-scoped map import=%d %s", importResponse.Code, importResponse.Body.String())
 	}
+	importJobID := assertScopedJob(importResponse, "map.import.qq_flash")
+	secondImportResponse := request(http.MethodPost, "/api/v1/nodes/"+nodeID+"/maps/imports", `{"share_url":"https://qfile.qq.com/q/Another456"}`)
+	if secondImportResponse.Code != http.StatusConflict {
+		t.Fatalf("concurrent map import=%d, want 409 instead of reusing another task: %s", secondImportResponse.Code, secondImportResponse.Body.String())
+	}
 	cancelActiveMapJob("map.import.qq_flash")
 
 	verifyResponse := request(http.MethodPost, "/api/v1/maps/"+otherMapID+"/verify", "")
 	if verifyResponse.Code != http.StatusAccepted {
 		t.Fatalf("instance-scoped map verification=%d %s", verifyResponse.Code, verifyResponse.Body.String())
 	}
+	assertScopedJob(verifyResponse, "map.verify")
 	cancelActiveMapJob("map.verify")
 
 	otherDeleteResponse := request(http.MethodPost, "/api/v1/maps/"+otherMapID+"/delete-confirmations", "")
@@ -122,5 +146,12 @@ func TestInstanceScopedSharedMapPermissionsEnforceDeleteOwnership(t *testing.T) 
 	deleteResponse := request(http.MethodDelete, "/api/v1/maps/"+ownMapID, `{"confirmation_token":"`+confirmation.Token+`"}`)
 	if deleteResponse.Code != http.StatusAccepted {
 		t.Fatalf("own map deletion=%d %s", deleteResponse.Code, deleteResponse.Body.String())
+	}
+	assertScopedJob(deleteResponse, "map.delete")
+
+	jobsResponse := request(http.MethodGet, "/api/v1/jobs?background=exclude", "")
+	if jobsResponse.Code != http.StatusOK || !strings.Contains(jobsResponse.Body.String(), importJobID) ||
+		!strings.Contains(jobsResponse.Body.String(), `"scope_instance_id":"`+instanceID+`"`) {
+		t.Fatalf("instance-scoped task center=%d %s", jobsResponse.Code, jobsResponse.Body.String())
 	}
 }

@@ -160,6 +160,31 @@ func TestEventMapRedactionUsesJobResourcePermission(t *testing.T) {
 	}
 }
 
+func TestInstanceScopedMapJobEventUsesPersistedAuthorizationScope(t *testing.T) {
+	t.Parallel()
+	server := &Server{}
+	principal := Principal{BindingsLoaded: true, Bindings: []domain.RoleBinding{{
+		Role: domain.RoleOperator, ScopeType: "instance", InstanceID: "instance-a",
+		Permissions: []string{string(PermissionJobsRead), string(PermissionJobsDetails)},
+	}}}
+	event := Event{Type: "job.updated", ResourceType: "job", ResourceID: "map-job", Data: map[string]any{"job": map[string]any{
+		"id": "map-job", "node_id": "node-a", "type": "map.verify", "scope_instance_id": "instance-a",
+		"payload": map[string]any{"map_id": "map-a"}, "result": map[string]any{"verified": true},
+	}}}
+	if !server.eventAllowed(context.Background(), principal, event) {
+		t.Fatal("instance-scoped map task event was hidden from its authorized instance")
+	}
+	redacted := redactEventForPrincipal(event, principal)
+	job := redacted.Data["job"].(map[string]any)
+	if job["payload"] == nil || job["result"] == nil {
+		t.Fatalf("job details were redacted despite instance-scoped details permission: %#v", job)
+	}
+	event.Data["job"].(map[string]any)["scope_instance_id"] = "instance-b"
+	if server.eventAllowed(context.Background(), principal, event) {
+		t.Fatal("instance-scoped map task event crossed its persisted authorization scope")
+	}
+}
+
 func TestRecoveryCodesAreUniqueNormalizedAndHashed(t *testing.T) {
 	codes, digests, err := newTOTPRecoveryCodes(10)
 	if err != nil {
