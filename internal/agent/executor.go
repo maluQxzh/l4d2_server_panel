@@ -165,18 +165,24 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 			return e.restartExternal(ctx, job, record, progress)
 		}
 		was := processStatusActive(e.processes.State(job.InstanceID).Status)
-		if _, err := e.stop(ctx, job, func(value int, message string) {
+		stopped, err := e.stop(ctx, job, func(value int, message string) {
 			progress(value*55/100, message)
-		}); err != nil {
+		})
+		if err != nil {
 			return nil, err
 		}
 		if !was {
 			progress(100, "instance was already stopped")
-			return map[string]any{"status": "stopped"}, nil
+			return stopped, nil
 		}
-		return e.start(ctx, job, func(value int, message string) {
+		started, err := e.start(ctx, job, func(value int, message string) {
 			progress(55+value*45/100, message)
 		})
+		if err != nil {
+			return nil, err
+		}
+		mergeSmartPluginConfigUpdates(started, stopped)
+		return started, nil
 	case "update":
 		return e.update(ctx, job, false, progress)
 	case "validate":
@@ -730,7 +736,7 @@ func (e *Executor) start(ctx context.Context, job domain.Job, progress ProgressF
 		health = "healthy"
 	}
 	progress(100, "server process started")
-	return map[string]any{"status": state.Status, "pid": state.PID, "started_at": state.StartedAt, "health": health}, nil
+	return e.attachSmartPluginGeneratedConfigs(ctx, job.InstanceID, job.Type, payload.RegisteredPaths, true, map[string]any{"status": state.Status, "pid": state.PID, "started_at": state.StartedAt, "health": health}), nil
 }
 
 func (e *Executor) stop(ctx context.Context, job domain.Job, progress ProgressFunc) (map[string]any, error) {
@@ -755,7 +761,7 @@ func (e *Executor) stop(ctx context.Context, job domain.Job, progress ProgressFu
 	if state.Status != "running" && state.Status != "starting" && state.Status != "stopping" && state.Status != "degraded" && state.Status != "crash_loop" {
 		e.processes.RequestStop(job.InstanceID)
 		progress(100, "server is already stopped")
-		return map[string]any{"status": "stopped"}, nil
+		return e.attachSmartPluginGeneratedConfigs(ctx, job.InstanceID, job.Type, payload.RegisteredPaths, false, map[string]any{"status": "stopped"}), nil
 	}
 	grace := 20 * time.Second
 	if payload.TimeoutSeconds > 0 && payload.TimeoutSeconds <= 300 {
@@ -784,7 +790,7 @@ func (e *Executor) stop(ctx context.Context, job domain.Job, progress ProgressFu
 			for time.Now().Before(deadline) {
 				if e.processes.State(job.InstanceID).Status == "stopped" {
 					progress(100, "server stopped through RCON")
-					return map[string]any{"status": "stopped", "graceful": true}, nil
+					return e.attachSmartPluginGeneratedConfigs(ctx, job.InstanceID, job.Type, payload.RegisteredPaths, false, map[string]any{"status": "stopped", "graceful": true}), nil
 				}
 				select {
 				case <-ctx.Done():
@@ -799,7 +805,7 @@ func (e *Executor) stop(ctx context.Context, job domain.Job, progress ProgressFu
 		return nil, err
 	}
 	progress(100, "server stopped")
-	return map[string]any{"status": "stopped", "graceful": password != ""}, nil
+	return e.attachSmartPluginGeneratedConfigs(ctx, job.InstanceID, job.Type, payload.RegisteredPaths, false, map[string]any{"status": "stopped", "graceful": password != ""}), nil
 }
 
 func (e *Executor) restartExternal(ctx context.Context, job domain.Job, record InstanceRecord, progress ProgressFunc) (map[string]any, error) {

@@ -150,6 +150,15 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 			return domain.Job{}, false, fmt.Errorf("game installation is not ready: %w", ErrConflict)
 		}
 	}
+	if action == "start" || action == "stop" || action == "restart" ||
+		(action == "delete_package" && strings.EqualFold(stringFromAny(payload["kind"]), "smart")) {
+		managedPaths, err := generatedConfigManagedPathsQuery(ctx, tx, instanceID)
+		if err != nil {
+			return domain.Job{}, false, err
+		}
+		payload = cloneMap(payload)
+		payload["registered_paths"] = managedPaths
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return domain.Job{}, false, err

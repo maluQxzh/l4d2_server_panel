@@ -97,6 +97,7 @@ type smartPluginStateFile struct {
 	SHA256         string `json:"sha256"`
 	Size           int64  `json:"size"`
 	Entrypoint     bool   `json:"entrypoint"`
+	Generated      bool   `json:"generated,omitempty"`
 	Baseline       bool   `json:"baseline"`
 	BaselineSHA256 string `json:"baseline_sha256,omitempty"`
 }
@@ -657,7 +658,18 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 				count++
 			}
 		}
-		if count != len(old.Files) {
+		expectedArchiveFiles := 0
+		for _, oldFile := range old.Files {
+			if oldFile.Generated {
+				sha, size, err := hashRegularFileWithinNoFollow(instancePath, oldFile.TargetPath, maxManagedFileSize)
+				if err != nil || !strings.EqualFold(sha, oldFile.SHA256) || size != oldFile.Size {
+					return nil, fmt.Errorf("generated smart plugin file %q changed or is missing", oldFile.TargetPath)
+				}
+				continue
+			}
+			expectedArchiveFiles++
+		}
+		if count != expectedArchiveFiles {
 			return nil, errors.New("smart plugin updates must contain the same managed path set as the installed package")
 		}
 	}
@@ -737,7 +749,6 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 			continue
 		}
 		state := smartPluginState{Version: 1, PackageID: packageID, InstanceID: job.InstanceID, Name: folder.Name, Enabled: true, ArchiveSHA: archiveSHA, UpdatedAt: time.Now().UTC()}
-		aggregate := sha256.New()
 		for _, item := range pending {
 			if item.folderID != folder.ID {
 				continue
@@ -747,9 +758,15 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 				baseline, baselineSHA = item.baseline, item.baselineSHA
 			}
 			state.Files = append(state.Files, smartPluginStateFile{ID: item.stateFileID, TargetPath: item.target, SHA256: item.file.SHA256, Size: item.file.Size, Entrypoint: item.file.Entrypoint, Baseline: baseline, BaselineSHA256: baselineSHA})
-			_, _ = io.WriteString(aggregate, item.target+"\x00"+item.file.SHA256+"\n")
 		}
-		state.AggregateSHA = hex.EncodeToString(aggregate.Sum(nil))
+		if previous, updating := updateStates[packageID]; updating {
+			for _, oldFile := range previous.Files {
+				if oldFile.Generated {
+					state.Files = append(state.Files, oldFile)
+				}
+			}
+		}
+		state.AggregateSHA = smartPluginAggregateSHA(state.Files)
 		oldState, stateErr := e.writeSmartPluginState(state, rollbackRoot, rollbacks, updateRoots[packageID])
 		if stateErr != nil {
 			stateRollbackErr := restoreStateCommits()
@@ -1094,7 +1111,32 @@ func (e *Executor) deleteSmartPlugin(job domain.Job, progress ProgressFunc) (map
 	if e.smartPluginServerRunning(job.InstanceID) {
 		return nil, errors.New("instance must be stopped before deleting a smart plugin")
 	}
+	payload, err := decodeOperation(job)
+	if err != nil {
+		return nil, err
+	}
 	packageID := stringFromPayload(job.Payload, "package_id")
+	state, _, err := e.readSmartPluginState(job.InstanceID, packageID)
+	if err != nil {
+		return nil, fmt.Errorf("load smart plugin state: %w", err)
+	}
+	expectedSHA := strings.ToLower(stringFromPayload(job.Payload, "expected_sha256"))
+	if len(expectedSHA) != sha256.Size*2 {
+		return nil, errors.New("smart plugin deletion requires a valid recorded SHA-256")
+	}
+	if _, err := hex.DecodeString(expectedSHA); err != nil {
+		return nil, errors.New("smart plugin deletion requires a valid recorded SHA-256")
+	}
+	// SourceMod may create cfg/sourcemod/<plugin>.cfg only after the first
+	// successful load. Reconcile it immediately before deletion as a final
+	// safety net for instances that stopped outside an explicit lifecycle job.
+	// Older Control versions omit the ownership snapshot. In that case delete
+	// only the already recorded manifest instead of adopting a late CFG.
+	if payload.RegisteredPaths != nil {
+		if _, err := e.reconcileSmartPluginGeneratedConfigs(job.InstanceID, payload.RegisteredPaths, packageID); err != nil && e.logger != nil {
+			e.logger.Printf("instance %s reconcile generated SourceMod configs before deleting smart plugin: %v", job.InstanceID, err)
+		}
+	}
 	state, stateRoot, err := e.readSmartPluginState(job.InstanceID, packageID)
 	if err != nil {
 		return nil, fmt.Errorf("load smart plugin state: %w", err)
@@ -1142,7 +1184,7 @@ func (e *Executor) deleteSmartPlugin(job domain.Job, progress ProgressFunc) (map
 		return nil, fmt.Errorf("remove smart plugin state: %w", err)
 	}
 	progress(100, "smart plugin deleted")
-	return map[string]any{"package_id": packageID, "sha256": state.AggregateSHA, "files": len(state.Files)}, nil
+	return map[string]any{"package_id": packageID, "sha256": expectedSHA, "files": len(state.Files)}, nil
 }
 
 func (e *Executor) smartPluginServerRunning(instanceID string) bool {

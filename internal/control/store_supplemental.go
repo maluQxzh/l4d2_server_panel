@@ -563,8 +563,18 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		return err
 	case "start", "restart":
 		if stringFromAny(job.Result["status"]) == "stopped" {
-			_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,started_at=NULL,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID)
-			return err
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			if _, err := tx.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,started_at=NULL,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID); err != nil {
+				return err
+			}
+			if err := applySmartPluginGeneratedConfigUpdatesTx(ctx, tx, job); err != nil {
+				return err
+			}
+			return tx.Commit()
 		}
 		pid := intFromAny(job.Result["pid"])
 		startedAt := jobProjectionTimestamp(job)
@@ -587,11 +597,24 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE addon_packages SET restart_required=0 WHERE instance_id=?1`, job.InstanceID); err != nil {
 			return err
 		}
+		if err := applySmartPluginGeneratedConfigUpdatesTx(ctx, tx, job); err != nil {
+			return err
+		}
 		err = tx.Commit()
 		return err
 	case "stop":
-		_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,started_at=NULL,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID)
-		return err
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,started_at=NULL,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID); err != nil {
+			return err
+		}
+		if err := applySmartPluginGeneratedConfigUpdatesTx(ctx, tx, job); err != nil {
+			return err
+		}
+		return tx.Commit()
 	case "install":
 		path, _ := job.Result["path"].(string)
 		buildID := stringFromAny(job.Result["build_id"])

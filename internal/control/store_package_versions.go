@@ -23,6 +23,11 @@ type packageVersionMetadata struct {
 	CreatedAt   time.Time
 }
 
+const (
+	smartPluginGeneratedConfigDirectory = "left4dead2/cfg/sourcemod"
+	maxSmartPluginGeneratedConfigs      = 5000
+)
+
 const maxScannedPackageBytes = 512 << 20
 
 func (s *Store) ListPackageVersions(ctx context.Context, instanceID, packageID string) ([]domain.AddonPackageVersion, error) {
@@ -544,6 +549,140 @@ func validateSmartPluginResultPath(value string) error {
 	default:
 		return errors.New("smart plugin file type is unsupported")
 	}
+}
+
+func applySmartPluginGeneratedConfigUpdatesTx(ctx context.Context, tx *sql.Tx, job domain.Job) error {
+	rawUpdates, exists := job.Result["smart_plugin_config_updates"]
+	if !exists {
+		return nil
+	}
+	updates, ok := rawUpdates.([]any)
+	if !ok || len(updates) == 0 || len(updates) > maxSmartPluginGeneratedConfigs {
+		return errors.New("smart plugin generated config reconciliation returned an invalid update list")
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT package.id,file.path FROM addon_packages package
+		JOIN addon_package_files file ON file.package_id=package.id AND file.instance_id=package.instance_id
+		WHERE package.instance_id=?1 AND lower(package.kind)='smart' AND package.enabled=true AND file.entrypoint=true`, job.InstanceID)
+	if err != nil {
+		return err
+	}
+	ownersByBase := make(map[string]map[string]bool)
+	for rows.Next() {
+		var packageID, path string
+		if err := rows.Scan(&packageID, &path); err != nil {
+			rows.Close()
+			return err
+		}
+		base, eligible := generatedConfigManagedSMXBase(path)
+		if !eligible {
+			continue
+		}
+		if ownersByBase[base] == nil {
+			ownersByBase[base] = make(map[string]bool)
+		}
+		ownersByBase[base][packageID] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	seenPaths := make(map[string]bool)
+	totalFiles := 0
+	for _, rawUpdate := range updates {
+		update, ok := rawUpdate.(map[string]any)
+		packageID := strings.TrimSpace(stringFromAny(update["package_id"]))
+		aggregate := strings.ToLower(stringFromAny(update["aggregate_sha256"]))
+		fileCount := intFromAny(update["file_count"])
+		files, filesOK := update["files"].([]any)
+		if !ok || uuid.Validate(packageID) != nil || !validPackageSHA(aggregate) || !filesOK || len(files) == 0 || len(files) > maxSmartPluginGeneratedConfigs || fileCount <= 0 || fileCount > maxSmartPluginGeneratedConfigs {
+			return errors.New("smart plugin generated config reconciliation returned invalid package metadata")
+		}
+		totalFiles += len(files)
+		if totalFiles > maxSmartPluginGeneratedConfigs {
+			return errors.New("smart plugin generated config reconciliation returned too many files")
+		}
+		var kind string
+		var enabled bool
+		if err := tx.QueryRowContext(ctx, `SELECT kind,enabled FROM addon_packages WHERE id=?1 AND instance_id=?2`, packageID, job.InstanceID).Scan(&kind, &enabled); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if !strings.EqualFold(kind, "smart") || !enabled {
+			return errors.New("generated SourceMod config can only be attached to an enabled smart plugin")
+		}
+		for _, rawFile := range files {
+			file, ok := rawFile.(map[string]any)
+			path := filepath.ToSlash(stringFromAny(file["path"]))
+			sha := strings.ToLower(stringFromAny(file["sha256"]))
+			size := int64FromAny(file["size"])
+			entrypoint, _ := file["entrypoint"].(bool)
+			base, validPath := generatedConfigManagedCFGBase(path)
+			key := strings.ToLower(path)
+			owners := ownersByBase[base]
+			if !ok || !validPath || !validPackageSHA(sha) || size < 0 || size > 8<<20 || entrypoint || seenPaths[key] || len(owners) != 1 || !owners[packageID] {
+				return errors.New("smart plugin generated config reconciliation returned an invalid or ambiguous file")
+			}
+			seenPaths[key] = true
+			var currentPackageID, currentSHA string
+			var currentSize int64
+			var currentEntrypoint bool
+			err := tx.QueryRowContext(ctx, `SELECT package_id,sha256,size,entrypoint FROM addon_package_files
+				WHERE instance_id=?1 AND lower(path)=lower(?2)`, job.InstanceID, path).Scan(&currentPackageID, &currentSHA, &currentSize, &currentEntrypoint)
+			switch {
+			case errors.Is(err, sql.ErrNoRows):
+				if _, err := tx.ExecContext(ctx, `INSERT INTO addon_package_files(package_id,instance_id,path,sha256,size,entrypoint)
+					VALUES(?1,?2,?3,?4,?5,false)`, packageID, job.InstanceID, path, sha, size); err != nil {
+					return err
+				}
+			case err != nil:
+				return err
+			case currentPackageID != packageID || currentEntrypoint || !strings.EqualFold(currentSHA, sha) || currentSize != size:
+				return ErrConflict
+			}
+		}
+		var projectedCount int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM addon_package_files WHERE package_id=?1 AND instance_id=?2`, packageID, job.InstanceID).Scan(&projectedCount); err != nil {
+			return err
+		}
+		if projectedCount != fileCount {
+			return errors.New("smart plugin generated config reconciliation file count does not match the managed inventory")
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE addon_packages SET sha256=?3,file_count=?4,last_job_id=?5
+			WHERE id=?1 AND instance_id=?2 AND lower(kind)='smart' AND enabled=true`, packageID, job.InstanceID, aggregate, fileCount, job.ID)
+		if err != nil {
+			return err
+		}
+		if resultRowsAffected(result) == 0 {
+			return ErrNotFound
+		}
+	}
+	return nil
+}
+
+func generatedConfigManagedSMXBase(path string) (string, bool) {
+	cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(path))))
+	lower := strings.ToLower(cleaned)
+	const prefix = "left4dead2/addons/sourcemod/plugins/"
+	if cleaned != path || !strings.HasPrefix(lower, prefix) || strings.HasPrefix(lower, prefix+"disabled/") || !strings.HasSuffix(lower, ".smx") {
+		return "", false
+	}
+	return strings.TrimSuffix(strings.ToLower(filepath.Base(filepath.FromSlash(cleaned))), ".smx"), true
+}
+
+func generatedConfigManagedCFGBase(path string) (string, bool) {
+	cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(path))))
+	if cleaned != path || !strings.EqualFold(filepath.Ext(cleaned), ".cfg") || !strings.EqualFold(filepath.ToSlash(filepath.Dir(filepath.FromSlash(cleaned))), smartPluginGeneratedConfigDirectory) {
+		return "", false
+	}
+	base := strings.TrimSuffix(strings.ToLower(filepath.Base(filepath.FromSlash(cleaned))), ".cfg")
+	return base, base != ""
 }
 
 func (s *Store) applySmartPluginFileEditResult(ctx context.Context, job domain.Job) error {
