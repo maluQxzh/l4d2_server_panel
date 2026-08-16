@@ -6,9 +6,9 @@ import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
 import { useToast } from "../context/ToastContext";
 import { api } from "../lib/api";
-import { hasAnyPermission, hasJobPermission } from "../lib/account-permissions";
+import { hasAnyPermission, hasJobPermission, hasRootSecurityPermission } from "../lib/account-permissions";
 import { dateTime, jobLabel } from "../lib/format";
-import type { Job } from "../lib/types";
+import type { Job, TerminalOutcomeConflict } from "../lib/types";
 
 export function JobsPage() {
   const { user } = useAuth();
@@ -18,11 +18,18 @@ export function JobsPage() {
   const [expanded, setExpanded] = useState<string>();
   const realtime = useRealtime();
   const canReadJobs = hasAnyPermission(user, "jobs.read");
+  const canResolveTerminalConflicts = hasRootSecurityPermission(user);
   const jobs = useQuery({
     queryKey: ["jobs", view],
     queryFn: () => api.jobList({ background: view === "operations" ? "exclude" : "only", backgroundSummary: true }),
     enabled: canReadJobs,
     refetchInterval: realtime.state === "live" ? false : 10_000,
+  });
+  const terminalConflicts = useQuery({
+    queryKey: ["job-terminal-conflicts"],
+    queryFn: api.terminalOutcomeConflicts,
+    enabled: canResolveTerminalConflicts,
+    refetchInterval: 10_000,
   });
   const list = useMemo(() => (jobs.data?.items || []).filter((job) => (filter === "all" || filter === "active" && ["queued", "dispatched", "running"].includes(job.status) || job.status === filter) && `${job.type} ${jobLabel(job)} ${job.message} ${job.id}`.toLowerCase().includes(search.toLowerCase())), [filter, jobs.data, search]);
   const totals = useMemo(() => ({ active: (jobs.data?.items || []).filter((job) => ["queued", "dispatched", "running"].includes(job.status)).length, failed: (jobs.data?.items || []).filter((job) => job.status === "failed").length, succeeded: (jobs.data?.items || []).filter((job) => job.status === "succeeded").length }), [jobs.data]);
@@ -30,11 +37,40 @@ export function JobsPage() {
   const backgroundState = background?.failed ? `${background.failed} 个异常` : background ? `${background.targets} 个目标` : "—";
   const backgroundDetail = background?.latest_at ? `最近 ${dateTime(background.latest_at)}` : "暂无探测记录";
   if (!canReadJobs) return <div><PageHeader eyebrow="PERSISTENT JOB QUEUE" title="任务中心" description="用户操作与后台探测分开显示，重要任务不会再被周期性状态查询挤出列表。" /><Card><EmptyState title="任务清单已隐藏" description="当前账号没有查看任务队列的权限。已授权的实例操作仍可在对应页面执行。" /></Card></div>;
-  return <div><PageHeader eyebrow="PERSISTENT JOB QUEUE" title="任务中心" description="用户操作与后台探测分开显示，重要任务不会再被周期性状态查询挤出列表。" actions={<Button variant="secondary" onClick={() => void jobs.refetch()}><RefreshCw size={16} />刷新</Button>} />
+  return <div><PageHeader eyebrow="PERSISTENT JOB QUEUE" title="任务中心" description="用户操作与后台探测分开显示，重要任务不会再被周期性状态查询挤出列表。" actions={<Button variant="secondary" onClick={() => { void jobs.refetch(); if (canResolveTerminalConflicts) void terminalConflicts.refetch(); }}><RefreshCw size={16} />刷新</Button>} />
+    {canResolveTerminalConflicts && terminalConflicts.error ? <Card className="terminal-conflict-card"><ErrorState error={terminalConflicts.error} retry={() => void terminalConflicts.refetch()} /></Card> : canResolveTerminalConflicts && terminalConflicts.data?.items.length ? <TerminalConflictPanel conflicts={terminalConflicts.data.items} /> : null}
     <section className="job-summary"><Card><LoaderCircle size={20} /><span>进行中</span><strong>{totals.active}</strong></Card><Card><CheckCircle2 size={20} /><span>已完成</span><strong>{totals.succeeded}</strong></Card><Card><CircleAlert size={20} /><span>失败</span><strong>{totals.failed}</strong></Card><Card className={background?.failed ? "job-background-card job-background-card--failed" : "job-background-card"}><RadioTower size={20} /><span>后台探测<em>{backgroundDetail}</em></span><strong>{backgroundState}</strong></Card></section>
     <Card className="toolbar-card"><div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务类型、消息或 ID" aria-label="搜索任务" /></div><div className="filter-select"><RadioTower size={16} /><select aria-label="任务分类" value={view} onChange={(event) => { setView(event.target.value as "operations" | "background"); setExpanded(undefined); }}><option value="operations">重要任务</option><option value="background">后台探测</option></select></div><div className="filter-select"><Filter size={16} /><select aria-label="任务状态" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">全部状态</option><option value="active">进行中</option><option value="succeeded">已完成</option><option value="failed">失败</option><option value="canceled">已取消</option></select></div></Card>
     {jobs.isPending ? <LoadingBlock label="正在同步任务队列…" /> : jobs.error ? <ErrorState error={jobs.error} retry={() => void jobs.refetch()} /> : list.length ? <Card className="jobs-card"><div className="jobs-table">{list.map((job) => <JobRow key={job.id} job={job} expanded={expanded === job.id} canCancel={hasJobPermission(user, job, "jobs.cancel")} canViewDetails={hasJobPermission(user, job, "jobs.details")} onToggle={() => setExpanded((value) => value === job.id ? undefined : job.id)} />)}</div></Card> : <Card><EmptyState title="没有匹配的任务" description={view === "operations" ? "后台状态查询已单独归类；实例部署、更新、备份与玩家操作会显示在这里。" : "当前没有可查看的后台探测记录。"} /></Card>}
   </div>;
+}
+
+function TerminalConflictPanel({ conflicts }: { conflicts: TerminalOutcomeConflict[] }) {
+  return <Card className="terminal-conflict-card">
+    <div className="terminal-conflict-card__heading"><CircleAlert size={19} /><div><strong>检测到任务最终结果冲突</strong><span>中心端记录保持不变；确认后仅清除 Agent 保存的冲突上报，不会改写已经完成的任务。</span></div></div>
+    <div>{conflicts.map((conflict) => <TerminalConflictRow key={`${conflict.job_id}:${conflict.reported_fingerprint}`} conflict={conflict} />)}</div>
+  </Card>;
+}
+
+function TerminalConflictRow({ conflict }: { conflict: TerminalOutcomeConflict }) {
+  const toast = useToast();
+  const client = useQueryClient();
+  const resolve = useMutation({
+    mutationFn: () => api.resolveTerminalOutcomeConflict(conflict.job_id, conflict.reported_fingerprint),
+    onSuccess: (result) => {
+      toast.push(result.acknowledgement_delivered ? "冲突已确认，节点已收到清理通知" : "冲突已确认，节点重连后会自动清理");
+      void client.invalidateQueries({ queryKey: ["job-terminal-conflicts"] });
+    },
+    onError: (error) => toast.push(error.message, "error"),
+  });
+  return <div className="terminal-conflict-row">
+    <div><strong>任务 <code>{conflict.job_id}</code></strong><span>节点 <code>{conflict.node_id}</code>{conflict.instance_id ? <> · 实例 <code>{conflict.instance_id}</code></> : null}</span><small>中心端：{terminalStatusLabel(conflict.stored_status)} · Agent：{terminalStatusLabel(conflict.reported_status)} · 已拦截 {conflict.occurrences} 次 · 最近 {dateTime(conflict.last_seen_at)}</small></div>
+    <Button variant="danger" loading={resolve.isPending} onClick={() => resolve.mutate()}>保留中心端结果并确认</Button>
+  </div>;
+}
+
+function terminalStatusLabel(status: TerminalOutcomeConflict["stored_status"]) {
+  return ({ succeeded: "成功", failed: "失败", canceled: "已取消" } as const)[status];
 }
 
 function JobRow({ job, expanded, canCancel, canViewDetails, onToggle }: { job: Job; expanded: boolean; canCancel: boolean; canViewDetails: boolean; onToggle: () => void }) {

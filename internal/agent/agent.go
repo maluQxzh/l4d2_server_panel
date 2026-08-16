@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -34,11 +35,15 @@ type Agent struct {
 	registry   *Registry
 	processes  *ProcessManager
 	executor   *Executor
+	dataLock   agentDataLock
+	closeOnce  sync.Once
 
 	ctx            context.Context
 	senderMu       sync.RWMutex
 	sender         chan protocol.Envelope
 	replayWake     chan struct{}
+	replayStateMu  sync.RWMutex
+	replayBlocked  map[string]struct{}
 	activeMu       sync.Mutex
 	activeJobs     map[string]context.CancelFunc
 	pendingCancels map[string]bool
@@ -52,6 +57,16 @@ func New(configPath string, config *Config, logger *log.Logger) (*Agent, error) 
 	if err := osMkdirData(config); err != nil {
 		return nil, err
 	}
+	dataLock, err := acquireAgentDataLock(filepath.Join(config.DataDir, ".agent.lock"))
+	if err != nil {
+		return nil, err
+	}
+	initialized := false
+	defer func() {
+		if !initialized {
+			_ = dataLock.Close()
+		}
+	}()
 	paths, err := NewPathGuard(config.InstanceRoots)
 	if err != nil {
 		return nil, err
@@ -64,7 +79,7 @@ func New(configPath string, config *Config, logger *log.Logger) (*Agent, error) 
 	if err != nil {
 		return nil, err
 	}
-	agent := &Agent{configPath: configPath, config: config, logger: logger, paths: paths, journal: journal, registry: registry, activeJobs: make(map[string]context.CancelFunc), pendingCancels: make(map[string]bool)}
+	agent := &Agent{configPath: configPath, config: config, logger: logger, paths: paths, journal: journal, registry: registry, dataLock: dataLock, activeJobs: make(map[string]context.CancelFunc), pendingCancels: make(map[string]bool)}
 	processes, err := NewProcessManager(config.DataDir, logger, func(instanceID, stream, line string, at time.Time) { agent.emitLog(instanceID, stream, line, at) })
 	if err != nil {
 		return nil, err
@@ -74,6 +89,7 @@ func New(configPath string, config *Config, logger *log.Logger) (*Agent, error) 
 	if agent.executor.mapStoreErr != nil {
 		return nil, fmt.Errorf("initialize map library: %w", agent.executor.mapStoreErr)
 	}
+	initialized = true
 	return agent, nil
 }
 
@@ -87,6 +103,7 @@ func osMkdirData(config *Config) error {
 func (a *Agent) Enroll(ctx context.Context) error { return Enroll(ctx, a.configPath, a.config) }
 
 func (a *Agent) Run(ctx context.Context) error {
+	defer a.Close()
 	a.logger.Printf("starting agent version=%s os=%s arch=%s", version.Version, runtime.GOOS, runtime.GOARCH)
 	defer a.logger.Printf("agent stopped")
 	a.ctx = ctx
@@ -132,6 +149,19 @@ func (a *Agent) Run(ctx context.Context) error {
 			delay = maxDelay
 		}
 	}
+}
+
+// Close releases the exclusive data_dir ownership. It is safe to call more
+// than once and is normally invoked automatically when Run returns.
+func (a *Agent) Close() error {
+	var err error
+	a.closeOnce.Do(func() {
+		if a.dataLock != nil {
+			err = a.dataLock.Close()
+			a.dataLock = nil
+		}
+	})
+	return err
 }
 
 func (a *Agent) runLogCleanup(ctx context.Context) {
@@ -215,7 +245,7 @@ func (a *Agent) runSession(ctx context.Context) error {
 	// Large browser-uploaded packages are Base64 job payloads, so the Agent's
 	// inbound ceiling must include their JSON envelope overhead.
 	conn.SetReadLimit(protocol.MaxPackageUploadEnvelopeBytes)
-	hello, err := protocol.NewEnvelope(protocol.TypeHello, a.config.NodeID, "", protocol.Hello{Name: a.config.NodeName, OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.Version, InstanceRoot: a.config.InstanceRoots[0], Capabilities: []string{"absolute_game_paths", "backup_delete_v1", "backup_upload", "check_update", "component_package_delete_v1", "discover_instances", "game_installation_delete_v1", "map_hot_reload_v1", "map_import_v2", "map_library_v1", "package_delete_v1", "package_scan_v1", "plugin_backup_7z_v1", "purge_quarantine", "qq_flash_file_v1", "qq_flash_package_v1", "qq_flash_vpk_packages_v2", "runtime_environment_v1", "server_cfg_native", "smart_plugin_archive_v1", "smart_plugin_file_edit_v1"}})
+	hello, err := protocol.NewEnvelope(protocol.TypeHello, a.config.NodeID, "", protocol.Hello{Name: a.config.NodeName, OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.Version, InstanceRoot: a.config.InstanceRoots[0], Capabilities: []string{"absolute_game_paths", "backup_delete_v1", "backup_upload", "check_update", "component_package_delete_v1", "discover_instances", "game_installation_delete_v1", "map_hot_reload_v1", "map_import_v2", "map_library_v1", "package_delete_v1", "package_scan_v1", "plugin_backup_7z_v1", "purge_quarantine", "qq_flash_file_v1", "qq_flash_package_v1", "qq_flash_vpk_packages_v2", "runtime_environment_v1", "server_cfg_native", "smart_plugin_archive_v1", "smart_plugin_file_edit_v1", protocol.CapabilityTerminalConflictV1}})
 	if err != nil {
 		return err
 	}
@@ -279,7 +309,10 @@ func (a *Agent) runSession(ctx context.Context) error {
 			}
 			if err := a.journal.Acknowledge(envelope.JobID); err != nil {
 				a.logger.Printf("persist job acknowledgement for %s: %v", envelope.JobID, err)
+				a.allowTerminalReplay(envelope.JobID)
+				a.wakeTerminalReplay()
 			} else {
+				a.allowTerminalReplay(envelope.JobID)
 				// Refill the bounded replay window on this same connection. Without
 				// this signal, entries beyond the first page could remain terminal
 				// locally while Control keeps their jobs in running forever.
@@ -291,6 +324,21 @@ func (a *Agent) runSession(ctx context.Context) error {
 				a.activeMu.Lock()
 				delete(a.pendingCancels, envelope.JobID)
 				a.activeMu.Unlock()
+			}
+		case protocol.TypeJobConflict:
+			if envelope.JobID == "" || len(envelope.JobID) > 200 {
+				a.logger.Printf("ignoring terminal conflict advisory with invalid job_id")
+				continue
+			}
+			var conflict protocol.JobConflict
+			if err := json.Unmarshal(envelope.Payload, &conflict); err != nil || conflict.Reason != "terminal_outcome_mismatch" {
+				a.logger.Printf("ignoring invalid terminal conflict advisory for %s", envelope.JobID)
+				continue
+			}
+			if entry, ok := a.journal.Get(envelope.JobID); ok && isFinalJobStatus(entry.Status) {
+				a.blockTerminalReplay(envelope.JobID)
+				a.logger.Printf("terminal journal replay quarantined pending Control resolution: job_id=%s", envelope.JobID)
+				a.wakeTerminalReplay()
 			}
 		default:
 			a.logger.Printf("ignoring unsupported control message %q", envelope.Type)
@@ -316,7 +364,7 @@ func (a *Agent) replayTerminalJournal(ctx context.Context, sender chan<- protoco
 		} else {
 			for jobID := range inFlight {
 				entry, ok := a.journal.Get(jobID)
-				if !ok || !isFinalJobStatus(entry.Status) {
+				if !ok || !isFinalJobStatus(entry.Status) || a.terminalReplayBlocked(jobID) {
 					delete(inFlight, jobID)
 				}
 			}
@@ -324,8 +372,12 @@ func (a *Agent) replayTerminalJournal(ctx context.Context, sender chan<- protoco
 		if len(inFlight) >= terminalReplayBatchSize {
 			return true
 		}
-		for _, entry := range a.journal.FinalEntries(terminalReplayBatchSize) {
+		for _, entry := range a.journal.FinalEntries(terminalReplayBatchSize + maxTerminalReplayQuarantineItems) {
 			if _, exists := inFlight[entry.JobID]; exists {
+				continue
+			}
+			if a.terminalReplayBlocked(entry.JobID) {
+				delete(inFlight, entry.JobID)
 				continue
 			}
 			envelope, err := protocol.NewEnvelope(protocol.TypeJobUpdate, a.config.NodeID, entry.JobID,
@@ -685,18 +737,54 @@ func (a *Agent) send(envelope protocol.Envelope) bool {
 }
 
 func (a *Agent) setSessionSender(sender chan protocol.Envelope, replayWake chan struct{}) {
+	a.replayStateMu.Lock()
+	a.replayBlocked = make(map[string]struct{})
+	a.replayStateMu.Unlock()
 	a.senderMu.Lock()
 	a.sender = sender
 	a.replayWake = replayWake
 	a.senderMu.Unlock()
 }
 func (a *Agent) clearSessionSender(sender chan protocol.Envelope) {
+	cleared := false
 	a.senderMu.Lock()
 	if a.sender == sender {
 		a.sender = nil
 		a.replayWake = nil
+		cleared = true
 	}
 	a.senderMu.Unlock()
+	if cleared {
+		a.replayStateMu.Lock()
+		clear(a.replayBlocked)
+		a.replayStateMu.Unlock()
+	}
+}
+
+const maxTerminalReplayQuarantineItems = 1024
+
+func (a *Agent) blockTerminalReplay(jobID string) {
+	a.replayStateMu.Lock()
+	defer a.replayStateMu.Unlock()
+	if a.replayBlocked == nil {
+		a.replayBlocked = make(map[string]struct{})
+	}
+	if len(a.replayBlocked) < maxTerminalReplayQuarantineItems {
+		a.replayBlocked[jobID] = struct{}{}
+	}
+}
+
+func (a *Agent) allowTerminalReplay(jobID string) {
+	a.replayStateMu.Lock()
+	delete(a.replayBlocked, jobID)
+	a.replayStateMu.Unlock()
+}
+
+func (a *Agent) terminalReplayBlocked(jobID string) bool {
+	a.replayStateMu.RLock()
+	_, blocked := a.replayBlocked[jobID]
+	a.replayStateMu.RUnlock()
+	return blocked
 }
 
 func (a *Agent) wakeTerminalReplay() bool {

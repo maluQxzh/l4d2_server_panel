@@ -1897,6 +1897,78 @@ paths:
                   cancel_delivered: { type: boolean }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /jobs/terminal-conflicts:
+    get:
+      tags: [Jobs]
+      summary: 列出 Agent 最终结果与中心端不可变记录的冲突
+      description: 仅允许交互式浏览器会话中的全局所有者访问；默认只返回尚未确认的冲突，不包含 Agent 原始结果正文。
+      parameters:
+        - { name: active, in: query, schema: { type: boolean, default: true } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+      responses:
+        "200":
+          description: 冲突列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/TerminalOutcomeConflict" } }
+
+  /jobs/{jobId}/terminal-conflict:
+    get:
+      tags: [Jobs]
+      summary: 获取任务最终结果冲突
+      description: 仅允许交互式浏览器会话中的全局所有者访问。
+      parameters:
+        - { $ref: "#/components/parameters/JobID" }
+        - { name: reported_fingerprint, in: query, schema: { type: string, pattern: "^[0-9a-f]{64}$" } }
+      responses:
+        "200":
+          description: 冲突记录
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [conflict]
+                properties:
+                  conflict: { $ref: "#/components/schemas/TerminalOutcomeConflict" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /jobs/{jobId}/terminal-conflict/resolve:
+    post:
+      tags: [Jobs]
+      summary: 保留中心端结果并确认冲突
+      description: 仅允许交互式浏览器会话中的全局所有者访问。不会改写任务终态；确认写入审计后，通知匹配的 Agent 删除该条终态日志。相同幂等键和请求可安全重放。
+      parameters:
+        - { $ref: "#/components/parameters/JobID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, reported_fingerprint]
+              properties:
+                action: { type: string, const: keep_control }
+                reported_fingerprint: { type: string, pattern: "^[0-9a-f]{64}$" }
+      responses:
+        "200":
+          description: 冲突已持久确认；Agent 离线时会在下一次重放后收到确认
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [conflict, idempotent_replay, acknowledgement_delivered]
+                properties:
+                  conflict: { $ref: "#/components/schemas/TerminalOutcomeConflict" }
+                  idempotent_replay: { type: boolean }
+                  acknowledgement_delivered: { type: boolean }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /metrics:
     get:
       tags: [Monitoring]
@@ -3880,6 +3952,25 @@ components:
       properties:
         job_id: { type: string, format: uuid }
         idempotent_replay: { type: boolean, default: false }
+
+    TerminalOutcomeConflict:
+      type: object
+      description: 不含 Agent 原始结果正文的最终结果冲突元数据。
+      required: [job_id, node_id, stored_status, reported_status, reported_fingerprint, reason, occurrences, first_seen_at, last_seen_at]
+      properties:
+        job_id: { type: string, format: uuid }
+        node_id: { type: string, format: uuid }
+        instance_id: { type: string, format: uuid }
+        stored_status: { type: string, enum: [succeeded, failed, canceled] }
+        reported_status: { type: string, enum: [succeeded, failed, canceled] }
+        reported_fingerprint: { type: string, pattern: "^[0-9a-f]{64}$", description: 由中心端主密钥生成的结果 HMAC 标识，不是结果正文摘要。 }
+        reason: { type: string, maxLength: 64 }
+        occurrences: { type: integer, minimum: 1 }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        resolution: { type: string, enum: [keep_control] }
+        resolved_at: { type: string, format: date-time }
+        resolved_by: { type: string, format: uuid }
 
     TransferReference:
       type: object

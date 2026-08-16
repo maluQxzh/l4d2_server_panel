@@ -25,14 +25,10 @@ type agentConnection struct {
 	canceled     map[string]struct{}
 	capabilities map[string]struct{}
 	jobUpdates   map[string]acceptedJobUpdate
-	// terminalConflicts bounds repeated audit/log work for a durable Agent
-	// journal outcome which cannot match Control's immutable terminal record.
-	// The entry deliberately lives only for this connection: the conflict is
-	// not resolved or acknowledged here, but it must not tear the session down.
-	terminalConflicts map[string]struct{}
+	// terminalConflicts binds an operator resolution to the exact outcome
+	// fingerprint observed on this connection before a direct job_ack is sent.
+	terminalConflicts map[string]string
 }
-
-const maxAgentTerminalConflictCacheItems = 1024
 
 var serverConfigNativeJobTypes = map[string]bool{
 	"create": true, "import": true, "game.import": true, "install": true,
@@ -161,7 +157,7 @@ func (h *AgentHub) Serve(node domain.Node, remoteAddress string, w http.Response
 	if err != nil {
 		return
 	}
-	client := &agentConnection{conn: conn, ownership: make(map[string]time.Time), sent: make(map[string]struct{}), canceled: make(map[string]struct{}), capabilities: make(map[string]struct{}), jobUpdates: make(map[string]acceptedJobUpdate), terminalConflicts: make(map[string]struct{})}
+	client := &agentConnection{conn: conn, ownership: make(map[string]time.Time), sent: make(map[string]struct{}), canceled: make(map[string]struct{}), capabilities: make(map[string]struct{}), jobUpdates: make(map[string]acceptedJobUpdate), terminalConflicts: make(map[string]string)}
 	h.mu.Lock()
 	if old := h.conns[node.ID]; old != nil {
 		_ = old.conn.Close()
@@ -398,7 +394,13 @@ func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelop
 			if settledTerminalJob(job) {
 				equivalent, compareErr := terminalReplayEquivalent(h.masterKey, job, update, terminalFingerprint)
 				if compareErr != nil || !equivalent {
-					h.recordTerminalOutcomeConflict(ctx, node, job, update.Status, "outcome_mismatch", terminalFingerprint)
+					resolved, conflictErr := h.recordTerminalOutcomeConflict(ctx, node, job, update.Status, "outcome_mismatch", terminalFingerprint)
+					if conflictErr != nil {
+						return conflictErr
+					}
+					if resolved {
+						return nil
+					}
 					return errTerminalOutcomeConflict
 				}
 				terminalReplay = true
@@ -425,8 +427,18 @@ func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelop
 				return nil
 			}
 			if errors.Is(err, errTerminalOutcomeConflict) {
-				h.recordTerminalOutcomeConflict(ctx, node, job, update.Status, "concurrent_outcome_mismatch", terminalFingerprint)
-				return err
+				persisted, lookupErr := h.store.GetJob(ctx, job.ID)
+				if lookupErr != nil {
+					return lookupErr
+				}
+				resolved, conflictErr := h.recordTerminalOutcomeConflict(ctx, node, persisted, update.Status, "concurrent_outcome_mismatch", terminalFingerprint)
+				if conflictErr != nil {
+					return conflictErr
+				}
+				if resolved {
+					return nil
+				}
+				return errTerminalOutcomeConflict
 			}
 			if err != nil {
 				return err
@@ -477,18 +489,8 @@ func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelop
 			return err
 		}
 		if isTerminalJobStatus(updated.Status) {
-			ack, err := protocol.NewEnvelope(protocol.TypeJobAck, node.ID, updated.ID, nil)
-			if err != nil {
+			if err := h.sendJobAcknowledgement(node.ID, updated.ID); err != nil {
 				return err
-			}
-			h.mu.RLock()
-			client := h.conns[node.ID]
-			h.mu.RUnlock()
-			if client == nil {
-				return errors.New("agent disconnected before final job acknowledgement")
-			}
-			if err := client.writeJSON(ack); err != nil {
-				return fmt.Errorf("send final job acknowledgement: %w", err)
 			}
 			// A completed automatic maintenance update releases the node-level
 			// dispatch gate. Re-scan after the ACK so the next durable intent does
@@ -529,40 +531,93 @@ func (h *AgentHub) auditTerminalReplayRejection(ctx context.Context, node domain
 	})
 }
 
-func (h *AgentHub) recordTerminalOutcomeConflict(ctx context.Context, node domain.Node, job domain.Job, reported domain.JobStatus, reason, fingerprint string) {
-	key := job.ID + ":" + fingerprint
+func (h *AgentHub) recordTerminalOutcomeConflict(ctx context.Context, node domain.Node, job domain.Job, reported domain.JobStatus, reason, fingerprint string) (bool, error) {
+	conflict, created, err := h.store.RecordTerminalOutcomeConflict(ctx, job, reported, fingerprint, reason)
+	if err != nil {
+		return false, fmt.Errorf("persist terminal outcome conflict: %w", err)
+	}
 	h.mu.RLock()
 	client := h.conns[node.ID]
 	h.mu.RUnlock()
 	if client != nil {
 		client.mu.Lock()
 		if client.terminalConflicts == nil {
-			client.terminalConflicts = make(map[string]struct{})
+			client.terminalConflicts = make(map[string]string)
 		}
-		if _, exists := client.terminalConflicts[key]; exists {
-			client.mu.Unlock()
-			return
-		}
-		if len(client.terminalConflicts) >= maxAgentTerminalConflictCacheItems {
-			client.mu.Unlock()
-			return
-		}
-		client.terminalConflicts[key] = struct{}{}
+		client.terminalConflicts[job.ID] = fingerprint
 		client.mu.Unlock()
 	}
-
-	if h.log != nil {
+	if conflict.Resolution == "keep_control" {
+		if err := h.sendJobAcknowledgement(node.ID, job.ID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if created && h.log != nil {
 		h.log.Warn("agent terminal outcome conflicts with persisted job",
 			"node_id", node.ID, "job_id", job.ID, "instance_id", job.InstanceID,
 			"stored_status", job.Status, "reported_status", reported, "reason", reason)
 	}
-	if h.store != nil {
+	if created {
 		h.auditTerminalReplayRejection(ctx, node, job, reported, reason)
 		_ = h.store.CreateNotificationOnce(ctx, "critical", "job.terminal_outcome_conflict", "Task result conflict detected",
 			"The Agent reported a terminal result which does not match the immutable Control record", job.ID,
 			map[string]any{"job_id": job.ID, "node_id": node.ID, "instance_id": job.InstanceID,
 				"stored_status": job.Status, "reported_status": reported}, 24*time.Hour)
 	}
+	if h.Supports(node.ID, protocol.CapabilityTerminalConflictV1) {
+		envelope, envelopeErr := protocol.NewEnvelope(protocol.TypeJobConflict, node.ID, job.ID,
+			protocol.JobConflict{Reason: "terminal_outcome_mismatch"})
+		if envelopeErr != nil {
+			return false, envelopeErr
+		}
+		if client == nil {
+			return false, errors.New("agent disconnected before terminal conflict advisory")
+		}
+		if err := client.writeJSON(envelope); err != nil {
+			return false, fmt.Errorf("send terminal conflict advisory: %w", err)
+		}
+	}
+	return false, nil
+}
+
+func (h *AgentHub) sendJobAcknowledgement(nodeID, jobID string) error {
+	ack, err := protocol.NewEnvelope(protocol.TypeJobAck, nodeID, jobID, nil)
+	if err != nil {
+		return err
+	}
+	h.mu.RLock()
+	client := h.conns[nodeID]
+	h.mu.RUnlock()
+	if client == nil {
+		return errors.New("agent disconnected before final job acknowledgement")
+	}
+	if err := client.writeJSON(ack); err != nil {
+		return fmt.Errorf("send final job acknowledgement: %w", err)
+	}
+	client.mu.Lock()
+	delete(client.terminalConflicts, jobID)
+	client.mu.Unlock()
+	return nil
+}
+
+func (h *AgentHub) AcknowledgeResolvedTerminalConflict(nodeID, jobID, fingerprint string) (bool, error) {
+	h.mu.RLock()
+	client := h.conns[nodeID]
+	h.mu.RUnlock()
+	if client == nil {
+		return false, nil
+	}
+	client.mu.Lock()
+	observed := client.terminalConflicts[jobID]
+	client.mu.Unlock()
+	if !terminalFingerprintsEqual(observed, fingerprint) {
+		return false, nil
+	}
+	if err := h.sendJobAcknowledgement(nodeID, jobID); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (h *AgentHub) forgetSent(nodeID, jobID string) {

@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -37,6 +38,20 @@ func TestRunLogsConnectionLifecycleWithoutSecrets(t *testing.T) {
 		defer conn.Close()
 		var hello protocol.Envelope
 		if err := conn.ReadJSON(&hello); err != nil || hello.Type != protocol.TypeHello {
+			return
+		}
+		var details protocol.Hello
+		if err := json.Unmarshal(hello.Payload, &details); err != nil {
+			return
+		}
+		supportsTerminalConflicts := false
+		for _, capability := range details.Capabilities {
+			if capability == protocol.CapabilityTerminalConflictV1 {
+				supportsTerminalConflicts = true
+				break
+			}
+		}
+		if !supportsTerminalConflicts {
 			return
 		}
 		connectedOnce.Do(func() { close(connected) })
@@ -100,7 +115,7 @@ func TestUpdateJournalLogsPersistenceFailureWithoutJobContent(t *testing.T) {
 	if existing, err := journal.Begin(job); err != nil || existing != nil {
 		t.Fatalf("claim test job: existing=%v err=%v", existing, err)
 	}
-	journal.path = t.TempDir()
+	journal.dir = filepath.Join(t.TempDir(), "missing", "v2")
 	var output bytes.Buffer
 	agent := &Agent{journal: journal, logger: log.New(&output, "", 0)}
 	agent.updateJournal(job.ID, domain.JobFailed, 1, "message-secret", map[string]any{"result": "result-secret"})

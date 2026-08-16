@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,6 +124,10 @@ func TestTerminalOutcomeConflictIsNonfatalAndDeduplicated(t *testing.T) {
 	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
 		t.Fatal(err)
 	}
+	owner, created, err := store.BootstrapOwner(ctx, "owner", "Owner", "hash")
+	if err != nil || !created {
+		t.Fatalf("bootstrap owner: created=%v err=%v", created, err)
+	}
 	nodeID, jobID := uuid.NewString(), uuid.NewString()
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'Node','online');
 		INSERT INTO jobs(id,node_id,type,status,progress,message,payload,result,created_at,finished_at)
@@ -131,7 +136,7 @@ func TestTerminalOutcomeConflictIsNonfatalAndDeduplicated(t *testing.T) {
 		t.Fatal(err)
 	}
 	hub := NewAgentHub(store, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []byte("0123456789abcdef0123456789abcdef"))
-	hub.conns[nodeID] = &agentConnection{terminalConflicts: make(map[string]struct{})}
+	hub.conns[nodeID] = &agentConnection{terminalConflicts: make(map[string]string)}
 	envelope, err := protocol.NewEnvelope(protocol.TypeJobUpdate, nodeID, jobID, protocol.JobUpdate{
 		Status: domain.JobFailed, Progress: 100, Message: "agent failed", Result: map[string]any{"value": "reported"},
 	})
@@ -156,6 +161,27 @@ func TestTerminalOutcomeConflictIsNonfatalAndDeduplicated(t *testing.T) {
 	}
 	if audits != 1 || notifications != 1 {
 		t.Fatalf("conflict records: audits=%d notifications=%d, want 1/1", audits, notifications)
+	}
+	conflicts, err := store.ListTerminalOutcomeConflicts(ctx, true, 100)
+	if err != nil || len(conflicts) != 1 || conflicts[0].Occurrences != 2 {
+		t.Fatalf("durable conflicts = %#v err=%v", conflicts, err)
+	}
+	requestFingerprint := "f" + strings.Repeat("0", 63)
+	resolved, replay, err := store.ResolveTerminalOutcomeConflict(ctx, jobID, conflicts[0].ReportedFingerprint,
+		owner.ID, "resolve-once", requestFingerprint)
+	if err != nil || replay || resolved.Resolution != "keep_control" || resolved.ResolvedAt == nil {
+		t.Fatalf("resolve conflict = %#v replay=%v err=%v", resolved, replay, err)
+	}
+	if _, replay, err := store.ResolveTerminalOutcomeConflict(ctx, jobID, conflicts[0].ReportedFingerprint,
+		owner.ID, "resolve-once", requestFingerprint); err != nil || !replay {
+		t.Fatalf("idempotent conflict resolution: replay=%v err=%v", replay, err)
+	}
+	if _, _, err := store.ResolveTerminalOutcomeConflict(ctx, jobID, conflicts[0].ReportedFingerprint,
+		owner.ID, "different-key", requestFingerprint); !errors.Is(err, ErrConflict) {
+		t.Fatalf("conflicting resolution replay = %v", err)
+	}
+	if active, err := store.ListTerminalOutcomeConflicts(ctx, true, 100); err != nil || len(active) != 0 {
+		t.Fatalf("resolved conflict remained active: %#v err=%v", active, err)
 	}
 	persisted, err := store.GetJob(ctx, jobID)
 	if err != nil || persisted.Status != domain.JobSucceeded || persisted.Message != "control done" || persisted.Result["value"] != "stored" {

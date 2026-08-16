@@ -52,9 +52,11 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		if _, err := agent.New(absConfig, cfg, log.New(os.Stderr, "agent validate: ", log.LstdFlags)); err != nil {
+		a, err := agent.New(absConfig, cfg, log.New(os.Stderr, "agent validate: ", log.LstdFlags))
+		if err != nil {
 			return err
 		}
+		defer a.Close()
 		fmt.Println("configuration is valid")
 		return nil
 	case "enroll":

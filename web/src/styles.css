@@ -715,6 +715,18 @@ h1, h2, h3, p { margin-top: 0; }
 .audit-timeline__footer > span { color: var(--text-faint); font-size: 8px; }
 
 .job-summary { margin-bottom: 13px; display: grid; grid-template-columns: repeat(4, minmax(150px, 240px)); gap: 11px; }
+.terminal-conflict-card { margin-bottom: 13px; overflow: hidden; border-color: rgba(220,79,74,.3); }
+.terminal-conflict-card__heading { padding: 14px 16px; display: flex; align-items: flex-start; gap: 10px; color: var(--red); background: var(--red-soft); border-bottom: 1px solid rgba(220,79,74,.2); }
+.terminal-conflict-card__heading > div { display: flex; flex-direction: column; gap: 4px; }
+.terminal-conflict-card__heading strong { font-size: 11px; }
+.terminal-conflict-card__heading span { color: var(--text-dim); font-size: 9px; line-height: 1.6; }
+.terminal-conflict-row { min-height: 78px; padding: 12px 16px; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 16px; border-bottom: 1px solid var(--line-soft); }
+.terminal-conflict-row:last-child { border-bottom: 0; }
+.terminal-conflict-row > div { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.terminal-conflict-row strong, .terminal-conflict-row span, .terminal-conflict-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-conflict-row strong { font-size: 10px; }
+.terminal-conflict-row span, .terminal-conflict-row small { color: var(--text-faint); font-size: 8px; }
+.terminal-conflict-row code { color: var(--text-dim); }
 .job-summary .card { min-height: 70px; padding: 14px 16px; display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 8px; }
 .job-summary svg { color: var(--green); }
 .job-summary .card:nth-child(3) svg { color: var(--red); }

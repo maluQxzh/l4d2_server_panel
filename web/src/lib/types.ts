@@ -25,6 +25,22 @@ export type InstanceStatus =
   | "external";
 export type JobStatus = "queued" | "dispatched" | "running" | "succeeded" | "failed" | "canceled";
 
+export interface TerminalOutcomeConflict {
+  job_id: string;
+  node_id: string;
+  instance_id?: string;
+  stored_status: "succeeded" | "failed" | "canceled";
+  reported_status: "succeeded" | "failed" | "canceled";
+  reported_fingerprint: string;
+  reason: string;
+  occurrences: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  resolution?: "keep_control";
+  resolved_at?: string;
+  resolved_by?: string;
+}
+
 export type SystemUpdatePhase = "validating" | "stopping" | "backing_up" | "installing" | "migrating" | "starting" | "health_check" | "rolling_back";
 
 export interface SystemUpdateRecord {

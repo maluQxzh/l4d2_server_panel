@@ -2,7 +2,12 @@
 
 package agent
 
-import "golang.org/x/sys/windows"
+import (
+	"errors"
+	"os"
+
+	"golang.org/x/sys/windows"
+)
 
 // Windows does not provide a portable directory fsync. MoveFileEx with
 // WRITE_THROUGH is the supported replacement primitive which waits for the
@@ -17,4 +22,12 @@ func replaceJournalFile(temporary, destination string) error {
 		return err
 	}
 	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+}
+
+func removeJournalFile(path, _ string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -101,7 +102,7 @@ func TestHandleClaimedJobDoesNotSendUnpersistedTerminalOutcome(t *testing.T) {
 	if _, err := journal.Begin(job); err != nil {
 		t.Fatal(err)
 	}
-	journal.path = t.TempDir()
+	journal.dir = filepath.Join(t.TempDir(), "missing", "v2")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	sender := make(chan protocol.Envelope, 4)
@@ -131,8 +132,8 @@ func TestHandleClaimedJobRetriesAndSendsExactPersistedTerminalOutcome(t *testing
 	if _, err := journal.Begin(job); err != nil {
 		t.Fatal(err)
 	}
-	validPath := journal.path
-	journal.path = t.TempDir()
+	validDir := journal.dir
+	journal.dir = filepath.Join(t.TempDir(), "missing", "v2")
 	failureSeen := make(chan struct{}, 1)
 	logger := log.New(terminalPersistenceSignalWriter{signal: failureSeen}, "", 0)
 	sender := make(chan protocol.Envelope, 4)
@@ -152,7 +153,7 @@ func TestHandleClaimedJobRetriesAndSendsExactPersistedTerminalOutcome(t *testing
 		t.Fatal("terminal persistence failure was not observed")
 	}
 	journal.mu.Lock()
-	journal.path = validPath
+	journal.dir = validDir
 	journal.mu.Unlock()
 	waitForSignal(t, done, "terminal journal retry")
 

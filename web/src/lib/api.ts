@@ -37,6 +37,7 @@ import type {
   MapRecord,
   MapPathEncoding,
   SmartPluginPlan,
+  TerminalOutcomeConflict,
 } from "./types";
 
 const baseURL = (import.meta.env.VITE_API_BASE || "/api/v1").replace(/\/$/, "");
@@ -355,6 +356,12 @@ export const api = {
   ),
   job: (id: string) => request<{ job: Job }>(`/jobs/${encodeURIComponent(id)}`).then((r) => r.job),
   cancelJob: (id: string) => request<void>(`/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+  terminalOutcomeConflicts: () => list<TerminalOutcomeConflict>("/jobs/terminal-conflicts"),
+  resolveTerminalOutcomeConflict: (jobId: string, reportedFingerprint: string) =>
+    request<{ conflict: TerminalOutcomeConflict; idempotent_replay: boolean; acknowledgement_delivered: boolean }>(
+      `/jobs/${encodeURIComponent(jobId)}/terminal-conflict/resolve`,
+      { method: "POST", body: JSON.stringify({ action: "keep_control", reported_fingerprint: reportedFingerprint }) },
+    ),
   audit: (resourceId?: string) => list<AuditEvent>(`/audit${resourceId ? `?resource_id=${encodeURIComponent(resourceId)}` : ""}`),
   publicServers: () => list<PublicServer>("/public/servers"),
 

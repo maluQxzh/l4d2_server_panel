@@ -26,3 +26,19 @@ func replaceJournalFile(temporary, destination string) error {
 	}
 	return closeErr
 }
+
+func removeJournalFile(path, directoryPath string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	directory, err := os.Open(directoryPath)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}

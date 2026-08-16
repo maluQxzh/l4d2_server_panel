@@ -31,6 +31,7 @@ func TestSQLiteMigrationChecksums(t *testing.T) {
 		"013_retire_obsolete_permissions.sql": "10e51770bde143350a4b7ec03f325ed17d1f265c617bc049ff04c76f930508af",
 		"014_smart_plugin_archives.sql":       "6e8d4d7b4ddb58653759cd17872a76a8e854728c2a8e1d6a9c49a98b371c7929",
 		"015_backup_deletion_permission.sql":  "f08e9075c807888531d5faab099e83ee31eee031fd4488fa52aeeac5862960ce",
+		"016_terminal_outcome_conflicts.sql":  "c75401441dc0d3bb633d36cbc8a0e357757cc12ef17fba8f12890821724d9dd5",
 	}
 	root := filepath.Join("..", "..", "migrations", "sqlite")
 	entries, err := os.ReadDir(root)

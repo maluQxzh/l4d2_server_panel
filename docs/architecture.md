@@ -96,7 +96,8 @@ SourceMod 安装具有强制的 Metamod:Source 前置依赖。Control 只在该�
 
 <agent-data-dir>/
   registry.json                       # Agent 实例注册资料
-  journal/                            # 本地任务幂等日志
+  .agent.lock                         # data_dir 单进程独占锁
+  journal/v2/<job-id-sha256>.json     # 逐任务原子幂等日志
   backups/<instance-id>/*.{zip,7z}    # 节点本地实例/插件备份
   package-versions/...                # 节点本地 VPK/SMX 历史快照
   maps/registry.json                  # 地图对象、副本与实例链接证明
@@ -139,6 +140,10 @@ SourceMod 安装具有强制的 Metamod:Source 前置依赖。Control 只在该�
 `Idempotency-Key` 在创建实例、配置更新、文件写/删及实例动作等长操作上避免重试重复执行。重放不仅匹配用户和键，还必须匹配目标资源、动作、正文和版本组成的规范化请求；不同实例、动作、负载或版本会返回 409，迁移前没有请求指纹的旧任务也不会被猜测为等价。HTTP 边界在秘密加密前用部署主密钥计算 HMAC-SHA256 指纹，因此随机加密 nonce 不破坏重试，数据库泄露也不能直接用指纹枚举低熵密码、RCON 命令、签名 URL 或文件正文。内部调度的无秘密任务使用带作用域的 SHA-256 指纹。实例结构化配置使用请求正文的 `version` 防止丢失更新；文件内容使用 SHA-256 前置条件。
 
 已派发或运行的任务收到取消时会先进入带 `cancel_pending` 的 canceled 状态并继续占用实例写锁。Agent 的最终 succeeded/failed/canceled 结果仍可完成投影并原子清除该标记；没有 `cancel_pending` 的普通 canceled 任务不能恢复成成功或失败。
+
+Agent 启动后独占锁定整个 `data_dir`，因此前台进程、系统服务或误启动的第二份进程不能同时读写 registry、journal 和本地状态。任务 journal v2 按任务拆分成以 Job ID SHA-256 命名的有界 JSON 文件，每次领取、进度、终态和 ACK 只原子提交对应文件；旧版 `journal/jobs.json` 在全部条目完成逐项落盘后才改名归档，中断迁移会在下一次启动逐项核对后继续，任何不一致都拒绝启动。
+
+Agent 声明 `terminal_conflict_v1` 时，Control 若发现终态上报与不可变任务终态不一致，会持久化不含结果正文的冲突元数据并返回 `job_conflict`。Agent 在当前连接中隔离该任务、停止重复发送但继续保留本地终态；其他任务和心跳不受影响。只有交互式全局所有者可选择 `keep_control`，该幂等操作写入审计且永不改写既有终态，然后只对完全匹配的上报指纹发送 `job_ack`。若 Agent 已离线，已确认记录会在其下次重放时触发 ACK。
 
 ## 当前边界
 

@@ -22,16 +22,19 @@ func CompatibleVersion(value string) bool {
 }
 
 const (
-	TypeHello     = "hello"
-	TypeHeartbeat = "heartbeat"
-	TypeMetrics   = "metrics"
-	TypeJob       = "job"
-	TypeJobCancel = "job_cancel"
-	TypeJobAck    = "job_ack"
-	TypeJobUpdate = "job_update"
-	TypeLog       = "log"
-	TypeInventory = "inventory"
+	TypeHello       = "hello"
+	TypeHeartbeat   = "heartbeat"
+	TypeMetrics     = "metrics"
+	TypeJob         = "job"
+	TypeJobCancel   = "job_cancel"
+	TypeJobAck      = "job_ack"
+	TypeJobConflict = "job_conflict"
+	TypeJobUpdate   = "job_update"
+	TypeLog         = "log"
+	TypeInventory   = "inventory"
 )
+
+const CapabilityTerminalConflictV1 = "terminal_conflict_v1"
 
 const MaxJobUpdateMessageBytes = 2 << 10
 
@@ -105,6 +108,10 @@ type JobUpdate struct {
 	Progress int              `json:"progress"`
 	Message  string           `json:"message,omitempty"`
 	Result   map[string]any   `json:"result,omitempty"`
+}
+
+type JobConflict struct {
+	Reason string `json:"reason"`
 }
 
 type LogEvent struct {

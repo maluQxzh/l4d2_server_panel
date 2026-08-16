@@ -93,6 +93,15 @@ func TestJournalNormalizesLegacyOversizedMessageOnOpen(t *testing.T) {
 	if len(entry.Message) > protocol.MaxJobUpdateMessageBytes || !utf8.ValidString(entry.Message) {
 		t.Fatalf("normalized message is %d bytes, valid UTF-8=%t", len(entry.Message), utf8.ValidString(entry.Message))
 	}
+	if _, err := os.Stat(filepath.Join(journalDir, legacyJournalArchiveName)); err != nil {
+		t.Fatalf("legacy journal was not archived after migration: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(journalDir, legacyJournalName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy migration source still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(journalDir, journalV2DirectoryName, journalEntryFileName("legacy-job"))); err != nil {
+		t.Fatalf("migrated per-job entry is missing: %v", err)
+	}
 
 	reopened, err := OpenJournal(dir)
 	if err != nil {
@@ -101,6 +110,71 @@ func TestJournalNormalizesLegacyOversizedMessageOnOpen(t *testing.T) {
 	persisted, ok := reopened.Get("legacy-job")
 	if !ok || persisted.Message != entry.Message {
 		t.Fatalf("normalized message was not persisted: %#v", persisted)
+	}
+}
+
+func TestJournalRejectsDisagreeingPartialLegacyMigration(t *testing.T) {
+	dir := t.TempDir()
+	journalDir := filepath.Join(dir, "journal")
+	v2Dir := filepath.Join(journalDir, journalV2DirectoryName)
+	if err := os.MkdirAll(v2Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := JournalEntry{JobID: "partial-job", Type: "test", Status: domain.JobFailed, Progress: 100, Message: "legacy", UpdatedAt: time.Now().UTC()}
+	v2 := legacy
+	v2.Message = "different"
+	legacyRaw, _ := json.Marshal(map[string]JournalEntry{legacy.JobID: legacy})
+	v2Raw, _ := json.Marshal(v2)
+	if err := os.WriteFile(filepath.Join(journalDir, legacyJournalName), legacyRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(v2Dir, journalEntryFileName(v2.JobID)), v2Raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenJournal(dir); err == nil || !strings.Contains(err.Error(), "disagree") {
+		t.Fatalf("disagreeing partial migration was accepted: %v", err)
+	}
+}
+
+func TestTerminalReplayQuarantineDoesNotStarveOtherJobs(t *testing.T) {
+	j, err := OpenJournal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, jobID := range []string{"blocked-job", "healthy-job"} {
+		job := domain.Job{ID: jobID, Type: "test"}
+		if _, err := j.Begin(job); err != nil {
+			t.Fatal(err)
+		}
+		if err := j.Update(jobID, domain.JobFailed, 100, "done", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agent := &Agent{config: &Config{NodeID: "node-1"}, journal: j, logger: log.New(io.Discard, "", 0)}
+	agent.blockTerminalReplay("blocked-job")
+	sender := make(chan protocol.Envelope, 4)
+	wake := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go agent.replayTerminalJournal(ctx, sender, wake)
+
+	select {
+	case envelope := <-sender:
+		if envelope.JobID != "healthy-job" {
+			t.Fatalf("quarantined replay was sent before a healthy job: %s", envelope.JobID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("healthy terminal replay was starved by quarantine")
+	}
+	agent.allowTerminalReplay("blocked-job")
+	wake <- struct{}{}
+	select {
+	case envelope := <-sender:
+		if envelope.JobID != "blocked-job" {
+			t.Fatalf("unexpected replay after resolution: %s", envelope.JobID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("resolved terminal replay did not resume")
 	}
 }
 
@@ -132,7 +206,7 @@ func TestJournalUpdateFailureDoesNotExposeUncommittedTerminalOutcome(t *testing.
 	if _, err := journal.Begin(job); err != nil {
 		t.Fatal(err)
 	}
-	journal.path = t.TempDir() // Replacing a directory with the journal file must fail on every supported OS.
+	journal.dir = filepath.Join(t.TempDir(), "missing", "v2")
 	if err := journal.Update(job.ID, domain.JobSucceeded, 100, "done", map[string]any{"secret": "must-not-surface"}); err == nil {
 		t.Fatal("terminal journal update unexpectedly succeeded")
 	}
@@ -147,7 +221,7 @@ func TestJournalClaimFailureRollsBackInMemoryClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	journal.path = t.TempDir()
+	journal.dir = filepath.Join(t.TempDir(), "missing", "v2")
 	job := domain.Job{ID: "claim-write-failure", Type: "test"}
 	if _, err := journal.Begin(job); err == nil {
 		t.Fatal("journal claim unexpectedly succeeded")

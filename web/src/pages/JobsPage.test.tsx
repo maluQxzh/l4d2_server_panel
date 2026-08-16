@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RealtimeProvider } from "../context/RealtimeContext";
 import { ToastProvider } from "../context/ToastContext";
 import { api } from "../lib/api";
-import type { Job } from "../lib/types";
+import type { Job, TerminalOutcomeConflict } from "../lib/types";
 
 const authState = vi.hoisted(() => ({ user: { role: "owner" } as { role: string; role_bindings?: unknown } }));
 
@@ -40,7 +40,10 @@ const probe: Job = {
 };
 
 describe("任务中心", () => {
-  beforeEach(() => { authState.user = { role: "owner" }; });
+  beforeEach(() => {
+    authState.user = { role: "owner" };
+    vi.spyOn(api, "terminalOutcomeConflicts").mockResolvedValue({ items: [] });
+  });
   afterEach(() => vi.restoreAllMocks());
 
   it("默认展示重要任务并将后台探测放入独立视图", async () => {
@@ -170,5 +173,34 @@ describe("任务中心", () => {
     render(<QueryClientProvider client={client}><ToastProvider><RealtimeProvider enabled={false}><MemoryRouter><JobsPage /></MemoryRouter></RealtimeProvider></ToastProvider></QueryClientProvider>);
     expect(await screen.findByText("任务清单已隐藏")).toBeInTheDocument();
     expect(jobList).not.toHaveBeenCalled();
+  });
+
+  it("全局所有者可确认冲突并保留中心端结果", async () => {
+    const conflict: TerminalOutcomeConflict = {
+      job_id: "de13ef3b-84e0-455a-8d08-f7722e665903",
+      node_id: "node-1",
+      instance_id: "instance-1",
+      stored_status: "succeeded",
+      reported_status: "failed",
+      reported_fingerprint: "a".repeat(64),
+      reason: "outcome_mismatch",
+      occurrences: 4,
+      first_seen_at: "2026-08-12T11:25:00Z",
+      last_seen_at: "2026-08-12T11:45:00Z",
+    };
+    vi.mocked(api.terminalOutcomeConflicts).mockResolvedValue({ items: [conflict] });
+    vi.spyOn(api, "jobList").mockResolvedValue({ items: [operation] });
+    const resolve = vi.spyOn(api, "resolveTerminalOutcomeConflict").mockResolvedValue({
+      conflict: { ...conflict, resolution: "keep_control" },
+      idempotent_replay: false,
+      acknowledgement_delivered: true,
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><ToastProvider><RealtimeProvider enabled={false}><MemoryRouter><JobsPage /></MemoryRouter></RealtimeProvider></ToastProvider></QueryClientProvider>);
+
+    expect(await screen.findByText("检测到任务最终结果冲突")).toBeInTheDocument();
+    expect(screen.getByText(/中心端：成功 · Agent：失败/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "保留中心端结果并确认" }));
+    await waitFor(() => expect(resolve).toHaveBeenCalledWith(conflict.job_id, conflict.reported_fingerprint));
   });
 });
