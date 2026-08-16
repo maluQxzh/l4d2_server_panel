@@ -5,12 +5,15 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 	"github.com/l4d2-panel/l4d2panel/internal/protocol"
 )
@@ -193,10 +196,75 @@ func TestOnlyRetryableJobUpdateFailureClosesAgentConnection(t *testing.T) {
 	if agentMessageFailureClosesConnection(protocol.TypeJobUpdate, errTerminalOutcomeConflict) {
 		t.Fatal("terminal semantic conflict closed the Agent connection")
 	}
-	if !agentMessageFailureClosesConnection(protocol.TypeJobUpdate, errors.New("persist projection")) {
+	if agentMessageFailureClosesConnection(protocol.TypeJobUpdate, errors.New("permanent protocol rejection")) {
+		t.Fatal("permanent job update rejection closed the Agent connection")
+	}
+	if !agentMessageFailureClosesConnection(protocol.TypeJobUpdate, retryableAgentMessage(errors.New("persist projection"))) {
 		t.Fatal("retryable job update failure did not close the Agent connection")
 	}
-	if agentMessageFailureClosesConnection(protocol.TypeHeartbeat, errors.New("invalid heartbeat")) {
+	if agentMessageFailureClosesConnection(protocol.TypeHeartbeat, retryableAgentMessage(errors.New("persist heartbeat"))) {
 		t.Fatal("non-job message failure closed the Agent connection")
+	}
+}
+
+func TestPermanentTerminalReplayRejectionKeepsAgentConnectionAlive(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "permanent-rejection.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	nodeID, acceptedJobID := uuid.NewString(), uuid.NewString()
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'Node','online');
+		INSERT INTO jobs(id,node_id,type,status,progress,payload,result,created_at)
+		VALUES(?2,?1,'discover_instances','running',50,'{}','{}',?3)`, nodeID, acceptedJobID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	events := NewEventBroker(store)
+	hub := NewAgentHub(store, events, slog.New(slog.NewTextHandler(io.Discard, nil)), []byte("0123456789abcdef0123456789abcdef"))
+	defer hub.Close()
+	node, err := store.GetNode(ctx, nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hub.Serve(node, "127.0.0.1", w, r)
+	}))
+	defer server.Close()
+
+	connection, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	stale, err := protocol.NewEnvelope(protocol.TypeJobUpdate, nodeID, "unknown-stale-job", protocol.JobUpdate{
+		Status: domain.JobFailed, Progress: 100, Message: "stale terminal replay",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.WriteJSON(stale); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := protocol.NewEnvelope(protocol.TypeJobUpdate, nodeID, acceptedJobID, protocol.JobUpdate{
+		Status: domain.JobCanceled, Progress: 100, Message: "canceled",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.WriteJSON(accepted); err != nil {
+		t.Fatalf("connection closed after permanent stale replay rejection: %v", err)
+	}
+	_ = connection.SetReadDeadline(time.Now().Add(3 * time.Second))
+	var acknowledgement protocol.Envelope
+	if err := connection.ReadJSON(&acknowledgement); err != nil {
+		t.Fatalf("connection did not process the next valid terminal outcome: %v", err)
+	}
+	if acknowledgement.Type != protocol.TypeJobAck || acknowledgement.JobID != acceptedJobID {
+		t.Fatalf("acknowledgement = %#v", acknowledgement)
 	}
 }

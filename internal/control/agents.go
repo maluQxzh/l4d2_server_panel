@@ -218,7 +218,7 @@ func (h *AgentHub) Serve(node domain.Node, remoteAddress string, w http.Response
 				// alive so heartbeats and unrelated journal outcomes can progress.
 				continue
 			}
-			h.log.Warn("agent message failed", "node_id", node.ID, "type", envelope.Type, "error", err)
+			h.log.Warn("agent message failed", "node_id", node.ID, "type", envelope.Type, "job_id", envelope.JobID, "error", err)
 			if agentMessageFailureClosesConnection(envelope.Type, err) {
 				// A terminal result is replayed from the Agent journal after the
 				// connection is re-established. Closing here turns projection or
@@ -230,7 +230,27 @@ func (h *AgentHub) Serve(node domain.Node, remoteAddress string, w http.Response
 }
 
 func agentMessageFailureClosesConnection(messageType string, err error) bool {
-	return messageType == protocol.TypeJobUpdate && !errors.Is(err, errTerminalOutcomeConflict)
+	var retryable *retryableAgentMessageError
+	return messageType == protocol.TypeJobUpdate && errors.As(err, &retryable)
+}
+
+// retryableAgentMessageError marks failures after which reconnecting and
+// replaying the Agent's durable journal can make progress. Permanent protocol,
+// authorization, and validation failures must not tear down the node session:
+// doing so lets one stale journal row hold heartbeats and unrelated jobs in a
+// reconnect loop forever.
+type retryableAgentMessageError struct {
+	err error
+}
+
+func (e *retryableAgentMessageError) Error() string { return e.err.Error() }
+func (e *retryableAgentMessageError) Unwrap() error { return e.err }
+
+func retryableAgentMessage(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &retryableAgentMessageError{err: err}
 }
 
 func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelope protocol.Envelope) error {
@@ -360,7 +380,13 @@ func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelop
 			return err
 		}
 		job, err := h.store.GetJob(ctx, envelope.JobID)
-		if err != nil || job.NodeID != node.ID {
+		if errors.Is(err, ErrNotFound) {
+			return ErrUnauthorized
+		}
+		if err != nil {
+			return retryableAgentMessage(fmt.Errorf("load job: %w", err))
+		}
+		if job.NodeID != node.ID {
 			return ErrUnauthorized
 		}
 		if err := validateJobUpdate(job, node.ID, envelope, update); err != nil {
@@ -368,6 +394,9 @@ func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelop
 		}
 		if job.InstanceID != "" {
 			if err := h.requireNodeInstances(ctx, node.ID, []string{job.InstanceID}); err != nil {
+				if !errors.Is(err, ErrUnauthorized) {
+					return retryableAgentMessage(fmt.Errorf("validate job instance ownership: %w", err))
+				}
 				return err
 			}
 		}
@@ -396,7 +425,7 @@ func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelop
 				if compareErr != nil || !equivalent {
 					resolved, conflictErr := h.recordTerminalOutcomeConflict(ctx, node, job, update.Status, "outcome_mismatch", terminalFingerprint)
 					if conflictErr != nil {
-						return conflictErr
+						return retryableAgentMessage(conflictErr)
 					}
 					if resolved {
 						return nil
@@ -429,11 +458,11 @@ func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelop
 			if errors.Is(err, errTerminalOutcomeConflict) {
 				persisted, lookupErr := h.store.GetJob(ctx, job.ID)
 				if lookupErr != nil {
-					return lookupErr
+					return retryableAgentMessage(fmt.Errorf("reload conflicting job: %w", lookupErr))
 				}
 				resolved, conflictErr := h.recordTerminalOutcomeConflict(ctx, node, persisted, update.Status, "concurrent_outcome_mismatch", terminalFingerprint)
 				if conflictErr != nil {
-					return conflictErr
+					return retryableAgentMessage(conflictErr)
 				}
 				if resolved {
 					return nil
@@ -441,13 +470,13 @@ func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelop
 				return errTerminalOutcomeConflict
 			}
 			if err != nil {
-				return err
+				return retryableAgentMessage(fmt.Errorf("persist job update: %w", err))
 			}
 		}
 		if jobProjectionPending(updated) {
 			updated, _, err = h.store.ApplyPendingJobProjection(ctx, updated.ID)
 			if err != nil {
-				return fmt.Errorf("project terminal job: %w", err)
+				return retryableAgentMessage(fmt.Errorf("project terminal job: %w", err))
 			}
 		}
 		if updated.Status == domain.JobSucceeded || updated.Status == domain.JobFailed || updated.Status == domain.JobCanceled {
@@ -486,11 +515,11 @@ func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelop
 		eventJob.Payload, eventJob.Result = cloneMap(updated.Payload), cloneMap(updated.Result)
 		stripJobFields(eventJob.Type, eventJob.Payload, eventJob.Result)
 		if _, err = h.events.Publish(ctx, Event{Type: "job.updated", ResourceType: "job", ResourceID: job.ID, Data: map[string]any{"job": eventJob}}, true); err != nil {
-			return err
+			return retryableAgentMessage(fmt.Errorf("publish job update: %w", err))
 		}
 		if isTerminalJobStatus(updated.Status) {
 			if err := h.sendJobAcknowledgement(node.ID, updated.ID); err != nil {
-				return err
+				return retryableAgentMessage(err)
 			}
 			// A completed automatic maintenance update releases the node-level
 			// dispatch gate. Re-scan after the ACK so the next durable intent does
