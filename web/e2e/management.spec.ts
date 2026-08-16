@@ -418,7 +418,7 @@ test("创建团队用户并绑定单个节点角色", async ({ page }) => {
   await dialog.getByLabel("用户名").fill("operator");
   await dialog.getByLabel("显示名称").fill("值班操作员");
   await dialog.getByLabel("角色").selectOption("operator");
-  await dialog.getByLabel("范围").selectOption("node");
+  await dialog.getByRole("combobox", { name: "范围" }).selectOption("node");
   await dialog.getByText("节点", { exact: true }).locator("..").locator("select").selectOption(node.id);
   await dialog.getByRole("button", { name: "创建账号并生成密码" }).click();
 
@@ -492,12 +492,10 @@ test("空 RCON 的运行实例保持绿色状态并显示独立警告", async ({
 test("RCON 玩家查询失败时显示节点返回的诊断", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance }));
-  await page.route("**/api/v1/instances/instance-1/players", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/instances/instance-1/players", (route) => json(route, {
+    items: [], status: "failed", message: "RCON 查询失败：RCON authentication failed",
+  }));
   await page.route("**/api/v1/instances/instance-1/bans", (route) => json(route, { items: [] }));
-  await page.route("**/api/v1/jobs**", (route) => json(route, { items: [{
-    id: "job-rcon-failed", node_id: node.id, instance_id: instance.id, type: "rcon.players",
-    status: "failed", progress: 30, message: "RCON authentication failed", created_at: "2026-08-04T00:00:00Z",
-  }] }));
 
   await page.goto("/instances/instance-1?tab=players");
   await expect(page.getByRole("alert")).toContainText("RCON 查询失败：RCON authentication failed");
@@ -949,6 +947,7 @@ test("停止实例可串行分块上传跨节点备份并排队恢复", async ({
   await page.route("**/api/v1/jobs**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v1/jobs") return json(route, { items: [] });
+    if (path === "/api/v1/jobs/terminal-conflicts") return json(route, { items: [] });
     genericJobDetailReads += 1;
     return json(route, { error: { code: "forbidden", message: "jobs.read is not granted" } }, 403);
   });
@@ -1021,6 +1020,7 @@ test("备份分块失败后清除旧幂等键并可独立重试", async ({ page 
   await page.route("**/api/v1/jobs**", (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v1/jobs") return json(route, { items: [] });
+    if (path === "/api/v1/jobs/terminal-conflicts") return json(route, { items: [] });
     genericJobDetailReads += 1;
     return json(route, { error: { code: "forbidden", message: "jobs.read is not granted" } }, 403);
   });
