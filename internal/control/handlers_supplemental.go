@@ -29,16 +29,37 @@ func (s *Server) handleInstancePlayers(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	latest, _ := s.store.LatestSuccessfulJob(r.Context(), instanceID, "rcon.players", map[string]any{})
-	if rconPlayerRefreshAllowed(instance) {
-		s.queueRefresh(r, instanceID, "rcon.players", map[string]any{})
+	latest, latestErr := s.store.LatestSuccessfulJob(r.Context(), instanceID, "rcon.players", map[string]any{})
+	if latestErr != nil && !errors.Is(latestErr, ErrNotFound) {
+		s.fail(w, latestErr)
+		return
+	}
+	hasLatest := latestErr == nil
+	var refreshJob domain.Job
+	if rconPlayerRefreshAllowed(instance) && (!hasLatest || latest.FinishedAt == nil || time.Since(*latest.FinishedAt) > 10*time.Second) {
+		queued, queueErr := s.queueRefresh(r, instanceID, "rcon.players", map[string]any{})
+		if queueErr != nil {
+			if !hasLatest {
+				s.fail(w, queueErr)
+				return
+			}
+		} else {
+			refreshJob = queued
+			// The idempotency bucket can return a probe that completed between the
+			// cache lookup above and this queue attempt. Use its result immediately.
+			if queued.Status == domain.JobSucceeded {
+				latest = queued
+				hasLatest = true
+			}
+		}
 	}
 	items := make([]any, 0)
-	if raw, ok := latest.Result["players"].([]any); ok {
+	if hasLatest {
+		raw, _ := latest.Result["players"].([]any)
 		for _, entry := range raw {
 			player, _ := entry.(map[string]any)
 			item := map[string]any{"id": player["user_id"], "name": player["name"], "steam_id": player["steam_id"],
-				"ping": player["ping"], "bot": player["bot"], "connected": player["connected"]}
+				"score": player["score"], "ping": player["ping"], "bot": player["bot"], "connected": player["connected"]}
 			if connected, ok := player["connected"].(string); ok {
 				if duration, valid := parseConnectedDuration(connected); valid {
 					item["connected_at"] = time.Now().UTC().Add(-duration)
@@ -47,7 +68,27 @@ func (s *Server) handleInstancePlayers(w http.ResponseWriter, r *http.Request) {
 			items = append(items, item)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	response := map[string]any{"items": items, "status": "ready"}
+	if hasLatest {
+		response["fresh_at"] = latest.FinishedAt
+	}
+	statusCode := http.StatusOK
+	if refreshJob.ID != "" {
+		response["refresh_job_id"] = refreshJob.ID
+		switch refreshJob.Status {
+		case domain.JobQueued, domain.JobDispatched, domain.JobRunning:
+			if hasLatest {
+				response["status"] = "refreshing"
+			} else {
+				response["status"] = "loading"
+				statusCode = http.StatusAccepted
+			}
+		case domain.JobFailed, domain.JobCanceled:
+			response["status"] = "failed"
+			response["message"] = "RCON 玩家查询失败，请确认游戏进程可访问且中心端保存的密码与 server.cfg 一致。"
+		}
+	}
+	writeJSON(w, statusCode, response)
 }
 
 func rconPlayerRefreshAllowed(instance domain.Instance) bool {

@@ -79,6 +79,63 @@ function renderPackagesPage(item: InstanceRecord, tab = "mods") {
   );
 }
 
+function renderPlayersPage(item: InstanceRecord) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  vi.spyOn(api, "instance").mockResolvedValue(item);
+  vi.spyOn(api, "bans").mockResolvedValue({ items: [] });
+  const router = createMemoryRouter(
+    [{ path: "/instances/:instanceId", element: <InstanceDetailPage /> }],
+    { initialEntries: [`/instances/${item.id}?tab=players`] },
+  );
+  return render(
+    <QueryClientProvider client={client}>
+      <RealtimeProvider enabled={false}>
+        <ToastProvider>
+          <RouterProvider router={router} />
+        </ToastProvider>
+      </RealtimeProvider>
+    </QueryClientProvider>,
+  );
+}
+
+describe("实例在线玩家", () => {
+  beforeEach(() => {
+    authState.user = {
+      role: "operator",
+      role_bindings: [{
+        role: "operator",
+        scope_type: "instance",
+        instance_id: instance.id,
+        permissions: ["instances.read", "players.read"],
+      }],
+    };
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("空缓存异步刷新完成前保持加载，并且不依赖作业读取权限", async () => {
+    const running = { ...instance, status: "running" as const, players: 1 };
+    let requests = 0;
+    vi.spyOn(api, "players").mockImplementation(async () => {
+      requests += 1;
+      if (requests === 1) return { items: [], status: "refreshing", refresh_job_id: "11111111-1111-4111-8111-111111111111" };
+      return {
+        items: [{ name: "Coach", steam_id: "STEAM_1:1:12345", score: 42, ping: 35 }],
+        status: "ready",
+        fresh_at: "2026-08-16T10:23:00Z",
+      };
+    });
+    const jobs = vi.spyOn(api, "instanceJobs");
+
+    renderPlayersPage(running);
+
+    expect(await screen.findByText("正在查询最新玩家信息…")).toBeVisible();
+    expect(screen.queryByText("服务器里暂时没人")).not.toBeInTheDocument();
+    expect(await screen.findByText("Coach", {}, { timeout: 2_500 })).toBeVisible();
+    expect(requests).toBeGreaterThanOrEqual(2);
+    expect(jobs).not.toHaveBeenCalled();
+  });
+});
+
 describe("游戏实例配置中的端口", () => {
   beforeEach(() => { authState.user = { role: "owner" }; });
   afterEach(() => {

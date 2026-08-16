@@ -317,25 +317,24 @@ function PlayersTab({ instance }: { instance: InstanceRecord }) {
   const canUnban = hasInstancePermission(user, instance, "players.unban");
   const canChangeMap = hasInstancePermission(user, instance, "players.change_map");
   const canBroadcast = hasInstancePermission(user, instance, "players.broadcast");
-  const canReadJobs = hasInstancePermission(user, instance, "jobs.read");
   const serverActive = instance.status === "running" || instance.status === "degraded";
   const canQueryRCON = canReadPlayers && serverActive && instance.rcon_configured;
-  const players = useQuery({ queryKey: ["instances", instance.id, "players"], queryFn: () => api.players(instance.id), enabled: canQueryRCON, refetchInterval: canQueryRCON ? 15_000 : false });
-  const probeJobs = useQuery({ queryKey: ["jobs", instance.id, "rcon.players"], queryFn: () => api.instanceJobs(instance.id, "only"), enabled: canQueryRCON && canReadJobs, refetchInterval: canQueryRCON && canReadJobs ? 2_000 : false });
+  const players = useQuery({
+    queryKey: ["instances", instance.id, "players"],
+    queryFn: () => api.players(instance.id),
+    enabled: canQueryRCON,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return canQueryRCON && (status === "loading" || status === "refreshing") ? 750 : canQueryRCON ? 15_000 : false;
+    },
+  });
   const bans = useQuery({ queryKey: ["instances", instance.id, "bans"], queryFn: () => api.bans(instance.id), enabled: canReadPlayers, refetchInterval: canReadPlayers ? 30_000 : false });
   const toast = useToast();
   const client = useQueryClient();
   const [selected, setSelected] = useState<Player | null>(null);
   const action = useMutation({ mutationFn: ({ type, payload }: { type: string; payload: Record<string, unknown> }) => api.instanceAction(instance.id, type, payload), onSuccess: (_data, values) => { toast.push(values.type === "kick_player" ? "已提交踢出操作" : "已提交解封操作"); void client.invalidateQueries({ queryKey: ["instances", instance.id, "bans"] }); }, onError: (error) => toast.push(error.message, "error") });
-  const latestProbe = probeJobs.data?.items.find((job) => job.instance_id === instance.id && job.type === "rcon.players");
-  const handledProbe = useRef("");
-  useEffect(() => {
-    if (latestProbe?.status !== "succeeded" || handledProbe.current === latestProbe.id) return;
-    handledProbe.current = latestProbe.id;
-    void players.refetch();
-  }, [latestProbe?.id, latestProbe?.status, players]);
-
   const playerItems = players.data?.items || [];
+  const playerStatus = players.data?.status || "ready";
   let playerContent: ReactNode;
   if (!canReadPlayers) {
     playerContent = <EmptyState title="玩家清单已隐藏" description="当前账号没有查看在线玩家和封禁清单的权限。" />;
@@ -343,15 +342,15 @@ function PlayersTab({ instance }: { instance: InstanceRecord }) {
     playerContent = <div className="form-warning"><ShieldAlert size={17} />服务器尚未启动，RCON 查询只在运行中生效。</div>;
   } else if (!instance.rcon_configured) {
     playerContent = <div className="form-warning"><ShieldAlert size={17} />中心端尚未保存 RCON 密码。请设置与 server.cfg 完全一致的密码后重试。</div>;
-  } else if (players.isPending) {
-    playerContent = <LoadingBlock label="正在发起 RCON 玩家查询…" />;
+  } else if (players.isPending || ((playerStatus === "loading" || playerStatus === "refreshing") && !playerItems.length)) {
+    playerContent = <LoadingBlock label={playerStatus === "refreshing" ? "正在查询最新玩家信息…" : "正在发起 RCON 玩家查询…"} />;
   } else if (players.error) {
     playerContent = <ErrorState error={players.error} retry={() => void players.refetch()} />;
   } else {
     playerContent = <>
-      {latestProbe?.status === "failed" && <div className="form-error" role="alert">RCON 查询失败：{latestProbe.message || "请确认 server.cfg 密码已在当前游戏进程中生效，并检查任务详情。"}</div>}
-      {latestProbe && ["queued", "dispatched", "running"].includes(latestProbe.status) && <div className="form-note"><RefreshCw className="spin" size={16} />正在通过节点查询最新玩家信息…</div>}
-      {playerItems.length ? <div className="data-table-wrap"><table className="data-table"><thead><tr><th>玩家</th><th>Steam ID</th><th>分数</th><th>延迟</th><th>连接时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{playerItems.map((player) => <tr key={player.steam_id || player.name}><td><strong>{player.name}</strong></td><td><code>{player.steam_id || "—"}</code></td><td>{player.score ?? "—"}</td><td>{player.ping != null ? `${player.ping} ms` : "—"}</td><td>{dateTime(player.connected_at)}</td><td className="table-actions">{canKick && <Button variant="ghost" onClick={() => action.mutate({ type: "kick_player", payload: { steam_id: player.steam_id, name: player.name } })}><Power size={14} />踢出</Button>}{canBan && <Button variant="ghost" onClick={() => setSelected(player)} disabled={!player.steam_id}><Ban size={14} />封禁</Button>}</td></tr>)}</tbody></table></div> : <EmptyState title="服务器里暂时没人" description="查询成功后，在线玩家会显示在这里；若上方出现错误，请按错误信息检查 RCON。" />}
+      {playerStatus === "failed" && <div className="form-error" role="alert">{players.data?.message || "RCON 玩家查询失败，请检查 RCON 配置后重试。"}</div>}
+      {playerStatus === "refreshing" && <div className="form-note"><RefreshCw className="spin" size={16} />正在通过节点查询最新玩家信息，当前先显示上次结果…</div>}
+      {playerItems.length ? <div className="data-table-wrap"><table className="data-table"><thead><tr><th>玩家</th><th>Steam ID</th><th>分数</th><th>延迟</th><th>连接时间</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{playerItems.map((player) => <tr key={player.steam_id || player.name}><td><strong>{player.name}</strong></td><td><code>{player.steam_id || "—"}</code></td><td>{player.score ?? "—"}</td><td>{player.ping != null ? `${player.ping} ms` : "—"}</td><td>{dateTime(player.connected_at)}</td><td className="table-actions">{canKick && <Button variant="ghost" onClick={() => action.mutate({ type: "kick_player", payload: { steam_id: player.steam_id, name: player.name } })}><Power size={14} />踢出</Button>}{canBan && <Button variant="ghost" onClick={() => setSelected(player)} disabled={!player.steam_id}><Ban size={14} />封禁</Button>}</td></tr>)}</tbody></table></div> : playerStatus === "failed" ? null : <EmptyState title="服务器里暂时没人" description="最新 RCON 查询已完成，当前没有在线玩家。" />}
     </>;
   }
 

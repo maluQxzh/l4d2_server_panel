@@ -365,6 +365,13 @@ export interface Player {
   connected_at?: string;
 }
 
+export interface PlayerListResponse extends ListResponse<Player> {
+  status?: "loading" | "refreshing" | "ready" | "failed";
+  fresh_at?: string;
+  refresh_job_id?: string;
+  message?: string;
+}
+
 export interface PlayerBan {
   id: string;
   instance_id: string;
