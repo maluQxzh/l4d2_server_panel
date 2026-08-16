@@ -1,14 +1,19 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
+	"github.com/l4d2-panel/l4d2panel/internal/protocol"
 )
 
 func TestHandleClaimedJobLateCancelPreservesCommittedSuccess(t *testing.T) {
@@ -85,6 +90,102 @@ func TestExecutionCompletionUsesExecutorErrorOnly(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandleClaimedJobDoesNotSendUnpersistedTerminalOutcome(t *testing.T) {
+	journal, err := OpenJournal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := domain.Job{ID: "unpersisted-terminal", NodeID: "node-1", Type: "test.commit"}
+	if _, err := journal.Begin(job); err != nil {
+		t.Fatal(err)
+	}
+	journal.path = t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sender := make(chan protocol.Envelope, 4)
+	agent := &Agent{config: &Config{NodeID: "node-1"}, journal: journal, logger: log.New(io.Discard, "", 0),
+		ctx: ctx, sender: sender, activeJobs: make(map[string]context.CancelFunc), pendingCancels: make(map[string]bool)}
+
+	agent.handleClaimedJob(job, func(context.Context, domain.Job, ProgressFunc) (map[string]any, error) {
+		return map[string]any{"secret": "must-not-send"}, nil
+	})
+	select {
+	case envelope := <-sender:
+		t.Fatalf("unpersisted journal state produced an outbound update: %#v", envelope)
+	default:
+	}
+	entry, ok := journal.Get(job.ID)
+	if !ok || entry.Status != domain.JobDispatched || entry.Result != nil {
+		t.Fatalf("journal exposed an unpersisted terminal outcome: %#v present=%t", entry, ok)
+	}
+}
+
+func TestHandleClaimedJobRetriesAndSendsExactPersistedTerminalOutcome(t *testing.T) {
+	journal, err := OpenJournal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := domain.Job{ID: "retried-terminal", NodeID: "node-1", Type: "test.commit"}
+	if _, err := journal.Begin(job); err != nil {
+		t.Fatal(err)
+	}
+	validPath := journal.path
+	journal.path = t.TempDir()
+	failureSeen := make(chan struct{}, 1)
+	logger := log.New(terminalPersistenceSignalWriter{signal: failureSeen}, "", 0)
+	sender := make(chan protocol.Envelope, 4)
+	agent := &Agent{config: &Config{NodeID: "node-1"}, journal: journal, logger: logger,
+		ctx: context.Background(), sender: sender, activeJobs: make(map[string]context.CancelFunc), pendingCancels: make(map[string]bool)}
+	wantResult := map[string]any{"revision": "42", "committed": true}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		agent.handleClaimedJob(job, func(context.Context, domain.Job, ProgressFunc) (map[string]any, error) {
+			return wantResult, nil
+		})
+	}()
+	select {
+	case <-failureSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("terminal persistence failure was not observed")
+	}
+	journal.mu.Lock()
+	journal.path = validPath
+	journal.mu.Unlock()
+	waitForSignal(t, done, "terminal journal retry")
+
+	select {
+	case envelope := <-sender:
+		var update protocol.JobUpdate
+		if err := json.Unmarshal(envelope.Payload, &update); err != nil {
+			t.Fatal(err)
+		}
+		if update.Status != domain.JobSucceeded || update.Progress != 100 || !reflect.DeepEqual(update.Result, wantResult) {
+			t.Fatalf("retried terminal update = %#v", update)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("persisted terminal outcome was not sent")
+	}
+	entry, ok := journal.Get(job.ID)
+	if !ok || entry.Status != domain.JobSucceeded || !reflect.DeepEqual(entry.Result, wantResult) {
+		t.Fatalf("durable terminal outcome = %#v present=%t", entry, ok)
+	}
+}
+
+type terminalPersistenceSignalWriter struct {
+	signal chan<- struct{}
+}
+
+func (w terminalPersistenceSignalWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("status=succeeded")) {
+		select {
+		case w.signal <- struct{}{}:
+		default:
+		}
+	}
+	return len(p), nil
 }
 
 func waitForSignal(t *testing.T, signal <-chan struct{}, description string) {

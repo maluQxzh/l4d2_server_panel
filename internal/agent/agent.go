@@ -464,20 +464,23 @@ func (a *Agent) metrics() []domain.MetricSample {
 }
 
 func (a *Agent) handleJob(job domain.Job) {
+	a.handleJobWithExecutor(job, a.executor.Execute)
+}
+
+func (a *Agent) handleJobWithExecutor(job domain.Job, execute executeJobFunc) {
 	if job.NodeID != "" && job.NodeID != a.config.NodeID {
 		a.logger.Printf("rejecting job %s for another node", job.ID)
 		return
 	}
-	existing, err := a.journal.Begin(job)
-	if err != nil {
-		a.sendJobUpdate(job.ID, domain.JobFailed, 0, err.Error(), nil)
+	existing, claimed := a.claimJob(job)
+	if !claimed {
 		return
 	}
 	if existing != nil {
 		a.sendJobUpdate(job.ID, existing.Status, existing.Progress, existing.Message, existing.Result)
 		return
 	}
-	a.handleClaimedJob(job, a.executor.Execute)
+	a.handleClaimedJob(job, execute)
 }
 
 type executeJobFunc func(context.Context, domain.Job, ProgressFunc) (map[string]any, error)
@@ -498,28 +501,87 @@ func (a *Agent) handleClaimedJob(job domain.Job, execute executeJobFunc) {
 	defer func() { cancel(); a.activeMu.Lock(); delete(a.activeJobs, job.ID); a.activeMu.Unlock() }()
 	if canceledBeforeStart {
 		const message = "operation canceled before execution"
-		a.updateJournal(job.ID, domain.JobCanceled, 0, message, nil)
-		a.sendJobUpdate(job.ID, domain.JobCanceled, 0, message, nil)
+		if a.persistTerminalJournal(job.ID, domain.JobCanceled, 0, message, nil) {
+			a.sendJobUpdate(job.ID, domain.JobCanceled, 0, message, nil)
+		}
 		return
 	}
-	a.updateJournal(job.ID, domain.JobRunning, 0, "operation started", nil)
-	a.sendJobUpdate(job.ID, domain.JobRunning, 0, "operation started", nil)
+	if err := a.updateJournal(job.ID, domain.JobRunning, 0, "operation started", nil); err == nil {
+		a.sendJobUpdate(job.ID, domain.JobRunning, 0, "operation started", nil)
+	}
 	progress := newJournalProgress(a, job.ID)
 	result, executeErr := execute(jobCtx, job, progress.Update)
 	status, message := executionCompletion(executeErr)
 	if status == domain.JobSucceeded {
-		a.updateJournal(job.ID, status, 100, message, result)
-		a.sendJobUpdate(job.ID, status, 100, message, result)
+		if a.persistTerminalJournal(job.ID, status, 100, message, result) {
+			a.sendJobUpdate(job.ID, status, 100, message, result)
+		}
 		return
 	}
 	failureResult := jobFailureResult(executeErr)
-	a.updateJournal(job.ID, status, progress.Value(), message, failureResult)
-	a.sendJobUpdate(job.ID, status, progress.Value(), message, failureResult)
+	if a.persistTerminalJournal(job.ID, status, progress.Value(), message, failureResult) {
+		a.sendJobUpdate(job.ID, status, progress.Value(), message, failureResult)
+	}
 }
 
-func (a *Agent) updateJournal(jobID string, status domain.JobStatus, progress int, message string, result map[string]any) {
+func (a *Agent) updateJournal(jobID string, status domain.JobStatus, progress int, message string, result map[string]any) error {
 	if err := a.journal.Update(jobID, status, progress, message, result); err != nil {
-		a.logger.Printf("persist job journal update: job_id=%s status=%s: %v", jobID, status, err)
+		if a.logger != nil {
+			a.logger.Printf("persist job journal update: job_id=%s status=%s: %v", jobID, status, err)
+		}
+		return err
+	}
+	return nil
+}
+
+const (
+	journalPersistRetryInitial = 250 * time.Millisecond
+	journalPersistRetryMax     = 5 * time.Second
+)
+
+func (a *Agent) claimJob(job domain.Job) (*JournalEntry, bool) {
+	delay := journalPersistRetryInitial
+	for {
+		existing, err := a.journal.Begin(job)
+		if err == nil {
+			return existing, true
+		}
+		if a.logger != nil {
+			a.logger.Printf("persist job journal claim: job_id=%s: %v", job.ID, err)
+		}
+		if errors.Is(err, ErrJobIDConflict) || job.ID == "" || !a.waitForJournalRetry(delay) {
+			return nil, false
+		}
+		delay = min(delay*2, journalPersistRetryMax)
+	}
+}
+
+func (a *Agent) persistTerminalJournal(jobID string, status domain.JobStatus, progress int, message string, result map[string]any) bool {
+	delay := journalPersistRetryInitial
+	for {
+		if err := a.updateJournal(jobID, status, progress, message, result); err == nil {
+			return true
+		} else if errors.Is(err, ErrJobNotInJournal) {
+			return false
+		}
+		if !a.waitForJournalRetry(delay) {
+			return false
+		}
+		delay = min(delay*2, journalPersistRetryMax)
+	}
+}
+
+func (a *Agent) waitForJournalRetry(delay time.Duration) bool {
+	if a.ctx == nil {
+		return false
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-a.ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
@@ -560,24 +622,35 @@ func (a *Agent) cancelJob(jobID string) {
 	}
 	a.activeMu.Unlock()
 	if !ok {
-		a.sendJobUpdate(jobID, domain.JobCanceled, 0, "operation canceled before dispatch", nil)
+		const message = "operation canceled before dispatch"
+		if err := a.journal.CancelBeforeDispatch(jobID, message); err != nil {
+			if a.logger != nil {
+				a.logger.Printf("persist pre-dispatch cancellation: job_id=%s: %v", jobID, err)
+			}
+			return
+		}
+		a.sendJobUpdate(jobID, domain.JobCanceled, 0, message, nil)
 	}
 }
 
 func (a *Agent) sendJobUpdate(jobID string, status domain.JobStatus, progress int, message string, result map[string]any) {
 	message = protocol.TruncateJobUpdateMessage(message)
 	if isFinalJobStatus(status) {
-		if entry, ok := a.journal.Get(jobID); ok && isFinalJobStatus(entry.Status) {
-			// Terminal outcomes are sent only by the reliable journal replay
-			// producer. Ordinary best-effort queue saturation must never strand a
-			// Control-plane job in running.
-			if a.wakeTerminalReplay() {
-				return
-			}
-			// A few local integrations embed Agent without a live session replay
-			// producer. Preserve their direct sender behavior; production sessions
-			// always install replayWake together with sender.
+		entry, ok := a.journal.Get(jobID)
+		if !ok || !isFinalJobStatus(entry.Status) {
+			// A terminal outcome which is not durable must never reach Control.
+			return
 		}
+		status, progress, message, result = entry.Status, entry.Progress, entry.Message, entry.Result
+		// Terminal outcomes are sent only by the reliable journal replay
+		// producer. Ordinary best-effort queue saturation must never strand a
+		// Control-plane job in running.
+		if a.wakeTerminalReplay() {
+			return
+		}
+		// A few local integrations embed Agent without a live session replay
+		// producer. Preserve their direct sender behavior; production sessions
+		// always install replayWake together with sender.
 	}
 	envelope, err := protocol.NewEnvelope(protocol.TypeJobUpdate, a.config.NodeID, jobID, protocol.JobUpdate{Status: status, Progress: progress, Message: message, Result: result})
 	if err != nil {
@@ -664,8 +737,9 @@ func (p *journalProgress) Update(value int, message string) {
 		return
 	}
 	p.value, p.last = value, time.Now()
-	p.agent.updateJournal(p.jobID, domain.JobRunning, value, message, nil)
-	p.agent.sendJobUpdate(p.jobID, domain.JobRunning, value, message, nil)
+	if err := p.agent.updateJournal(p.jobID, domain.JobRunning, value, message, nil); err == nil {
+		p.agent.sendJobUpdate(p.jobID, domain.JobRunning, value, message, nil)
+	}
 }
 func (p *journalProgress) Value() int { p.mu.Lock(); defer p.mu.Unlock(); return p.value }
 

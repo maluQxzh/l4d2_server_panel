@@ -82,11 +82,11 @@ func TestCancelUnknownJobAcknowledgesAndPreventsLateExecution(t *testing.T) {
 		t.Fatal("unknown canceled job did not retain a late-dispatch guard")
 	}
 
-	if existing, err := j.Begin(job); err != nil || existing != nil {
+	if existing, err := j.Begin(job); err != nil || existing == nil || existing.Status != domain.JobCanceled {
 		t.Fatalf("claim late job: existing=%v err=%v", existing, err)
 	}
 	executed := false
-	a.handleClaimedJob(job, func(context.Context, domain.Job, ProgressFunc) (map[string]any, error) {
+	a.handleJobWithExecutor(job, func(context.Context, domain.Job, ProgressFunc) (map[string]any, error) {
 		executed = true
 		return nil, nil
 	})
@@ -94,7 +94,7 @@ func TestCancelUnknownJobAcknowledgesAndPreventsLateExecution(t *testing.T) {
 		t.Fatal("late job executed after its cancellation was acknowledged")
 	}
 	update = receiveCancelUpdate(t, sender, job.ID)
-	if update.Status != domain.JobCanceled || update.Message != "operation canceled before execution" {
+	if update.Status != domain.JobCanceled || update.Message != "operation canceled before dispatch" {
 		t.Fatalf("late-job cancellation = %#v", update)
 	}
 	entry, ok := j.Get(job.ID)

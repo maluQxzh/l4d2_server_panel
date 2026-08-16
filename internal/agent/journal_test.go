@@ -123,6 +123,40 @@ func TestJournalUpdateTruncatesMessageAtUTF8Boundary(t *testing.T) {
 	}
 }
 
+func TestJournalUpdateFailureDoesNotExposeUncommittedTerminalOutcome(t *testing.T) {
+	journal, err := OpenJournal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := domain.Job{ID: "terminal-write-failure", Type: "test"}
+	if _, err := journal.Begin(job); err != nil {
+		t.Fatal(err)
+	}
+	journal.path = t.TempDir() // Replacing a directory with the journal file must fail on every supported OS.
+	if err := journal.Update(job.ID, domain.JobSucceeded, 100, "done", map[string]any{"secret": "must-not-surface"}); err == nil {
+		t.Fatal("terminal journal update unexpectedly succeeded")
+	}
+	entry, ok := journal.Get(job.ID)
+	if !ok || entry.Status != domain.JobDispatched || entry.Progress != 0 || entry.Message != "" || entry.Result != nil {
+		t.Fatalf("uncommitted terminal outcome remained visible in memory: %#v present=%t", entry, ok)
+	}
+}
+
+func TestJournalClaimFailureRollsBackInMemoryClaim(t *testing.T) {
+	journal, err := OpenJournal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.path = t.TempDir()
+	job := domain.Job{ID: "claim-write-failure", Type: "test"}
+	if _, err := journal.Begin(job); err == nil {
+		t.Fatal("journal claim unexpectedly succeeded")
+	}
+	if _, ok := journal.Get(job.ID); ok {
+		t.Fatal("failed journal claim remained visible in memory")
+	}
+}
+
 func TestJournalAcknowledgementRemovesOnlyTerminalEntry(t *testing.T) {
 	dir := t.TempDir()
 	j, err := OpenJournal(dir)

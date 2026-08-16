@@ -1,8 +1,15 @@
 package control
 
 import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 	"github.com/l4d2-panel/l4d2panel/internal/protocol"
 )
@@ -103,5 +110,67 @@ func TestDeferredProjectionClassification(t *testing.T) {
 	}
 	if requiresDeferredJobProjection("update", domain.JobCanceled) {
 		t.Fatal("atomically canceled job required deferred projection")
+	}
+}
+
+func TestTerminalOutcomeConflictIsNonfatalAndDeduplicated(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "terminal-conflict.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	nodeID, jobID := uuid.NewString(), uuid.NewString()
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'Node','online');
+		INSERT INTO jobs(id,node_id,type,status,progress,message,payload,result,created_at,finished_at)
+		VALUES(?2,?1,'discover_instances','succeeded',100,'control done','{}','{"value":"stored"}',?3,?3)`,
+		nodeID, jobID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	hub := NewAgentHub(store, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []byte("0123456789abcdef0123456789abcdef"))
+	hub.conns[nodeID] = &agentConnection{terminalConflicts: make(map[string]struct{})}
+	envelope, err := protocol.NewEnvelope(protocol.TypeJobUpdate, nodeID, jobID, protocol.JobUpdate{
+		Status: domain.JobFailed, Progress: 100, Message: "agent failed", Result: map[string]any{"value": "reported"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		err := hub.handleEnvelope(ctx, domain.Node{ID: nodeID, Name: "Node"}, envelope)
+		if !errors.Is(err, errTerminalOutcomeConflict) {
+			t.Fatalf("mismatched terminal replay error = %v", err)
+		}
+		if agentMessageFailureClosesConnection(envelope.Type, err) {
+			t.Fatal("terminal outcome conflict was classified as a connection-fatal error")
+		}
+	}
+	var audits, notifications int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events WHERE action='job.terminal_replay_rejected' AND resource_id=?1`, jobID).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications WHERE type='job.terminal_outcome_conflict' AND resource=?1`, jobID).Scan(&notifications); err != nil {
+		t.Fatal(err)
+	}
+	if audits != 1 || notifications != 1 {
+		t.Fatalf("conflict records: audits=%d notifications=%d, want 1/1", audits, notifications)
+	}
+	persisted, err := store.GetJob(ctx, jobID)
+	if err != nil || persisted.Status != domain.JobSucceeded || persisted.Message != "control done" || persisted.Result["value"] != "stored" {
+		t.Fatalf("conflict changed immutable job: %#v err=%v", persisted, err)
+	}
+}
+
+func TestOnlyRetryableJobUpdateFailureClosesAgentConnection(t *testing.T) {
+	if agentMessageFailureClosesConnection(protocol.TypeJobUpdate, errTerminalOutcomeConflict) {
+		t.Fatal("terminal semantic conflict closed the Agent connection")
+	}
+	if !agentMessageFailureClosesConnection(protocol.TypeJobUpdate, errors.New("persist projection")) {
+		t.Fatal("retryable job update failure did not close the Agent connection")
+	}
+	if agentMessageFailureClosesConnection(protocol.TypeHeartbeat, errors.New("invalid heartbeat")) {
+		t.Fatal("non-job message failure closed the Agent connection")
 	}
 }

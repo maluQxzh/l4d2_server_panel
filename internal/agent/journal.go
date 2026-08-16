@@ -17,6 +17,9 @@ import (
 )
 
 var ErrJobIDConflict = errors.New("job id was already used for different work")
+var ErrJobNotInJournal = errors.New("job is not in journal")
+
+const cancellationOnlyJournalType = "__cancel_before_dispatch"
 
 type JournalEntry struct {
 	JobID       string           `json:"job_id"`
@@ -105,6 +108,10 @@ func (j *Journal) Begin(job domain.Job) (*JournalEntry, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if old, ok := j.entries[job.ID]; ok {
+		if old.Type == cancellationOnlyJournalType && old.Status == domain.JobCanceled {
+			copy := old
+			return &copy, nil
+		}
 		if old.Fingerprint != fp {
 			return nil, ErrJobIDConflict
 		}
@@ -114,11 +121,10 @@ func (j *Journal) Begin(job domain.Job) (*JournalEntry, error) {
 	entry := JournalEntry{JobID: job.ID, Fingerprint: fp, Type: job.Type, InstanceID: job.InstanceID, Status: domain.JobDispatched, UpdatedAt: time.Now().UTC()}
 	j.entries[job.ID] = entry
 	if err := j.persistLocked(); err != nil {
-		// Keep the in-memory claim even when durability cannot be confirmed.
-		// The atomic replacement may already have committed before a directory
-		// flush failed; forgetting the claim here could execute the same job twice
-		// in this process. A restart may retry only when the claim truly was not
-		// committed, which is the safer failure mode.
+		// No operation has executed yet, so roll the in-memory claim back. If an
+		// atomic replacement committed before a later directory flush failed, a
+		// retry writes the same fingerprint again and still executes only once.
+		delete(j.entries, job.ID)
 		return nil, err
 	}
 	return nil, nil
@@ -136,17 +142,51 @@ func (j *Journal) Update(jobID string, status domain.JobStatus, progress int, me
 	defer j.mu.Unlock()
 	entry, ok := j.entries[jobID]
 	if !ok {
-		return errors.New("job is not in journal")
+		return ErrJobNotInJournal
 	}
 	if isFinalJobStatus(entry.Status) {
 		return nil
 	}
+	previous := entry
 	entry.Status, entry.Progress, entry.Message, entry.UpdatedAt = status, progress, message, time.Now().UTC()
 	if result != nil {
 		entry.Result = result
 	}
 	j.entries[jobID] = entry
-	return j.persistLocked()
+	if err := j.persistLocked(); err != nil {
+		// Never expose an update in memory unless the exact same outcome is
+		// durable. Terminal replay reads this map, so retaining an uncommitted
+		// value here could send a result which disappears after restart.
+		j.entries[jobID] = previous
+		return err
+	}
+	return nil
+}
+
+// CancelBeforeDispatch durably records Control's cancellation of a job which
+// has not reached this Agent yet. A later delivery replays this tombstone and
+// must never execute the canceled operation.
+func (j *Journal) CancelBeforeDispatch(jobID, message string) error {
+	if jobID == "" {
+		return errors.New("job id is required")
+	}
+	message = protocol.TruncateJobUpdateMessage(message)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if entry, ok := j.entries[jobID]; ok {
+		if isFinalJobStatus(entry.Status) {
+			return nil
+		}
+		return errors.New("cannot replace a claimed job with a cancellation tombstone")
+	}
+	entry := JournalEntry{JobID: jobID, Type: cancellationOnlyJournalType, Status: domain.JobCanceled,
+		Message: message, UpdatedAt: time.Now().UTC()}
+	j.entries[jobID] = entry
+	if err := j.persistLocked(); err != nil {
+		delete(j.entries, jobID)
+		return err
+	}
+	return nil
 }
 
 func (j *Journal) Get(jobID string) (JournalEntry, bool) {
