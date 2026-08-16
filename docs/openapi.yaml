@@ -3443,7 +3443,8 @@ components:
         `install_package` 传 kind，以及 source、source_id 或 name + content_base64（原始文件最大 100 MiB）。
         插件类型可传 source_transport=qq_flash 和 source 分享链接，分享必须恰好包含一个实际包文件；
         kind=smart 仅接受已经识别的本机或 QQ 闪传 ZIP/7Z/RAR，还必须传 inspection_fingerprint 和 smart_packages；
-        每个选择项含 folder_id、可选 package_id（同名已纳管智能插件更新）、歧义路径 overrides 和已有未纳管文件 takeovers。
+        每个选择项含 folder_id、可选 package_id（同名已纳管智能插件更新）、歧义路径 overrides 和已有未纳管文件 takeovers；
+        takeovers 表示彻底接管并覆盖，安装成功后不保留旧文件，卸载插件时会删除接管文件而不恢复旧内容。
         运行中安装或启用智能插件必须同时传 acknowledge_live_changes=true 与 acknowledge_restart_required=true；停用和删除必须先停服。
         安装 SourceMod（官方或第三方整包）前必须先成功安装并启用 Metamod:Source；已有的
         left4dead2/addons/sourcemod/configs/admins_simple.ini 不会被覆盖，首次安装创建的同名文件也会在后续更新和卸载中保留。
@@ -3654,6 +3655,7 @@ components:
         takeovers:
           type: array
           items: { type: string }
+          description: 逐项确认彻底接管的文件 ID；安装成功后旧文件不保留，卸载插件时删除接管文件且不恢复旧内容
 
     SmartPluginFilePlan:
       type: object

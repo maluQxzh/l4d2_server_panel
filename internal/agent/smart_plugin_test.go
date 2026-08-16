@@ -14,7 +14,7 @@ import (
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 )
 
-func TestSmartPluginInstallToggleDeleteRestoresTakeover(t *testing.T) {
+func TestSmartPluginInstallToggleDeleteFullyOwnsTakeover(t *testing.T) {
 	executor, _, instancePath := uploadedPackageExecutor(t)
 	existingConfig := filepath.Join(instancePath, "left4dead2", "cfg", "sourcemod", "sample.cfg")
 	if err := os.MkdirAll(filepath.Dir(existingConfig), 0o750); err != nil {
@@ -62,7 +62,7 @@ func TestSmartPluginInstallToggleDeleteRestoresTakeover(t *testing.T) {
 	assertFileContent(t, existingConfig, "new config")
 	smx := filepath.Join(instancePath, "left4dead2", "addons", "sourcemod", "plugins", "sample.smx")
 	assertFileContent(t, smx, "smx-v1")
-	state, _, err := executor.readSmartPluginState("instance", packageID)
+	state, stateRoot, err := executor.readSmartPluginState("instance", packageID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,13 @@ func TestSmartPluginInstallToggleDeleteRestoresTakeover(t *testing.T) {
 	for _, file := range state.Files {
 		if file.TargetPath == "left4dead2/cfg/sourcemod/sample.cfg" {
 			configSHA = file.SHA256
+			if file.Baseline || file.BaselineSHA256 != "" {
+				t.Fatalf("takeover persisted a restore baseline: %#v", file)
+			}
 		}
+	}
+	if _, err := os.Stat(filepath.Join(stateRoot, "baseline")); !os.IsNotExist(err) {
+		t.Fatalf("takeover baseline directory was persisted: %v", err)
 	}
 	editResult, err := executor.file(context.Background(), domain.Job{InstanceID: "instance", Payload: map[string]any{
 		"operation": "smart_plugin_edit", "package_id": packageID, "relative_path": "left4dead2/cfg/sourcemod/sample.cfg",
@@ -145,7 +151,64 @@ func TestSmartPluginInstallToggleDeleteRestoresTakeover(t *testing.T) {
 	if _, err := os.Stat(smx); !os.IsNotExist(err) {
 		t.Fatalf("SMX still exists after deletion: %v", err)
 	}
-	assertFileContent(t, existingConfig, "old config")
+	if _, err := os.Stat(existingConfig); !os.IsNotExist(err) {
+		t.Fatalf("taken-over config still exists after deletion: %v", err)
+	}
+}
+
+func TestSmartPluginDeleteIgnoresLegacyTakeoverBaseline(t *testing.T) {
+	executor, _, instancePath := uploadedPackageExecutor(t)
+	const (
+		packageID = "11111111-1111-4111-8111-111111111111"
+		target    = "left4dead2/cfg/sourcemod/legacy.cfg"
+		fileID    = "legacy-file"
+	)
+	targetPath := filepath.Join(instancePath, filepath.FromSlash(target))
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, []byte("managed config"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	sha, size, err := hashRegularFileWithinNoFollow(instancePath, target, maxSmartPluginEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := smartPluginState{
+		Version: 1, PackageID: packageID, InstanceID: "instance", Name: "Legacy", Enabled: true,
+		ArchiveSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", UpdatedAt: time.Now().UTC(),
+		Files: []smartPluginStateFile{{
+			ID: fileID, TargetPath: target, SHA256: sha, Size: size,
+			Baseline: true, BaselineSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		}},
+	}
+	state.AggregateSHA = smartPluginAggregateSHA(state.Files)
+	if old, err := executor.writeSmartPluginState(state); err != nil || old != "" {
+		t.Fatalf("write legacy smart plugin state: old=%q err=%v", old, err)
+	}
+	stateRoot, err := executor.smartPluginStateRoot("instance", packageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineDir := filepath.Join(stateRoot, "baseline")
+	if err := os.MkdirAll(baselineDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(baselineDir, fileID+".cfg"), []byte("original config"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := executor.deletePackage(context.Background(), domain.Job{InstanceID: "instance", Payload: map[string]any{
+		"kind": "smart", "package_id": packageID, "expected_sha256": state.AggregateSHA,
+	}}, func(int, string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy taken-over file was restored instead of deleted: %v", err)
+	}
+	if _, err := os.Stat(stateRoot); !os.IsNotExist(err) {
+		t.Fatalf("legacy smart plugin state still exists after deletion: %v", err)
+	}
 }
 
 func TestSmartPluginReconcilesGeneratedSameNameConfigAndDeletesIt(t *testing.T) {

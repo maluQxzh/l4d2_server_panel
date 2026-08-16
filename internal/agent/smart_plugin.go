@@ -92,13 +92,15 @@ type smartPluginSelection struct {
 }
 
 type smartPluginStateFile struct {
-	ID             string `json:"id"`
-	TargetPath     string `json:"target_path"`
-	SHA256         string `json:"sha256"`
-	Size           int64  `json:"size"`
-	Entrypoint     bool   `json:"entrypoint"`
-	Generated      bool   `json:"generated,omitempty"`
-	Baseline       bool   `json:"baseline"`
+	ID         string `json:"id"`
+	TargetPath string `json:"target_path"`
+	SHA256     string `json:"sha256"`
+	Size       int64  `json:"size"`
+	Entrypoint bool   `json:"entrypoint"`
+	Generated  bool   `json:"generated,omitempty"`
+	// Baseline fields are accepted only so manifests written by older Agents remain readable.
+	// Takeovers now transfer ownership permanently and deletion ignores these legacy values.
+	Baseline       bool   `json:"baseline,omitempty"`
 	BaselineSHA256 string `json:"baseline_sha256,omitempty"`
 }
 
@@ -563,20 +565,15 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 		}
 	}
 	type pendingFile struct {
-		folderID, packageID, packageName string
-		file                             smartPluginFile
-		target, source                   string
-		takeover                         bool
-		existingSHA                      string
-		stateFileID                      string
-		baseline                         bool
-		baselineSHA                      string
+		folderID, packageID string
+		file                smartPluginFile
+		target, source      string
+		stateFileID         string
 	}
 	pending := make([]pendingFile, 0)
 	selectedTargets := make(map[string]string)
 	packageIDs := make(map[string]string)
 	updateStates := make(map[string]smartPluginState)
-	updateRoots := make(map[string]string)
 	nativeRisk := false
 	for _, folder := range plan.Folders {
 		selection, ok := selected[folder.ID]
@@ -590,14 +587,14 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 			return nil, errors.New("smart plugin update package id is invalid")
 		}
 		if selection.PackageID != "" {
-			state, stateRoot, stateErr := e.readSmartPluginState(job.InstanceID, packageID)
+			state, _, stateErr := e.readSmartPluginState(job.InstanceID, packageID)
 			if stateErr != nil {
 				return nil, fmt.Errorf("load smart plugin update state: %w", stateErr)
 			}
 			if !state.Enabled {
 				return nil, errors.New("enable a smart plugin before updating it")
 			}
-			updateStates[packageID], updateRoots[packageID] = state, stateRoot
+			updateStates[packageID] = state
 		}
 		packageIDs[folder.ID] = packageID
 		takeovers := make(map[string]bool, len(selection.Takeovers))
@@ -637,7 +634,7 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 			if err != nil {
 				return nil, err
 			}
-			item := pendingFile{folderID: folder.ID, packageID: packageID, packageName: folder.Name, file: file, target: target, source: source, takeover: takeovers[file.ID], existingSHA: existingSHA, stateFileID: file.ID}
+			item := pendingFile{folderID: folder.ID, packageID: packageID, file: file, target: target, source: source, stateFileID: file.ID}
 			if old, updating := updateStates[packageID]; updating {
 				matched := false
 				for _, oldFile := range old.Files {
@@ -645,7 +642,7 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 						if !strings.EqualFold(existingSHA, oldFile.SHA256) {
 							return nil, fmt.Errorf("managed update target %q changed or is missing", target)
 						}
-						item.stateFileID, item.baseline, item.baselineSHA = oldFile.ID, oldFile.Baseline, oldFile.BaselineSHA256
+						item.stateFileID = oldFile.ID
 						matched = true
 						break
 					}
@@ -763,11 +760,7 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 			if item.folderID != folder.ID {
 				continue
 			}
-			baseline, baselineSHA := item.existingSHA != "" && item.takeover, item.existingSHA
-			if _, updating := updateStates[packageID]; updating {
-				baseline, baselineSHA = item.baseline, item.baselineSHA
-			}
-			state.Files = append(state.Files, smartPluginStateFile{ID: item.stateFileID, TargetPath: item.target, SHA256: item.file.SHA256, Size: item.file.Size, Entrypoint: item.file.Entrypoint, Baseline: baseline, BaselineSHA256: baselineSHA})
+			state.Files = append(state.Files, smartPluginStateFile{ID: item.stateFileID, TargetPath: item.target, SHA256: item.file.SHA256, Size: item.file.Size, Entrypoint: item.file.Entrypoint})
 		}
 		if previous, updating := updateStates[packageID]; updating {
 			for _, oldFile := range previous.Files {
@@ -777,7 +770,7 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 			}
 		}
 		state.AggregateSHA = smartPluginAggregateSHA(state.Files)
-		oldState, stateErr := e.writeSmartPluginState(state, rollbackRoot, rollbacks, updateRoots[packageID])
+		oldState, stateErr := e.writeSmartPluginState(state)
 		if stateErr != nil {
 			stateRollbackErr := restoreStateCommits()
 			fileRollbackErr := rollback()
@@ -828,40 +821,16 @@ func (e *Executor) smartPluginStateRoot(instanceID, packageID string) (string, e
 	return ResolveWithin(root, filepath.Join(safeLogName(instanceID), packageID))
 }
 
-func (e *Executor) writeSmartPluginState(state smartPluginState, rollbackRoot string, rollbacks []smartRollbackFile, oldStateRoot string) (string, error) {
+func (e *Executor) writeSmartPluginState(state smartPluginState) (string, error) {
 	stateRoot, err := e.smartPluginStateRoot(state.InstanceID, state.PackageID)
 	if err != nil {
 		return "", err
 	}
 	temporary := stateRoot + ".tmp-" + uuid.NewString()
-	if err := os.MkdirAll(filepath.Join(temporary, "baseline"), 0o700); err != nil {
+	if err := os.MkdirAll(temporary, 0o700); err != nil {
 		return "", err
 	}
 	defer os.RemoveAll(temporary)
-	byTarget := make(map[string]smartRollbackFile, len(rollbacks))
-	for _, item := range rollbacks {
-		byTarget[item.target] = item
-	}
-	for _, file := range state.Files {
-		if !file.Baseline {
-			continue
-		}
-		item := byTarget[file.TargetPath]
-		if !item.existed {
-			return "", errors.New("smart plugin baseline disappeared before commit")
-		}
-		sourceRoot, sourceRelative := rollbackRoot, item.backup
-		if oldStateRoot != "" {
-			sourceRoot, sourceRelative = oldStateRoot, filepath.ToSlash(filepath.Join("baseline", file.ID+filepath.Ext(file.TargetPath)))
-		}
-		source, err := ResolveWithin(sourceRoot, filepath.FromSlash(sourceRelative))
-		if err != nil {
-			return "", err
-		}
-		if err := copyRegularFileToRootNoFollow(source, temporary, filepath.ToSlash(filepath.Join("baseline", file.ID+filepath.Ext(file.TargetPath))), secureWriteOptions{Mode: 0o600, Replace: false, RejectExistingLink: true}); err != nil {
-			return "", err
-		}
-	}
 	raw, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return "", err
@@ -1174,19 +1143,7 @@ func (e *Executor) deleteSmartPlugin(job domain.Job, progress ProgressFunc) (map
 		if !state.Enabled && file.Entrypoint {
 			sourceRoot, sourcePath = stateRoot, filepath.ToSlash(filepath.Join("disabled", file.ID+filepath.Ext(file.TargetPath)))
 		}
-		if file.Baseline {
-			baseline := filepath.ToSlash(filepath.Join("baseline", file.ID+filepath.Ext(file.TargetPath)))
-			baselinePath, err := ResolveWithin(stateRoot, filepath.FromSlash(baseline))
-			if err != nil {
-				return nil, err
-			}
-			if err := copyRegularFileToRootNoFollow(baselinePath, instancePath, file.TargetPath, secureWriteOptions{Mode: 0o640, ExpectedSHA256: file.BaselineSHA256, Replace: true, RejectExistingLink: true}); err != nil {
-				return nil, fmt.Errorf("restore taken-over file %q: %w", file.TargetPath, err)
-			}
-			if sourceRoot != instancePath {
-				_ = deleteManagedFileNoFollow(sourceRoot, sourcePath)
-			}
-		} else if err := deleteManagedFileNoFollow(sourceRoot, sourcePath); err != nil {
+		if err := deleteManagedFileNoFollow(sourceRoot, sourcePath); err != nil {
 			return nil, fmt.Errorf("delete smart plugin file %q: %w", file.TargetPath, err)
 		}
 	}

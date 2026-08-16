@@ -467,10 +467,10 @@ describe("服务端组件依赖", () => {
     }));
 
     expect(screen.queryByText("已登记为此插件的文件，将作为更新替换。")).not.toBeInTheDocument();
-    const takeover = screen.getByRole("checkbox", { name: /接管并覆盖实例中的已有文件/ });
+    const takeover = screen.getByRole("checkbox", { name: /彻底接管并覆盖实例中的已有文件.*不恢复原文件/ });
     expect(takeover).not.toBeChecked();
     expect(screen.getByText("还有 1 项需要处理，暂时无法安装")).toBeVisible();
-    expect(screen.getByText("目标文件已存在，需要确认接管并覆盖")).toBeVisible();
+    expect(screen.getByText("目标文件已存在，需要确认彻底接管并覆盖")).toBeVisible();
     expect(screen.getByRole("button", { name: "安装 1 个插件" })).toBeDisabled();
 
     fireEvent.click(takeover);
@@ -495,7 +495,7 @@ describe("服务端组件依赖", () => {
     }), [installed]);
 
     expect(screen.getByText("已登记为此插件的文件，将作为更新替换。")).toBeVisible();
-    expect(screen.queryByRole("checkbox", { name: /接管并覆盖实例中的已有文件/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /彻底接管并覆盖实例中的已有文件/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/项需要处理，暂时无法安装/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "安装 1 个插件" })).toBeEnabled();
   });
