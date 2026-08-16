@@ -221,6 +221,19 @@ func TestRestoreArchiveIsEncryptedAtRestAndBackupPathsAreRedacted(t *testing.T) 
 		t.Fatal("safe backup metadata was removed")
 	}
 
+	pluginPayload := map[string]any{
+		"layout":          "compact",
+		"plugin_packages": []any{map[string]any{"name": "private inventory"}},
+	}
+	pluginResult := map[string]any{"path": "/private/plugin.7z", "sha256": strings.Repeat("b", 64)}
+	stripJobFields("plugin.backup", pluginPayload, pluginResult)
+	if pluginPayload["plugin_packages"] != nil || pluginPayload["layout"] != "compact" {
+		t.Fatalf("plugin backup payload was not selectively redacted: %#v", pluginPayload)
+	}
+	if pluginResult["path"] != nil || pluginResult["sha256"] == nil {
+		t.Fatalf("plugin backup result was not selectively redacted: %#v", pluginResult)
+	}
+
 	restoreResult := map[string]any{"checkpoint": map[string]any{"path": "/private/checkpoint.zip", "sha256": "safe"}}
 	stripJobFields("restore", map[string]any{"archive": encryptedValuePlaceholder}, restoreResult)
 	checkpoint := restoreResult["checkpoint"].(map[string]any)

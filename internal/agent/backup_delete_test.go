@@ -73,3 +73,15 @@ func TestDeleteBackupRejectsUnsafeOrChangedTarget(t *testing.T) {
 		t.Fatalf("rejected deletion changed the target: %v", err)
 	}
 }
+
+func TestValidBackupArchiveNameAllowsOnlyPluginSevenZip(t *testing.T) {
+	t.Parallel()
+	if !validBackupArchiveName("plugin-20260812T120000Z-job.7z") {
+		t.Fatal("expected plugin 7z archive name to be accepted")
+	}
+	for _, name := range []string{"plugin-job.zip", "manual-job.7z", "plugin-../job.7z"} {
+		if validBackupArchiveName(name) {
+			t.Fatalf("unexpected archive name accepted: %s", name)
+		}
+	}
+}

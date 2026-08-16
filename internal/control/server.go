@@ -249,6 +249,7 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requireInstancePermission(PermissionPackagesRead)).Get("/instances/{instanceID}/packages/{packageID}/versions", s.handlePackageVersions)
 			r.With(s.requireInstancePermission(PermissionPackagesRollback)).Post("/instances/{instanceID}/packages/{packageID}/versions/{versionID}/rollback", s.handleRollbackPackageVersion)
 			r.With(s.requireInstancePermission(PermissionBackupsRead)).Get("/instances/{instanceID}/backups", s.handleInstanceBackups)
+			r.With(s.requireInstancePermission(PermissionBackupsCreate)).Post("/instances/{instanceID}/plugin-backups", s.handleCreatePluginBackup)
 			r.With(s.requireInstancePermission(PermissionBackupsDelete)).Delete("/instances/{instanceID}/backups/{backupID}", s.handleDeleteBackup)
 			r.With(s.requireInstancePermission(PermissionBackupsDownload)).Post("/instances/{instanceID}/backups/{backupID}/downloads", s.handleCreateBackupDownload)
 			r.With(s.requireInstancePermission(PermissionBackupsDownload)).Get("/instances/{instanceID}/backups/{backupID}/downloads/{jobID}", s.handleGetBackupDownload)

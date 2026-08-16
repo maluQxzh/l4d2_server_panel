@@ -193,7 +193,8 @@ func (e *Executor) backupChunk(_ context.Context, job domain.Job, progress Progr
 		return nil, err
 	}
 	canonicalDir, err := filepath.EvalSymlinks(backupDir)
-	if err != nil || !samePath(filepath.Dir(archive), canonicalDir) || !strings.EqualFold(filepath.Ext(archive), ".zip") {
+	extension := strings.ToLower(filepath.Ext(archive))
+	if err != nil || !samePath(filepath.Dir(archive), canonicalDir) || (extension != ".zip" && extension != ".7z") {
 		return nil, errors.New("backup archive is outside the instance backup directory")
 	}
 	result, err := e.readVerifiedBackupChunk(archive, payload.Offset, payload.Length, payload.ExpectedSHA256, payload.ExpectedSize)

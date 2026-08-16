@@ -233,7 +233,7 @@ func TestGenericInstanceActionContractIsSeparateFromInternalJobs(t *testing.T) {
 	}
 
 	internalOnly := []string{
-		"a2s.info", "a2s.players", "backup.chunk", "backup.upload.abort", "configure", "create", "delete", "detach", "file", "game.import",
+		"a2s.info", "a2s.players", "backup.chunk", "backup.upload.abort", "plugin.backup", "configure", "create", "delete", "detach", "file", "game.import",
 		"import", "install", "install_mod", "list", "logs.chunk", "logs.search", "rcon.players", "rollback_package", "scan_packages", "update", "validate",
 	}
 	for _, action := range internalOnly {
@@ -345,7 +345,7 @@ func TestRetiredPermissionsAreNotAssignable(t *testing.T) {
 
 func TestInternalJobsCannotBeSubmittedThroughGenericActions(t *testing.T) {
 	for _, action := range []string{
-		"a2s.info", "a2s.players", "backup.chunk", "backup.upload.abort", "configure", "create", "file", "game.import", "import", "install",
+		"a2s.info", "a2s.players", "backup.chunk", "backup.upload.abort", "plugin.backup", "configure", "create", "file", "game.import", "import", "install",
 		"install_mod", "list", "logs.chunk", "logs.search", "rcon.players",
 	} {
 		t.Run(action, func(t *testing.T) {

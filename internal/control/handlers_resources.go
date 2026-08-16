@@ -756,12 +756,16 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		}
 	case "restore":
 		if backupID, _ := request.Payload["backup_id"].(string); backupID != "" {
-			path, err := s.store.BackupPath(r.Context(), instanceID, backupID)
+			backup, err := s.store.GetBackup(r.Context(), instanceID, backupID)
 			if err != nil {
 				s.fail(w, err)
 				return
 			}
-			request.Payload["archive"] = path
+			if strings.HasPrefix(strings.ToLower(backup.Kind), "plugin_") {
+				writeError(w, http.StatusBadRequest, "plugin_backup_not_restorable", "插件备份仅用于下载，不能作为实例备份恢复")
+				return
+			}
+			request.Payload["archive"] = backup.Path
 		}
 		request.Payload["instance"] = instance
 	}

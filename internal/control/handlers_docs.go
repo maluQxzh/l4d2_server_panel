@@ -23,6 +23,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
 			"/api/v1/nodes/{nodeID}/quarantine/{entryID}/purge":               map[string]any{"post": map[string]any{"summary": "Queue a confirmed quarantine purge"}},
 			"/api/v1/instances":                                                       map[string]any{"get": map[string]any{"summary": "List instances"}, "post": map[string]any{"summary": "Create an instance"}},
 			"/api/v1/instances/{instanceID}/backup-uploads":                           map[string]any{"post": map[string]any{"summary": "Create a resumable backup upload"}},
+			"/api/v1/instances/{instanceID}/plugin-backups":                           map[string]any{"post": map[string]any{"summary": "Create a plugin 7z backup"}},
 			"/api/v1/instances/{instanceID}/backup-uploads/{uploadID}":                map[string]any{"get": map[string]any{"summary": "Get a backup upload"}, "delete": map[string]any{"summary": "Abandon a backup upload and queue staging cleanup"}},
 			"/api/v1/instances/{instanceID}/backup-uploads/{uploadID}/chunks":         map[string]any{"post": map[string]any{"summary": "Queue one verified backup upload chunk"}},
 			"/api/v1/instances/{instanceID}/backup-uploads/{uploadID}/chunks/{jobID}": map[string]any{"get": map[string]any{"summary": "Get a backup upload chunk status"}},

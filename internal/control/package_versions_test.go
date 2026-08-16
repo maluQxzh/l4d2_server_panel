@@ -295,6 +295,145 @@ func TestSmartPluginDetailsAndFileEditProjection(t *testing.T) {
 	}
 }
 
+func TestLifecycleProjectionAddsGeneratedSmartPluginConfig(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "smart-generated-config.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	packageID := "11111111-1111-4111-8111-111111111111"
+	smxSHA, cfgSHA, aggregate := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online');
+		INSERT INTO instances(id,node_id,name,status,path,port,config) VALUES('instance','node','Server','running','C:\server',27015,'{}');
+		INSERT INTO addon_packages(id,instance_id,name,kind,source,sha256,path,enabled,risk,file_count)
+		VALUES(?1,'instance','Sample','smart','sample.zip',?2,'',1,'normal',1);
+		INSERT INTO addon_package_files(package_id,instance_id,path,sha256,size,entrypoint)
+		VALUES(?1,'instance','left4dead2/addons/sourcemod/plugins/sample.smx',?2,10,1)`, packageID, smxSHA); err != nil {
+		t.Fatal(err)
+	}
+	job := domain.Job{ID: "stop-generated-config", InstanceID: "instance", Type: "stop", Status: domain.JobSucceeded,
+		Result: map[string]any{"status": "stopped", "smart_plugin_config_updates": []any{map[string]any{
+			"package_id": packageID, "aggregate_sha256": aggregate, "file_count": float64(2),
+			"files": []any{map[string]any{"path": "left4dead2/cfg/sourcemod/sample.cfg", "sha256": cfgSHA, "size": float64(24), "entrypoint": false}},
+		}}}}
+	if err := store.ApplyJobResult(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ApplyJobResult(ctx, job); err != nil {
+		t.Fatalf("replayed lifecycle projection failed: %v", err)
+	}
+	pkg, files, err := store.PackageDetails(ctx, "instance", packageID)
+	if err != nil || pkg.FileCount != 2 || pkg.SHA256 != aggregate || len(files) != 2 {
+		t.Fatalf("generated config was not projected: pkg=%#v files=%#v err=%v", pkg, files, err)
+	}
+	var configFound bool
+	for _, file := range files {
+		if file.Path == "left4dead2/cfg/sourcemod/sample.cfg" && file.SHA256 == cfgSHA && file.Size == 24 && file.Editable && !file.Entrypoint {
+			configFound = true
+		}
+	}
+	if !configFound {
+		t.Fatalf("projected generated config is missing or not editable: %#v", files)
+	}
+}
+
+func TestLifecycleProjectionRejectsAmbiguousGeneratedSmartPluginConfig(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "smart-ambiguous-generated-config.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	firstID := "11111111-1111-4111-8111-111111111111"
+	secondID := "22222222-2222-4222-8222-222222222222"
+	sha := strings.Repeat("a", 64)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online');
+		INSERT INTO instances(id,node_id,name,status,path,port,config) VALUES('instance','node','Server','running','C:\server',27015,'{}');
+		INSERT INTO addon_packages(id,instance_id,name,kind,sha256,enabled,risk,file_count) VALUES
+		(?1,'instance','One','smart',?3,1,'normal',1),(?2,'instance','Two','smart',?3,1,'normal',1);
+		INSERT INTO addon_package_files(package_id,instance_id,path,sha256,size,entrypoint) VALUES
+		(?1,'instance','left4dead2/addons/sourcemod/plugins/one/sample.smx',?3,10,1),
+		(?2,'instance','left4dead2/addons/sourcemod/plugins/two/sample.smx',?3,10,1)`, firstID, secondID, sha); err != nil {
+		t.Fatal(err)
+	}
+	job := domain.Job{ID: "stop-ambiguous-config", InstanceID: "instance", Type: "stop", Status: domain.JobSucceeded,
+		Result: map[string]any{"status": "stopped", "smart_plugin_config_updates": []any{map[string]any{
+			"package_id": firstID, "aggregate_sha256": strings.Repeat("b", 64), "file_count": float64(2),
+			"files": []any{map[string]any{"path": "left4dead2/cfg/sourcemod/sample.cfg", "sha256": strings.Repeat("c", 64), "size": float64(1)}},
+		}}}}
+	if err := store.ApplyJobResult(ctx, job); err == nil {
+		t.Fatal("ambiguous generated config ownership was accepted")
+	}
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM addon_package_files WHERE instance_id='instance'`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("ambiguous projection changed the inventory: count=%d err=%v", count, err)
+	}
+}
+
+func TestLifecycleJobIncludesRegisteredGeneratedConfigPaths(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "smart-generated-config-job.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	const instanceID = "11111111-1111-4111-8111-111111111111"
+	const smartID = "22222222-2222-4222-8222-222222222222"
+	const sourceModID = "33333333-3333-4333-8333-333333333333"
+	sha := strings.Repeat("a", 64)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online');
+		INSERT INTO instances(id,node_id,name,status,path,port,config) VALUES(?1,'node','Server','running','C:\server',27015,'{}');
+		INSERT INTO addon_packages(id,instance_id,name,kind,sha256,enabled,risk,file_count) VALUES
+		(?2,?1,'Smart','smart',?4,true,'normal',2),(?3,?1,'SourceMod','sourcemod',?4,true,'normal',2);
+		INSERT INTO addon_package_files(package_id,instance_id,path,sha256,size,entrypoint) VALUES
+		(?2,?1,'left4dead2/cfg/sourcemod/smart.cfg',?4,10,false),
+		(?3,?1,'left4dead2/cfg/sourcemod/core.cfg',?4,10,false),
+		(?3,?1,'left4dead2/cfg/sourcemod/nested/ignored.cfg',?4,10,false)`, instanceID, smartID, sourceModID, sha); err != nil {
+		t.Fatal(err)
+	}
+	originalPayload := map[string]any{"timeout_seconds": 10}
+	job, reused, err := store.QueueInstanceJob(ctx, instanceID, "stop", originalPayload, "", "")
+	if err != nil || reused {
+		t.Fatalf("queue lifecycle job: reused=%v err=%v", reused, err)
+	}
+	if _, changed := originalPayload["registered_paths"]; changed {
+		t.Fatal("server-derived registered paths mutated the caller payload")
+	}
+	managed, ok := job.Payload["registered_paths"].(map[string]string)
+	if !ok || len(managed) != 2 || managed["left4dead2/cfg/sourcemod/smart.cfg"] != smartID || managed["left4dead2/cfg/sourcemod/core.cfg"] != sourceModID {
+		t.Fatalf("unexpected registered generated config paths: %#v", job.Payload["registered_paths"])
+	}
+	if _, exists := managed["left4dead2/cfg/sourcemod/nested/ignored.cfg"]; exists {
+		t.Fatalf("nested config was included in direct generated config registry: %#v", managed)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET status='succeeded' WHERE id=?1;
+		UPDATE instances SET status='stopped' WHERE id=?2`, job.ID, instanceID); err != nil {
+		t.Fatal(err)
+	}
+	deletePayload := map[string]any{"kind": "smart", "package_id": smartID, "expected_sha256": sha}
+	deleteJob, reused, err := store.QueueInstanceJob(ctx, instanceID, "delete_package", deletePayload, "", "")
+	if err != nil || reused {
+		t.Fatalf("queue smart plugin delete job: reused=%v err=%v", reused, err)
+	}
+	deleteManaged, ok := deleteJob.Payload["registered_paths"].(map[string]string)
+	if !ok || len(deleteManaged) != 2 || deleteManaged["left4dead2/cfg/sourcemod/smart.cfg"] != smartID {
+		t.Fatalf("smart plugin delete lacks registered generated config paths: %#v", deleteJob.Payload["registered_paths"])
+	}
+	if _, changed := deletePayload["registered_paths"]; changed {
+		t.Fatal("smart plugin delete registry mutated the caller payload")
+	}
+}
+
 func TestServerExtensionProjectionKeepsOneManagedComponentRecord(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "server-extension.sqlite3"))

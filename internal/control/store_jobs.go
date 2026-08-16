@@ -150,6 +150,15 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 			return domain.Job{}, false, fmt.Errorf("game installation is not ready: %w", ErrConflict)
 		}
 	}
+	if action == "start" || action == "stop" || action == "restart" ||
+		(action == "delete_package" && strings.EqualFold(stringFromAny(payload["kind"]), "smart")) {
+		managedPaths, err := generatedConfigManagedPathsQuery(ctx, tx, instanceID)
+		if err != nil {
+			return domain.Job{}, false, err
+		}
+		payload = cloneMap(payload)
+		payload["registered_paths"] = managedPaths
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return domain.Job{}, false, err
@@ -296,7 +305,7 @@ func validateJobScopeInstanceTx(ctx context.Context, tx *sql.Tx, nodeID, instanc
 
 func externalInstanceJobAllowed(action string, payload map[string]any) bool {
 	switch action {
-	case "restart", "a2s.info", "a2s.players", "rcon.players", "list", "scan_packages", "logs.search", "logs.chunk", "backup", "backup.delete", "backup.chunk", "check_update":
+	case "restart", "a2s.info", "a2s.players", "rcon.players", "list", "scan_packages", "logs.search", "logs.chunk", "backup", "plugin.backup", "backup.delete", "backup.chunk", "check_update":
 		return true
 	case "file":
 		operation := strings.ToLower(strings.TrimSpace(stringFromAny(payload["operation"])))

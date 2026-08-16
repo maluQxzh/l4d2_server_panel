@@ -72,15 +72,20 @@ func (e *Executor) deleteBackup(job domain.Job, progress ProgressFunc) (map[stri
 }
 
 func validBackupArchiveName(name string) bool {
-	if name == "" || len(name) > 512 || filepath.Base(name) != name || !strings.HasSuffix(strings.ToLower(name), ".zip") {
+	lower := strings.ToLower(name)
+	if name == "" || len(name) > 512 || filepath.Base(name) != name ||
+		(!strings.HasSuffix(lower, ".zip") && !strings.HasSuffix(lower, ".7z")) {
 		return false
 	}
 	validPrefix := false
-	for _, prefix := range []string{"daily-", "weekly-", "checkpoint-", "manual-"} {
-		if strings.HasPrefix(strings.ToLower(name), prefix) {
+	for _, prefix := range []string{"daily-", "weekly-", "checkpoint-", "manual-", "plugin-"} {
+		if strings.HasPrefix(lower, prefix) {
 			validPrefix = true
 			break
 		}
+	}
+	if strings.HasPrefix(lower, "plugin-") != strings.HasSuffix(lower, ".7z") {
+		return false
 	}
 	if !validPrefix {
 		return false

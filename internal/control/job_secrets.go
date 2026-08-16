@@ -278,6 +278,9 @@ func stripJobFields(jobType string, jobPayload, jobResult map[string]any) {
 		if weekly, ok := jobResult["weekly"].(map[string]any); ok {
 			delete(weekly, "path")
 		}
+	case "plugin.backup":
+		delete(jobPayload, "plugin_packages")
+		delete(jobResult, "path")
 	case "restore":
 		delete(jobPayload, "archive")
 		if checkpoint, ok := jobResult["checkpoint"].(map[string]any); ok {

@@ -1143,7 +1143,7 @@ paths:
     get:
       tags: [Instances]
       summary: 列出节点本地备份元数据
-      description: 需要目标实例的 `backups.read`；不返回节点路径。常规 v4 归档只包含配置和 Control 登记且非本机扫描来源的包文件，并记录无秘密启动快照及地图引用；每日任务产生的新周副本会独立投影到列表。
+      description: 需要目标实例的 `backups.read`；不返回节点路径。常规 v4 归档只包含配置和 Control 登记且非本机扫描来源的包文件，并记录无秘密启动快照及地图引用；每日任务产生的新周副本会独立投影到列表。用户主动创建的插件 7z 归档也会以 `plugin_preserve` 或 `plugin_compact` 类型返回。
       parameters: [{ $ref: "#/components/parameters/InstanceID" }]
       responses:
         "200":
@@ -1160,11 +1160,43 @@ paths:
                       items: { $ref: "#/components/schemas/BackupSummary" },
                     }
 
+  /instances/{instanceId}/plugin-backups:
+    post:
+      tags: [Instances]
+      summary: 主动创建插件 7z 备份
+      description: |
+        需要目标实例的 `backups.create`。Control 从插件记录生成不可由调用者修改的文件清单，Agent 在实例边界内
+        逐文件 no-follow 打开并复核大小和 SHA-256，再创建最多 5000 个文件、2 GiB 展开量的 7z。
+        每个插件使用独立顶层文件夹；preserve 保留从 left4dead2 开始的游戏路径，compact 去掉游戏和 SourceMod 根目录，
+        但保留 plugins、gamedata、configs、cfg 等相对结构。归档只支持下载和删除，不能作为实例恢复源。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [layout]
+              additionalProperties: false
+              properties:
+                layout: { type: string, enum: [preserve, compact] }
+      responses:
+        "202":
+          description: 插件备份任务已排队
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /instances/{instanceId}/backups/{backupId}:
     delete:
       tags: [Instances]
       summary: 永久删除节点本地备份
-      description: 需要目标实例的 `backups.delete`。不接受请求正文或 Agent 路径；Agent 会在固定实例备份目录中复核名称、大小和 SHA-256 后删除 ZIP，文件已经不存在时按幂等成功处理。Control 只在 Agent 成功后删除备份元数据。
+      description: 需要目标实例的 `backups.delete`。不接受请求正文或 Agent 路径；Agent 会在固定实例备份目录中复核名称、大小和 SHA-256 后删除常规 ZIP 或插件 7z，文件已经不存在时按幂等成功处理。Control 只在 Agent 成功后删除备份元数据。
       parameters:
         - { $ref: "#/components/parameters/InstanceID" }
         - { $ref: "#/components/parameters/BackupID" }
@@ -3614,7 +3646,7 @@ components:
 
     BackupSummary:
       type: object
-      required: [id, name, size, platform, checksum, created_at]
+      required: [id, name, kind, size, platform, checksum, created_at]
       properties:
         id: { type: string, format: uuid }
         name:
@@ -3622,6 +3654,7 @@ components:
             type: string,
             description: Agent 生成的归档名；自动周副本以 weekly- 开头,
           }
+        kind: { type: string, enum: [daily, weekly, checkpoint, manual, plugin_preserve, plugin_compact] }
         size: { type: integer, format: int64 }
         platform: { type: string, example: linux/amd64 }
         checksum: { type: string, pattern: "^[a-f0-9]{64}$" }
