@@ -111,9 +111,43 @@ func TestDeferredProjectionClassification(t *testing.T) {
 		if requiresDeferredJobProjection("restore", status) {
 			t.Fatalf("restore %s incorrectly required deferred projection", status)
 		}
+		if requiresDeferredJobProjection("inspect_plugin_archive", status) {
+			t.Fatalf("archive inspection %s incorrectly required deferred projection", status)
+		}
 	}
 	if requiresDeferredJobProjection("update", domain.JobCanceled) {
 		t.Fatal("atomically canceled job required deferred projection")
+	}
+}
+
+func TestTerminalPluginArchiveInspectionScrubsUploadWithoutProjection(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "plugin-inspection-terminal.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	nodeID, jobID := uuid.NewString(), uuid.NewString()
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'Node','online');
+		INSERT INTO jobs(id,node_id,type,status,progress,payload,result,created_at)
+		VALUES(?2,?1,'inspect_plugin_archive','running',20,
+		'{"source":"[encrypted]","source_ciphertext":"sealed-source","content_base64":"[encrypted]","content_base64_ciphertext":"sealed-upload"}',
+		'{}',?3)`, nodeID, jobID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := store.UpdateJob(ctx, jobID, domain.JobFailed, 20, "unsupported plugin file", map[string]any{"kind": "smart"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != domain.JobFailed || jobProjectionPending(updated) {
+		t.Fatalf("archive inspection retained a projection barrier: %#v", updated)
+	}
+	if updated.Payload["content_base64_ciphertext"] != nil || updated.Payload["source_ciphertext"] != nil {
+		t.Fatalf("archive inspection retained terminal upload secrets: %#v", updated.Payload)
 	}
 }
 

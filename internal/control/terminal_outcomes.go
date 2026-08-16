@@ -42,6 +42,13 @@ func settledTerminalJob(job domain.Job) bool {
 }
 
 func requiresDeferredJobProjection(jobType string, status domain.JobStatus) bool {
+	// Archive inspection only returns diagnostics to its caller. Its encrypted
+	// upload can approach the wire limit, so marking the terminal row for a
+	// no-op projection would force SQLite to rewrite the same very large jobs
+	// record a second time merely to remove the marker.
+	if jobType == "inspect_plugin_archive" {
+		return false
+	}
 	return jobType != "restore" && (status == domain.JobSucceeded || status == domain.JobFailed)
 }
 

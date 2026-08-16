@@ -16,22 +16,23 @@ import (
 func TestSQLiteMigrationChecksums(t *testing.T) {
 	t.Parallel()
 	expected := map[string]string{
-		"001_control_plane.sql":               "5a95514ce69e52e64613fbd1313eeed81eae422dc917c3e6f7acaae53e2f508f",
-		"002_bootstrap_setup_key.sql":         "403054323dc5d62600b26aebdcdcadbabea46cbde0f6b83f136c37c2e4ff3fa1",
-		"003_system_update_jobs.sql":          "508c18088158cc8f1be897e30f510e207d8e2999c1762569216a9bf2d36ddea3",
-		"004_runtime_environments.sql":        "2ea900b03eb08199bb3d543907a6a34b92bd158a6c645570afc7ec8dc2ea7104",
-		"005_absolute_game_installations.sql": "17649c639d13e47e480f0f8a75e4a67d02b279d2cbceab006162bdb94f2a8193",
-		"006_remove_config_history.sql":       "468fd664f7f60907388db13edb051ecde268dae82ce6e07fb5e3893ae03c43a5",
-		"007_map_library.sql":                 "8ff1eb6583f458254ef8add0e7928e26523668ae15423e5d1599e77e401fbd5e",
-		"008_map_metadata.sql":                "4bd22eb20d0a97910dd433e8d48b1ac434c89a9b438093f9f686237f378e4996",
-		"009_fine_grained_permissions.sql":    "830a1cc1afb76bda4a6f1fa7d171ad939ac789de02d02bf00de2fd719e367ae4",
-		"010_user_activation.sql":             "d02925cf0d8621472c805e2e89b61aed36d40cdf3e5e53e0d8efbdc1499b575e",
-		"011_game_installation_deletion.sql":  "6396f1edfcbd4eb45a28e33655620225eb62c689d834fdcc8e600620a22c5e07",
-		"012_instance_port_changes.sql":       "3f62ff7f344090a692b6f28f605eb1c514222b2c99a6bf7e8008f220a004ce22",
-		"013_retire_obsolete_permissions.sql": "10e51770bde143350a4b7ec03f325ed17d1f265c617bc049ff04c76f930508af",
-		"014_smart_plugin_archives.sql":       "6e8d4d7b4ddb58653759cd17872a76a8e854728c2a8e1d6a9c49a98b371c7929",
-		"015_backup_deletion_permission.sql":  "f08e9075c807888531d5faab099e83ee31eee031fd4488fa52aeeac5862960ce",
-		"016_terminal_outcome_conflicts.sql":  "c75401441dc0d3bb633d36cbc8a0e357757cc12ef17fba8f12890821724d9dd5",
+		"001_control_plane.sql":                      "5a95514ce69e52e64613fbd1313eeed81eae422dc917c3e6f7acaae53e2f508f",
+		"002_bootstrap_setup_key.sql":                "403054323dc5d62600b26aebdcdcadbabea46cbde0f6b83f136c37c2e4ff3fa1",
+		"003_system_update_jobs.sql":                 "508c18088158cc8f1be897e30f510e207d8e2999c1762569216a9bf2d36ddea3",
+		"004_runtime_environments.sql":               "2ea900b03eb08199bb3d543907a6a34b92bd158a6c645570afc7ec8dc2ea7104",
+		"005_absolute_game_installations.sql":        "17649c639d13e47e480f0f8a75e4a67d02b279d2cbceab006162bdb94f2a8193",
+		"006_remove_config_history.sql":              "468fd664f7f60907388db13edb051ecde268dae82ce6e07fb5e3893ae03c43a5",
+		"007_map_library.sql":                        "8ff1eb6583f458254ef8add0e7928e26523668ae15423e5d1599e77e401fbd5e",
+		"008_map_metadata.sql":                       "4bd22eb20d0a97910dd433e8d48b1ac434c89a9b438093f9f686237f378e4996",
+		"009_fine_grained_permissions.sql":           "830a1cc1afb76bda4a6f1fa7d171ad939ac789de02d02bf00de2fd719e367ae4",
+		"010_user_activation.sql":                    "d02925cf0d8621472c805e2e89b61aed36d40cdf3e5e53e0d8efbdc1499b575e",
+		"011_game_installation_deletion.sql":         "6396f1edfcbd4eb45a28e33655620225eb62c689d834fdcc8e600620a22c5e07",
+		"012_instance_port_changes.sql":              "3f62ff7f344090a692b6f28f605eb1c514222b2c99a6bf7e8008f220a004ce22",
+		"013_retire_obsolete_permissions.sql":        "10e51770bde143350a4b7ec03f325ed17d1f265c617bc049ff04c76f930508af",
+		"014_smart_plugin_archives.sql":              "6e8d4d7b4ddb58653759cd17872a76a8e854728c2a8e1d6a9c49a98b371c7929",
+		"015_backup_deletion_permission.sql":         "f08e9075c807888531d5faab099e83ee31eee031fd4488fa52aeeac5862960ce",
+		"016_terminal_outcome_conflicts.sql":         "c75401441dc0d3bb633d36cbc8a0e357757cc12ef17fba8f12890821724d9dd5",
+		"017_terminal_plugin_inspection_cleanup.sql": "dfd1d59ec45fd120ada1eabf2e45c924262a824dec5eacdccc46e3049ae04323",
 	}
 	root := filepath.Join("..", "..", "migrations", "sqlite")
 	entries, err := os.ReadDir(root)
@@ -55,6 +56,51 @@ func TestSQLiteMigrationChecksums(t *testing.T) {
 	}
 	if actual != len(expected) {
 		t.Fatalf("SQLite migration count=%d checksum count=%d", actual, len(expected))
+	}
+}
+
+func TestTerminalPluginInspectionCleanupMigration(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "plugin-inspection-cleanup.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	root := filepath.Join("..", "..", "migrations", "sqlite")
+	if err := store.Migrate(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online');
+		INSERT INTO jobs(id,node_id,type,status,payload,result) VALUES(
+		'inspection','node','inspect_plugin_archive','failed',
+		'{"source":"[encrypted]","source_ciphertext":"sealed-source","content_base64":"[encrypted]","content_base64_ciphertext":"sealed-upload"}',
+		'{"_projection_pending":true}');
+		INSERT INTO jobs(id,node_id,type,status,payload,result) VALUES(
+		'install','node','install_mod','failed',
+		'{"content_base64":"[encrypted]","content_base64_ciphertext":"sealed-upload"}',
+		'{"_projection_pending":true}')`); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, "017_terminal_plugin_inspection_cleanup.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, string(body)); err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := store.GetJob(ctx, "inspection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jobProjectionPending(inspection) || inspection.Payload["content_base64_ciphertext"] != nil || inspection.Payload["source_ciphertext"] != nil {
+		t.Fatalf("inspection cleanup = %#v", inspection)
+	}
+	install, err := store.GetJob(ctx, "install")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !jobProjectionPending(install) || install.Payload["content_base64_ciphertext"] == nil {
+		t.Fatalf("cleanup changed unrelated job: %#v", install)
 	}
 }
 
