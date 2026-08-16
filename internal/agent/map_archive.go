@@ -3,6 +3,7 @@ package agent
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/bodgit/sevenzip"
 	"github.com/nwaples/rardecode/v2"
@@ -42,11 +44,21 @@ type mapArchiveState struct {
 	MaxExpanded     int64
 	DiskFreeReserve uint64
 	Subject         string
+	SelectiveInputs bool
+	PathEncoding    string
+	PathDecodes     mapPathDecodeStats
 }
 
 type mapVPKInput struct {
 	Path    string
 	SortKey string
+}
+
+type mapInputDiscovery struct {
+	Inputs      []mapVPKInput
+	Ignored     int
+	Expanded    int64
+	PathDecodes mapPathDecodeStats
 }
 
 type mapFileKind int
@@ -70,64 +82,73 @@ func detectMapFileKind(path string) (mapFileKind, error) {
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return mapFileUnknown, err
 	}
+	return detectMapFileKindFromSignature(signature[:count]), nil
+}
+
+func detectMapFileKindFromSignature(signature []byte) mapFileKind {
+	count := len(signature)
 	if count >= 4 && uint32(signature[0])|uint32(signature[1])<<8|uint32(signature[2])<<16|uint32(signature[3])<<24 == vpkSignature {
-		return mapFileVPK, nil
+		return mapFileVPK
 	}
 	if count >= 4 && signature[0] == 'P' && signature[1] == 'K' &&
 		((signature[2] == 3 && signature[3] == 4) || (signature[2] == 5 && signature[3] == 6) || (signature[2] == 7 && signature[3] == 8)) {
-		return mapFileZIP, nil
+		return mapFileZIP
 	}
 	if count >= 6 && string(signature[:6]) == "7z\xbc\xaf'\x1c" {
-		return mapFile7Z, nil
+		return mapFile7Z
 	}
 	if count >= 7 && string(signature[:7]) == "Rar!\x1a\x07\x00" {
-		return mapFileRAR, nil
+		return mapFileRAR
 	}
 	if count >= 8 && string(signature[:8]) == "Rar!\x1a\x07\x01\x00" {
-		return mapFileRAR, nil
+		return mapFileRAR
 	}
-	return mapFileUnknown, nil
+	return mapFileUnknown
 }
 
 func discoverMapInputs(ctx context.Context, stagingRoot string, topLevel []qqFlashListedFile, initialEntries int, deviceID string,
-	client *qqFlashClient, progress ProgressFunc) ([]mapVPKInput, int, int64, error) {
+	client *qqFlashClient, pathEncoding string, progress ProgressFunc) (mapInputDiscovery, error) {
+	pathEncoding, err := normalizeMapPathEncoding(pathEncoding)
+	if err != nil {
+		return mapInputDiscovery{}, err
+	}
 	var downloadBytes int64
 	for _, listed := range topLevel {
 		if listed.File.Size < 0 || downloadBytes > maxMapQQFlashDownload-listed.File.Size {
-			return nil, 0, 0, errors.New("QQ flash share exceeds the map download limit")
+			return mapInputDiscovery{}, errors.New("QQ flash share exceeds the map download limit")
 		}
 		downloadBytes += listed.File.Size
 	}
 	usage, err := disk.Usage(stagingRoot)
 	if err != nil {
-		return nil, 0, 0, fmt.Errorf("read map staging free space: %w", err)
+		return mapInputDiscovery{}, fmt.Errorf("read map staging free space: %w", err)
 	}
 	if uint64(downloadBytes) > usage.Free || usage.Free-uint64(downloadBytes) < mapDiskFreeReserve {
-		return nil, 0, 0, errors.New("map download would consume the reserved free disk space")
+		return mapInputDiscovery{}, errors.New("map download would consume the reserved free disk space")
 	}
-	state := &mapArchiveState{Root: stagingRoot, Entries: initialEntries}
+	state := &mapArchiveState{Root: stagingRoot, Entries: initialEntries, SelectiveInputs: true, PathEncoding: pathEncoding}
 	inputs := make([]mapVPKInput, 0)
 	for index, listed := range topLevel {
 		if ctx.Err() != nil {
-			return nil, state.Ignored, state.Expanded, ctx.Err()
+			return mapInputDiscovery{}, ctx.Err()
 		}
 		relative := filepath.ToSlash(filepath.Join("downloads", filepath.FromSlash(listed.Relative)))
 		progress(8+index*25/max(1, len(topLevel)), "downloading QQ flash map files")
 		if err := client.downloadFile(ctx, stagingRoot, relative, listed.File, deviceID, nil); err != nil {
-			return nil, state.Ignored, state.Expanded, err
+			return mapInputDiscovery{}, &mapImportInputError{Stage: mapImportStageDownload, Source: listed.Relative, Err: err}
 		}
 		path, err := ResolveWithin(stagingRoot, filepath.FromSlash(relative))
 		if err != nil {
-			return nil, state.Ignored, state.Expanded, err
+			return mapInputDiscovery{}, err
 		}
 		found, _, err := discoverMapFile(ctx, stagingRoot, path, listed.Relative, 0, state)
 		if err != nil {
-			return nil, state.Ignored, state.Expanded, fmt.Errorf("process %s: %w", listed.Relative, err)
+			return mapInputDiscovery{}, &mapImportInputError{Stage: mapImportStageArchive, Source: listed.Relative, Err: err}
 		}
 		inputs = append(inputs, found...)
 	}
 	sortMapInputs(inputs)
-	return inputs, state.Ignored, state.Expanded, nil
+	return mapInputDiscovery{Inputs: inputs, Ignored: state.Ignored, Expanded: state.Expanded, PathDecodes: state.PathDecodes}, nil
 }
 
 func discoverMapFile(ctx context.Context, stagingRoot, filePath, sortKey string, depth int, state *mapArchiveState) ([]mapVPKInput, bool, error) {
@@ -236,11 +257,18 @@ func extractMapZIP(ctx context.Context, archivePath, destination string, state *
 		if mode&fs.ModeSymlink != 0 || (!mode.IsDir() && !mode.IsRegular()) {
 			return nil, errors.New("ZIP archive contains a link or special file")
 		}
-		relative, err := validateMapArchivePath(entry.Name)
+		entryName := entry.Name
+		if state.SelectiveInputs {
+			entryName, err = decodeMapZIPPath(entry.Name, entry.NonUTF8, state.PathEncoding, &state.PathDecodes)
+			if err != nil {
+				return nil, fmt.Errorf("decode ZIP path: %w", err)
+			}
+		}
+		relative, err := validateMapArchivePathForState(entryName, state)
 		if err != nil {
 			return nil, err
 		}
-		if !rememberMapArchivePath(seen, relative) {
+		if !state.SelectiveInputs && !rememberMapArchivePath(seen, relative) {
 			return nil, errors.New("ZIP archive contains colliding paths")
 		}
 		if err := state.countEntry(); err != nil {
@@ -251,14 +279,29 @@ func extractMapZIP(ctx context.Context, archivePath, destination string, state *
 		}
 		size := int64(entry.UncompressedSize64)
 		compressed := int64(entry.CompressedSize64)
-		if err := state.reserveEntry(destination, size, compressed); err != nil {
-			return nil, err
+		if state.SelectiveInputs {
+			if err := state.validateEntryBounds(size, compressed); err != nil {
+				return nil, err
+			}
 		}
 		source, err := entry.Open()
 		if err != nil {
 			return nil, err
 		}
-		err = writeMapArchiveFile(ctx, destination, relative, source, size)
+		selected, keep, err := selectMapArchiveInput(state, destination, relative, source, size, compressed)
+		if err != nil {
+			_ = source.Close()
+			return nil, err
+		}
+		if !keep {
+			_ = source.Close()
+			continue
+		}
+		if state.SelectiveInputs && !rememberMapArchivePath(seen, relative) {
+			_ = source.Close()
+			return nil, errors.New("ZIP archive contains colliding selected input paths")
+		}
+		err = writeMapArchiveFile(ctx, destination, relative, selected, size)
 		closeErr := source.Close()
 		if err == nil {
 			err = closeErr
@@ -307,11 +350,11 @@ func extractMap7Z(ctx context.Context, archivePath, destination string, state *m
 		if mode&fs.ModeSymlink != 0 || (!mode.IsDir() && !mode.IsRegular()) {
 			return nil, errors.New("7Z archive contains a link or special file")
 		}
-		relative, err := validateMapArchivePath(entry.Name)
+		relative, err := validateMapArchivePathForState(entry.Name, state)
 		if err != nil {
 			return nil, err
 		}
-		if !rememberMapArchivePath(seen, relative) {
+		if !state.SelectiveInputs && !rememberMapArchivePath(seen, relative) {
 			return nil, errors.New("7Z archive contains colliding paths")
 		}
 		if err := state.countEntry(); err != nil {
@@ -321,9 +364,6 @@ func extractMap7Z(ctx context.Context, archivePath, destination string, state *m
 			continue
 		}
 		size := int64(entry.UncompressedSize)
-		if err := state.reserveEntry(destination, size, -1); err != nil {
-			return nil, err
-		}
 		source, err := entry.Open()
 		if err != nil {
 			var readErr *sevenzip.ReadError
@@ -332,7 +372,20 @@ func extractMap7Z(ctx context.Context, archivePath, destination string, state *m
 			}
 			return nil, err
 		}
-		err = writeMapArchiveFile(ctx, destination, relative, source, size)
+		selected, keep, err := selectMapArchiveInput(state, destination, relative, source, size, -1)
+		if err != nil {
+			_ = source.Close()
+			return nil, err
+		}
+		if !keep {
+			_ = source.Close()
+			continue
+		}
+		if state.SelectiveInputs && !rememberMapArchivePath(seen, relative) {
+			_ = source.Close()
+			return nil, errors.New("7Z archive contains colliding selected input paths")
+		}
+		err = writeMapArchiveFile(ctx, destination, relative, selected, size)
 		closeErr := source.Close()
 		if err == nil {
 			err = closeErr
@@ -376,11 +429,11 @@ func extractMapRAR(ctx context.Context, archivePath, destination string, state *
 		if mode&fs.ModeSymlink != 0 || (!header.IsDir && !mode.IsRegular()) {
 			return nil, errors.New("RAR archive contains a link or special file")
 		}
-		relative, err := validateMapArchivePath(header.Name)
+		relative, err := validateMapArchivePathForState(header.Name, state)
 		if err != nil {
 			return nil, err
 		}
-		if !rememberMapArchivePath(seen, relative) {
+		if !state.SelectiveInputs && !rememberMapArchivePath(seen, relative) {
 			return nil, errors.New("RAR archive contains colliding paths")
 		}
 		if err := state.countEntry(); err != nil {
@@ -392,10 +445,22 @@ func extractMapRAR(ctx context.Context, archivePath, destination string, state *
 		if header.UnKnownSize {
 			return nil, errors.New("RAR entry has an unknown expanded size")
 		}
-		if err := state.reserveEntry(destination, header.UnPackedSize, header.PackedSize); err != nil {
+		if state.SelectiveInputs {
+			if err := state.validateEntryBounds(header.UnPackedSize, header.PackedSize); err != nil {
+				return nil, err
+			}
+		}
+		selected, keep, err := selectMapArchiveInput(state, destination, relative, reader, header.UnPackedSize, header.PackedSize)
+		if err != nil {
 			return nil, err
 		}
-		if err := writeMapArchiveFile(ctx, destination, relative, reader, header.UnPackedSize); err != nil {
+		if !keep {
+			continue
+		}
+		if state.SelectiveInputs && !rememberMapArchivePath(seen, relative) {
+			return nil, errors.New("RAR archive contains colliding selected input paths")
+		}
+		if err := writeMapArchiveFile(ctx, destination, relative, selected, header.UnPackedSize); err != nil {
 			return nil, err
 		}
 		path, _ := ResolveWithin(destination, filepath.FromSlash(relative))
@@ -429,6 +494,36 @@ func validateMapArchivePath(name string) (string, error) {
 	return cleaned, nil
 }
 
+func validateMapArchivePathForState(name string, state *mapArchiveState) (string, error) {
+	if state != nil && state.SelectiveInputs && !utf8.ValidString(name) {
+		return "", errors.New("archive path is not valid UTF-8 after decoding")
+	}
+	return validateMapArchivePath(name)
+}
+
+func selectMapArchiveInput(state *mapArchiveState, destination, relative string, source io.Reader, size, compressed int64) (io.Reader, bool, error) {
+	if !state.SelectiveInputs {
+		if err := state.reserveEntry(destination, size, compressed); err != nil {
+			return nil, false, err
+		}
+		return source, true, nil
+	}
+	var signature [8]byte
+	count, err := io.ReadFull(source, signature[:])
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, false, err
+	}
+	prefix := signature[:count]
+	if detectMapFileKindFromSignature(prefix) == mapFileUnknown && !potentialExternalVPKChunk(relative) {
+		state.Ignored++
+		return nil, false, nil
+	}
+	if err := state.reserveEntry(destination, size, compressed); err != nil {
+		return nil, false, err
+	}
+	return io.MultiReader(bytes.NewReader(prefix), source), true, nil
+}
+
 func (s *mapArchiveState) countEntry() error {
 	s.Entries++
 	limit := s.MaxEntries
@@ -442,14 +537,11 @@ func (s *mapArchiveState) countEntry() error {
 }
 
 func (s *mapArchiveState) reserveEntry(path string, expanded, compressed int64) error {
-	if expanded < 0 || expanded > s.maxEntrySize() || s.Expanded > s.maxExpandedBytes()-expanded {
+	if err := s.validateEntryBounds(expanded, compressed); err != nil {
+		return err
+	}
+	if s.Expanded > s.maxExpandedBytes()-expanded {
 		return fmt.Errorf("%s archive expanded size exceeds limit", s.subject())
-	}
-	if expanded > 0 && compressed == 0 {
-		return fmt.Errorf("%s archive entry exceeds the compression ratio limit", s.subject())
-	}
-	if compressed > 0 && expanded > compressed*maxMapCompressionRatio {
-		return fmt.Errorf("%s archive entry exceeds the compression ratio limit", s.subject())
 	}
 	reserve := s.DiskFreeReserve
 	if reserve == 0 {
@@ -459,6 +551,19 @@ func (s *mapArchiveState) reserveEntry(path string, expanded, compressed int64) 
 		return err
 	}
 	s.Expanded += expanded
+	return nil
+}
+
+func (s *mapArchiveState) validateEntryBounds(expanded, compressed int64) error {
+	if expanded < 0 || expanded > s.maxEntrySize() {
+		return fmt.Errorf("%s archive entry size exceeds limit", s.subject())
+	}
+	if expanded > 0 && compressed == 0 {
+		return fmt.Errorf("%s archive entry exceeds the compression ratio limit", s.subject())
+	}
+	if compressed > 0 && expanded > compressed*maxMapCompressionRatio {
+		return fmt.Errorf("%s archive entry exceeds the compression ratio limit", s.subject())
+	}
 	return nil
 }
 

@@ -738,6 +738,10 @@ h1, h2, h3, p { margin-top: 0; }
 .job-row__details strong, .job-row__details code { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .job-row__details .job-row__technical { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .job-row__technical code { padding: 8px; overflow: auto; color: var(--text-dim); background: #090e0c; border-radius: 6px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.job-row__details .job-row__failure { grid-column: 1 / -1; padding: 12px; display: grid; gap: 6px; color: #e6c77b; background: var(--orange-soft); border: 1px solid rgba(229,169,63,.2); border-radius: 8px; }
+.job-row__failure strong { color: var(--text); font-size: 11px; }
+.job-row__failure p, .job-row__failure small { margin: 0; color: var(--text-dim); font-size: 9px; line-height: 1.6; }
+.job-row__failure code { color: #e6c77b; font-size: 9px; overflow-wrap: anywhere; white-space: normal; }
 
 .notification-list { overflow: hidden; }
 .notification-row { min-height: 76px; padding: 14px 17px; display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 12px; border-bottom: 1px solid var(--line-soft); }

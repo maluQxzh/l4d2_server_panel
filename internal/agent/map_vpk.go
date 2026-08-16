@@ -29,6 +29,8 @@ type mapVPKSource struct {
 	fileDataSize int64
 	entries      []mapVPKEntry
 	chunkSizes   map[uint16]int64
+	pathEncoding string
+	pathDecodes  mapPathDecodeStats
 }
 
 type mapVPKEntry struct {
@@ -67,16 +69,22 @@ type mapVPKBuildResult struct {
 }
 
 func buildMapVPKs(ctx context.Context, stagingRoot string, inputs []mapVPKInput, alreadyExpanded int64, taskName, sourceName string) (mapVPKBuildResult, error) {
+	return buildMapVPKsWithEncoding(ctx, stagingRoot, inputs, alreadyExpanded, taskName, sourceName, "auto")
+}
+
+func buildMapVPKsWithEncoding(ctx context.Context, stagingRoot string, inputs []mapVPKInput, alreadyExpanded int64, taskName, sourceName, pathEncoding string) (mapVPKBuildResult, error) {
 	if len(inputs) == 0 {
 		return mapVPKBuildResult{}, errors.New("map import did not contain a VPK")
 	}
 	winners := make(map[string]mapVPKEntry)
 	var virtualBytes int64
+	var pathDecodes mapPathDecodeStats
 	for _, input := range inputs {
-		source, err := openMapVPK(input.Path)
+		source, err := openMapVPKWithEncoding(input.Path, pathEncoding)
 		if err != nil {
 			return mapVPKBuildResult{}, fmt.Errorf("validate VPK %s: %w", input.SortKey, err)
 		}
+		pathDecodes.add(source.pathDecodes)
 		for index := range source.entries {
 			entry := source.entries[index]
 			entry.source = source
@@ -94,7 +102,7 @@ func buildMapVPKs(ctx context.Context, stagingRoot string, inputs []mapVPKInput,
 	}
 	sort.Strings(paths)
 	prepared := make([]mapPreparedEntry, 0, len(paths))
-	result := mapVPKBuildResult{}
+	result := mapVPKBuildResult{Warnings: mapPathDecodeWarnings(pathDecodes)}
 	var addonInfo []byte
 	for _, key := range paths {
 		entry := winners[key]
@@ -207,6 +215,14 @@ func buildMapVPKs(ctx context.Context, stagingRoot string, inputs []mapVPKInput,
 }
 
 func openMapVPK(path string) (*mapVPKSource, error) {
+	return openMapVPKWithEncoding(path, "auto")
+}
+
+func openMapVPKWithEncoding(path, pathEncoding string) (*mapVPKSource, error) {
+	pathEncoding, err := normalizeMapPathEncoding(pathEncoding)
+	if err != nil {
+		return nil, err
+	}
 	linkInfo, err := os.Lstat(path)
 	if err != nil || !linkInfo.Mode().IsRegular() || isReparseOrSymlink(linkInfo) {
 		return nil, errors.New("VPK input must be a regular no-follow file")
@@ -250,7 +266,8 @@ func openMapVPK(path string) (*mapVPKSource, error) {
 	if _, err := io.ReadFull(file, tree); err != nil {
 		return nil, errors.New("VPK directory tree is truncated")
 	}
-	source := &mapVPKSource{path: path, directory: filepath.Dir(path), dataStart: headerSize + int64(treeSize), fileDataSize: fileDataSize, chunkSizes: make(map[uint16]int64)}
+	source := &mapVPKSource{path: path, directory: filepath.Dir(path), dataStart: headerSize + int64(treeSize), fileDataSize: fileDataSize,
+		chunkSizes: make(map[uint16]int64), pathEncoding: pathEncoding}
 	base := filepath.Base(path)
 	if strings.HasSuffix(strings.ToLower(base), "_dir.vpk") {
 		source.chunkPrefix = base[:len(base)-len("_dir.vpk")]
@@ -270,7 +287,7 @@ func parseMapVPKTree(tree []byte, source *mapVPKSource) ([]mapVPKEntry, error) {
 	entries := make([]mapVPKEntry, 0)
 	seen := make(map[string]bool)
 	for {
-		extension, err := readVPKString(tree, &position)
+		extension, err := readMapVPKString(tree, &position, source)
 		if err != nil {
 			return nil, err
 		}
@@ -281,7 +298,7 @@ func parseMapVPKTree(tree []byte, source *mapVPKSource) ([]mapVPKEntry, error) {
 			return nil, errors.New("VPK contains an invalid extension")
 		}
 		for {
-			directory, err := readVPKString(tree, &position)
+			directory, err := readMapVPKString(tree, &position, source)
 			if err != nil {
 				return nil, err
 			}
@@ -295,7 +312,7 @@ func parseMapVPKTree(tree []byte, source *mapVPKSource) ([]mapVPKEntry, error) {
 				return nil, errors.New("VPK contains an unsafe virtual directory")
 			}
 			for {
-				filename, err := readVPKString(tree, &position)
+				filename, err := readMapVPKString(tree, &position, source)
 				if err != nil {
 					return nil, err
 				}
@@ -350,6 +367,28 @@ func parseMapVPKTree(tree []byte, source *mapVPKSource) ([]mapVPKEntry, error) {
 		return nil, err
 	}
 	return entries, nil
+}
+
+func readMapVPKString(tree []byte, position *int, source *mapVPKSource) (string, error) {
+	raw, err := readVPKStringBytes(tree, position)
+	if err != nil {
+		return "", err
+	}
+	strategy := source.pathEncoding
+	if strategy == "" {
+		strategy = "auto"
+	}
+	value, usedEncoding, err := decodeMapPathBytes(raw, strategy)
+	if err != nil {
+		return "", fmt.Errorf("VPK directory component cannot be decoded using %s: %w", strategy, err)
+	}
+	switch usedEncoding {
+	case "gbk":
+		source.pathDecodes.VPKGBK++
+	case "big5":
+		source.pathDecodes.VPKBig5++
+	}
+	return value, nil
 }
 
 func validateMapVPKEntryRange(source *mapVPKSource, entry mapVPKEntry) error {

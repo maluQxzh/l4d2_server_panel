@@ -215,19 +215,27 @@ func parseVPKTree(tree []byte, fileDataSize uint64) ([]vpkEntry, error) {
 }
 
 func readVPKString(tree []byte, position *int) (string, error) {
-	if *position >= len(tree) {
-		return "", errors.New("VPK directory tree is missing a terminator")
+	value, err := readVPKStringBytes(tree, position)
+	if err != nil {
+		return "", err
 	}
-	end := bytes.IndexByte(tree[*position:], 0)
-	if end < 0 || end > 4096 {
-		return "", errors.New("VPK directory component is unterminated or too long")
-	}
-	value := tree[*position : *position+end]
-	*position += end + 1
 	if !utf8.Valid(value) {
 		return "", errors.New("VPK directory component is not UTF-8")
 	}
 	return string(value), nil
+}
+
+func readVPKStringBytes(tree []byte, position *int) ([]byte, error) {
+	if *position >= len(tree) {
+		return nil, errors.New("VPK directory tree is missing a terminator")
+	}
+	end := bytes.IndexByte(tree[*position:], 0)
+	if end < 0 || end > 4096 {
+		return nil, errors.New("VPK directory component is unterminated or too long")
+	}
+	value := tree[*position : *position+end]
+	*position += end + 1
+	return value, nil
 }
 
 func validVPKLeaf(value string) bool {

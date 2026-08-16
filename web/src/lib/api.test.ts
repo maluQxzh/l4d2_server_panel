@@ -141,6 +141,26 @@ describe("API 客户端", () => {
     expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
   });
 
+  it("地图导入提交显式 ZIP 和 VPK 路径编码", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ job_id: "job-map" }), { status: 202, headers: { "Content-Type": "application/json" } }));
+
+    await api.importMap("节点/一", "https://qfile.qq.com/q/LegacyGBK", "gbk");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/v1/nodes/%E8%8A%82%E7%82%B9%2F%E4%B8%80/maps/imports");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({ share_url: "https://qfile.qq.com/q/LegacyGBK", path_encoding: "gbk" });
+    expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
+  });
+
+  it("地图导入未指定编码时默认提交自动模式", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ job_id: "job-map-auto" }), { status: 202, headers: { "Content-Type": "application/json" } }));
+
+    await api.importMap("node-1", "https://qfile.qq.com/q/AutoEncoding");
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ share_url: "https://qfile.qq.com/q/AutoEncoding", path_encoding: "auto" });
+  });
+
   it("智能插件压缩包通过实例端点识别并返回预览", async () => {
     const plan = {
       version: 1, archive_name: "plugins.7z", archive_sha256: "a".repeat(64), fingerprint: "b".repeat(64),

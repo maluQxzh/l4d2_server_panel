@@ -15,6 +15,7 @@ require (
 	golang.org/x/crypto v0.46.0
 	golang.org/x/image v0.44.0
 	golang.org/x/sys v0.46.0
+	golang.org/x/text v0.40.0
 	modernc.org/sqlite v1.55.0
 )
 
@@ -41,7 +42,6 @@ require (
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
-	golang.org/x/text v0.40.0 // indirect
 	modernc.org/libc v1.74.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

@@ -1696,7 +1696,7 @@ paths:
     post:
       tags: [Maps]
       summary: 从 QQ 闪传导入一张逻辑地图
-      description: 需要节点/全局 `maps.import`，或该节点内已绑定实例的 `maps.import`，以及 map_library_v1 Agent。分享链接加密进入任务且不回显；节点完整枚举后下载，递归处理最多三层 ZIP/7Z/RAR，最终只保留确定性服务端 VPK。
+      description: 需要节点/全局 `maps.import`，或该节点内已绑定实例的 `maps.import`，以及 map_library_v1 Agent。分享链接加密进入任务且不回显；节点完整枚举后下载，递归处理最多三层 ZIP/7Z/RAR，只展开 VPK、外部分卷和嵌套归档，最终保留确定性服务端 VPK。显式路径编码需要 map_import_v2；失败任务在有 jobs.details 权限时返回阶段、稳定错误码和修复建议。
       parameters:
         - { $ref: "#/components/parameters/NodeID" }
         - { $ref: "#/components/parameters/CSRF" }
@@ -1708,9 +1708,16 @@ paths:
             schema:
               type: object
               required: [share_url]
-              properties: { share_url: { type: string, format: uri, pattern: '^https://qfile\.qq\.com/q/' } }
+              properties:
+                share_url: { type: string, format: uri, pattern: '^https://qfile\.qq\.com/q/' }
+                path_encoding:
+                  type: string
+                  enum: [auto, utf8, gbk, big5]
+                  default: auto
+                  description: ZIP 与 VPK 内部路径编码。auto 优先 UTF-8，仅在无效时回退 GBK；显式值覆盖 ZIP 的编码标志。
       responses:
         "202": { description: 导入任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "409": { $ref: "#/components/responses/Conflict" }
 
   /maps/{mapId}/assignments/{instanceId}:
@@ -3080,6 +3087,17 @@ components:
         message: { type: string, maxLength: 1024 }
         virtual_path: { type: string, maxLength: 512 }
 
+    MapImportFailure:
+      type: object
+      required: [stage, code, summary, remediation, retryable]
+      properties:
+        stage: { type: string, enum: [preflight, staging, metadata, download, archive, vpk, publish] }
+        code: { type: string, maxLength: 64 }
+        summary: { type: string, maxLength: 256 }
+        remediation: { type: string, maxLength: 1024 }
+        retryable: { type: boolean }
+        source: { type: string, maxLength: 512, description: 已脱敏且截断的分享内相对来源名；不包含分享 URL 或节点绝对路径。 }
+
     MapReplica:
       type: object
       required: [filesystem_id, health]
@@ -3794,7 +3812,13 @@ components:
         progress: { type: integer, minimum: 0, maximum: 100 }
         message: { type: string }
         payload: { type: object, additionalProperties: true }
-        result: { type: object, additionalProperties: true, readOnly: true }
+        result:
+          type: object
+          additionalProperties: true
+          readOnly: true
+          description: 任务结果。地图导入失败时可包含 failure，结构见 MapImportFailure；仅向具有 jobs.details 权限的调用方返回。
+          properties:
+            failure: { $ref: "#/components/schemas/MapImportFailure" }
         idempotency_key: { type: string }
         requested_by: { type: string, format: uuid }
         requested_by_display_name:

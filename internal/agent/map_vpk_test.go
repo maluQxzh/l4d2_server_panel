@@ -138,6 +138,52 @@ func TestBuildMapVPKsPreservesWindowsUnsafeVirtualNames(t *testing.T) {
 	}
 }
 
+func TestBuildMapVPKsDecodesLegacyGBKPathComponents(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "legacy-gbk.vpk")
+	data := []byte("BSP payload with stringtable_dictionary.dct")
+	gbkName := string(append([]byte("campaign-"), 0xb8, 0xb1, 0xb1, 0xbe))
+	tree := minimalVPKTree("maps", gbkName, "bsp", data, 0xffff)
+	header := make([]byte, 12)
+	binary.LittleEndian.PutUint32(header[:4], vpkSignature)
+	binary.LittleEndian.PutUint32(header[4:8], 1)
+	binary.LittleEndian.PutUint32(header[8:12], uint32(len(tree)))
+	if err := os.WriteFile(input, append(append(header, tree...), data...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := validateVPK(input); err == nil || !strings.Contains(err.Error(), "not UTF-8") {
+		t.Fatalf("ordinary VPK validation accepted a legacy GBK path: %v", err)
+	}
+	result, err := buildMapVPKs(context.Background(), t.TempDir(), []mapVPKInput{{Path: input, SortKey: "legacy-gbk.vpk"}}, 0, "", "legacy-gbk.vpk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const decodedPath = "maps/campaign-副本.bsp"
+	if len(result.BSPs) != 1 || result.BSPs[0].VirtualPath != decodedPath {
+		t.Fatalf("legacy GBK BSP path was not decoded: %+v", result.BSPs)
+	}
+	if got := readMapVPKEntry(t, result.Outputs[0], decodedPath); !bytes.Equal(got, data) {
+		t.Fatalf("decoded VPK entry data = %q, want %q", got, data)
+	}
+	if !hasMapWarning(result.Warnings, "legacy_gbk_vpk_paths") {
+		t.Fatalf("legacy GBK conversion warning was not retained: %+v", result.Warnings)
+	}
+}
+
+func TestParseMapVPKTreeRejectsInvalidGBKAndDecodedCollisions(t *testing.T) {
+	invalid := testMapVPKTreeWithRawNames("maps", "bsp", [][]byte{{0x81}})
+	if _, err := parseMapVPKTree(invalid, &mapVPKSource{chunkSizes: make(map[uint16]int64)}); err == nil || !strings.Contains(err.Error(), "cannot be decoded") {
+		t.Fatalf("invalid GBK directory component was accepted: %v", err)
+	}
+
+	utf8Name := []byte("副本")
+	gbkName := []byte{0xb8, 0xb1, 0xb1, 0xbe}
+	collision := testMapVPKTreeWithRawNames("maps", "bsp", [][]byte{utf8Name, gbkName})
+	if _, err := parseMapVPKTree(collision, &mapVPKSource{chunkSizes: make(map[uint16]int64)}); err == nil || !strings.Contains(err.Error(), "duplicate path") {
+		t.Fatalf("UTF-8/GBK decoded path collision was accepted: %v", err)
+	}
+}
+
 func testUTF16LE(value string) []byte {
 	units := utf16.Encode([]rune(value))
 	result := make([]byte, 2+len(units)*2)
@@ -388,6 +434,22 @@ func testExternalMapVPKTree(directory, name, extension string, data []byte, arch
 	binary.LittleEndian.PutUint32(header[12:16], uint32(len(data)))
 	binary.LittleEndian.PutUint16(header[16:18], 0xffff)
 	tree = append(tree, header...)
+	return append(tree, 0, 0, 0)
+}
+
+func testMapVPKTreeWithRawNames(directory, extension string, names [][]byte) []byte {
+	tree := append([]byte(nil), extension...)
+	tree = append(tree, 0)
+	tree = append(tree, directory...)
+	tree = append(tree, 0)
+	for _, name := range names {
+		tree = append(tree, name...)
+		tree = append(tree, 0)
+		header := make([]byte, 18)
+		binary.LittleEndian.PutUint16(header[6:8], vpkEmbeddedArchive)
+		binary.LittleEndian.PutUint16(header[16:18], 0xffff)
+		tree = append(tree, header...)
+	}
 	return append(tree, 0, 0, 0)
 }
 

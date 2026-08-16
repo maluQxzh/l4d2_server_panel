@@ -356,6 +356,7 @@ type operationPayload struct {
 	SourcePath                 string                 `json:"source_path,omitempty"`
 	Source                     string                 `json:"source,omitempty"`
 	ShareURL                   string                 `json:"share_url,omitempty"`
+	PathEncoding               string                 `json:"path_encoding,omitempty"`
 	Kind                       string                 `json:"kind,omitempty"`
 	SourceID                   string                 `json:"source_id,omitempty"`
 	PackagePath                string                 `json:"package_path,omitempty"`

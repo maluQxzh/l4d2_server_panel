@@ -227,6 +227,7 @@ export interface InstanceRecord {
 }
 
 export type MapHealth = "healthy" | "degraded" | "broken" | "deleting";
+export type MapPathEncoding = "auto" | "utf8" | "gbk" | "big5";
 
 export interface MapArtifactRecord {
   id: string;
