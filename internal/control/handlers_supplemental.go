@@ -375,6 +375,25 @@ func packageNameFromSource(source string) string {
 
 func validatePackageUpload(payload map[string]any) error {
 	encoded := stringFromAny(payload["content_base64"])
+	transport := strings.ToLower(strings.TrimSpace(stringFromAny(payload["source_transport"])))
+	if transport != "" && transport != "qq_flash" {
+		return errors.New("unsupported package source transport")
+	}
+	if transport == "qq_flash" {
+		if encoded != "" {
+			return errors.New("QQ flash package transport cannot include uploaded content")
+		}
+		normalizedSource, err := normalizeQQFlashShareURL(stringFromAny(payload["source"]))
+		if err != nil {
+			return err
+		}
+		payload["source"] = normalizedSource
+		kind := strings.ToLower(strings.TrimSpace(stringFromAny(payload["kind"])))
+		if kind != "" && kind != "smart" && kind != "sourcemod" && kind != "metamod" && kind != "sourcemod_url" && kind != "metamod_url" {
+			return errors.New("QQ flash package transport is only supported for plugin packages")
+		}
+		return nil
+	}
 	if encoded == "" {
 		return nil
 	}

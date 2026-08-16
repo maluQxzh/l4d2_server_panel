@@ -883,6 +883,7 @@ function PackageDetailsModal({ open, item, instance, onClose, onEdit }: { open: 
 function InstallPackageModal({ open, instance, section, metamodInstalled, smartPackages, onClose }: { open: boolean; instance: InstanceRecord; section: PackageSection; metamodInstalled?: boolean; smartPackages: PackageRecord[]; onClose: () => void }) {
   const pluginSection = section === "plugins";
   const [kind, setKind] = useState(pluginSection ? "smart" : "workshop");
+  const [transport, setTransport] = useState<"default" | "qq_flash">("default");
   const [source, setSource] = useState("");
   const [upload, setUpload] = useState<{ name: string; size: number; contentBase64: string } | null>(null);
   const [risk, setRisk] = useState(false);
@@ -891,14 +892,15 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
   const toast = useToast();
   const client = useQueryClient();
   const official = kind === "sourcemod" || kind === "metamod";
-  const qqFlash = kind === "qq_flash";
+  const qqFlashVPK = kind === "qq_flash";
+  const qqFlashPlugin = pluginSection && transport === "qq_flash";
   const smart = kind === "smart";
-  const riskRequired = ["native", "sourcemod_url", "metamod_url"].includes(kind);
+  const riskRequired = ["native", "sourcemod_url", "metamod_url"].includes(kind) || (qqFlashPlugin && ["sourcemod", "metamod"].includes(kind));
   const smartNativeRisk = smartPlan?.folders.some((folder) => smartChoices[folder.id]?.selected && folder.native_risk) || false;
   const showRisk = riskRequired || smartNativeRisk;
   const needsRisk = riskRequired || smartNativeRisk;
   const sourceModBlocked = (kind === "sourcemod" || kind === "sourcemod_url") && metamodInstalled === false;
-  const canUpload = !official && kind !== "workshop" && !qqFlash;
+  const canUpload = !official && kind !== "workshop" && !qqFlashVPK && !qqFlashPlugin;
   const hasSource = Boolean(source.trim() || upload);
   const accept = kind === "vpk_url" ? ".vpk" : smart ? ".zip,.7z,.rar" : kind === "native" ? ".dll,.so" : ".zip,.tar,.gz,.bz2,.xz";
   const clearSmartPlan = () => {
@@ -924,6 +926,7 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
   const resetAndClose = () => {
     setSource("");
     setUpload(null);
+    setTransport("default");
     setRisk(false);
     setSmartPlan(null);
     setSmartChoices({});
@@ -931,6 +934,10 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
   };
   const inspection = useMutation({
     mutationFn: () => {
+      if (qqFlashPlugin) {
+        if (!source.trim()) throw new ApiError("请先填写 QQ 闪传分享链接", 400, "archive_required");
+        return api.inspectPluginArchive(instance.id, { source: source.trim(), source_transport: "qq_flash" });
+      }
       if (!upload) throw new ApiError("请先选择 ZIP、7Z 或 RAR 压缩包", 400, "archive_required");
       return api.inspectPluginArchive(instance.id, { name: upload.name, content_base64: upload.contentBase64 });
     },
@@ -961,11 +968,12 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
     });
   });
   const install = useMutation({
-    mutationFn: (liveAcknowledged: boolean) => qqFlash
+    mutationFn: (liveAcknowledged: boolean) => qqFlashVPK
       ? api.importQQFlashFile(instance.id, source)
       : api.instanceAction(instance.id, "install_package", {
         kind,
         source: source.trim() || undefined,
+        source_transport: qqFlashPlugin ? "qq_flash" : undefined,
         name: upload?.name,
         content_base64: upload?.contentBase64,
         acknowledge_native_risk: risk,
@@ -980,7 +988,7 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
         acknowledge_restart_required: liveAcknowledged,
       }),
     onSuccess: () => {
-      toast.push(qqFlash ? "QQ闪传 VPK 导入任务已提交" : `${pluginSection ? "插件" : "模组"}安装任务已提交`);
+      toast.push(qqFlashVPK ? "QQ闪传 VPK 导入任务已提交" : `${pluginSection ? "插件" : "模组"}安装任务已提交`);
       void client.invalidateQueries({ queryKey: ["jobs"] });
       void client.invalidateQueries({ queryKey: ["instances", instance.id, "packages"] });
       resetAndClose();
@@ -996,17 +1004,24 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
     }
     install.mutate(false);
   };
-  const primaryDisabled = sourceModBlocked || (smart ? !upload || !smartPlan || !smartReady : (!official && !hasSource)) || (needsRisk && !risk);
-  return <Modal open={open} onClose={resetAndClose} title={pluginSection ? "安装插件或服务端组件" : "安装模组"} description={smart ? "上传 ZIP、7Z 或 RAR；目标 Agent 会先识别每个插件文件夹和目标路径，确认预览后再整批安装。" : qqFlash ? "供玩家通过 QQ闪传提交 VPK；节点暂存并检查完整分享，安全解压后再安装，不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose}>取消</Button>{smart && !smartPlan ? <Button onClick={() => inspection.mutate()} loading={inspection.isPending} disabled={!upload}><Search size={16} />开始识别</Button> : <Button onClick={submitInstall} loading={install.isPending} disabled={primaryDisabled}>{qqFlash ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlash ? "导入 VPK" : smart ? `安装 ${selectedSmartFolders.length} 个插件` : "提交安装"}</Button>}</>}>
+  const smartSourceReady = qqFlashPlugin ? Boolean(source.trim()) : Boolean(upload);
+  const ordinarySourceReady = official ? (!qqFlashPlugin || Boolean(source.trim())) : hasSource;
+  const primaryDisabled = sourceModBlocked || (smart ? !smartSourceReady || !smartPlan || !smartReady : !ordinarySourceReady) || (needsRisk && !risk);
+  const defaultTransportLabel = smart ? "本机上传" : official ? "官方下载" : "HTTPS / 本机上传";
+  return <Modal open={open} onClose={resetAndClose} title={pluginSection ? "安装插件或服务端组件" : "安装模组"} description={smart ? `${qqFlashPlugin ? "通过 QQ 闪传获取" : "上传"} ZIP、7Z 或 RAR；目标 Agent 会先识别每个插件文件夹和目标路径，确认预览后再整批安装。` : (qqFlashVPK || qqFlashPlugin) ? "节点直接从 QQ 闪传暂存并检查完整分享，文件正文不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose}>取消</Button>{smart && !smartPlan ? <Button onClick={() => inspection.mutate()} loading={inspection.isPending} disabled={!smartSourceReady}><Search size={16} />开始识别</Button> : <Button onClick={submitInstall} loading={install.isPending} disabled={primaryDisabled}>{qqFlashVPK || qqFlashPlugin ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlashVPK ? "导入 VPK" : smart ? `安装 ${selectedSmartFolders.length} 个插件` : "提交安装"}</Button>}</>}>
     <div className="form-stack">
-      <Field label="类型"><select value={kind} onChange={(event) => { setKind(event.target.value); setSource(""); setUpload(null); clearSmartPlan(); }}>{pluginSection ? <><option value="smart">智能识别</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option></> : <><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="qq_flash">QQ闪传（玩家上传 VPK）</option></>}</select></Field>
+      <Field label="类型"><select value={kind} onChange={(event) => { setKind(event.target.value); setTransport("default"); setSource(""); setUpload(null); clearSmartPlan(); }}>{pluginSection ? <><option value="smart">智能识别</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option></> : <><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="qq_flash">QQ闪传（玩家上传 VPK）</option></>}</select></Field>
+      {pluginSection && <Field label="传输方式"><select value={transport} onChange={(event) => { setTransport(event.target.value as "default" | "qq_flash"); setSource(""); setUpload(null); clearSmartPlan(); }}><option value="default">{defaultTransportLabel}</option><option value="qq_flash">QQ 闪传</option></select></Field>}
       {sourceModBlocked && <div className="form-note"><ShieldAlert size={18} /><span><strong>请先安装 Metamod:Source</strong><small>SourceMod 依赖 Metamod；Metamod 安装并验证成功后才能提交 SourceMod 安装。</small></span></div>}
-      {qqFlash ? <>
+      {qqFlashVPK ? <>
         <Field label="固定目标目录"><input value="left4dead2/addons" readOnly /></Field>
         <Field label="QQ闪传分享链接" hint="可直接粘贴 QQ 分享文本；支持直接 VPK，以及最多嵌套 3 层的 ZIP、7Z、RAR 压缩包。"><textarea rows={4} value={source} onChange={(event) => setSource(event.target.value)} placeholder="链接：https://qfile.qq.com/q/Example123" spellCheck={false} /></Field>
         <div className="form-note"><CloudDownload size={18} /><span><strong>仅接收经过校验的 VPK</strong><small>节点会先完整暂存分享，限制下载与解压总量，拒绝加密包、危险路径和任何非 VPK 文件。成功后每个 VPK 会单独出现在本页，可启停和删除。</small></span></div>
       </> : <>
-        {official ? <div className="form-note"><ShieldCheck size={18} /><span><strong>自动解析官方稳定版</strong><small>Agent 只接受 AlliedModders 官方白名单地址，并按节点系统选择压缩包。</small></span></div> : !smart && <Field label={kind === "workshop" ? "项目或合集 ID" : "HTTPS 来源"} hint={canUpload ? "填写 URL，或在下方从本机选择一个文件" : undefined}><input value={source} onChange={(event) => { setSource(event.target.value); setUpload(null); clearSmartPlan(); }} placeholder={kind === "workshop" ? "例如：123456789" : "https://example.org/plugin.zip"} /></Field>}
+        {qqFlashPlugin ? <>
+          <Field label="QQ 闪传分享链接" hint="分享中必须只有一个实际包文件；智能识别支持 ZIP、7Z、RAR，组件整包会继续按所选类型校验。"><textarea rows={4} value={source} onChange={(event) => { setSource(event.target.value); clearSmartPlan(); }} placeholder="链接：https://qfile.qq.com/q/Example123" spellCheck={false} /></Field>
+          <div className="form-note"><CloudDownload size={18} /><span><strong>节点直连下载</strong><small>最多下载 2 GiB，并保留至少 1 GiB 可用空间；下载后的包仍经过现有路径、归档和安装校验。</small></span></div>
+        </> : official ? <div className="form-note"><ShieldCheck size={18} /><span><strong>自动解析官方稳定版</strong><small>Agent 只接受 AlliedModders 官方白名单地址，并按节点系统选择压缩包。</small></span></div> : !smart && <Field label={kind === "workshop" ? "项目或合集 ID" : "HTTPS 来源"} hint={canUpload ? "填写 URL，或在下方从本机选择一个文件" : undefined}><input value={source} onChange={(event) => { setSource(event.target.value); setUpload(null); clearSmartPlan(); }} placeholder={kind === "workshop" ? "例如：123456789" : "https://example.org/plugin.zip"} /></Field>}
         {canUpload && <Field label={smart ? "插件压缩包" : "从本机上传"} hint={smart ? "支持 ZIP、7Z、RAR；单个文件上限 100 MiB。可包含多个顶层插件文件夹" : "单个文件上限 100 MiB；载荷会加密保存，并只发送给目标节点"}><input type="file" accept={accept} onChange={(event) => { void chooseUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} /></Field>}
         {upload && <div className="binary-file-note"><Upload size={20} /><div><strong>{upload.name}</strong><span>{bytes(upload.size)} · 已准备安全上传</span></div><Button variant="secondary" onClick={() => { setUpload(null); clearSmartPlan(); }}>移除</Button></div>}
         {smartPlan && <div className="smart-plugin-plan">

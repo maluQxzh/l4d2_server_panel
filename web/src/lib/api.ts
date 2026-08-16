@@ -301,7 +301,7 @@ export const api = {
     `/instances/${encodeURIComponent(id)}/actions`,
     { method: "POST", body: JSON.stringify({ type, payload }) },
   ),
-  inspectPluginArchive: async (instanceId: string, payload: { name: string; content_base64: string }): Promise<SmartPluginPlan> => {
+  inspectPluginArchive: async (instanceId: string, payload: { name?: string; content_base64?: string; source?: string; source_transport?: "qq_flash" }): Promise<SmartPluginPlan> => {
     const encodedID = encodeURIComponent(instanceId);
     const created = await request<{ job_id: string }>(`/instances/${encodedID}/plugin-archives/inspections`, {
       method: "POST",

@@ -59,8 +59,8 @@ type qqFlashListedFile struct {
 }
 
 // listAllFiles validates the complete share before any bytes are downloaded.
-// Map imports use it to reserve disk space and to ensure a late page cannot
-// turn a previously acceptable share into an oversized partial import.
+// Importers use it to reserve disk space and to ensure a late page cannot turn
+// a previously acceptable share into an oversized partial import.
 func (c *qqFlashClient) listAllFiles(ctx context.Context, shareURL string, maxFiles int, maxBytes int64) ([]qqFlashListedFile, string, string, int, error) {
 	if err := validateQQFlashShareURL(shareURL); err != nil {
 		return nil, "", "", 0, err
@@ -110,7 +110,7 @@ func (c *qqFlashClient) listAllFiles(ctx context.Context, shareURL string, maxFi
 				}
 				totalBytes += file.Size
 				if file.Size < 0 || totalBytes < 0 || totalBytes > maxBytes {
-					return nil, "", "", 0, errors.New("QQ flash share exceeds the map download limit")
+					return nil, "", "", 0, errors.New("QQ flash share exceeds the configured download limit")
 				}
 				key := strings.ToLower(child)
 				if _, duplicate := seenTargets[key]; duplicate {

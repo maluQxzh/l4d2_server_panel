@@ -12,13 +12,18 @@ import (
 
 func (s *Server) handleCreatePluginArchiveInspection(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Name          string `json:"name"`
-		ContentBase64 string `json:"content_base64"`
+		Name            string `json:"name"`
+		ContentBase64   string `json:"content_base64"`
+		Source          string `json:"source"`
+		SourceTransport string `json:"source_transport"`
 	}
 	if !decodeJSONWithLimit(w, r, &request, protocol.MaxPackageUploadEnvelopeBytes) {
 		return
 	}
-	payload := map[string]any{"name": strings.TrimSpace(request.Name), "content_base64": request.ContentBase64}
+	payload := map[string]any{
+		"name": strings.TrimSpace(request.Name), "content_base64": request.ContentBase64,
+		"source": strings.TrimSpace(request.Source), "source_transport": strings.TrimSpace(request.SourceTransport),
+	}
 	if err := validatePackageUpload(payload); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_plugin_archive", err.Error())
 		return
@@ -37,6 +42,10 @@ func (s *Server) handleCreatePluginArchiveInspection(w http.ResponseWriter, r *h
 	payload["registered_paths"] = managedPaths
 	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "smart_plugin_archive_v1") {
 		writeError(w, http.StatusConflict, "agent_upgrade_required", "target Agent does not support smart plugin archive inspection")
+		return
+	}
+	if strings.EqualFold(request.SourceTransport, "qq_flash") && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "qq_flash_plugin_packages_v1") {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "target Agent does not support QQ flash plugin packages")
 		return
 	}
 	principal := principalFromContext(r.Context())
@@ -85,8 +94,8 @@ func validateSmartPluginInstallPayload(instance domain.Instance, payload map[str
 	if !strings.EqualFold(stringFromAny(payload["kind"]), "smart") {
 		return nil
 	}
-	if stringFromAny(payload["source"]) != "" {
-		return errors.New("smart plugin installation accepts local archives only")
+	if stringFromAny(payload["source"]) != "" && !strings.EqualFold(stringFromAny(payload["source_transport"]), "qq_flash") {
+		return errors.New("smart plugin installation accepts local uploads or QQ flash archives only")
 	}
 	fingerprint := strings.ToLower(strings.TrimSpace(stringFromAny(payload["inspection_fingerprint"])))
 	if len(fingerprint) != 64 || strings.Trim(fingerprint, "0123456789abcdef") != "" {

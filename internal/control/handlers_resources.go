@@ -733,12 +733,20 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_package_upload", uploadErr.Error())
 			return
 		}
+		if strings.EqualFold(stringFromAny(request.Payload["source_transport"]), "qq_flash") && strings.TrimSpace(stringFromAny(request.Payload["kind"])) == "" {
+			writeError(w, http.StatusBadRequest, "invalid_package_upload", "QQ flash package transport requires a plugin package kind")
+			return
+		}
 		if smartErr := validateSmartPluginInstallPayload(instance, request.Payload); smartErr != nil {
 			writeError(w, http.StatusBadRequest, "invalid_smart_plugin_install", smartErr.Error())
 			return
 		}
 		if strings.EqualFold(stringFromAny(request.Payload["kind"]), "smart") && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "smart_plugin_archive_v1") {
 			writeError(w, http.StatusConflict, "agent_upgrade_required", "target Agent does not support smart plugin archives")
+			return
+		}
+		if strings.EqualFold(stringFromAny(request.Payload["source_transport"]), "qq_flash") && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "qq_flash_plugin_packages_v1") {
+			writeError(w, http.StatusConflict, "agent_upgrade_required", "target Agent does not support QQ flash plugin packages")
 			return
 		}
 		if strings.EqualFold(stringFromAny(request.Payload["kind"]), "smart") {

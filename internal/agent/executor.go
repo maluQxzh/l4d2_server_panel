@@ -363,6 +363,7 @@ type operationPayload struct {
 	Archive                    string                 `json:"archive,omitempty"`
 	SourcePath                 string                 `json:"source_path,omitempty"`
 	Source                     string                 `json:"source,omitempty"`
+	SourceTransport            string                 `json:"source_transport,omitempty"`
 	ShareURL                   string                 `json:"share_url,omitempty"`
 	PathEncoding               string                 `json:"path_encoding,omitempty"`
 	Kind                       string                 `json:"kind,omitempty"`
@@ -1827,6 +1828,13 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 	}
 	kind := strings.ToLower(strings.TrimSpace(payload.Kind))
 	componentKind := strings.TrimSuffix(kind, "_url")
+	qqFlashTransport := strings.EqualFold(strings.TrimSpace(payload.SourceTransport), "qq_flash")
+	if payload.SourceTransport != "" && !qqFlashTransport {
+		return nil, errors.New("unsupported package source transport")
+	}
+	if qqFlashTransport && kind != "smart" && kind != "sourcemod" && kind != "metamod" && kind != "sourcemod_url" && kind != "metamod_url" {
+		return nil, errors.New("QQ flash package transport is only supported for plugin packages")
+	}
 	if componentKind == "sourcemod" {
 		if err := requireMetamodInstalled(instancePath); err != nil {
 			return nil, err
@@ -1836,6 +1844,9 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 	uploadedContent := strings.TrimSpace(payload.ContentBase64)
 	if uploadedContent != "" && source != "" {
 		return nil, errors.New("provide either an uploaded package or a package source, not both")
+	}
+	if qqFlashTransport && (source == "" || uploadedContent != "") {
+		return nil, errors.New("QQ flash package transport requires one share link and no uploaded content")
 	}
 	if kind == "workshop" || kind == "workshop_item" {
 		if uploadedContent != "" {
@@ -1852,7 +1863,7 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 	var officialFallbackURLs []string
 	officialExpectedSHA256 := ""
 	officialExpectedSize := int64(0)
-	if source == "" && uploadedContent == "" {
+	if source == "" && uploadedContent == "" && !qqFlashTransport {
 		if kind != "sourcemod" && kind != "metamod" {
 			return nil, errors.New("package source is required")
 		}
@@ -1890,7 +1901,15 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 	localSource := source
 	downloadedHash := ""
 	downloadedSize := int64(0)
-	if uploadedContent != "" {
+	if qqFlashTransport {
+		var cleanup func()
+		localSource, payload.Name, downloadedHash, downloadedSize, cleanup, err = e.stageQQFlashPluginPackage(ctx, job.ID, source, progress)
+		if err != nil {
+			return nil, err
+		}
+		defer cleanup()
+		source = payload.Name
+	} else if uploadedContent != "" {
 		if payload.Name == "" || filepath.Base(payload.Name) != payload.Name || strings.ContainsAny(payload.Name, "\x00/\\") {
 			return nil, errors.New("uploaded package name is invalid")
 		}
@@ -1957,8 +1976,8 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 		}
 	}
 	if kind == "smart" {
-		if uploadedContent == "" {
-			return nil, errors.New("smart plugin installation requires a local archive upload")
+		if uploadedContent == "" && !qqFlashTransport {
+			return nil, errors.New("smart plugin installation requires a local upload or QQ flash archive")
 		}
 		return e.installSmartPluginArchive(ctx, job, payload, localSource, downloadedHash, instancePath, progress)
 	}

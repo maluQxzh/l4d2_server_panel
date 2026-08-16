@@ -49,6 +49,15 @@ func TestValidatePackageUpload(t *testing.T) {
 	if err := validatePackageUpload(valid); err != nil {
 		t.Fatal(err)
 	}
+	qqPayload := map[string]any{
+		"kind": "smart", "source": "QQ 分享：https://qfile.qq.com/q/Example123", "source_transport": "qq_flash",
+	}
+	if err := validatePackageUpload(qqPayload); err != nil {
+		t.Fatalf("valid QQ flash plugin source was rejected: %v", err)
+	}
+	if qqPayload["source"] != "https://qfile.qq.com/q/Example123" {
+		t.Fatalf("QQ flash plugin source was not normalized: %#v", qqPayload["source"])
+	}
 	previouslyTooLarge := make([]byte, 8<<20+1)
 	if err := validatePackageUpload(map[string]any{
 		"name": "large-package.zip", "content_base64": base64.StdEncoding.EncodeToString(previouslyTooLarge),
@@ -59,10 +68,28 @@ func TestValidatePackageUpload(t *testing.T) {
 		{"name": "../plugin.smx", "content_base64": "YQ=="},
 		{"name": "plugin.smx", "source": "https://example.test/p.smx", "content_base64": "YQ=="},
 		{"name": "plugin.smx", "content_base64": "not-base64"},
+		{"kind": "workshop", "source": "https://qfile.qq.com/q/Example123", "source_transport": "qq_flash"},
+		{"kind": "smart", "source_transport": "qq_flash"},
+		{"kind": "smart", "source": "https://qfile.qq.com/q/Example123", "source_transport": "ftp"},
+		{"kind": "smart", "source": "https://qfile.qq.com/q/Example123", "source_transport": "qq_flash", "content_base64": "YQ=="},
 	} {
 		if err := validatePackageUpload(payload); err == nil {
 			t.Fatalf("unsafe upload was accepted: %#v", payload)
 		}
+	}
+}
+
+func TestValidateSmartPluginInstallAllowsQQFlashArchive(t *testing.T) {
+	payload := map[string]any{
+		"kind": "smart", "source": "https://qfile.qq.com/q/Example123", "source_transport": "qq_flash",
+		"inspection_fingerprint": strings.Repeat("a", 64), "smart_packages": []any{map[string]any{"folder_id": "plugin"}},
+	}
+	if err := validateSmartPluginInstallPayload(domain.Instance{Status: domain.InstanceStopped}, payload); err != nil {
+		t.Fatalf("QQ flash smart plugin install was rejected: %v", err)
+	}
+	payload["source_transport"] = ""
+	if err := validateSmartPluginInstallPayload(domain.Instance{Status: domain.InstanceStopped}, payload); err == nil {
+		t.Fatal("ordinary remote smart plugin source was accepted")
 	}
 }
 

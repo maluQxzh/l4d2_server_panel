@@ -132,7 +132,17 @@ func (e *Executor) inspectSmartPluginArchive(ctx context.Context, job domain.Job
 	if err != nil {
 		return nil, err
 	}
-	archivePath, archiveSHA, cleanup, err := e.stageSmartPluginUpload(job.ID, payload.Name, payload.ContentBase64)
+	var archivePath, archiveSHA string
+	var cleanup func()
+	if strings.EqualFold(strings.TrimSpace(payload.SourceTransport), "qq_flash") {
+		var archiveName string
+		archivePath, archiveName, archiveSHA, _, cleanup, err = e.stageQQFlashPluginPackage(ctx, job.ID, payload.Source, progress)
+		payload.Name = archiveName
+	} else if payload.SourceTransport != "" {
+		return nil, errors.New("unsupported plugin archive source transport")
+	} else {
+		archivePath, archiveSHA, cleanup, err = e.stageSmartPluginUpload(job.ID, payload.Name, payload.ContentBase64)
+	}
 	if err != nil {
 		return nil, err
 	}

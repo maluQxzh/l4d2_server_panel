@@ -710,6 +710,18 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
   await page.getByRole("button", { name: "提交安装" }).click();
   await expect.poll(() => actions.some((item) => item.type === "install_package" && item.payload?.kind === "metamod")).toBeTruthy();
 
+  await page.getByRole("button", { name: "安装插件" }).click();
+  for (const pluginKind of ["smart", "sourcemod", "metamod", "sourcemod_url", "metamod_url"]) {
+    await page.getByLabel("类型").selectOption(pluginKind);
+    await expect(page.getByLabel("传输方式").locator('option[value="qq_flash"]')).toHaveText("QQ 闪传");
+  }
+  await page.getByLabel("类型").selectOption("metamod_url");
+  await page.getByLabel("传输方式").selectOption("qq_flash");
+  await page.getByLabel("QQ 闪传分享链接").fill("QQ 分享：https://qfile.qq.com/q/PluginPackage1");
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "提交安装" }).click();
+  await expect.poll(() => actions.some((item) => item.type === "install_package" && item.payload?.kind === "metamod_url" && item.payload?.source_transport === "qq_flash")).toBeTruthy();
+
   await page.getByRole("button", { name: "文件", exact: true }).click();
   await expect(page.getByRole("button", { name: "cfg", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "addons", exact: true })).toHaveCount(0);
