@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -80,8 +79,8 @@ func (s *Store) QueueBackupUploadAbortWithFingerprint(ctx context.Context, insta
 	}
 
 	// A canceled-but-unacknowledged job remains Agent-owned. A succeeded chunk
-	// at received_size is also still capable of changing the public session when
-	// its result projection is replayed. Neither may race staging deletion.
+	// with a durable projection barrier is still capable of changing the public
+	// session when its result is replayed. Neither may race staging deletion.
 	var conflicting bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
 		SELECT 1 FROM jobs j
@@ -90,13 +89,10 @@ func (s *Store) QueueBackupUploadAbortWithFingerprint(ctx context.Context, insta
 		  AND (
 			j.status IN ('queued','dispatched','running')
 			OR (j.status='canceled' AND json_extract(j.result,'$.cancel_pending')=1)
-			OR (j.type='backup.upload.chunk' AND j.status IN ('succeeded','failed','canceled')
-				AND json_type(j.payload,'$.content_base64_ciphertext') IS NOT NULL)
 			OR (j.type='backup.upload.chunk' AND j.status='succeeded'
-				AND j.id IS NOT NULLIF(?3,'')
-				AND json_extract(j.payload,'$.offset')=?4)
+				AND json_extract(j.result,'$._projection_pending')=1)
 		  )
-	)`, instanceID, uploadID, upload.LastChunkJobID, fmt.Sprint(upload.ReceivedSize)).Scan(&conflicting); err != nil {
+	)`, instanceID, uploadID).Scan(&conflicting); err != nil {
 		return domain.Job{}, false, err
 	}
 	if conflicting {

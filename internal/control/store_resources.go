@@ -304,12 +304,13 @@ func (s *Store) Housekeeping(ctx context.Context) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET
-		payload=json_remove(payload,'$.command_ciphertext','$.source_ciphertext','$.content_ciphertext','$.content_base64_ciphertext','$.archive_ciphertext','$.keyword_ciphertext','$.existing_rcon_password_ciphertext'),
+		payload=json_remove(payload,'$.command_ciphertext','$.source_ciphertext','$.content_ciphertext','$.content_base64_ciphertext','$.share_url_ciphertext','$.archive_ciphertext','$.keyword_ciphertext','$.existing_rcon_password_ciphertext'),
 		result=json_remove(result,'$.response_ciphertext','$.content_base64_ciphertext','$.entries_ciphertext')
 		WHERE status IN ('succeeded','failed','canceled') AND finished_at<?1
 		AND COALESCE(json_extract(result,'$._projection_pending'),0)<>1
 		AND (json_type(payload,'$.command_ciphertext') IS NOT NULL OR json_type(payload,'$.source_ciphertext') IS NOT NULL
 			OR json_type(payload,'$.content_ciphertext') IS NOT NULL OR json_type(payload,'$.content_base64_ciphertext') IS NOT NULL
+			OR json_type(payload,'$.share_url_ciphertext') IS NOT NULL
 			OR json_type(payload,'$.archive_ciphertext') IS NOT NULL OR json_type(payload,'$.keyword_ciphertext') IS NOT NULL
 			OR json_type(payload,'$.existing_rcon_password_ciphertext') IS NOT NULL OR json_type(result,'$.response_ciphertext') IS NOT NULL
 			OR json_type(result,'$.content_base64_ciphertext') IS NOT NULL OR json_type(result,'$.entries_ciphertext') IS NOT NULL)`, dayAgo); err != nil {

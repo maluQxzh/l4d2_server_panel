@@ -219,19 +219,21 @@ func (h *AgentHub) Serve(node domain.Node, remoteAddress string, w http.Response
 				continue
 			}
 			h.log.Warn("agent message failed", "node_id", node.ID, "type", envelope.Type, "job_id", envelope.JobID, "error", err)
-			if agentMessageFailureClosesConnection(envelope.Type, err) {
-				// A terminal result is replayed from the Agent journal after the
-				// connection is re-established. Closing here turns projection or
-				// event persistence failures into an automatic durable retry.
+			if agentMessageFailureClosesConnection(envelope.Type, err,
+				h.Supports(node.ID, protocol.CapabilitySameSessionTerminalRetryV1)) {
 				return
 			}
 		}
 	}
 }
 
-func agentMessageFailureClosesConnection(messageType string, err error) bool {
+func agentMessageFailureClosesConnection(messageType string, err error, sameSessionRetry bool) bool {
+	var fatal *agentSessionFatalError
+	if errors.As(err, &fatal) {
+		return true
+	}
 	var retryable *retryableAgentMessageError
-	return messageType == protocol.TypeJobUpdate && errors.As(err, &retryable)
+	return messageType == protocol.TypeJobUpdate && !sameSessionRetry && errors.As(err, &retryable)
 }
 
 // retryableAgentMessageError marks failures after which reconnecting and
@@ -251,6 +253,23 @@ func retryableAgentMessage(err error) error {
 		return nil
 	}
 	return &retryableAgentMessageError{err: err}
+}
+
+// agentSessionFatalError marks a failed WebSocket write. Unlike a persistence
+// failure, this connection cannot carry a later journal replay and must be
+// replaced even when the Agent supports same-session retry.
+type agentSessionFatalError struct {
+	err error
+}
+
+func (e *agentSessionFatalError) Error() string { return e.err.Error() }
+func (e *agentSessionFatalError) Unwrap() error { return e.err }
+
+func agentSessionFatal(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &agentSessionFatalError{err: err}
 }
 
 func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelope protocol.Envelope) error {
@@ -519,7 +538,7 @@ func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelop
 		}
 		if isTerminalJobStatus(updated.Status) {
 			if err := h.sendJobAcknowledgement(node.ID, updated.ID); err != nil {
-				return retryableAgentMessage(err)
+				return agentSessionFatal(err)
 			}
 			// A completed automatic maintenance update releases the node-level
 			// dispatch gate. Re-scan after the ACK so the next durable intent does

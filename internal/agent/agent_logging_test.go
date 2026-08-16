@@ -45,13 +45,16 @@ func TestRunLogsConnectionLifecycleWithoutSecrets(t *testing.T) {
 			return
 		}
 		supportsTerminalConflicts := false
+		supportsSameSessionRetry := false
 		for _, capability := range details.Capabilities {
 			if capability == protocol.CapabilityTerminalConflictV1 {
 				supportsTerminalConflicts = true
-				break
+			}
+			if capability == protocol.CapabilitySameSessionTerminalRetryV1 {
+				supportsSameSessionRetry = true
 			}
 		}
-		if !supportsTerminalConflicts {
+		if !supportsTerminalConflicts || !supportsSameSessionRetry {
 			return
 		}
 		connectedOnce.Do(func() { close(connected) })

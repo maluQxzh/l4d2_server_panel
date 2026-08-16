@@ -34,7 +34,10 @@ const (
 	TypeInventory   = "inventory"
 )
 
-const CapabilityTerminalConflictV1 = "terminal_conflict_v1"
+const (
+	CapabilitySameSessionTerminalRetryV1 = "same_session_terminal_retry_v1"
+	CapabilityTerminalConflictV1         = "terminal_conflict_v1"
+)
 
 const MaxJobUpdateMessageBytes = 2 << 10
 

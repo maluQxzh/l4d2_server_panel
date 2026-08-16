@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
 	"github.com/l4d2-panel/l4d2panel/internal/protocol"
@@ -41,15 +42,69 @@ func settledTerminalJob(job domain.Job) bool {
 	return !pending
 }
 
-func requiresDeferredJobProjection(jobType string, status domain.JobStatus) bool {
-	// Archive inspection only returns diagnostics to its caller. Its encrypted
-	// upload can approach the wire limit, so marking the terminal row for a
-	// no-op projection would force SQLite to rewrite the same very large jobs
-	// record a second time merely to remove the marker.
-	if jobType == "inspect_plugin_archive" {
-		return false
+func requiresDeferredJobProjection(jobType string, payload map[string]any, status domain.JobStatus) bool {
+	switch status {
+	case domain.JobSucceeded:
+		if strings.HasPrefix(jobType, "map.") {
+			switch jobType {
+			case "map.import.qq_flash", "map.assign", "map.unassign", "map.verify", "map.inventory", "map.delete":
+				return true
+			}
+		}
+		switch jobType {
+		case "environment.inspect", "steamcmd.configure", "steamcmd.install", "steamcmd.repair", "steamcmd.clear",
+			"configure", "game.install", "game.import", "game.validate", "game.update", "game.delete",
+			"start", "restart", "stop", "install", "import", "update", "validate", "a2s.info", "check_update",
+			"backup.upload.chunk", "backup.upload.abort", "backup", "plugin.backup", "backup.delete", "install_mod", "scan_packages",
+			"rollback_package", "toggle_package", "delete_package", "ban_player", "unban_player", "delete", "detach",
+			"purge_quarantine":
+			return true
+		case "file":
+			return strings.EqualFold(stringFromAny(payload["operation"]), "smart_plugin_edit")
+		case "qq_flash_import":
+			return stringFromAny(payload["mode"]) == "managed_vpk_v2"
+		}
+	case domain.JobFailed:
+		switch jobType {
+		case "configure", "start", "stop", "restart", "install", "import", "update", "validate",
+			"game.install", "game.import", "game.validate", "game.update", "game.delete",
+			"steamcmd.configure", "steamcmd.install", "steamcmd.repair", "steamcmd.clear", "environment.inspect",
+			"purge_quarantine", "map.delete", "map.verify", "map.inventory":
+			return true
+		}
 	}
-	return jobType != "restore" && (status == domain.JobSucceeded || status == domain.JobFailed)
+	return false
+}
+
+var terminalPayloadSecretFields = [][2]string{
+	{"command_ciphertext", "command"},
+	{"existing_rcon_password_ciphertext", "existing_rcon_password"},
+	{"source_ciphertext", "source"},
+	{"content_ciphertext", "content"},
+	{"content_base64_ciphertext", "content_base64"},
+	{"share_url_ciphertext", "share_url"},
+	{"archive_ciphertext", "archive"},
+	{"keyword_ciphertext", "keyword"},
+}
+
+// scrubTerminalJobPayload removes every one-shot secret needed only while a
+// task can still be dispatched. It deliberately keeps non-secret routing and
+// projection metadata. Doing this in Go avoids SQLite's JSON functions
+// materializing a near-limit payload in a small container /tmp filesystem.
+func scrubTerminalJobPayload(payload map[string]any) (map[string]any, bool) {
+	cleaned := cloneMap(payload)
+	changed := false
+	for _, pair := range terminalPayloadSecretFields {
+		if _, exists := cleaned[pair[0]]; exists {
+			delete(cleaned, pair[0])
+			changed = true
+		}
+		if plaintext, ok := cleaned[pair[1]].(string); ok && plaintext == encryptedValuePlaceholder {
+			delete(cleaned, pair[1])
+			changed = true
+		}
+	}
+	return cleaned, changed
 }
 
 func jobProjectionPending(job domain.Job) bool {

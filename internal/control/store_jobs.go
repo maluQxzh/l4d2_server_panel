@@ -574,16 +574,27 @@ func (s *Store) UpdateJob(ctx context.Context, id string, status domain.JobStatu
 			delete(result, "cancel_pending")
 		}
 	}
-	if requiresDeferredJobProjection(current.Type, status) {
+	if requiresDeferredJobProjection(current.Type, current.Payload, status) {
 		result[jobProjectionPendingField] = true
 	}
-	resultRaw, _ := json.Marshal(result)
+	resultRaw, err := json.Marshal(result)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	terminalPayload := current.Payload
+	payloadRaw := []byte("{}")
+	if isTerminalJobStatus(status) {
+		terminalPayload, _ = scrubTerminalJobPayload(current.Payload)
+		payloadRaw, err = json.Marshal(terminalPayload)
+		if err != nil {
+			return domain.Job{}, err
+		}
+	}
 	_, err = tx.ExecContext(ctx, `UPDATE jobs SET status=?2,progress=?3,message=?4,result=?5,
-		payload=CASE WHEN type='inspect_plugin_archive' AND ?2 IN ('succeeded','failed','canceled')
-			THEN json_remove(payload,'$.content_base64_ciphertext','$.source_ciphertext') ELSE payload END,
+		payload=CASE WHEN ?2 IN ('succeeded','failed','canceled') THEN ?6 ELSE payload END,
 		started_at=CASE WHEN ?2='running' THEN COALESCE(started_at,unixepoch('subsec')*1000000) ELSE started_at END,
 		finished_at=CASE WHEN ?2 IN ('succeeded','failed','canceled') THEN COALESCE(finished_at,unixepoch('subsec')*1000000) ELSE finished_at END
-		WHERE id=?1`, id, status, progress, message, string(resultRaw))
+		WHERE id=?1`, id, status, progress, message, string(resultRaw), string(payloadRaw))
 	if err != nil {
 		return domain.Job{}, err
 	}
@@ -591,6 +602,7 @@ func (s *Store) UpdateJob(ctx context.Context, id string, status domain.JobStatu
 	current.Progress = progress
 	current.Message = message
 	current.Result = result
+	current.Payload = terminalPayload
 	if status == domain.JobCanceled {
 		if err := applyJobCancellationTx(ctx, tx, current); err != nil {
 			return domain.Job{}, err

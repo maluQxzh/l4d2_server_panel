@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -101,21 +102,40 @@ func TestPersistedTerminalOutcomeIsImmutable(t *testing.T) {
 
 func TestDeferredProjectionClassification(t *testing.T) {
 	t.Parallel()
-	projectedTypes := []string{"update", "install_mod", "rollback_package", "backup.upload.chunk", "ban_player", "delete", "purge_quarantine"}
-	for _, status := range []domain.JobStatus{domain.JobSucceeded, domain.JobFailed} {
-		for _, jobType := range projectedTypes {
-			if !requiresDeferredJobProjection(jobType, status) {
-				t.Fatalf("%s %s did not require deferred projection", jobType, status)
-			}
-		}
-		if requiresDeferredJobProjection("restore", status) {
-			t.Fatalf("restore %s incorrectly required deferred projection", status)
-		}
-		if requiresDeferredJobProjection("inspect_plugin_archive", status) {
-			t.Fatalf("archive inspection %s incorrectly required deferred projection", status)
+	for _, jobType := range []string{"update", "install_mod", "rollback_package", "backup.upload.chunk", "ban_player", "delete", "purge_quarantine", "check_update"} {
+		if !requiresDeferredJobProjection(jobType, nil, domain.JobSucceeded) {
+			t.Fatalf("%s succeeded did not require deferred projection", jobType)
 		}
 	}
-	if requiresDeferredJobProjection("update", domain.JobCanceled) {
+	for _, jobType := range []string{"update", "game.delete", "steamcmd.repair", "purge_quarantine", "map.inventory"} {
+		if !requiresDeferredJobProjection(jobType, nil, domain.JobFailed) {
+			t.Fatalf("%s failed did not require deferred projection", jobType)
+		}
+	}
+	for _, test := range []struct {
+		jobType string
+		payload map[string]any
+		status  domain.JobStatus
+	}{
+		{"restore", nil, domain.JobSucceeded},
+		{"inspect_plugin_archive", nil, domain.JobFailed},
+		{"install_mod", nil, domain.JobFailed},
+		{"discover_instances", nil, domain.JobSucceeded},
+		{"file", map[string]any{"operation": "read"}, domain.JobSucceeded},
+		{"qq_flash_import", map[string]any{"mode": "ordinary"}, domain.JobSucceeded},
+		{"unknown_future_task", nil, domain.JobSucceeded},
+	} {
+		if requiresDeferredJobProjection(test.jobType, test.payload, test.status) {
+			t.Fatalf("%s %s incorrectly required deferred projection", test.jobType, test.status)
+		}
+	}
+	if !requiresDeferredJobProjection("file", map[string]any{"operation": "smart_plugin_edit"}, domain.JobSucceeded) {
+		t.Fatal("smart plugin edit did not require deferred projection")
+	}
+	if !requiresDeferredJobProjection("qq_flash_import", map[string]any{"mode": "managed_vpk_v2"}, domain.JobSucceeded) {
+		t.Fatal("managed QQ package import did not require deferred projection")
+	}
+	if requiresDeferredJobProjection("update", nil, domain.JobCanceled) {
 		t.Fatal("atomically canceled job required deferred projection")
 	}
 }
@@ -148,6 +168,84 @@ func TestTerminalPluginArchiveInspectionScrubsUploadWithoutProjection(t *testing
 	}
 	if updated.Payload["content_base64_ciphertext"] != nil || updated.Payload["source_ciphertext"] != nil {
 		t.Fatalf("archive inspection retained terminal upload secrets: %#v", updated.Payload)
+	}
+}
+
+func TestTerminalLargeOneShotPayloadIsShrunkBeforeProjection(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "large-terminal-payload.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	nodeID, jobID := uuid.NewString(), uuid.NewString()
+	payloadRaw, err := json.Marshal(map[string]any{
+		"kind":                      "smart",
+		"content_base64":            encryptedValuePlaceholder,
+		"content_base64_ciphertext": strings.Repeat("x", 65<<20),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'Node','online');
+		INSERT INTO jobs(id,node_id,type,status,progress,payload,result,created_at)
+		VALUES(?2,?1,'install_mod','running',20,?3,'{}',?4)`, nodeID, jobID, string(payloadRaw), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := store.UpdateJob(ctx, jobID, domain.JobFailed, 20, "package rejected", map[string]any{"kind": "smart"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jobProjectionPending(updated) {
+		t.Fatal("failed package task retained a no-op projection barrier")
+	}
+	if updated.Payload["content_base64"] != nil || updated.Payload["content_base64_ciphertext"] != nil {
+		t.Fatalf("terminal package payload retained one-shot content: %#v", updated.Payload)
+	}
+	var persistedBytes int
+	if err := store.db.QueryRowContext(ctx, `SELECT length(payload) FROM jobs WHERE id=?1`, jobID).Scan(&persistedBytes); err != nil {
+		t.Fatal(err)
+	}
+	if persistedBytes > 1024 {
+		t.Fatalf("terminal package payload remained unexpectedly large: %d bytes", persistedBytes)
+	}
+}
+
+func TestPendingLegacyNoOpProjectionRepairsLargePayload(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "legacy-large-projection.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	nodeID, jobID := uuid.NewString(), uuid.NewString()
+	payloadRaw, err := json.Marshal(map[string]any{
+		"content_base64":            encryptedValuePlaceholder,
+		"content_base64_ciphertext": strings.Repeat("x", 65<<20),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES(?1,'Node','online');
+		INSERT INTO jobs(id,node_id,type,status,progress,payload,result,created_at,finished_at)
+		VALUES(?2,?1,'discover_instances','failed',100,?3,'{"_projection_pending":true}',?4,?4)`,
+		nodeID, jobID, string(payloadRaw), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	projected, applied, err := store.ApplyPendingJobProjection(ctx, jobID)
+	if err != nil || !applied {
+		t.Fatalf("repair legacy projection: applied=%v err=%v", applied, err)
+	}
+	if jobProjectionPending(projected) || projected.Payload["content_base64_ciphertext"] != nil || projected.Payload["content_base64"] != nil {
+		t.Fatalf("legacy projection was not compacted: %#v", projected)
 	}
 }
 
@@ -185,7 +283,7 @@ func TestTerminalOutcomeConflictIsNonfatalAndDeduplicated(t *testing.T) {
 		if !errors.Is(err, errTerminalOutcomeConflict) {
 			t.Fatalf("mismatched terminal replay error = %v", err)
 		}
-		if agentMessageFailureClosesConnection(envelope.Type, err) {
+		if agentMessageFailureClosesConnection(envelope.Type, err, true) {
 			t.Fatal("terminal outcome conflict was classified as a connection-fatal error")
 		}
 	}
@@ -226,17 +324,24 @@ func TestTerminalOutcomeConflictIsNonfatalAndDeduplicated(t *testing.T) {
 	}
 }
 
-func TestOnlyRetryableJobUpdateFailureClosesAgentConnection(t *testing.T) {
-	if agentMessageFailureClosesConnection(protocol.TypeJobUpdate, errTerminalOutcomeConflict) {
+func TestSameSessionRetryOnlyKeepsPersistenceFailuresOnline(t *testing.T) {
+	if agentMessageFailureClosesConnection(protocol.TypeJobUpdate, errTerminalOutcomeConflict, true) {
 		t.Fatal("terminal semantic conflict closed the Agent connection")
 	}
-	if agentMessageFailureClosesConnection(protocol.TypeJobUpdate, errors.New("permanent protocol rejection")) {
+	if agentMessageFailureClosesConnection(protocol.TypeJobUpdate, errors.New("permanent protocol rejection"), true) {
 		t.Fatal("permanent job update rejection closed the Agent connection")
 	}
-	if !agentMessageFailureClosesConnection(protocol.TypeJobUpdate, retryableAgentMessage(errors.New("persist projection"))) {
-		t.Fatal("retryable job update failure did not close the Agent connection")
+	persistenceFailure := retryableAgentMessage(errors.New("persist projection"))
+	if agentMessageFailureClosesConnection(protocol.TypeJobUpdate, persistenceFailure, true) {
+		t.Fatal("same-session retry Agent was disconnected for a persistence failure")
 	}
-	if agentMessageFailureClosesConnection(protocol.TypeHeartbeat, retryableAgentMessage(errors.New("persist heartbeat"))) {
+	if !agentMessageFailureClosesConnection(protocol.TypeJobUpdate, persistenceFailure, false) {
+		t.Fatal("legacy Agent did not reconnect for a persistence failure")
+	}
+	if !agentMessageFailureClosesConnection(protocol.TypeJobUpdate, agentSessionFatal(errors.New("write failed")), true) {
+		t.Fatal("failed WebSocket write did not close the Agent connection")
+	}
+	if agentMessageFailureClosesConnection(protocol.TypeHeartbeat, retryableAgentMessage(errors.New("persist heartbeat")), true) {
 		t.Fatal("non-job message failure closed the Agent connection")
 	}
 }
