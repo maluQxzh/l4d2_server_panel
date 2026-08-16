@@ -19,8 +19,8 @@ $nodeMajor = [int](& node -p "process.versions.node.split('.')[0]")
 if ($LASTEXITCODE -ne 0 -or $nodeMajor -lt 24) { throw 'Node.js 24 or later is required.' }
 $goVersion = (& go version).Trim()
 $goVersionMatch = [regex]::Match($goVersion, '^go version go1\.25\.(\d+) ')
-if ($LASTEXITCODE -ne 0 -or -not $goVersionMatch.Success -or [int]$goVersionMatch.Groups[1].Value -lt 12) {
-    throw 'Go 1.25.12 or a later 1.25 security patch is required.'
+if ($LASTEXITCODE -ne 0 -or -not $goVersionMatch.Success -or [int]$goVersionMatch.Groups[1].Value -lt 13) {
+    throw 'Go 1.25.13 or a later 1.25 security patch is required.'
 }
 $commit = (& git -C $repoRoot rev-parse --short HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $commit) { throw 'Unable to resolve the Git commit.' }

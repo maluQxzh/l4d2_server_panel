@@ -1,6 +1,6 @@
 module github.com/l4d2-panel/l4d2panel
 
-go 1.25.12
+go 1.25.13
 
 require (
 	github.com/bodgit/sevenzip v1.6.5

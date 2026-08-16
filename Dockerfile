@@ -8,7 +8,7 @@ RUN --mount=type=cache,id=l4d2panel-npm,target=/root/.npm,sharing=locked \
 COPY web/ ./
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.25.12-alpine AS go-build
+FROM --platform=$BUILDPLATFORM golang:1.25.13-alpine AS go-build
 WORKDIR /src
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG ALPINE_MIRROR=https://dl-cdn.alpinelinux.org/alpine

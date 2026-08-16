@@ -196,7 +196,7 @@ Copy-Item .\agent.yaml.example .\agent.yaml
 
 ## 本地开发
 
-需要 Go 1.25.12 或更高补丁版本、Node.js 24；SQLite 通过无 CGO 的 Go 驱动嵌入：
+需要 Go 1.25.13 或更高补丁版本、Node.js 24；SQLite 通过无 CGO 的 Go 驱动嵌入：
 
 ```bash
 go mod download
