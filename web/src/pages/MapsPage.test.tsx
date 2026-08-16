@@ -228,6 +228,7 @@ describe("地图管理卡片", () => {
     vi.spyOn(api, "maps").mockResolvedValue({ items: [ownMap, otherMap] });
     const nodes = vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
     vi.spyOn(api, "instances").mockResolvedValue({ items: [scopedInstance] });
+    const importMap = vi.spyOn(api, "importMap").mockResolvedValue({ job_id: "map-import-gbk" });
 
     render(<QueryClientProvider client={client}><ToastProvider><RealtimeProvider enabled={false}><MemoryRouter><MapsPage /></MemoryRouter></RealtimeProvider></ToastProvider></QueryClientProvider>);
 
@@ -239,5 +240,10 @@ describe("地图管理卡片", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /QQ 闪传导入/ }));
     expect(await screen.findByRole("option", { name: "共享地图节点" })).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /^ZIP \/ VPK 路径编码/ })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "目标节点" }), { target: { value: map.node_id } });
+    fireEvent.change(screen.getByRole("textbox", { name: /^QQ 闪传链接/ }), { target: { value: "https://qfile.qq.com/q/LegacyGBK" } });
+    fireEvent.click(screen.getByRole("button", { name: "开始导入" }));
+    await waitFor(() => expect(importMap).toHaveBeenCalledWith(map.node_id, "https://qfile.qq.com/q/LegacyGBK"));
   });
 });

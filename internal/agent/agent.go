@@ -215,7 +215,7 @@ func (a *Agent) runSession(ctx context.Context) error {
 	// Large browser-uploaded packages are Base64 job payloads, so the Agent's
 	// inbound ceiling must include their JSON envelope overhead.
 	conn.SetReadLimit(protocol.MaxPackageUploadEnvelopeBytes)
-	hello, err := protocol.NewEnvelope(protocol.TypeHello, a.config.NodeID, "", protocol.Hello{Name: a.config.NodeName, OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.Version, InstanceRoot: a.config.InstanceRoots[0], Capabilities: []string{"absolute_game_paths", "backup_delete_v1", "backup_upload", "check_update", "component_package_delete_v1", "discover_instances", "game_installation_delete_v1", "map_hot_reload_v1", "map_library_v1", "package_delete_v1", "package_scan_v1", "purge_quarantine", "qq_flash_file_v1", "qq_flash_package_v1", "qq_flash_vpk_packages_v2", "runtime_environment_v1", "server_cfg_native", "smart_plugin_archive_v1", "smart_plugin_file_edit_v1"}})
+	hello, err := protocol.NewEnvelope(protocol.TypeHello, a.config.NodeID, "", protocol.Hello{Name: a.config.NodeName, OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.Version, InstanceRoot: a.config.InstanceRoots[0], Capabilities: []string{"absolute_game_paths", "backup_delete_v1", "backup_upload", "check_update", "component_package_delete_v1", "discover_instances", "game_installation_delete_v1", "map_hot_reload_v1", "map_import_v2", "map_library_v1", "package_delete_v1", "package_scan_v1", "purge_quarantine", "qq_flash_file_v1", "qq_flash_package_v1", "qq_flash_vpk_packages_v2", "runtime_environment_v1", "server_cfg_native", "smart_plugin_archive_v1", "smart_plugin_file_edit_v1"}})
 	if err != nil {
 		return err
 	}
@@ -512,8 +512,9 @@ func (a *Agent) handleClaimedJob(job domain.Job, execute executeJobFunc) {
 		a.sendJobUpdate(job.ID, status, 100, message, result)
 		return
 	}
-	a.updateJournal(job.ID, status, progress.Value(), message, nil)
-	a.sendJobUpdate(job.ID, status, progress.Value(), message, nil)
+	failureResult := jobFailureResult(executeErr)
+	a.updateJournal(job.ID, status, progress.Value(), message, failureResult)
+	a.sendJobUpdate(job.ID, status, progress.Value(), message, failureResult)
 }
 
 func (a *Agent) updateJournal(jobID string, status domain.JobStatus, progress int, message string, result map[string]any) {

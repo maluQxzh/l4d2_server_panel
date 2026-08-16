@@ -115,9 +115,27 @@ func TestInstanceScopedSharedMapPermissionsEnforceDeleteOwnership(t *testing.T) 
 		t.Fatalf("instance-scoped map import=%d %s", importResponse.Code, importResponse.Body.String())
 	}
 	importJobID := assertScopedJob(importResponse, "map.import.qq_flash")
+	importJob, err := store.GetJob(ctx, importJobID)
+	if err != nil || importJob.Payload["path_encoding"] != "auto" {
+		t.Fatalf("default map import encoding = %#v, err=%v", importJob.Payload["path_encoding"], err)
+	}
+	invalidEncodingResponse := request(http.MethodPost, "/api/v1/nodes/"+nodeID+"/maps/imports", `{"share_url":"https://qfile.qq.com/q/InvalidEncoding","path_encoding":"shift_jis"}`)
+	if invalidEncodingResponse.Code != http.StatusBadRequest || !strings.Contains(invalidEncodingResponse.Body.String(), "invalid_map_path_encoding") {
+		t.Fatalf("invalid map path encoding=%d %s", invalidEncodingResponse.Code, invalidEncodingResponse.Body.String())
+	}
 	secondImportResponse := request(http.MethodPost, "/api/v1/nodes/"+nodeID+"/maps/imports", `{"share_url":"https://qfile.qq.com/q/Another456"}`)
 	if secondImportResponse.Code != http.StatusConflict {
 		t.Fatalf("concurrent map import=%d, want 409 instead of reusing another task: %s", secondImportResponse.Code, secondImportResponse.Body.String())
+	}
+	cancelActiveMapJob("map.import.qq_flash")
+	gbkImportResponse := request(http.MethodPost, "/api/v1/nodes/"+nodeID+"/maps/imports", `{"share_url":"https://qfile.qq.com/q/LegacyGBK","path_encoding":"gbk"}`)
+	if gbkImportResponse.Code != http.StatusAccepted {
+		t.Fatalf("explicit GBK map import=%d %s", gbkImportResponse.Code, gbkImportResponse.Body.String())
+	}
+	gbkJobID := assertScopedJob(gbkImportResponse, "map.import.qq_flash")
+	gbkJob, err := store.GetJob(ctx, gbkJobID)
+	if err != nil || gbkJob.Payload["path_encoding"] != "gbk" {
+		t.Fatalf("explicit map import encoding = %#v, err=%v", gbkJob.Payload["path_encoding"], err)
 	}
 	cancelActiveMapJob("map.import.qq_flash")
 

@@ -69,22 +69,26 @@ func (e *Executor) importQQFlashMap(ctx context.Context, job domain.Job, payload
 		return e.maps.importResult(existing), nil
 	}
 	if err := validateQQFlashShareURL(payload.Source); err != nil {
-		return nil, err
+		return nil, wrapMapImportFailure(mapImportStagePreflight, "", err)
+	}
+	pathEncoding, err := normalizeMapPathEncoding(payload.PathEncoding)
+	if err != nil {
+		return nil, wrapMapImportFailure(mapImportStagePreflight, "", err)
 	}
 	stagingRelative := filepath.ToSlash(filepath.Join("staging", job.ID))
 	stagingRoot, err := ResolveWithin(e.maps.defaultRoot().Path, filepath.FromSlash(stagingRelative))
 	if err != nil {
-		return nil, err
+		return nil, wrapMapImportFailure(mapImportStageStaging, "", err)
 	}
 	if err := os.Mkdir(stagingRoot, 0o700); err != nil {
 		if !errors.Is(err, os.ErrExist) {
-			return nil, err
+			return nil, wrapMapImportFailure(mapImportStageStaging, "", err)
 		}
 		if err := removeMapOwnedTree(stagingRoot); err != nil {
-			return nil, err
+			return nil, wrapMapImportFailure(mapImportStageStaging, "", err)
 		}
 		if err := os.Mkdir(stagingRoot, 0o700); err != nil {
-			return nil, err
+			return nil, wrapMapImportFailure(mapImportStageStaging, "", err)
 		}
 	}
 	defer func() {
@@ -97,26 +101,27 @@ func (e *Executor) importQQFlashMap(ctx context.Context, job domain.Job, payload
 	progress(3, "enumerating QQ flash share")
 	files, deviceID, taskName, shareEntries, err := client.listAllFiles(ctx, payload.Source, maxMapQQFlashFiles, maxMapQQFlashDownload)
 	if err != nil {
-		return nil, err
+		return nil, wrapMapImportFailure(mapImportStageMetadata, "", err)
 	}
 	if len(files) == 0 {
-		return nil, errors.New("QQ flash share contains no files")
+		return nil, wrapMapImportFailure(mapImportStageMetadata, "", errors.New("QQ flash share contains no files"))
 	}
-	inputs, ignored, expanded, err := discoverMapInputs(ctx, stagingRoot, files, shareEntries, deviceID, client, progress)
+	discovery, err := discoverMapInputs(ctx, stagingRoot, files, shareEntries, deviceID, client, pathEncoding, progress)
 	if err != nil {
-		return nil, err
+		return nil, wrapMapImportFailure(mapImportStagePreflight, "", err)
 	}
 	sourceName := files[0].Relative
-	if len(inputs) > 0 {
-		sourceName = strings.SplitN(inputs[0].SortKey, "!/", 2)[0]
+	if len(discovery.Inputs) > 0 {
+		sourceName = strings.SplitN(discovery.Inputs[0].SortKey, "!/", 2)[0]
 	}
 	progress(38, "validating and merging VPK content")
-	result, err := buildMapVPKs(ctx, stagingRoot, inputs, expanded, taskName, sourceName)
+	result, err := buildMapVPKsWithEncoding(ctx, stagingRoot, discovery.Inputs, discovery.Expanded, taskName, sourceName, pathEncoding)
 	if err != nil {
-		return nil, err
+		return nil, wrapMapImportFailure(mapImportStageVPK, sourceName, err)
 	}
-	if ignored > 0 {
-		result.Warnings = append(result.Warnings, mapLocalWarning{Code: "ignored_non_vpk_files", Message: fmt.Sprintf("Ignored %d non-VPK files from the share and nested archives", ignored)})
+	result.Warnings = append(mapPathDecodeWarnings(discovery.PathDecodes), result.Warnings...)
+	if discovery.Ignored > 0 {
+		result.Warnings = append(result.Warnings, mapLocalWarning{Code: "ignored_non_vpk_files", Message: fmt.Sprintf("已跳过分享和嵌套归档中的 %d 个非 VPK 文件", discovery.Ignored)})
 	}
 	record := mapLocalRecord{ID: payload.MapID, Name: result.Name, Author: result.Author, Version: result.Version,
 		Description: result.Description, AggregateSHA256: result.AggregateSHA256,
@@ -127,7 +132,7 @@ func (e *Executor) importQQFlashMap(ctx context.Context, job domain.Job, payload
 	progress(88, "publishing map objects")
 	record, err = e.maps.publish(record, result.Outputs, result.PosterOutput)
 	if err != nil {
-		return nil, err
+		return nil, wrapMapImportFailure(mapImportStagePublish, sourceName, err)
 	}
 	progress(100, "map import completed")
 	return e.maps.importResult(record), nil

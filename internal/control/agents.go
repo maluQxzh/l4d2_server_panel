@@ -566,6 +566,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, smartPluginArchiveSupported := client.capabilities["smart_plugin_archive_v1"]
 		_, smartPluginFileEditSupported := client.capabilities["smart_plugin_file_edit_v1"]
 		_, mapLibrarySupported := client.capabilities["map_library_v1"]
+		_, mapImportV2Supported := client.capabilities["map_import_v2"]
 		_, mapHotReloadSupported := client.capabilities["map_hot_reload_v1"]
 		client.mu.Unlock()
 		if job.Status != domain.JobCanceled && (sent || canceled) {
@@ -610,6 +611,10 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 			continue
 		}
 		if strings.HasPrefix(job.Type, "map.") && !mapLibrarySupported {
+			continue
+		}
+		if job.Type == "map.import.qq_flash" && !mapImportV2Supported &&
+			!strings.EqualFold(defaultString(stringFromAny(job.Payload["path_encoding"]), domain.MapPathEncodingAuto), domain.MapPathEncodingAuto) {
 			continue
 		}
 		if job.Type == "map.assign" && !mapHotReloadSupported {

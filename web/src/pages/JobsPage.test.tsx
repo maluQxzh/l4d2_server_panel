@@ -135,6 +135,34 @@ describe("任务中心", () => {
     expect(screen.getByText('{"message":"ok"}')).toBeInTheDocument();
   });
 
+  it("将地图导入的结构化失败显示为阶段、原因和处理建议", async () => {
+    const failedImport: Job = {
+      ...operation,
+      id: "map-import-failed",
+      type: "map.import.qq_flash",
+      status: "failed",
+      message: "地图归档处理失败",
+      result: { failure: {
+        stage: "archive",
+        code: "map_archive_path_encoding_invalid",
+        summary: "ZIP 内部路径编码无法识别",
+        remediation: "在导入窗口改选 UTF-8、GBK 或 Big5。",
+        retryable: false,
+        source: "广州地图.zip",
+      } },
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    vi.spyOn(api, "jobList").mockResolvedValue({ items: [failedImport] });
+
+    render(<QueryClientProvider client={client}><ToastProvider><RealtimeProvider enabled={false}><MemoryRouter><JobsPage /></MemoryRouter></RealtimeProvider></ToastProvider></QueryClientProvider>);
+    fireEvent.click(await screen.findByRole("button", { name: /导入地图/ }));
+
+    expect(screen.getByText(/失败阶段 · 归档 · map_archive_path_encoding_invalid/)).toBeInTheDocument();
+    expect(screen.getByText("ZIP 内部路径编码无法识别")).toBeInTheDocument();
+    expect(screen.getByText("在导入窗口改选 UTF-8、GBK 或 Big5。")).toBeInTheDocument();
+    expect(screen.getByText("广州地图.zip")).toBeInTheDocument();
+  });
+
   it("没有任务读取权限时不请求任务列表", async () => {
     authState.user = { role: "viewer", role_bindings: [] };
     const jobList = vi.spyOn(api, "jobList").mockResolvedValue({ items: [operation] });

@@ -101,7 +101,8 @@ func (s *Server) handleGetMapPoster(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleImportMap(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		ShareURL string `json:"share_url"`
+		ShareURL     string `json:"share_url"`
+		PathEncoding string `json:"path_encoding"`
 	}
 	if !decodeJSONWithLimit(w, r, &request, 4<<10) {
 		return
@@ -109,6 +110,14 @@ func (s *Server) handleImportMap(w http.ResponseWriter, r *http.Request) {
 	shareURL, err := normalizeQQFlashShareURL(request.ShareURL)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_qq_flash_share_url", err.Error())
+		return
+	}
+	pathEncoding := strings.ToLower(strings.TrimSpace(request.PathEncoding))
+	if pathEncoding == "" {
+		pathEncoding = domain.MapPathEncodingAuto
+	}
+	if !domain.ValidMapPathEncoding(pathEncoding) {
+		writeError(w, http.StatusBadRequest, "invalid_map_path_encoding", "path_encoding 必须是 auto、utf8、gbk 或 big5")
 		return
 	}
 	nodeID := chi.URLParam(r, "nodeID")
@@ -126,7 +135,11 @@ func (s *Server) handleImportMap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "agent_upgrade_required", "target node Agent does not support the map library")
 		return
 	}
-	fingerprintPayload := map[string]any{"source": shareURL}
+	if pathEncoding != domain.MapPathEncodingAuto && s.agents.Connected(nodeID) && !s.agents.Supports(nodeID, "map_import_v2") {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "目标节点 Agent 不支持显式地图路径编码，请先升级 Agent")
+		return
+	}
+	fingerprintPayload := map[string]any{"source": shareURL, "path_encoding": pathEncoding}
 	requestFingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "node-map", nodeID, "import", fingerprintPayload)
 	if err != nil {
 		s.fail(w, err)
@@ -149,7 +162,7 @@ func (s *Server) handleImportMap(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	payload := map[string]any{"source": shareURL, "map_id": uuid.NewString()}
+	payload := map[string]any{"source": shareURL, "map_id": uuid.NewString(), "path_encoding": pathEncoding}
 	if scopeInstanceID != "" {
 		payload[jobScopeInstancePayloadField] = scopeInstanceID
 	}
@@ -167,7 +180,7 @@ func (s *Server) handleImportMap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "idempotency_scope_conflict", "idempotency key belongs to a different authorization scope")
 		return
 	}
-	s.audit(r, "map.import.requested", "node", nodeID, map[string]any{"job_id": job.ID})
+	s.audit(r, "map.import.requested", "node", nodeID, map[string]any{"job_id": job.ID, "path_encoding": pathEncoding})
 	s.publishMapJob(r, job)
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "idempotent_replay": reused})
 }
