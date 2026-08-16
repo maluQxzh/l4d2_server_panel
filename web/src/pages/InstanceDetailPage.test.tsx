@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RealtimeProvider } from "../context/RealtimeContext";
 import { ToastProvider } from "../context/ToastContext";
 import { api } from "../lib/api";
-import type { InstanceRecord } from "../lib/types";
+import type { InstanceRecord, PackageRecord, SmartPluginPlan } from "../lib/types";
 
 const authState = vi.hoisted(() => ({ user: { role: "owner" } as { role: string; role_bindings?: unknown } }));
 
@@ -77,6 +77,44 @@ function renderPackagesPage(item: InstanceRecord, tab = "mods") {
       </RealtimeProvider>
     </QueryClientProvider>,
   );
+}
+
+function smartPlan(file: SmartPluginPlan["folders"][number]["files"][number], folderName = "Gear Transfer"): SmartPluginPlan {
+  return {
+    version: 1,
+    archive_name: "plugins.7z",
+    archive_sha256: "a".repeat(64),
+    fingerprint: "b".repeat(64),
+    folders: [{
+      id: "folder-1",
+      name: folderName,
+      files: [file],
+      native_risk: false,
+      ambiguous_files: file.ambiguous ? 1 : 0,
+      existing_files: file.existing ? 1 : 0,
+    }],
+    file_count: 1,
+    expanded_bytes: file.size,
+    format: "7z",
+  };
+}
+
+async function inspectSmartPlugin(plan: SmartPluginPlan, packages: PackageRecord[] = []) {
+  vi.spyOn(api, "packages").mockResolvedValue({ items: packages });
+  vi.spyOn(api, "packageVersions").mockResolvedValue({ items: [] });
+  vi.spyOn(api, "inspectPluginArchive").mockResolvedValue(plan);
+  renderPackagesPage(instance, "plugins");
+  if (packages.length) await screen.findByRole("button", { name: `查看 ${packages[0].name} 详情` });
+  fireEvent.click(await screen.findByRole("button", { name: "安装插件" }));
+  fireEvent.change(screen.getByLabelText("类型"), { target: { value: "smart" } });
+  const archive = new File([new Uint8Array([0x37, 0x7a])], "plugins.7z", { type: "application/x-7z-compressed" });
+  Object.defineProperty(archive, "arrayBuffer", { value: async () => new Uint8Array([0x37, 0x7a]).buffer });
+  const fileInput = screen.getByRole("dialog").querySelector<HTMLInputElement>('input[type="file"]');
+  if (!fileInput) throw new Error("smart plugin upload input is missing");
+  fireEvent.change(fileInput, { target: { files: [archive] } });
+  await screen.findByText("plugins.7z");
+  fireEvent.click(screen.getByRole("button", { name: "开始识别" }));
+  await screen.findByText("识别完成");
 }
 
 function renderPlayersPage(item: InstanceRecord) {
@@ -412,6 +450,95 @@ describe("服务端组件依赖", () => {
 
     expect(screen.getByText("请先安装 Metamod:Source")).toBeVisible();
     expect(screen.getByRole("button", { name: "提交安装" })).toBeDisabled();
+  });
+
+  it("把未纳管的已有文件显示为待接管项，并明确列出安装阻塞原因", async () => {
+    await inspectSmartPlugin(smartPlan({
+      id: "file-1",
+      source_path: "Gear/left4dead2/cfg/sourcemod/gear.cfg",
+      target_path: "left4dead2/cfg/sourcemod/gear.cfg",
+      reason: "压缩包已提供完整游戏路径",
+      ambiguous: false,
+      native: false,
+      entrypoint: false,
+      existing: true,
+      size: 12,
+      sha256: "c".repeat(64),
+    }));
+
+    expect(screen.queryByText("已登记为此插件的文件，将作为更新替换。")).not.toBeInTheDocument();
+    const takeover = screen.getByRole("checkbox", { name: /接管并覆盖实例中的已有文件/ });
+    expect(takeover).not.toBeChecked();
+    expect(screen.getByText("还有 1 项需要处理，暂时无法安装")).toBeVisible();
+    expect(screen.getByText("目标文件已存在，需要确认接管并覆盖")).toBeVisible();
+    expect(screen.getByRole("button", { name: "安装 1 个插件" })).toBeDisabled();
+
+    fireEvent.click(takeover);
+    expect(screen.queryByText("还有 1 项需要处理，暂时无法安装")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "安装 1 个插件" })).toBeEnabled();
+  });
+
+  it("仅在两个非空包 ID 相同时把已有文件识别为同插件更新", async () => {
+    const installed: PackageRecord = { id: "package-1", name: "Gear Transfer", kind: "smart", enabled: true, installed_at: "2026-08-01T00:00:00Z" };
+    await inspectSmartPlugin(smartPlan({
+      id: "file-1",
+      source_path: "Gear/left4dead2/cfg/sourcemod/gear.cfg",
+      target_path: "left4dead2/cfg/sourcemod/gear.cfg",
+      reason: "压缩包已提供完整游戏路径",
+      ambiguous: false,
+      native: false,
+      entrypoint: false,
+      existing: true,
+      managed_package_id: installed.id,
+      size: 12,
+      sha256: "c".repeat(64),
+    }), [installed]);
+
+    expect(screen.getByText("已登记为此插件的文件，将作为更新替换。")).toBeVisible();
+    expect(screen.queryByRole("checkbox", { name: /接管并覆盖实例中的已有文件/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/项需要处理，暂时无法安装/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "安装 1 个插件" })).toBeEnabled();
+  });
+
+  it("拒绝覆盖另一个面板包管理的目标路径", async () => {
+    await inspectSmartPlugin(smartPlan({
+      id: "file-1",
+      source_path: "Gear/left4dead2/cfg/sourcemod/gear.cfg",
+      target_path: "left4dead2/cfg/sourcemod/gear.cfg",
+      reason: "压缩包已提供完整游戏路径",
+      ambiguous: false,
+      native: false,
+      entrypoint: false,
+      existing: true,
+      managed_package_id: "another-package",
+      size: 12,
+      sha256: "c".repeat(64),
+    }));
+
+    expect(screen.getByText(/该路径已由另一个面板包管理，不能覆盖/)).toBeVisible();
+    expect(screen.getByText("目标路径已由另一个面板包管理")).toBeVisible();
+    expect(screen.getByRole("button", { name: "安装 1 个插件" })).toBeDisabled();
+  });
+
+  it("把已填入建议路径的歧义文件标记为需核对但不阻止安装", async () => {
+    await inspectSmartPlugin(smartPlan({
+      id: "file-1",
+      source_path: "Gear/gear.cfg",
+      suggested_path: "left4dead2/cfg/sourcemod/gear.cfg",
+      choices: ["left4dead2/cfg/sourcemod/gear.cfg", "left4dead2/addons/sourcemod/configs/gear.cfg"],
+      reason: "CFG 可能是运行配置、SourceMod configs 或 data",
+      ambiguous: true,
+      native: false,
+      entrypoint: false,
+      existing: false,
+      size: 12,
+      sha256: "c".repeat(64),
+    }));
+
+    expect(screen.getByText(/1 项路径需核对/)).toBeVisible();
+    expect(screen.getByLabelText("安装路径")).toHaveValue("left4dead2/cfg/sourcemod/gear.cfg");
+    expect(screen.queryByText(/项需要处理，暂时无法安装/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "安装 1 个插件" })).toBeEnabled();
   });
 
   it("固定核心组件排序并从详情查看和编辑智能插件文件", async () => {

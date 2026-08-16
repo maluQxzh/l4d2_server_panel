@@ -67,7 +67,7 @@ import { buildStartupArgumentPreview, canAccessInstance, lifecycleActionAllowed 
 import { defaultTickrate, gameDifficulties, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
 import { filterAndSortPackages, type PackageSort } from "../lib/package-list";
 import { summarizeRecentOperations } from "../lib/recent-operations";
-import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, PackageRecord, Permission, Player, PlayerBan, ScheduleRecord, SmartPluginPlan, SmartPluginSelection } from "../lib/types";
+import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, PackageRecord, Permission, Player, PlayerBan, ScheduleRecord, SmartPluginFilePlan, SmartPluginPlan, SmartPluginSelection } from "../lib/types";
 
 const tabs = [
   { id: "overview", label: "概览", icon: CircleDot, permissions: [] },
@@ -880,6 +880,24 @@ function PackageDetailsModal({ open, item, instance, onClose, onEdit }: { open: 
   </Modal>;
 }
 
+type SmartPluginChoice = { selected: boolean; packageId?: string; overrides: Record<string, string>; takeovers: string[] };
+
+function smartPluginFileState(file: SmartPluginFilePlan, choice: SmartPluginChoice) {
+  const target = file.ambiguous ? choice.overrides[file.id]?.trim() || "" : file.target_path || file.suggested_path || "";
+  const pathState = file.path_states?.[target];
+  const existing = pathState?.existing ?? file.existing;
+  const owner = pathState?.managed_package_id ?? file.managed_package_id;
+  const sameOwner = Boolean(owner && choice.packageId && owner === choice.packageId);
+  const otherOwner = Boolean(owner && owner !== choice.packageId);
+  const takeoverRequired = existing && !owner;
+  const takeoverConfirmed = choice.takeovers.includes(file.id);
+  let blocker = "";
+  if (file.ambiguous && !target) blocker = "需要确认安装路径";
+  else if (otherOwner) blocker = "目标路径已由另一个面板包管理";
+  else if (takeoverRequired && !takeoverConfirmed) blocker = "目标文件已存在，需要确认接管并覆盖";
+  return { target, existing, owner, sameOwner, otherOwner, takeoverRequired, takeoverConfirmed, blocker };
+}
+
 function InstallPackageModal({ open, instance, section, metamodInstalled, smartPackages, onClose }: { open: boolean; instance: InstanceRecord; section: PackageSection; metamodInstalled?: boolean; smartPackages: PackageRecord[]; onClose: () => void }) {
   const pluginSection = section === "plugins";
   const [kind, setKind] = useState(pluginSection ? "smart" : "workshop");
@@ -888,7 +906,7 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
   const [upload, setUpload] = useState<{ name: string; size: number; contentBase64: string } | null>(null);
   const [risk, setRisk] = useState(false);
   const [smartPlan, setSmartPlan] = useState<SmartPluginPlan | null>(null);
-  const [smartChoices, setSmartChoices] = useState<Record<string, { selected: boolean; packageId?: string; overrides: Record<string, string>; takeovers: string[] }>>({});
+  const [smartChoices, setSmartChoices] = useState<Record<string, SmartPluginChoice>>({});
   const toast = useToast();
   const client = useQueryClient();
   const official = kind === "sourcemod" || kind === "metamod";
@@ -957,16 +975,14 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
     onError: (error) => toast.push(error.message, "error"),
   });
   const selectedSmartFolders = smartPlan?.folders.filter((folder) => smartChoices[folder.id]?.selected) || [];
-  const smartReady = selectedSmartFolders.length > 0 && selectedSmartFolders.every((folder) => {
+  const smartBlockers = selectedSmartFolders.flatMap((folder) => {
     const choice = smartChoices[folder.id];
-    return folder.files.every((file) => {
-      const target = file.ambiguous ? choice.overrides[file.id]?.trim() : file.target_path || file.suggested_path || "";
-      const pathState = file.path_states?.[target];
-      const existing = pathState?.existing ?? file.existing;
-      const owner = pathState?.managed_package_id ?? file.managed_package_id;
-      return (!file.ambiguous || Boolean(target)) && (!existing || Boolean(owner) || choice.takeovers.includes(file.id)) && (!owner || owner === choice.packageId);
+    return folder.files.flatMap((file) => {
+      const state = smartPluginFileState(file, choice);
+      return state.blocker ? [{ folder: folder.name, path: state.target || file.source_path, reason: state.blocker }] : [];
     });
   });
+  const smartReady = selectedSmartFolders.length > 0 && smartBlockers.length === 0;
   const install = useMutation({
     mutationFn: (liveAcknowledged: boolean) => qqFlashVPK
       ? api.importQQFlashFile(instance.id, source)
@@ -1030,23 +1046,21 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
             const choice = smartChoices[folder.id];
             if (!choice) return null;
             return <details className="smart-plugin-folder" open={folder.ambiguous_files > 0 || folder.existing_files > 0} key={folder.id}>
-              <summary><label onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={choice.selected} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], selected: event.target.checked } }))} /><strong>{folder.name}</strong></label><span>{choice.packageId ? "更新已有插件 · " : ""}{folder.files.length} 个文件{folder.native_risk ? " · 含原生扩展" : ""}{folder.ambiguous_files ? ` · ${folder.ambiguous_files} 项待确认` : ""}</span></summary>
+              <summary><label onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={choice.selected} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], selected: event.target.checked } }))} /><strong>{folder.name}</strong></label><span>{choice.packageId ? "更新已有插件 · " : ""}{folder.files.length} 个文件{folder.native_risk ? " · 含原生扩展" : ""}{folder.ambiguous_files ? ` · ${folder.ambiguous_files} 项路径需核对` : ""}</span></summary>
               <div className="smart-plugin-files">
                 {folder.files.map((file) => {
-                  const target = file.ambiguous ? choice.overrides[file.id] || "" : file.target_path || file.suggested_path || "";
-                  const pathState = file.path_states?.[target];
-                  const existing = pathState?.existing ?? file.existing;
-                  const managedPackageID = pathState?.managed_package_id ?? file.managed_package_id;
-                  return <div className={`smart-plugin-file ${file.ambiguous || existing ? "smart-plugin-file--attention" : ""}`} key={file.id}>
+                  const state = smartPluginFileState(file, choice);
+                  return <div className={`smart-plugin-file ${file.ambiguous || state.existing ? "smart-plugin-file--attention" : ""}`} key={file.id}>
                     <div><code>{file.source_path}</code><span>{file.reason}{file.entrypoint ? " · 加载入口" : ""}</span></div>
-                    {file.ambiguous ? <Field label="安装路径"><input list={`smart-paths-${file.id}`} value={target} disabled={!choice.selected} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], overrides: { ...current[folder.id].overrides, [file.id]: event.target.value } } }))} /><datalist id={`smart-paths-${file.id}`}>{file.choices?.map((path) => <option value={path} key={path} />)}</datalist></Field> : <code className="smart-plugin-target">→ {target}</code>}
-                    {managedPackageID && managedPackageID !== choice.packageId ? <div className="smart-plugin-managed-conflict">该路径已由另一个面板包管理，不能覆盖。请取消选择此插件或调整歧义路径。</div> : existing && managedPackageID === choice.packageId ? <div className="smart-plugin-update-path">已登记为此插件的文件，将作为更新替换。</div> : existing && <label className="smart-plugin-takeover"><input type="checkbox" disabled={!choice.selected} checked={choice.takeovers.includes(file.id)} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], takeovers: event.target.checked ? [...current[folder.id].takeovers, file.id] : current[folder.id].takeovers.filter((id) => id !== file.id) } }))} />接管并覆盖实例中的已有文件（删除插件时会恢复原文件）</label>}
+                    {file.ambiguous ? <Field label="安装路径"><input list={`smart-paths-${file.id}`} value={state.target} disabled={!choice.selected} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], overrides: { ...current[folder.id].overrides, [file.id]: event.target.value } } }))} /><datalist id={`smart-paths-${file.id}`}>{file.choices?.map((path) => <option value={path} key={path} />)}</datalist></Field> : <code className="smart-plugin-target">→ {state.target}</code>}
+                    {state.otherOwner ? <div className="smart-plugin-managed-conflict">该路径已由另一个面板包管理，不能覆盖。请取消选择此插件或调整歧义路径。</div> : state.sameOwner ? <div className="smart-plugin-update-path">已登记为此插件的文件，将作为更新替换。</div> : state.takeoverRequired && <label className="smart-plugin-takeover"><input type="checkbox" disabled={!choice.selected} checked={state.takeoverConfirmed} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], takeovers: event.target.checked ? [...current[folder.id].takeovers, file.id] : current[folder.id].takeovers.filter((id) => id !== file.id) } }))} />接管并覆盖实例中的已有文件（删除插件时会恢复原文件）</label>}
                   </div>;
                 })}
               </div>
             </details>;
           })}
         </div>}
+        {smartPlan && smartBlockers.length > 0 && <div className="smart-plugin-blockers" role="alert"><ShieldAlert size={18} /><div><strong>还有 {smartBlockers.length} 项需要处理，暂时无法安装</strong><ul>{smartBlockers.slice(0, 8).map((blocker, index) => <li key={`${blocker.folder}-${blocker.path}-${index}`}><span>{blocker.folder}</span><code>{blocker.path}</code><em>{blocker.reason}</em></li>)}</ul>{smartBlockers.length > 8 && <small>另外还有 {smartBlockers.length - 8} 项，请检查上方带提示的插件文件夹。</small>}</div></div>}
         {showRisk && <label className="risk-check"><input type="checkbox" checked={risk} onChange={(event) => setRisk(event.target.checked)} /><ShieldAlert size={19} /><span><strong>我了解第三方原生代码风险</strong><small>{needsRisk ? "此包可能包含或覆盖节点执行的二进制扩展，必须确认后安装。" : "普通 SMX 不要求确认；DLL/SO 原生扩展必须确认。"}</small></span></label>}
         <div className="form-note"><strong>{smart ? "整批原子安装" : "自动回退"}</strong><span>{smart ? "任一插件文件写入失败会回滚整批；停用只移动 SMX、DLL、SO、VDF、AUTOLOAD 等加载入口，配置和翻译等支持文件保留。" : "组件升级前会创建快照；重启后的版本检测失败时，Agent 恢复上一版本。"}</span></div>
       </>}
