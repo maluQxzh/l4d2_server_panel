@@ -11,7 +11,7 @@ import type {
   PackageRecord,
   PackageFileRecord,
   PackageVersionRecord,
-  Player,
+  PlayerListResponse,
   PlayerBan,
   PublicServer,
   ScheduleRecord,
@@ -358,7 +358,7 @@ export const api = {
   audit: (resourceId?: string) => list<AuditEvent>(`/audit${resourceId ? `?resource_id=${encodeURIComponent(resourceId)}` : ""}`),
   publicServers: () => list<PublicServer>("/public/servers"),
 
-  players: (instanceId: string) => list<Player>(`/instances/${encodeURIComponent(instanceId)}/players`),
+  players: (instanceId: string) => request<PlayerListResponse>(`/instances/${encodeURIComponent(instanceId)}/players`),
   bans: (instanceId: string) => list<PlayerBan>(`/instances/${encodeURIComponent(instanceId)}/bans`),
   packages: (instanceId: string) => list<PackageRecord>(`/instances/${encodeURIComponent(instanceId)}/packages`),
   packageDetails: (instanceId: string, packageId: string) => request<{ package: PackageRecord; files: PackageFileRecord[] }>(

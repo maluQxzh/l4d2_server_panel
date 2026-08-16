@@ -133,6 +133,85 @@ func TestRCONPlayerRefreshIsQueuedAsBackgroundProbe(t *testing.T) {
 	}
 }
 
+func TestInstancePlayersReportLoadingUntilRCONProbeCompletes(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "player-refresh.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx, filepath.Join("..", "..", "migrations", "sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	owner, created, err := store.BootstrapOwner(ctx, "owner", "Owner", "hash")
+	if err != nil || !created {
+		t.Fatalf("bootstrap owner: created=%v err=%v", created, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('node','Node','online')`); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := store.CreateInstance(ctx, CreateInstanceInput{NodeID: "node", Name: "players", Port: 27015})
+	if err != nil {
+		t.Fatal(err)
+	}
+	masterKey := []byte("0123456789abcdef0123456789abcdef")
+	encryptedRCON, err := encryptSecret(masterKey, "rcon-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveInstanceSecrets(ctx, instance.ID, encryptedRCON, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='running' WHERE id=?1`, instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(Config{MasterKey: masterKey}, store, nil)
+	defer server.Close()
+	request := func() *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+instance.ID+"/players", nil)
+		route := chi.NewRouteContext()
+		route.URLParams.Add("instanceID", instance.ID)
+		requestContext := context.WithValue(req.Context(), chi.RouteCtxKey, route)
+		requestContext = context.WithValue(requestContext, principalContextKey, Principal{User: owner})
+		req = req.WithContext(requestContext)
+		recorder := httptest.NewRecorder()
+		server.handleInstancePlayers(recorder, req)
+		return recorder
+	}
+
+	loading := request()
+	if loading.Code != http.StatusAccepted {
+		t.Fatalf("initial player list status=%d body=%s", loading.Code, loading.Body.String())
+	}
+	var pending struct {
+		Status       string `json:"status"`
+		RefreshJobID string `json:"refresh_job_id"`
+	}
+	if err := json.Unmarshal(loading.Body.Bytes(), &pending); err != nil || pending.Status != "loading" || pending.RefreshJobID == "" {
+		t.Fatalf("initial player list response=%#v err=%v", pending, err)
+	}
+	result := `{"players":[{"user_id":"7","name":"Coach","steam_id":"STEAM_1:1:12345","score":42,"ping":35,"bot":false,"connected":"01:23"}]}`
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET status='succeeded',progress=100,result=?2,finished_at=?3 WHERE id=?1`, pending.RefreshJobID, result, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	ready := request()
+	if ready.Code != http.StatusOK {
+		t.Fatalf("completed player list status=%d body=%s", ready.Code, ready.Body.String())
+	}
+	var completed struct {
+		Status string           `json:"status"`
+		Items  []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(ready.Body.Bytes(), &completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != "ready" || len(completed.Items) != 1 || completed.Items[0]["name"] != "Coach" || completed.Items[0]["score"] != float64(42) || completed.Items[0]["connected_at"] == nil {
+		t.Fatalf("completed player list response=%#v", completed)
+	}
+}
+
 func TestInstanceFilesReportLoadingUntilAgentListingCompletes(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "file-list-refresh.sqlite3"))
