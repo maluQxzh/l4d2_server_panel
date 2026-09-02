@@ -1171,8 +1171,8 @@ paths:
       summary: 主动创建插件 7z 备份
       description: |
         需要目标实例的 `backups.create`。Control 从插件记录生成不可由调用者修改的文件清单，Agent 在实例边界内
-        逐文件 no-follow 打开并复核登记大小和实际读取长度，但允许内容不同于安装时登记的 SHA-256；随后创建最多
-        5000 个文件、2 GiB 展开量的 7z，并为最终归档计算 SHA-256。
+        逐文件 no-follow 打开并复核当前大小和实际读取长度，但允许当前大小和内容不同于安装时的登记值；随后创建
+        最多 5000 个文件、2 GiB 展开量的 7z，并为最终归档计算 SHA-256。
         每个插件使用独立顶层文件夹；preserve 保留从 left4dead2 开始的游戏路径，compact 去掉游戏和 SourceMod 根目录，
         但保留 plugins、gamedata、configs、cfg 等相对结构。归档只支持下载和删除，不能作为实例恢复源。
       parameters:

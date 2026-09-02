@@ -116,10 +116,6 @@ func (e *Executor) pluginBackup(ctx context.Context, job domain.Job, progress Pr
 				_ = source.Close()
 				return nil, fmt.Errorf("plugin %q file %q is not a bounded regular file", item.Name, managed.Path)
 			}
-			if managed.Size > 0 && managed.Size != info.Size() {
-				_ = source.Close()
-				return nil, fmt.Errorf("plugin %q file %q size changed", item.Name, managed.Path)
-			}
 			entryPath := pluginBackupEntryPath(folders[packageIndex], managed.Path, layout)
 			entryKey := strings.ToLower(entryPath)
 			if entryPaths[entryKey] {

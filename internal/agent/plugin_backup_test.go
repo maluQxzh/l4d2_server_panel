@@ -87,7 +87,7 @@ func TestPluginBackupCreatesReadableSevenZipLayouts(t *testing.T) {
 	}
 }
 
-func TestPluginBackupIncludesChangedManagedFile(t *testing.T) {
+func TestPluginBackupIncludesManagedFileWithChangedContentAndSize(t *testing.T) {
 	executor, _, instancePath := uploadedPackageExecutor(t)
 	relative := "left4dead2/addons/sourcemod/plugins/sample.smx"
 	path := filepath.Join(instancePath, filepath.FromSlash(relative))
@@ -99,7 +99,7 @@ func TestPluginBackupIncludesChangedManagedFile(t *testing.T) {
 	}
 	result, err := executor.pluginBackup(context.Background(), domain.Job{ID: "plugin-backup-changed", InstanceID: "instance", Payload: map[string]any{
 		"layout": pluginBackupLayoutPreserve, "plugin_packages": []domain.PluginBackupPackage{{ID: "package-one", Name: "Sample", Kind: "plugin", Enabled: true,
-			Files: []domain.PluginBackupFile{{Path: relative, SHA256: strings.Repeat("0", 64), Size: 7, Entrypoint: true}}}},
+			Files: []domain.PluginBackupFile{{Path: relative, SHA256: strings.Repeat("0", 64), Size: 1, Entrypoint: true}}}},
 	}}, func(int, string) {})
 	if err != nil {
 		t.Fatalf("back up changed managed file: %v", err)
