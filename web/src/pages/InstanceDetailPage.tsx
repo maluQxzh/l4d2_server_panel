@@ -1249,9 +1249,15 @@ async function waitForBackupRestoreProjection(instanceID: string, uploadID: stri
 
 function BackupsTab({ instance }: { instance: InstanceRecord }) {
   const { user } = useAuth();
+  const realtime = useRealtime();
   const canRead = canAccessInstance(user, instance, "backups.read");
   const canDownload = canAccessInstance(user, instance, "backups.download");
-  const backups = useQuery({ queryKey: ["instances", instance.id, "backups"], queryFn: () => api.backups(instance.id), enabled: canRead });
+  const backups = useQuery({
+    queryKey: ["instances", instance.id, "backups"],
+    queryFn: () => api.backups(instance.id),
+    enabled: canRead,
+    refetchInterval: realtime.state === "live" ? false : 10_000,
+  });
   const toast = useToast();
   const client = useQueryClient();
   const [uploadOpen, setUploadOpen] = useState(false);

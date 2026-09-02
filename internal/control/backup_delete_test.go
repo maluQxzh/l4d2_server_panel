@@ -114,8 +114,8 @@ func TestPluginBackupInventoryAndProjection(t *testing.T) {
 	createdAt := time.Now().UTC().Truncate(time.Second)
 	job := domain.Job{ID: "plugin-backup-job", InstanceID: instance.ID, Type: "plugin.backup", Status: domain.JobSucceeded,
 		Payload: map[string]any{"layout": "compact"}, Result: map[string]any{
-			"name": "plugin-20260812T120000Z-job.7z", "path": "backups/instance/plugin-20260812T120000Z-job.7z",
-			"kind": "plugin_compact", "platform": "linux/amd64", "size": 123, "sha256": sha, "created_at": createdAt.Format(time.RFC3339Nano),
+			"name": "plugin-20260812T120000Z-job.7z", "path": `D:\agent\data\backups\instance\plugin-20260812T120000Z-job.7z`,
+			"kind": "plugin_compact", "platform": "windows/amd64", "size": 123, "sha256": sha, "created_at": createdAt.Format(time.RFC3339Nano),
 		}}
 	if err := store.ApplyJobResult(ctx, job); err != nil {
 		t.Fatal(err)
@@ -127,6 +127,19 @@ func TestPluginBackupInventoryAndProjection(t *testing.T) {
 	job.Result["kind"] = "plugin_preserve"
 	if err := store.ApplyJobResult(ctx, job); err == nil {
 		t.Fatal("mismatched plugin backup layout was projected")
+	}
+}
+
+func TestAgentPathBaseAcceptsWindowsAndLinuxPaths(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{
+		`D:\agent\data\backups\instance\plugin-job.7z`,
+		"/var/lib/l4d2panel/backups/instance/plugin-job.7z",
+		"backups/instance/plugin-job.7z",
+	} {
+		if actual := agentPathBase(value); actual != "plugin-job.7z" {
+			t.Errorf("agentPathBase(%q) = %q", value, actual)
+		}
 	}
 }
 

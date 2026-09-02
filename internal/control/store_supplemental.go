@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -765,7 +766,7 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		if job.Type == "plugin.backup" {
 			expectedKind := "plugin_" + stringFromAny(job.Payload["layout"])
 			if (expectedKind != "plugin_preserve" && expectedKind != "plugin_compact") || kind != expectedKind ||
-				!strings.HasPrefix(strings.ToLower(name), "plugin-") || !strings.HasSuffix(strings.ToLower(name), ".7z") || filepath.Base(path) != name {
+				!strings.HasPrefix(strings.ToLower(name), "plugin-") || !strings.HasSuffix(strings.ToLower(name), ".7z") || agentPathBase(path) != name {
 				return errors.New("plugin backup result does not match the requested layout")
 			}
 		}
@@ -888,6 +889,13 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		return s.ApplyQuarantinePurgeResult(ctx, job)
 	}
 	return nil
+}
+
+// Agent paths follow the target node's platform, which can differ from the
+// Control host. Normalize both supported separators before checking the safe
+// basename so a Linux Control can project results from a Windows Agent.
+func agentPathBase(value string) string {
+	return pathpkg.Base(strings.ReplaceAll(value, `\`, "/"))
 }
 
 func (s *Store) ApplyJobFailure(ctx context.Context, job domain.Job) error {
