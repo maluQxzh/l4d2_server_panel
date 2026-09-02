@@ -127,8 +127,7 @@ func (e *Executor) pluginBackup(ctx context.Context, job domain.Job, progress Pr
 				return nil, fmt.Errorf("plugin backup entry %q is duplicated", entryPath)
 			}
 			entryPaths[entryKey] = true
-			hash := sha256.New()
-			size, _, addErr := archive.Add(entryPath, io.LimitReader(io.TeeReader(&contextReader{ctx: ctx, reader: source}, hash), maxSmartPluginEntry+1))
+			size, _, addErr := archive.Add(entryPath, io.LimitReader(&contextReader{ctx: ctx, reader: source}, maxSmartPluginEntry+1))
 			closeErr := source.Close()
 			if addErr != nil {
 				return nil, addErr
@@ -138,9 +137,6 @@ func (e *Executor) pluginBackup(ctx context.Context, job domain.Job, progress Pr
 			}
 			if size > uint64(maxSmartPluginEntry) || int64(size) != info.Size() {
 				return nil, fmt.Errorf("plugin %q file %q changed while reading", item.Name, managed.Path)
-			}
-			if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), managed.SHA256) {
-				return nil, fmt.Errorf("plugin %q file %q SHA-256 changed", item.Name, managed.Path)
 			}
 			totalSize += int64(size)
 			if totalSize > maxSmartPluginExpanded {

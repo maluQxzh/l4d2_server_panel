@@ -87,8 +87,8 @@ func TestPluginBackupCreatesReadableSevenZipLayouts(t *testing.T) {
 	}
 }
 
-func TestPluginBackupRejectsChangedManagedFile(t *testing.T) {
-	executor, dataDir, instancePath := uploadedPackageExecutor(t)
+func TestPluginBackupIncludesChangedManagedFile(t *testing.T) {
+	executor, _, instancePath := uploadedPackageExecutor(t)
 	relative := "left4dead2/addons/sourcemod/plugins/sample.smx"
 	path := filepath.Join(instancePath, filepath.FromSlash(relative))
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
@@ -97,16 +97,29 @@ func TestPluginBackupRejectsChangedManagedFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("changed"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	_, err := executor.pluginBackup(context.Background(), domain.Job{ID: "plugin-backup-invalid", InstanceID: "instance", Payload: map[string]any{
+	result, err := executor.pluginBackup(context.Background(), domain.Job{ID: "plugin-backup-changed", InstanceID: "instance", Payload: map[string]any{
 		"layout": pluginBackupLayoutPreserve, "plugin_packages": []domain.PluginBackupPackage{{ID: "package-one", Name: "Sample", Kind: "plugin", Enabled: true,
 			Files: []domain.PluginBackupFile{{Path: relative, SHA256: strings.Repeat("0", 64), Size: 7, Entrypoint: true}}}},
 	}}, func(int, string) {})
-	if err == nil || !strings.Contains(err.Error(), "SHA-256 changed") {
-		t.Fatalf("expected changed file rejection, got %v", err)
+	if err != nil {
+		t.Fatalf("back up changed managed file: %v", err)
 	}
-	matches, globErr := filepath.Glob(filepath.Join(dataDir, "backups", "instance", "*.tmp"))
-	if globErr != nil || len(matches) != 0 {
-		t.Fatalf("temporary archive was not cleaned: %v, %v", matches, globErr)
+	reader, err := sevenzip.OpenReader(result["path"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	if len(reader.File) != 1 || reader.File[0].Name != "Sample/"+relative {
+		t.Fatalf("unexpected changed-file archive entries: %#v", reader.File)
+	}
+	entry, err := reader.File[0].Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived, readErr := io.ReadAll(entry)
+	closeErr := entry.Close()
+	if readErr != nil || closeErr != nil || string(archived) != "changed" {
+		t.Fatalf("unexpected changed-file archive content: %q, %v, %v", archived, readErr, closeErr)
 	}
 }
 
