@@ -87,9 +87,32 @@ func TestValidateSmartPluginInstallAllowsQQFlashArchive(t *testing.T) {
 	if err := validateSmartPluginInstallPayload(domain.Instance{Status: domain.InstanceStopped}, payload); err != nil {
 		t.Fatalf("QQ flash smart plugin install was rejected: %v", err)
 	}
+	if payload["path_encoding"] != domain.MapPathEncodingAuto {
+		t.Fatalf("default smart plugin path encoding = %#v", payload["path_encoding"])
+	}
 	payload["source_transport"] = ""
 	if err := validateSmartPluginInstallPayload(domain.Instance{Status: domain.InstanceStopped}, payload); err == nil {
 		t.Fatal("ordinary remote smart plugin source was accepted")
+	}
+	invalid := map[string]any{
+		"kind": "smart", "name": "plugins.zip", "content_base64": "YQ==", "path_encoding": "shift_jis",
+		"inspection_fingerprint": strings.Repeat("a", 64), "smart_packages": []any{map[string]any{"folder_id": "plugin"}},
+	}
+	if err := validateSmartPluginInstallPayload(domain.Instance{Status: domain.InstanceStopped}, invalid); err == nil {
+		t.Fatal("unsupported smart plugin path encoding was accepted")
+	}
+}
+
+func TestNormalizePluginArchivePathEncoding(t *testing.T) {
+	t.Parallel()
+	for input, expected := range map[string]string{"": "auto", " AUTO ": "auto", "UTF8": "utf8", "gbk": "gbk", "Big5": "big5"} {
+		actual, err := normalizePluginArchivePathEncoding(input)
+		if err != nil || actual != expected {
+			t.Errorf("normalizePluginArchivePathEncoding(%q) = %q, %v", input, actual, err)
+		}
+	}
+	if _, err := normalizePluginArchivePathEncoding("shift_jis"); err == nil {
+		t.Fatal("unsupported plugin archive path encoding was accepted")
 	}
 }
 

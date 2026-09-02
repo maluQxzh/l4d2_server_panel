@@ -40,7 +40,7 @@ func TestPluginBackupCreatesReadableSevenZipLayouts(t *testing.T) {
 			result, err := executor.pluginBackup(context.Background(), domain.Job{
 				ID: "plugin-backup-" + layout, InstanceID: "instance", Payload: map[string]any{
 					"layout": layout, "plugin_packages": []domain.PluginBackupPackage{{
-						ID: "package-one", Name: "Sample Plugin", Kind: "plugin", Enabled: true, Files: managed,
+						ID: "package-one", Name: "中文插件", Kind: "plugin", Enabled: true, Files: managed,
 					}},
 				},
 			}, func(int, string) {})
@@ -67,9 +67,9 @@ func TestPluginBackupCreatesReadableSevenZipLayouts(t *testing.T) {
 				actual[archived.Name] = string(raw)
 			}
 			for relative, content := range files {
-				expected := "Sample Plugin/" + relative
+				expected := "中文插件/" + relative
 				if layout == pluginBackupLayoutCompact {
-					expected = "Sample Plugin/" + pluginBackupEntryPath("", relative, layout)[1:]
+					expected = "中文插件/" + pluginBackupEntryPath("", relative, layout)[1:]
 				}
 				if actual[expected] != content {
 					keys := make([]string, 0, len(actual))

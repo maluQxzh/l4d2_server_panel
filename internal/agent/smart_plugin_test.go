@@ -8,10 +8,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/l4d2-panel/l4d2panel/internal/domain"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 func TestSmartPluginInstallToggleDeleteFullyOwnsTakeover(t *testing.T) {
@@ -486,6 +488,67 @@ func smartTestZIP(t *testing.T, files map[string]string) []byte {
 	return buffer.Bytes()
 }
 
+func TestSmartPluginArchiveDecodesLegacyGBKZIPPaths(t *testing.T) {
+	executor, _, instancePath := uploadedPackageExecutor(t)
+	entryName := "中文插件/left4dead2/addons/sourcemod/plugins/sample.smx"
+	legacyName, err := simplifiedchinese.GBK.NewEncoder().Bytes([]byte(entryName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	entry, err := writer.CreateHeader(&zip.FileHeader{Name: string(legacyName), Method: zip.Store, NonUTF8: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte("compiled plugin")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(archive.Bytes())
+	inspection, err := executor.inspectSmartPluginArchive(context.Background(), domain.Job{
+		ID: "inspect-gbk-smart", InstanceID: "instance", Payload: map[string]any{
+			"name": "legacy.zip", "content_base64": encoded, "path_encoding": domain.MapPathEncodingAuto,
+		},
+	}, func(int, string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection["version"] != float64(smartPluginPlanVersion) || inspection["path_encoding"] != domain.MapPathEncodingAuto {
+		t.Fatalf("unexpected inspection metadata: %#v", inspection)
+	}
+	folder := inspection["folders"].([]any)[0].(map[string]any)
+	file := folder["files"].([]any)[0].(map[string]any)
+	if folder["name"] != "中文插件" || file["source_path"] != entryName || strings.ContainsRune(file["source_path"].(string), '�') {
+		t.Fatalf("legacy GBK path was not decoded losslessly: folder=%#v file=%#v", folder["name"], file["source_path"])
+	}
+	result, err := executor.installMod(context.Background(), domain.Job{
+		ID: "install-gbk-smart", InstanceID: "instance", Payload: map[string]any{
+			"kind": "smart", "name": "legacy.zip", "content_base64": encoded, "path_encoding": domain.MapPathEncodingAuto,
+			"inspection_fingerprint": inspection["fingerprint"],
+			"smart_packages":         []any{map[string]any{"folder_id": folder["id"]}},
+		},
+	}, func(int, string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packages := result["packages"].([]map[string]any)
+	if len(packages) != 1 || packages[0]["name"] != "中文插件" {
+		t.Fatalf("decoded plugin name was not retained: %#v", packages)
+	}
+	assertFileContent(t, filepath.Join(instancePath, "left4dead2", "addons", "sourcemod", "plugins", "sample.smx"), "compiled plugin")
+
+	if _, err := executor.inspectSmartPluginArchive(context.Background(), domain.Job{
+		ID: "inspect-gbk-as-utf8", InstanceID: "instance", Payload: map[string]any{
+			"name": "legacy.zip", "content_base64": encoded, "path_encoding": domain.MapPathEncodingUTF8,
+		},
+	}, func(int, string) {}); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("explicit UTF-8 accepted a legacy GBK path: %v", err)
+	}
+}
+
 func assertFileContent(t *testing.T, path, expected string) {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -520,7 +583,7 @@ func TestSmartPluginShowCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := buildSmartPluginPlan(root, "pluginshow.zip", "archive-sha", "zip", 0, files, t.TempDir())
+	plan, err := buildSmartPluginPlan(root, "pluginshow.zip", "archive-sha", domain.MapPathEncodingAuto, "zip", 0, files, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +645,7 @@ func TestBuildSmartPluginPlanSplitsCollectionWrapper(t *testing.T) {
 		}
 		files = append(files, extractedMapFile{Path: path, Relative: relative})
 	}
-	plan, err := buildSmartPluginPlan(root, "pluginshow.zip", "archive-sha", "zip", 123, files, t.TempDir())
+	plan, err := buildSmartPluginPlan(root, "pluginshow.zip", "archive-sha", domain.MapPathEncodingAuto, "zip", 123, files, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

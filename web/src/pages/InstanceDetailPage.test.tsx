@@ -81,9 +81,10 @@ function renderPackagesPage(item: InstanceRecord, tab = "mods") {
 
 function smartPlan(file: SmartPluginPlan["folders"][number]["files"][number], folderName = "Gear Transfer"): SmartPluginPlan {
   return {
-    version: 1,
+    version: 2,
     archive_name: "plugins.7z",
     archive_sha256: "a".repeat(64),
+    path_encoding: "auto",
     fingerprint: "b".repeat(64),
     folders: [{
       id: "folder-1",
@@ -99,7 +100,7 @@ function smartPlan(file: SmartPluginPlan["folders"][number]["files"][number], fo
   };
 }
 
-async function inspectSmartPlugin(plan: SmartPluginPlan, packages: PackageRecord[] = []) {
+async function inspectSmartPlugin(plan: SmartPluginPlan, packages: PackageRecord[] = [], pathEncoding: "auto" | "utf8" | "gbk" | "big5" = "auto") {
   vi.spyOn(api, "packages").mockResolvedValue({ items: packages });
   vi.spyOn(api, "packageVersions").mockResolvedValue({ items: [] });
   vi.spyOn(api, "inspectPluginArchive").mockResolvedValue(plan);
@@ -107,6 +108,7 @@ async function inspectSmartPlugin(plan: SmartPluginPlan, packages: PackageRecord
   if (packages.length) await screen.findByRole("button", { name: `查看 ${packages[0].name} 详情` });
   fireEvent.click(await screen.findByRole("button", { name: "安装插件" }));
   fireEvent.change(screen.getByLabelText("类型"), { target: { value: "smart" } });
+  fireEvent.change(await screen.findByLabelText("压缩包路径编码"), { target: { value: pathEncoding } });
   const archive = new File([new Uint8Array([0x37, 0x7a])], "plugins.7z", { type: "application/x-7z-compressed" });
   Object.defineProperty(archive, "arrayBuffer", { value: async () => new Uint8Array([0x37, 0x7a]).buffer });
   const fileInput = screen.getByRole("dialog").querySelector<HTMLInputElement>('input[type="file"]');
@@ -450,6 +452,30 @@ describe("服务端组件依赖", () => {
 
     expect(screen.getByText("请先安装 Metamod:Source")).toBeVisible();
     expect(screen.getByRole("button", { name: "提交安装" })).toBeDisabled();
+  });
+
+  it("识别和安装智能插件时始终使用同一个压缩包路径编码", async () => {
+    const plan = smartPlan({
+      id: "file-encoding",
+      source_path: "中文插件/left4dead2/addons/sourcemod/plugins/sample.smx",
+      target_path: "left4dead2/addons/sourcemod/plugins/sample.smx",
+      reason: "压缩包已提供完整游戏路径",
+      ambiguous: false,
+      native: false,
+      entrypoint: true,
+      existing: false,
+      size: 12,
+      sha256: "c".repeat(64),
+    }, "中文插件");
+    plan.path_encoding = "gbk";
+    const install = vi.spyOn(api, "instanceAction").mockResolvedValue({ job_id: "install-smart-gbk" });
+
+    await inspectSmartPlugin(plan, [], "gbk");
+
+    expect(api.inspectPluginArchive).toHaveBeenCalledWith(instance.id, expect.objectContaining({ path_encoding: "gbk" }));
+    expect(screen.getByText(/路径编码 GBK/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "安装 1 个插件" }));
+    await waitFor(() => expect(install).toHaveBeenCalledWith(instance.id, "install_package", expect.objectContaining({ path_encoding: "gbk" })));
   });
 
   it("把未纳管的已有文件显示为待接管项，并明确列出安装阻塞原因", async () => {

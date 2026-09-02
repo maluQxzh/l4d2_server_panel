@@ -48,7 +48,7 @@ func normalizeMapPathEncoding(value string) (string, error) {
 		value = domain.MapPathEncodingAuto
 	}
 	if !domain.ValidMapPathEncoding(value) {
-		return "", errors.New("map path_encoding must be auto, utf8, gbk, or big5")
+		return "", errors.New("path_encoding must be auto, utf8, gbk, or big5")
 	}
 	return value, nil
 }

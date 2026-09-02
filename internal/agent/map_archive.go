@@ -45,6 +45,8 @@ type mapArchiveState struct {
 	DiskFreeReserve uint64
 	Subject         string
 	SelectiveInputs bool
+	DecodeZIPPaths  bool
+	RequireUTF8Path bool
 	PathEncoding    string
 	PathDecodes     mapPathDecodeStats
 }
@@ -126,7 +128,8 @@ func discoverMapInputs(ctx context.Context, stagingRoot string, topLevel []qqFla
 	if uint64(downloadBytes) > usage.Free || usage.Free-uint64(downloadBytes) < mapDiskFreeReserve {
 		return mapInputDiscovery{}, errors.New("map download would consume the reserved free disk space")
 	}
-	state := &mapArchiveState{Root: stagingRoot, Entries: initialEntries, SelectiveInputs: true, PathEncoding: pathEncoding}
+	state := &mapArchiveState{Root: stagingRoot, Entries: initialEntries, SelectiveInputs: true,
+		DecodeZIPPaths: true, RequireUTF8Path: true, PathEncoding: pathEncoding}
 	inputs := make([]mapVPKInput, 0)
 	for index, listed := range topLevel {
 		if ctx.Err() != nil {
@@ -258,7 +261,7 @@ func extractMapZIP(ctx context.Context, archivePath, destination string, state *
 			return nil, errors.New("ZIP archive contains a link or special file")
 		}
 		entryName := entry.Name
-		if state.SelectiveInputs {
+		if state.SelectiveInputs || state.DecodeZIPPaths {
 			entryName, err = decodeMapZIPPath(entry.Name, entry.NonUTF8, state.PathEncoding, &state.PathDecodes)
 			if err != nil {
 				return nil, fmt.Errorf("decode ZIP path: %w", err)
@@ -495,7 +498,7 @@ func validateMapArchivePath(name string) (string, error) {
 }
 
 func validateMapArchivePathForState(name string, state *mapArchiveState) (string, error) {
-	if state != nil && state.SelectiveInputs && !utf8.ValidString(name) {
+	if state != nil && (state.SelectiveInputs || state.RequireUTF8Path) && (!utf8.ValidString(name) || strings.ContainsRune(name, utf8.RuneError)) {
 		return "", errors.New("archive path is not valid UTF-8 after decoding")
 	}
 	return validateMapArchivePath(name)

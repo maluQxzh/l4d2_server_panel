@@ -454,6 +454,7 @@ export interface SmartPluginPlan {
   version: number;
   archive_name: string;
   archive_sha256: string;
+  path_encoding: MapPathEncoding;
   fingerprint: string;
   folders: SmartPluginFolderPlan[];
   file_count: number;

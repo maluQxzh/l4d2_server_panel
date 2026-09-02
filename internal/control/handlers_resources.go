@@ -741,8 +741,8 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_smart_plugin_install", smartErr.Error())
 			return
 		}
-		if strings.EqualFold(stringFromAny(request.Payload["kind"]), "smart") && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "smart_plugin_archive_v1") {
-			writeError(w, http.StatusConflict, "agent_upgrade_required", "target Agent does not support smart plugin archives")
+		if strings.EqualFold(stringFromAny(request.Payload["kind"]), "smart") && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, protocol.CapabilitySmartPluginArchiveV2) {
+			writeError(w, http.StatusConflict, "agent_upgrade_required", "目标 Agent 不支持插件压缩包路径编码，请先升级 Agent")
 			return
 		}
 		if strings.EqualFold(stringFromAny(request.Payload["source_transport"]), "qq_flash") && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "qq_flash_plugin_packages_v1") {

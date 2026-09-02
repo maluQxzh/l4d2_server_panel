@@ -721,6 +721,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, componentPackageDeleteSupported := client.capabilities["component_package_delete_v1"]
 		_, packageScanSupported := client.capabilities["package_scan_v1"]
 		_, smartPluginArchiveSupported := client.capabilities["smart_plugin_archive_v1"]
+		_, smartPluginArchiveV2Supported := client.capabilities[protocol.CapabilitySmartPluginArchiveV2]
 		_, qqFlashPluginPackagesSupported := client.capabilities["qq_flash_plugin_packages_v1"]
 		_, smartPluginFileEditSupported := client.capabilities["smart_plugin_file_edit_v1"]
 		_, mapLibrarySupported := client.capabilities["map_library_v1"]
@@ -763,8 +764,12 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		if job.Type == "scan_packages" && !packageScanSupported {
 			continue
 		}
-		smartPluginTask := job.Type == "inspect_plugin_archive" ||
-			((job.Type == "install_mod" || job.Type == "toggle_package" || job.Type == "delete_package") && strings.EqualFold(stringFromAny(job.Payload["kind"]), "smart"))
+		smartPluginArchiveTask := job.Type == "inspect_plugin_archive" ||
+			(job.Type == "install_mod" && strings.EqualFold(stringFromAny(job.Payload["kind"]), "smart"))
+		if smartPluginArchiveTask && !smartPluginArchiveV2Supported {
+			continue
+		}
+		smartPluginTask := (job.Type == "toggle_package" || job.Type == "delete_package") && strings.EqualFold(stringFromAny(job.Payload["kind"]), "smart")
 		if smartPluginTask && !smartPluginArchiveSupported {
 			continue
 		}

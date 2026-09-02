@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	smartPluginPlanVersion = 1
+	smartPluginPlanVersion = 2
 	maxSmartPluginFolders  = 256
 	maxSmartPluginFiles    = 5000
 	maxSmartPluginEntry    = int64(512 << 20)
@@ -77,6 +77,7 @@ type smartPluginPlan struct {
 	Version       int                 `json:"version"`
 	ArchiveName   string              `json:"archive_name"`
 	ArchiveSHA256 string              `json:"archive_sha256"`
+	PathEncoding  string              `json:"path_encoding"`
 	Fingerprint   string              `json:"fingerprint"`
 	Folders       []smartPluginFolder `json:"folders"`
 	FileCount     int                 `json:"file_count"`
@@ -150,7 +151,7 @@ func (e *Executor) inspectSmartPluginArchive(ctx context.Context, job domain.Job
 	}
 	defer cleanup()
 	progress(20, "extracting plugin archive safely")
-	plan, _, extractedCleanup, err := e.prepareSmartPluginPlan(ctx, archivePath, payload.Name, archiveSHA, instancePath)
+	plan, _, extractedCleanup, err := e.prepareSmartPluginPlan(ctx, archivePath, payload.Name, archiveSHA, payload.PathEncoding, instancePath)
 	if extractedCleanup != nil {
 		defer extractedCleanup()
 	}
@@ -195,7 +196,11 @@ func (e *Executor) stageSmartPluginUpload(jobID, name, encoded string) (string, 
 	return path, hex.EncodeToString(digest[:]), func() { _ = os.Remove(path) }, nil
 }
 
-func (e *Executor) prepareSmartPluginPlan(ctx context.Context, archivePath, archiveName, archiveSHA, instancePath string) (smartPluginPlan, string, func(), error) {
+func (e *Executor) prepareSmartPluginPlan(ctx context.Context, archivePath, archiveName, archiveSHA, pathEncoding, instancePath string) (smartPluginPlan, string, func(), error) {
+	pathEncoding, err := normalizeMapPathEncoding(pathEncoding)
+	if err != nil {
+		return smartPluginPlan{}, "", nil, err
+	}
 	kind, err := detectMapFileKind(archivePath)
 	if err != nil {
 		return smartPluginPlan{}, "", nil, err
@@ -223,6 +228,7 @@ func (e *Executor) prepareSmartPluginPlan(ctx context.Context, archivePath, arch
 	state := &mapArchiveState{
 		Root: extracted, MaxEntries: maxSmartPluginFiles, MaxEntrySize: maxSmartPluginEntry,
 		MaxExpanded: maxSmartPluginExpanded, DiskFreeReserve: 256 << 20, Subject: "plugin",
+		DecodeZIPPaths: true, RequireUTF8Path: true, PathEncoding: pathEncoding,
 	}
 	files, err := extractMapArchive(ctx, archivePath, extracted, kind, state)
 	if err != nil {
@@ -233,7 +239,7 @@ func (e *Executor) prepareSmartPluginPlan(ctx context.Context, archivePath, arch
 		cleanup()
 		return smartPluginPlan{}, "", nil, errors.New("plugin archive contains no regular files")
 	}
-	plan, err := buildSmartPluginPlan(extracted, archiveName, archiveSHA, format, state.Expanded, files, instancePath)
+	plan, err := buildSmartPluginPlan(extracted, archiveName, archiveSHA, pathEncoding, format, state.Expanded, files, instancePath)
 	if err != nil {
 		cleanup()
 		return smartPluginPlan{}, "", nil, err
@@ -241,7 +247,7 @@ func (e *Executor) prepareSmartPluginPlan(ctx context.Context, archivePath, arch
 	return plan, extracted, cleanup, nil
 }
 
-func buildSmartPluginPlan(extracted, archiveName, archiveSHA, format string, expanded int64, files []extractedMapFile, instancePath string) (smartPluginPlan, error) {
+func buildSmartPluginPlan(extracted, archiveName, archiveSHA, pathEncoding, format string, expanded int64, files []extractedMapFile, instancePath string) (smartPluginPlan, error) {
 	groups, err := groupSmartPluginFiles(archiveName, files)
 	if err != nil {
 		return smartPluginPlan{}, err
@@ -249,7 +255,8 @@ func buildSmartPluginPlan(extracted, archiveName, archiveSHA, format string, exp
 	if len(groups) > maxSmartPluginFolders {
 		return smartPluginPlan{}, errors.New("plugin archive contains more than 256 plugin folders")
 	}
-	plan := smartPluginPlan{Version: smartPluginPlanVersion, ArchiveName: archiveName, ArchiveSHA256: archiveSHA, Format: format, ExpandedBytes: expanded}
+	plan := smartPluginPlan{Version: smartPluginPlanVersion, ArchiveName: archiveName, ArchiveSHA256: archiveSHA,
+		PathEncoding: pathEncoding, Format: format, ExpandedBytes: expanded}
 	seenTargets := make(map[string]string)
 	for _, group := range groups {
 		folder := smartPluginFolder{ID: smartStableID("folder", group.name), Name: group.name, SourcePrefix: group.prefix}
@@ -530,7 +537,7 @@ func structToMap(value any) (map[string]any, error) {
 }
 
 func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job, payload operationPayload, archivePath, archiveSHA, instancePath string, progress ProgressFunc) (map[string]any, error) {
-	plan, extracted, cleanup, err := e.prepareSmartPluginPlan(ctx, archivePath, payload.Name, archiveSHA, instancePath)
+	plan, extracted, cleanup, err := e.prepareSmartPluginPlan(ctx, archivePath, payload.Name, archiveSHA, payload.PathEncoding, instancePath)
 	if cleanup != nil {
 		defer cleanup()
 	}

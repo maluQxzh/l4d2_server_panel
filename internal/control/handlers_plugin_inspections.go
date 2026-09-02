@@ -16,13 +16,20 @@ func (s *Server) handleCreatePluginArchiveInspection(w http.ResponseWriter, r *h
 		ContentBase64   string `json:"content_base64"`
 		Source          string `json:"source"`
 		SourceTransport string `json:"source_transport"`
+		PathEncoding    string `json:"path_encoding"`
 	}
 	if !decodeJSONWithLimit(w, r, &request, protocol.MaxPackageUploadEnvelopeBytes) {
+		return
+	}
+	pathEncoding, err := normalizePluginArchivePathEncoding(request.PathEncoding)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_plugin_path_encoding", err.Error())
 		return
 	}
 	payload := map[string]any{
 		"name": strings.TrimSpace(request.Name), "content_base64": request.ContentBase64,
 		"source": strings.TrimSpace(request.Source), "source_transport": strings.TrimSpace(request.SourceTransport),
+		"path_encoding": pathEncoding,
 	}
 	if err := validatePackageUpload(payload); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_plugin_archive", err.Error())
@@ -40,8 +47,8 @@ func (s *Server) handleCreatePluginArchiveInspection(w http.ResponseWriter, r *h
 		return
 	}
 	payload["registered_paths"] = managedPaths
-	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "smart_plugin_archive_v1") {
-		writeError(w, http.StatusConflict, "agent_upgrade_required", "target Agent does not support smart plugin archive inspection")
+	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, protocol.CapabilitySmartPluginArchiveV2) {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "目标 Agent 不支持插件压缩包路径编码，请先升级 Agent")
 		return
 	}
 	if strings.EqualFold(request.SourceTransport, "qq_flash") && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, "qq_flash_plugin_packages_v1") {
@@ -64,7 +71,7 @@ func (s *Server) handleCreatePluginArchiveInspection(w http.ResponseWriter, r *h
 		s.fail(w, err)
 		return
 	}
-	s.audit(r, "plugin_archive.inspection.requested", "instance", instanceID, map[string]any{"job_id": job.ID, "name": request.Name})
+	s.audit(r, "plugin_archive.inspection.requested", "instance", instanceID, map[string]any{"job_id": job.ID, "name": request.Name, "path_encoding": pathEncoding})
 	_, _ = s.events.Publish(r.Context(), Event{Type: "job.queued", ResourceType: "job", ResourceID: job.ID, Data: map[string]any{"job": job}}, true)
 	s.dispatchSoon(job.NodeID)
 	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "idempotent_replay": reused})
@@ -97,6 +104,11 @@ func validateSmartPluginInstallPayload(instance domain.Instance, payload map[str
 	if stringFromAny(payload["source"]) != "" && !strings.EqualFold(stringFromAny(payload["source_transport"]), "qq_flash") {
 		return errors.New("smart plugin installation accepts local uploads or QQ flash archives only")
 	}
+	pathEncoding, err := normalizePluginArchivePathEncoding(stringFromAny(payload["path_encoding"]))
+	if err != nil {
+		return err
+	}
+	payload["path_encoding"] = pathEncoding
 	fingerprint := strings.ToLower(strings.TrimSpace(stringFromAny(payload["inspection_fingerprint"])))
 	if len(fingerprint) != 64 || strings.Trim(fingerprint, "0123456789abcdef") != "" {
 		return errors.New("smart plugin installation requires a valid inspection fingerprint")
@@ -113,4 +125,15 @@ func validateSmartPluginInstallPayload(instance domain.Instance, payload map[str
 		}
 	}
 	return nil
+}
+
+func normalizePluginArchivePathEncoding(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		value = domain.MapPathEncodingAuto
+	}
+	if !domain.ValidMapPathEncoding(value) {
+		return "", errors.New("path_encoding 必须是 auto、utf8、gbk 或 big5")
+	}
+	return value, nil
 }

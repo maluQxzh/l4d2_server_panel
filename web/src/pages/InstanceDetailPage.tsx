@@ -67,7 +67,7 @@ import { buildStartupArgumentPreview, canAccessInstance, lifecycleActionAllowed 
 import { defaultTickrate, gameDifficulties, gameModes, maxTickrate, minTickrate, officialMapGroups } from "../lib/l4d2-options";
 import { filterAndSortPackages, type PackageSort } from "../lib/package-list";
 import { summarizeRecentOperations } from "../lib/recent-operations";
-import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, PackageRecord, Permission, Player, PlayerBan, ScheduleRecord, SmartPluginFilePlan, SmartPluginPlan, SmartPluginSelection } from "../lib/types";
+import type { BackupRecord, BackupUploadRecord, InstanceConfig, InstanceRecord, LogSearchEntry, MapPathEncoding, PackageRecord, Permission, Player, PlayerBan, ScheduleRecord, SmartPluginFilePlan, SmartPluginPlan, SmartPluginSelection } from "../lib/types";
 
 const tabs = [
   { id: "overview", label: "概览", icon: CircleDot, permissions: [] },
@@ -904,6 +904,7 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
   const [transport, setTransport] = useState<"default" | "qq_flash">("default");
   const [source, setSource] = useState("");
   const [upload, setUpload] = useState<{ name: string; size: number; contentBase64: string } | null>(null);
+  const [pathEncoding, setPathEncoding] = useState<MapPathEncoding>("auto");
   const [risk, setRisk] = useState(false);
   const [smartPlan, setSmartPlan] = useState<SmartPluginPlan | null>(null);
   const [smartChoices, setSmartChoices] = useState<Record<string, SmartPluginChoice>>({});
@@ -945,6 +946,7 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
     setSource("");
     setUpload(null);
     setTransport("default");
+    setPathEncoding("auto");
     setRisk(false);
     setSmartPlan(null);
     setSmartChoices({});
@@ -954,10 +956,10 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
     mutationFn: () => {
       if (qqFlashPlugin) {
         if (!source.trim()) throw new ApiError("请先填写 QQ 闪传分享链接", 400, "archive_required");
-        return api.inspectPluginArchive(instance.id, { source: source.trim(), source_transport: "qq_flash" });
+        return api.inspectPluginArchive(instance.id, { source: source.trim(), source_transport: "qq_flash", path_encoding: pathEncoding });
       }
       if (!upload) throw new ApiError("请先选择 ZIP、7Z 或 RAR 压缩包", 400, "archive_required");
-      return api.inspectPluginArchive(instance.id, { name: upload.name, content_base64: upload.contentBase64 });
+      return api.inspectPluginArchive(instance.id, { name: upload.name, content_base64: upload.contentBase64, path_encoding: pathEncoding });
     },
     onSuccess: (plan) => {
       const choices: typeof smartChoices = {};
@@ -992,6 +994,7 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
         source_transport: qqFlashPlugin ? "qq_flash" : undefined,
         name: upload?.name,
         content_base64: upload?.contentBase64,
+        path_encoding: smart ? pathEncoding : undefined,
         acknowledge_native_risk: risk,
         inspection_fingerprint: smartPlan?.fingerprint,
         smart_packages: smartPlan ? selectedSmartFolders.map((folder): SmartPluginSelection => ({
@@ -1026,9 +1029,10 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
   const defaultTransportLabel = smart ? "本机上传" : official ? "官方下载" : "HTTPS / 本机上传";
   return <Modal open={open} onClose={resetAndClose} title={pluginSection ? "安装插件或服务端组件" : "安装模组"} description={smart ? `${qqFlashPlugin ? "通过 QQ 闪传获取" : "上传"} ZIP、7Z 或 RAR；目标 Agent 会先识别每个插件文件夹和目标路径，确认预览后再整批安装。` : (qqFlashVPK || qqFlashPlugin) ? "节点直接从 QQ 闪传暂存并检查完整分享，文件正文不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose}>取消</Button>{smart && !smartPlan ? <Button onClick={() => inspection.mutate()} loading={inspection.isPending} disabled={!smartSourceReady}><Search size={16} />开始识别</Button> : <Button onClick={submitInstall} loading={install.isPending} disabled={primaryDisabled}>{qqFlashVPK || qqFlashPlugin ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlashVPK ? "导入 VPK" : smart ? `安装 ${selectedSmartFolders.length} 个插件` : "提交安装"}</Button>}</>}>
     <div className="form-stack">
-      <Field label="类型"><select value={kind} onChange={(event) => { setKind(event.target.value); setTransport("default"); setSource(""); setUpload(null); clearSmartPlan(); }}>{pluginSection ? <><option value="smart">智能识别</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option></> : <><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="qq_flash">QQ闪传（玩家上传 VPK）</option></>}</select></Field>
-      {pluginSection && <Field label="传输方式"><select value={transport} onChange={(event) => { setTransport(event.target.value as "default" | "qq_flash"); setSource(""); setUpload(null); clearSmartPlan(); }}><option value="default">{defaultTransportLabel}</option><option value="qq_flash">QQ 闪传</option></select></Field>}
+      <Field label="类型"><select value={kind} onChange={(event) => { setKind(event.target.value); setTransport("default"); setSource(""); setUpload(null); setPathEncoding("auto"); clearSmartPlan(); }}>{pluginSection ? <><option value="smart">智能识别</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option></> : <><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="qq_flash">QQ闪传（玩家上传 VPK）</option></>}</select></Field>
+      {pluginSection && <Field label="传输方式"><select value={transport} onChange={(event) => { setTransport(event.target.value as "default" | "qq_flash"); setSource(""); setUpload(null); setPathEncoding("auto"); clearSmartPlan(); }}><option value="default">{defaultTransportLabel}</option><option value="qq_flash">QQ 闪传</option></select></Field>}
       {sourceModBlocked && <div className="form-note"><ShieldAlert size={18} /><span><strong>请先安装 Metamod:Source</strong><small>SourceMod 依赖 Metamod；Metamod 安装并验证成功后才能提交 SourceMod 安装。</small></span></div>}
+      {smart && <Field label="压缩包路径编码" hint="自动模式优先使用 UTF-8，并在 ZIP 旧式文件名无效时回退 GBK；仍不正确时可显式选择原始编码。"><select aria-label="压缩包路径编码" value={pathEncoding} onChange={(event) => { setPathEncoding(event.target.value as MapPathEncoding); clearSmartPlan(); }}><option value="auto">自动（推荐）</option><option value="utf8">UTF-8</option><option value="gbk">GBK（简体中文旧压缩包）</option><option value="big5">Big5（繁体中文旧压缩包）</option></select></Field>}
       {qqFlashVPK ? <>
         <Field label="固定目标目录"><input value="left4dead2/addons" readOnly /></Field>
         <Field label="QQ闪传分享链接" hint="可直接粘贴 QQ 分享文本；支持直接 VPK，以及最多嵌套 3 层的 ZIP、7Z、RAR 压缩包。"><textarea rows={4} value={source} onChange={(event) => setSource(event.target.value)} placeholder="链接：https://qfile.qq.com/q/Example123" spellCheck={false} /></Field>
@@ -1041,7 +1045,7 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
         {canUpload && <Field label={smart ? "插件压缩包" : "从本机上传"} hint={smart ? "支持 ZIP、7Z、RAR；单个文件上限 100 MiB。可包含多个顶层插件文件夹" : "单个文件上限 100 MiB；载荷会加密保存，并只发送给目标节点"}><input type="file" accept={accept} onChange={(event) => { void chooseUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} /></Field>}
         {upload && <div className="binary-file-note"><Upload size={20} /><div><strong>{upload.name}</strong><span>{bytes(upload.size)} · 已准备安全上传</span></div><Button variant="secondary" onClick={() => { setUpload(null); clearSmartPlan(); }}>移除</Button></div>}
         {smartPlan && <div className="smart-plugin-plan">
-          <div className="smart-plugin-plan__summary"><strong>识别完成</strong><span>{smartPlan.format.toUpperCase()} · {smartPlan.folders.length} 个插件文件夹 · {smartPlan.file_count} 个文件 · 解压后 {bytes(smartPlan.expanded_bytes)}</span></div>
+          <div className="smart-plugin-plan__summary"><strong>识别完成</strong><span>{smartPlan.format.toUpperCase()} · 路径编码 {smartPlan.path_encoding.toUpperCase()} · {smartPlan.folders.length} 个插件文件夹 · {smartPlan.file_count} 个文件 · 解压后 {bytes(smartPlan.expanded_bytes)}</span></div>
           {smartPlan.folders.map((folder) => {
             const choice = smartChoices[folder.id];
             if (!choice) return null;

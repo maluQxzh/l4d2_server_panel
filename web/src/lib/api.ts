@@ -301,11 +301,11 @@ export const api = {
     `/instances/${encodeURIComponent(id)}/actions`,
     { method: "POST", body: JSON.stringify({ type, payload }) },
   ),
-  inspectPluginArchive: async (instanceId: string, payload: { name?: string; content_base64?: string; source?: string; source_transport?: "qq_flash" }): Promise<SmartPluginPlan> => {
+  inspectPluginArchive: async (instanceId: string, payload: { name?: string; content_base64?: string; source?: string; source_transport?: "qq_flash"; path_encoding?: MapPathEncoding }): Promise<SmartPluginPlan> => {
     const encodedID = encodeURIComponent(instanceId);
     const created = await request<{ job_id: string }>(`/instances/${encodedID}/plugin-archives/inspections`, {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, path_encoding: payload.path_encoding ?? "auto" }),
     });
     for (let attempt = 0; attempt < 400; attempt += 1) {
       const response = await request<{ status: JobStatus; progress: number; message?: string; error?: string; plan?: SmartPluginPlan }>(

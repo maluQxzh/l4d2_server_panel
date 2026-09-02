@@ -163,7 +163,7 @@ describe("API 客户端", () => {
 
   it("智能插件压缩包通过实例端点识别并返回预览", async () => {
     const plan = {
-      version: 1, archive_name: "plugins.7z", archive_sha256: "a".repeat(64), fingerprint: "b".repeat(64),
+      version: 2, archive_name: "plugins.7z", archive_sha256: "a".repeat(64), path_encoding: "auto", fingerprint: "b".repeat(64),
       folders: [], file_count: 0, expanded_bytes: 0, format: "7z",
     };
     const fetchMock = vi.spyOn(globalThis, "fetch")
@@ -175,7 +175,7 @@ describe("API 客户端", () => {
       "/api/v1/instances/%E5%AE%9E%E4%BE%8B%2F%E4%B8%80/plugin-archives/inspections",
       "/api/v1/instances/%E5%AE%9E%E4%BE%8B%2F%E4%B8%80/plugin-archives/inspections/inspect-1",
     ]);
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ name: "plugins.7z", content_base64: "YWJj" });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ name: "plugins.7z", content_base64: "YWJj", path_encoding: "auto" });
   });
 
 	it("扫描已安装 VPK 使用固定的资源化端点", async () => {

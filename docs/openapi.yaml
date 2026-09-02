@@ -945,10 +945,11 @@ paths:
       tags: [Packages]
       summary: 识别本机上传或 QQ 闪传的插件压缩包
       description: |
-        需要 packages.install 和 smart_plugin_archive_v1 Agent。本机方式仅接受不超过 100 MiB 的 ZIP、7Z 或
+        需要 packages.install 和 smart_plugin_archive_v2 Agent。本机方式仅接受不超过 100 MiB 的 ZIP、7Z 或
         单卷 RAR；qq_flash 方式另需 qq_flash_plugin_packages_v1，分享最多下载 2 GiB 且必须恰好包含一个实际包文件。
         Agent 在实例根之外安全展开并返回按顶层插件文件夹分组的逐文件目标路径预览；
-        不写入实例。TXT、CFG 和无法确定类别的裸 DLL/SO 会标为歧义项并给出受限候选路径。
+        不写入实例。ZIP 路径编码支持 auto、utf8、gbk、big5；auto 优先 UTF-8 并对旧式无效 UTF-8 名称回退 GBK。
+        TXT、CFG 和无法确定类别的裸 DLL/SO 会标为歧义项并给出受限候选路径。
       parameters:
         - { $ref: "#/components/parameters/InstanceID" }
         - { $ref: "#/components/parameters/CSRF" }
@@ -967,6 +968,11 @@ paths:
                 content_base64: { type: string, format: byte, writeOnly: true }
                 source: { type: string, description: QQ 闪传分享链接或包含唯一链接的分享文本, writeOnly: true }
                 source_transport: { type: string, const: qq_flash }
+                path_encoding:
+                  type: string
+                  enum: [auto, utf8, gbk, big5]
+                  default: auto
+                  description: ZIP 内部路径编码；显式 GBK/Big5 可覆盖来源错误设置的 UTF-8 标志。
       responses:
         "202":
           description: 识别任务已排队
@@ -3443,7 +3449,8 @@ components:
         retention_daily、retention_weekly；`restore` 推荐传 backup_id，其内部归档定位符会加密持久化，server.cfg 作为普通可移植配置恢复，中心端 RCON 凭据不会写入文件；`toggle_package` 传 package_id 和布尔 enabled，enabled=false 只允许实例处于 stopped 状态，Control 与 Agent 都会拒绝运行中停用；
         `install_package` 传 kind，以及 source、source_id 或 name + content_base64（原始文件最大 100 MiB）。
         插件类型可传 source_transport=qq_flash 和 source 分享链接，分享必须恰好包含一个实际包文件；
-        kind=smart 仅接受已经识别的本机或 QQ 闪传 ZIP/7Z/RAR，还必须传 inspection_fingerprint 和 smart_packages；
+        kind=smart 仅接受已经识别的本机或 QQ 闪传 ZIP/7Z/RAR，还必须传 inspection_fingerprint、smart_packages
+        以及与识别时相同的 path_encoding；
         每个选择项含 folder_id、可选 package_id（同名已纳管智能插件更新）、歧义路径 overrides 和已有未纳管文件 takeovers；
         takeovers 表示彻底接管并覆盖，安装成功后不保留旧文件，卸载插件时会删除接管文件而不恢复旧内容。
         运行中安装或启用智能插件必须同时传 acknowledge_live_changes=true 与 acknowledge_restart_required=true；停用和删除必须先停服。
@@ -3472,6 +3479,11 @@ components:
         reason: { type: string, maxLength: 200 }
         kind: { type: string }
         inspection_fingerprint: { type: string, pattern: "^[a-f0-9]{64}$" }
+        path_encoding:
+          type: string
+          enum: [auto, utf8, gbk, big5]
+          default: auto
+          description: 智能插件 ZIP 内部路径编码，识别和安装必须相同。
         smart_packages:
           type: array
           minItems: 1
@@ -3701,11 +3713,12 @@ components:
 
     SmartPluginPlan:
       type: object
-      required: [version, archive_name, archive_sha256, fingerprint, folders, file_count, expanded_bytes, format]
+      required: [version, archive_name, archive_sha256, path_encoding, fingerprint, folders, file_count, expanded_bytes, format]
       properties:
         version: { type: integer }
         archive_name: { type: string }
         archive_sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+        path_encoding: { type: string, enum: [auto, utf8, gbk, big5] }
         fingerprint: { type: string, pattern: "^[a-f0-9]{64}$" }
         folders: { type: array, items: { $ref: "#/components/schemas/SmartPluginFolderPlan" } }
         file_count: { type: integer, minimum: 0 }
