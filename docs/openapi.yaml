@@ -916,6 +916,68 @@ paths:
                       items: { $ref: "#/components/schemas/AddonPackage" },
                     }
 
+  /instances/{instanceId}/packages/{packageId}/rename:
+    post:
+      tags: [Packages]
+      summary: 重命名已纳管模组或插件
+      description: >
+        需要 packages.install 和 Agent package_rename_v1。name 修改显示名称；filename 可选，
+        仅支持 vpk/workshop/plugin/smx 的单文件同目录重命名，并要求实例 stopped。
+        文件名须保留原扩展名，禁止路径、Windows 保留名、控制字符、地图保留前缀、覆盖现有文件及仅改变大小写。
+        名称最多 240 个 UTF-8 字节。智能插件和整套 SourceMod/Metamod 仅允许改显示名称。
+        从当前记录生成源路径及版本清单，成功后同步文件路径及版本历史。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { name: packageId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 240 }
+                filename: { type: string, maxLength: 240 }
+      responses:
+        "202":
+          description: 重命名任务已排队或返回同一幂等任务
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/package-operations/{jobId}:
+    get:
+      tags: [Packages]
+      summary: 查询包操作进度及写锁释放状态
+      description: >
+        需要目标实例 packages.read。仅查询属于该实例的 toggle_package、delete_package、rename_package；
+        不返回任务正文、结果、Agent 内部路径或诊断信息。批量界面等待终态且 busy=false 后再提交下一项；
+        终态但投影未完成或取消待确认时 busy 仍为 true。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: 包操作状态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, busy]
+                properties:
+                  status: { type: string, enum: [queued, dispatched, running, succeeded, failed, canceled] }
+                  busy: { type: boolean }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /instances/{instanceId}/packages/scan:
     post:
       tags: [Packages]

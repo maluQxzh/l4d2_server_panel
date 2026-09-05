@@ -271,6 +271,7 @@ var instanceJobPermissions = map[string]Permission{
 	"start":                  PermissionInstancesStart,
 	"stop":                   PermissionInstancesStop,
 	"toggle_package":         PermissionPackagesToggle,
+	"rename_package":         PermissionPackagesInstall,
 	"delete_package":         PermissionPackagesDelete,
 	"unban_player":           PermissionPlayersUnban,
 	// Legacy instance maintenance jobs remain valid for durable job replay and

@@ -43,6 +43,7 @@ import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, Progr
 import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
 import { useToast } from "../context/ToastContext";
+import { PackageBatchControls, RenamePackageModal } from "../components/PackageManagement";
 import { api, ApiError } from "../lib/api";
 import { hasInstancePermission, hasNodePermission } from "../lib/account-permissions";
 import { backupUploadChunkSize, bytesToBase64 as encodeBackupChunk, hashBlobSHA256, readBlobSlice, sha256Hex, validateBackupUploadFile } from "../lib/backup-upload";
@@ -745,6 +746,9 @@ function PackagesTab({ instance, section }: { instance: InstanceRecord; section:
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<PackageSort>("installed_desc");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const canDelete = hasInstancePermission(user, instance, "packages.delete");
   const canRead = hasInstancePermission(user, instance, "packages.read");
   const canInstall = hasInstancePermission(user, instance, "packages.install");
   const canToggle = hasInstancePermission(user, instance, "packages.toggle");
@@ -769,10 +773,10 @@ function PackagesTab({ instance, section }: { instance: InstanceRecord; section:
   const description = pluginSection ? "智能识别 ZIP、7Z、RAR 中的 SourceMod 插件、配置、脚本与原生扩展，也支持 SourceMod/Metamod 整包。" : "支持 VPK、Workshop 项目与合集、QQ闪传批量导入，以及扫描 left4dead2/addons 中已有的 VPK。";
   const installButton = canInstall ? <Button onClick={() => setOpen(true)}><Plus size={16} />安装{noun}</Button> : undefined;
   const headingActions = canInstall ? <div className="package-heading-actions">{!pluginSection && <Button variant="secondary" loading={scan.isPending} onClick={() => scan.mutate()} title="扫描 left4dead2/addons 直属目录中的 VPK"><Search size={16} />扫描已安装</Button>}{installButton}</div> : undefined;
-  return <Card><div className="card-heading"><div><span className="eyebrow">{pluginSection ? "SERVER PLUGINS" : "ADD-ONS"}</span><h2>{pluginSection ? "插件与服务端组件" : "模组"}</h2></div>{headingActions}</div>{canRead && !packages.isPending && !packages.error && sectionItems.length > 0 && <div className="package-toolbar"><div className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`按名称搜索${noun}`} aria-label={`按名称搜索${noun}`} /></div><div className="filter-select"><select value={sort} onChange={(event) => setSort(event.target.value as PackageSort)} aria-label={`${noun}排序`}><option value="installed_desc">添加时间：最新优先</option><option value="installed_asc">添加时间：最早优先</option><option value="name_asc">名称：升序</option><option value="name_desc">名称：降序</option></select></div><span className="toolbar-count">{items.length} / {sectionItems.length}</span></div>}{disablingBlocked && <div className="package-runtime-warning" role="status"><ShieldAlert size={16} /><span>当前实例未停止，不能停用已启用的{noun}；请先停止实例。</span></div>}{!canRead ? <EmptyState title={`${noun}清单已隐藏`} description={`当前账号没有查看${noun}清单的权限，但仍可执行上方单独授予的安装操作。`} /> : packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title={`${noun}清单尚不可用`} description={`当前控制端未开放${noun}清单接口；安装任务仍可通过面板提交。`} /> : items.length ? <div className="package-grid">{items.map((item) => <PackageCard key={item.id} item={item} instance={instance} />)}</div> : sectionItems.length ? <EmptyState title={`没有匹配的${noun}`} description={`请更换搜索名称，当前共纳管 ${sectionItems.length} 个${noun}。`} /> : <EmptyState title={`还没有安装${noun}`} description={description} />}<InstallPackageModal open={canInstall && open} instance={instance} section={section} metamodInstalled={metamodInstalled} smartPackages={sectionItems.filter((item) => item.kind === "smart")} onClose={() => setOpen(false)} /></Card>;
+  return <Card><div className="card-heading"><div><span className="eyebrow">{pluginSection ? "SERVER PLUGINS" : "ADD-ONS"}</span><h2>{pluginSection ? "插件与服务端组件" : "模组"}</h2></div>{headingActions}</div>{canRead && !packages.isPending && !packages.error && sectionItems.length > 0 && <div className="package-toolbar"><div className="search-box"><Search size={16} /><input value={search} disabled={batchBusy} onChange={(event) => { setSearch(event.target.value); setSelected([]); }} placeholder={`按名称搜索${noun}`} aria-label={`按名称搜索${noun}`} /></div><div className="filter-select"><select value={sort} onChange={(event) => setSort(event.target.value as PackageSort)} aria-label={`${noun}排序`}><option value="installed_desc">添加时间：最新优先</option><option value="installed_asc">添加时间：最早优先</option><option value="name_asc">名称：升序</option><option value="name_desc">名称：降序</option></select></div><span className="toolbar-count">{items.length} / {sectionItems.length}</span></div>}{canRead && <PackageBatchControls instance={instance} items={items} selected={selected} setSelected={setSelected} canToggle={canToggle} canDelete={canDelete} busy={batchBusy} setBusy={setBatchBusy} />}{disablingBlocked && <div className="package-runtime-warning" role="status"><ShieldAlert size={16} /><span>当前实例未停止，不能停用已启用的{noun}；请先停止实例。</span></div>}{!canRead ? <EmptyState title={`${noun}清单已隐藏`} description={`当前账号没有查看${noun}清单的权限，但仍可执行上方单独授予的安装操作。`} /> : packages.isPending ? <LoadingBlock /> : packages.error ? <OptionalUnavailable error={packages.error} title={`${noun}清单尚不可用`} description={`当前控制端未开放${noun}清单接口；安装任务仍可通过面板提交。`} /> : items.length ? <div className="package-grid">{items.map((item) => <PackageCard key={item.id} item={item} instance={instance} busy={batchBusy} selected={selected.includes(item.id)} onSelect={canToggle || canDelete ? (checked) => setSelected((ids) => checked ? [...ids, item.id] : ids.filter((id) => id !== item.id)) : undefined} />)}</div> : sectionItems.length ? <EmptyState title={`没有匹配的${noun}`} description={`请更换搜索名称，当前共纳管 ${sectionItems.length} 个${noun}。`} /> : <EmptyState title={`还没有安装${noun}`} description={description} />}<InstallPackageModal open={canInstall && open} instance={instance} section={section} metamodInstalled={metamodInstalled} smartPackages={sectionItems.filter((item) => item.kind === "smart")} onClose={() => setOpen(false)} /></Card>;
 }
 
-function PackageCard({ item, instance }: { item: PackageRecord; instance: InstanceRecord }) {
+function PackageCard({ item, instance, busy, selected: checked, onSelect }: { item: PackageRecord; instance: InstanceRecord; busy: boolean; selected: boolean; onSelect?: (checked: boolean) => void }) {
   const { user } = useAuth();
   const instanceId = instance.id;
   const canToggle = hasInstancePermission(user, instance, "packages.toggle");
@@ -782,6 +786,8 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
   const client = useQueryClient();
   const [selectedVersion, setSelectedVersion] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const canRename = hasInstancePermission(user, instance, "packages.install");
   const [editor, setEditor] = useState<FileEditorTarget | null>(null);
   const toggle = useMutation({ mutationFn: (liveAcknowledged: boolean) => api.instanceAction(instanceId, "toggle_package", { package_id: item.id, enabled: !item.enabled, acknowledge_live_changes: liveAcknowledged, acknowledge_restart_required: liveAcknowledged }), onSuccess: () => { toast.push(item.enabled ? "组件停用任务已提交" : "组件启用任务已提交"); void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages"] }); }, onError: (error) => toast.push(error.message, "error") });
   const toggleable = item.kind === "smart" || /\.(?:vpk|smx)$/i.test(item.path || "");
@@ -822,11 +828,12 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
     onError: (error) => toast.push(error.message, "error"),
   });
   const selected = versions.data?.items.find((version) => version.id === selectedVersion);
-  return <><div className="package-card">
-    <div className={`package-icon package-icon--${item.kind}`}><PackageOpen size={20} /></div>
+  return <><fieldset disabled={busy} className={`package-card ${checked ? "package-card--selected" : ""}`}>
+    <div className={`package-icon package-icon--${item.kind}`}>{onSelect ? <input type="checkbox" checked={checked} aria-label={`选择 ${item.name}`} onChange={(event) => onSelect(event.target.checked)} /> : <PackageOpen size={20} />}</div>
     <button type="button" className="package-card__identity" onClick={() => setDetailsOpen(true)} aria-label={`查看 ${item.name} 详情`}><strong>{item.name}</strong><span>{item.kind === "smart" ? `智能识别 · ${item.file_count || 0} 个文件` : `${item.kind.toUpperCase()} · ${item.version || "版本未知"}`}</span>{item.sha256 && <code>{item.sha256.slice(0, 16)}…</code>}{item.restart_required && <span className="package-restart-required">需要重启实例完成加载</span>}<span className="package-card__detail-hint">查看详情 <ChevronRight size={12} /></span></button>
     <div className="package-card__controls">
       <div className="package-card__actions">
+        {canRename && <button type="button" className="package-rollback-button" aria-label={`重命名 ${item.name}`} disabled={remove.isPending || toggle.isPending} onClick={() => setRenameOpen(true)}>重命名</button>}
         {toggleable && canToggle ? <button className={`switch ${item.enabled ? "switch--on" : ""}`} disabled={toggle.isPending || remove.isPending || disablingBlocked} title={disablingBlocked ? "请先停止实例，再停用组件" : undefined} onClick={() => {
           if (item.kind === "smart" && !item.enabled && instance.status !== "stopped") {
             if (!window.confirm("实例正在运行。现在启用只会移动插件入口文件，已加载模块不会立刻变化。仍要继续吗？")) return;
@@ -850,7 +857,7 @@ function PackageCard({ item, instance }: { item: PackageRecord; instance: Instan
         }}><RotateCcw size={13} />{rollback.isPending ? "提交中" : "回退"}</button>
       </div> : canRollback && rollbackable && versions.error ? <small className="package-version-error">版本历史暂不可用</small> : null}
     </div>
-  </div><PackageDetailsModal open={detailsOpen} item={item} instance={instance} onClose={() => setDetailsOpen(false)} onEdit={(file) => {
+  </fieldset>{renameOpen && <RenamePackageModal instance={instance} item={item} onClose={() => setRenameOpen(false)} />}<PackageDetailsModal open={detailsOpen} item={item} instance={instance} onClose={() => setDetailsOpen(false)} onEdit={(file) => {
     setDetailsOpen(false);
     setEditor({ path: file.path, isNew: false, packageId: item.id, packageName: item.name });
   }} /><FileEditorModal instance={instance} editor={editor} onClose={() => {

@@ -237,6 +237,8 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 		return e.deleteInstance(ctx, job, action == "detach", progress)
 	case "install_mod", "install_package":
 		return e.installMod(ctx, job, progress)
+	case "rename_package":
+		return e.renamePackage(ctx, job, progress)
 	case "toggle_package":
 		return e.togglePackage(ctx, job, progress)
 	case "delete_package":
@@ -298,6 +300,8 @@ func normalizeJobType(value string) string {
 		return "install_mod"
 	case "package.install", "install.package":
 		return "install_package"
+	case "package.rename", "rename.package":
+		return "rename_package"
 	case "package.toggle", "toggle.addon", "toggle.package":
 		return "toggle_package"
 	case "package.delete", "delete.addon", "delete.package":

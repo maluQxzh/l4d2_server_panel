@@ -56,7 +56,7 @@ func requiresDeferredJobProjection(jobType string, payload map[string]any, statu
 			"configure", "game.install", "game.import", "game.validate", "game.update", "game.delete",
 			"start", "restart", "stop", "install", "import", "update", "validate", "a2s.info", "check_update",
 			"backup.upload.chunk", "backup.upload.abort", "backup", "plugin.backup", "backup.delete", "install_mod", "scan_packages",
-			"rollback_package", "toggle_package", "delete_package", "ban_player", "unban_player", "delete", "detach",
+			"rollback_package", "toggle_package", "rename_package", "delete_package", "ban_player", "unban_player", "delete", "detach",
 			"purge_quarantine":
 			return true
 		case "file":

@@ -585,6 +585,14 @@ h1, h2, h3, p { margin-top: 0; }
 .package-grid { padding: 15px; display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .package-heading-actions { display: flex; align-items: center; gap: 8px; }
 .package-toolbar { min-height: 54px; padding: 8px 15px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line-soft); }
+.package-batch { padding: 12px 15px; border-bottom: 1px solid var(--line-soft); font-size: 12px; }
+.package-batch__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.package-batch__actions label { display: inline-flex; align-items: center; gap: 6px; }
+.package-batch p { color: var(--text-faint); overflow-wrap: anywhere; }
+.package-batch details { margin-top: 10px; max-height: 220px; overflow: auto; overflow-wrap: anywhere; }
+.package-card--selected { outline: 1px solid var(--blue); }
+fieldset.package-card { min-width: 0; margin: 0; }
+.package-icon input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
 .package-runtime-warning { min-height: 40px; padding: 9px 15px; display: flex; align-items: center; gap: 8px; color: var(--orange); background: var(--orange-soft); border-bottom: 1px solid rgba(229,169,63,.18); font-size: 10px; }
 .package-runtime-warning svg { flex: 0 0 auto; }
 .package-card { min-height: 70px; padding: 11px; display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 10px; background: rgba(255,255,255,.018); border: 1px solid var(--line-soft); border-radius: 8px; }

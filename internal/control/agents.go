@@ -724,6 +724,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, legacyQQFlashPackageSupported := client.capabilities["qq_flash_package_v1"]
 		_, qqFlashPackageSupported := client.capabilities["qq_flash_vpk_packages_v2"]
 		_, packageDeleteSupported := client.capabilities["package_delete_v1"]
+		_, packageRenameSupported := client.capabilities["package_rename_v1"]
 		_, backupDeleteSupported := client.capabilities["backup_delete_v1"]
 		_, pluginBackupSupported := client.capabilities["plugin_backup_7z_v1"]
 		_, componentPackageDeleteSupported := client.capabilities["component_package_delete_v1"]
@@ -755,6 +756,9 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		if job.Type == "qq_flash_import" && ((managedQQFlashImport && !qqFlashPackageSupported) || (!managedQQFlashImport && !legacyQQFlashPackageSupported)) {
 			// A queued import may outlive a temporary Agent rollback. Keep the
 			// expiring share intent durable until a compatible Agent reconnects.
+			continue
+		}
+		if job.Type == "rename_package" && !packageRenameSupported {
 			continue
 		}
 		if job.Type == "delete_package" && !packageDeleteSupported {
@@ -931,7 +935,7 @@ func (h *AgentHub) dispatchPendingCancellation(ctx context.Context, client *agen
 
 func jobChangesInstance(jobType string) bool {
 	switch jobType {
-	case "start", "stop", "restart", "install", "import", "restore", "configure", "update", "validate", "a2s.info", "delete", "detach", "install_mod", "toggle_package", "rollback_package", "delete_package", "qq_flash_import", "scan_packages":
+	case "start", "stop", "restart", "install", "import", "restore", "configure", "update", "validate", "a2s.info", "delete", "detach", "install_mod", "toggle_package", "rename_package", "rollback_package", "delete_package", "qq_flash_import", "scan_packages":
 		return true
 	default:
 		return false

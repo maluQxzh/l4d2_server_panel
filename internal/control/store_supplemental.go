@@ -835,6 +835,8 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		return s.applyInstalledPackageScanResult(ctx, job)
 	case "rollback_package":
 		return s.applyPackageRollbackResult(ctx, job)
+	case "rename_package":
+		return s.applyPackageRenameResult(ctx, job)
 	case "toggle_package":
 		packageID := stringFromAny(job.Payload["package_id"])
 		enabled, _ := job.Payload["enabled"].(bool)

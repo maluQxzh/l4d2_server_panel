@@ -172,7 +172,15 @@ func (s *Store) applyInstalledPackageScanResult(ctx context.Context, job domain.
 		return err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT path FROM addon_packages WHERE instance_id=?1`, job.InstanceID)
+	// Scans do not take the instance write barrier. Reserve both sides of a
+	// concurrent rename, including a rename completed since this scan was
+	// queued, so a delayed inventory cannot resurrect its old path or duplicate
+	// the new file before the rename projection commits.
+	rows, err := tx.QueryContext(ctx, `SELECT path FROM addon_packages WHERE instance_id=?1
+		UNION SELECT json_extract(payload,'$.path') FROM jobs WHERE instance_id=?1 AND type='rename_package'
+		AND (holds_instance_write_lock=1 OR (status='succeeded' AND finished_at>=?2))
+		UNION SELECT json_extract(payload,'$.target_path') FROM jobs WHERE instance_id=?1 AND type='rename_package'
+		AND (holds_instance_write_lock=1 OR (status='succeeded' AND finished_at>=?2))`, job.InstanceID, job.CreatedAt)
 	if err != nil {
 		return err
 	}

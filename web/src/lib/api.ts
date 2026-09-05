@@ -382,6 +382,13 @@ export const api = {
     `/instances/${encodeURIComponent(instanceId)}/packages/${encodeURIComponent(packageId)}/versions/${encodeURIComponent(versionId)}/rollback`,
     { method: "POST" },
   ),
+  renamePackage: (instanceId: string, packageId: string, payload: { name: string; filename?: string }) => request<{ job_id: string }>(
+    `/instances/${encodeURIComponent(instanceId)}/packages/${encodeURIComponent(packageId)}/rename`,
+    { method: "POST", body: JSON.stringify(payload) },
+  ),
+  packageOperationStatus: (instanceId: string, jobId: string) => request<{ status: JobStatus; busy: boolean }>(
+    `/instances/${encodeURIComponent(instanceId)}/package-operations/${encodeURIComponent(jobId)}`,
+  ),
   deletePackage: (instanceId: string, packageId: string) => request<{ job_id: string }>(
     `/instances/${encodeURIComponent(instanceId)}/packages/${encodeURIComponent(packageId)}`,
     { method: "DELETE" },

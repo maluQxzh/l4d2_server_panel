@@ -58,6 +58,54 @@ function json(route: Route, body: unknown, status = 200) {
   return route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
 
+test("模组多选批量开关、搜索选择、重命名与批量删除", async ({ page }) => {
+  await authenticated(page);
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, status: "stopped" } }));
+  await page.route("**/api/v1/instances/instance-1/metrics**", (route) => json(route, { items: [] }));
+  let packages = ["alpha", "beta"].map((name) => ({ id: name, name, kind: "vpk", enabled: true, path: `left4dead2/addons/${name}.vpk`, sha256: "a".repeat(64), installed_at: "2026-09-01T00:00:00Z" }));
+  const toggled: string[] = [];
+  await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: packages }));
+  await page.route("**/api/v1/instances/instance-1/packages/*/versions", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/instances/instance-1/actions", (route) => {
+    const body = route.request().postDataJSON();
+    toggled.push(body.payload.package_id);
+    packages = packages.map((item) => item.id === body.payload.package_id ? { ...item, enabled: body.payload.enabled } : item);
+    return json(route, { job_id: "toggle-job" }, 202);
+  });
+  await page.route("**/api/v1/instances/instance-1/package-operations/*", (route) => json(route, { status: "succeeded", busy: false }));
+  await page.route("**/api/v1/instances/instance-1/packages/*/rename", (route) => {
+    const body = route.request().postDataJSON();
+    packages = packages.map((item) => item.id === "alpha" ? { ...item, name: body.name, path: `left4dead2/addons/${body.filename}` } : item);
+    return json(route, { job_id: "rename-job" }, 202);
+  });
+  await page.route("**/api/v1/instances/instance-1/packages/*", (route) => {
+    if (route.request().method() !== "DELETE") return route.fallback();
+    packages = packages.filter((item) => !route.request().url().endsWith(`/${item.id}`));
+    return json(route, { job_id: "delete-job" }, 202);
+  });
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.goto("/instances/instance-1?tab=mods");
+  await page.getByRole("checkbox", { name: "全选当前结果" }).check();
+  await page.getByRole("button", { name: "批量停用", exact: true }).click();
+  await expect(page.getByText(/批量操作结束：成功 2 项/)).toBeVisible();
+  expect(toggled.sort()).toEqual(["alpha", "beta"]);
+  await page.getByLabel("按名称搜索模组").fill("alpha");
+  await page.getByRole("checkbox", { name: "全选当前结果" }).check();
+  await expect(page.getByText("已选 1 项")).toBeVisible();
+  await page.getByLabel("按名称搜索模组").fill("");
+  await expect(page.getByText("已选 0 项")).toBeVisible();
+  await page.getByRole("button", { name: "重命名 alpha", exact: true }).click();
+  await page.getByLabel("显示名称", { exact: true }).fill("自定义模组");
+  await page.getByLabel("文件名", { exact: true }).fill("custom.vpk");
+  await page.getByRole("button", { name: "保存名称" }).click();
+  await expect(page.getByRole("button", { name: "查看 自定义模组 详情" })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("package-multi-select.png"), fullPage: true });
+  await page.getByRole("checkbox", { name: "全选当前结果" }).check();
+  await page.getByRole("button", { name: "批量删除" }).click();
+  await expect(page.getByText("还没有安装模组")).toBeVisible();
+  expect(packages).toHaveLength(0);
+});
+
 test("创建一次性节点注册令牌", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/nodes", (route) => json(route, { items: [] }));
@@ -718,7 +766,7 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
   await page.getByLabel("类型").selectOption("metamod_url");
   await page.getByLabel("传输方式").selectOption("qq_flash");
   await page.getByLabel("QQ 闪传分享链接").fill("QQ 分享：https://qfile.qq.com/q/PluginPackage1");
-  await page.getByRole("checkbox").check();
+  await page.getByRole("dialog").getByRole("checkbox", { name: /我了解第三方原生代码风险/ }).check();
   await page.getByRole("button", { name: "提交安装" }).click();
   await expect.poll(() => actions.some((item) => item.type === "install_package" && item.payload?.kind === "metamod_url" && item.payload?.source_transport === "qq_flash")).toBeTruthy();
 

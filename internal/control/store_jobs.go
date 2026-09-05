@@ -126,6 +126,12 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 		}
 		return domain.Job{}, false, err
 	}
+	if action == "rename_package" {
+		payload, err = packageRenamePayload(ctx, tx, instanceID, instanceStatus, payload)
+		if err != nil {
+			return domain.Job{}, false, err
+		}
+	}
 	if action == "toggle_package" {
 		enabled, ok := payload["enabled"].(bool)
 		if !ok {
