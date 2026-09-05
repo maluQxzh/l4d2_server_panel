@@ -1,3 +1,4 @@
+import { dropFile } from "./file-drop";
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { createHash } from "node:crypto";
 
@@ -57,6 +58,58 @@ async function authenticated(page: Page, user = owner) {
 function json(route: Route, body: unknown, status = 200) {
   return route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
+
+test("拖拽模组、插件压缩包和实例文件复用现有上传流程", async ({ page }) => {
+  await authenticated(page);
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, status: "stopped" } }));
+  await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/instances/instance-1/files?**", (route) => json(route, { items: [] }));
+  let install: Record<string, unknown> | undefined;
+  let inspection: Record<string, unknown> | undefined;
+  let content: Record<string, unknown> | undefined;
+  await page.route("**/api/v1/instances/instance-1/actions", (route) => {
+    install = route.request().postDataJSON().payload;
+    return json(route, { job_id: "install" }, 202);
+  });
+  await page.route("**/api/v1/instances/instance-1/plugin-archives/inspections", (route) => {
+    inspection = route.request().postDataJSON();
+    return json(route, { error: { message: "测试包无插件内容", code: "invalid_archive" } }, 400);
+  });
+  await page.route("**/api/v1/instances/instance-1/files/content?**", (route) => {
+    content = route.request().postDataJSON();
+    expect(new URL(route.request().url()).searchParams.get("path")).toBe("left4dead2/cfg/drag.cfg");
+    return json(route, { job_id: "file" }, 202);
+  });
+  await page.goto("/instances/instance-1?tab=mods");
+  await page.getByRole("button", { name: "安装模组", exact: true }).click();
+  let dialog = page.getByRole("dialog");
+  await dialog.getByLabel("类型").selectOption("vpk_url");
+  await dropFile(page, dialog.getByTestId("file-dropzone"), { name: "拖拽模组.vpk", mimeType: "", buffer: Buffer.from("vpk-content") });
+  await expect(dialog.getByText("已选择：拖拽模组.vpk")).toBeVisible();
+  await expect.poll(() => install).toBeUndefined(); // Selection does not submit.
+  await dialog.getByRole("button", { name: "提交安装" }).click();
+  await expect.poll(() => install).toMatchObject({ name: "拖拽模组.vpk", content_base64: Buffer.from("vpk-content").toString("base64") });
+
+  await page.getByRole("button", { name: "插件", exact: true }).click();
+  await page.getByRole("button", { name: "安装插件", exact: true }).click();
+  dialog = page.getByRole("dialog");
+  await dropFile(page, dialog.getByTestId("file-dropzone"), { name: "plugins.7z", mimeType: "", buffer: Buffer.from("plugin-content") });
+  await expect(dialog.getByText("已选择：plugins.7z")).toBeVisible();
+  await dialog.getByRole("button", { name: "开始识别" }).click();
+  await expect.poll(() => inspection).toMatchObject({ name: "plugins.7z", content_base64: Buffer.from("plugin-content").toString("base64") });
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+
+  await page.goto("/instances/instance-1?tab=files");
+  await page.getByRole("button", { name: "cfg", exact: true }).click();
+  await page.getByRole("button", { name: "上传或新建", exact: true }).click();
+  dialog = page.getByRole("dialog");
+  await dropFile(page, dialog.getByTestId("file-dropzone"), { name: "drag.cfg", mimeType: "text/plain", buffer: Buffer.from("hostname test") });
+  await expect(dialog.getByLabel("文件内容")).toHaveValue("hostname test");
+  await expect(dialog.getByLabel("实例内相对路径")).toHaveValue("left4dead2/cfg/drag.cfg");
+  await page.screenshot({ path: test.info().outputPath("file-dropzone.png"), fullPage: true });
+  await dialog.getByRole("button", { name: "提交写入" }).click();
+  await expect.poll(() => content).toMatchObject({ content: "hostname test" });
+});
 
 test("模组多选批量开关、搜索选择、重命名与批量删除", async ({ page }) => {
   await authenticated(page);
@@ -1015,7 +1068,7 @@ test("停止实例可串行分块上传跨节点备份并排队恢复", async ({
   await page.goto("/instances/instance-1?tab=backups");
   await page.getByRole("button", { name: "上传并恢复" }).click();
   const dialog = page.getByRole("dialog", { name: "上传备份并恢复" });
-  await dialog.getByLabel("ZIP 备份文件").setInputFiles({ name: "cross-node.zip", mimeType: "application/zip", buffer: archive });
+  await dropFile(page, dialog.getByTestId("file-dropzone"), { name: "cross-node.zip", mimeType: "application/zip", buffer: archive });
   await dialog.getByLabel("备份来源平台").selectOption("windows/amd64");
   await dialog.getByRole("button", { name: "开始上传并恢复" }).click();
 

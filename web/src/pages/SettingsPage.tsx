@@ -6,6 +6,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, StatusBadge } from "../components/ui";
+import { FileUploadInput } from "../components/FileUploadInput";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import { hasAnyPermission, hasGlobalPermission, hasInstancePermission, hasNodePermission, hasRootSecurityPermission, normalizePermissionsAtScope, permissionAllowedAtScope, permissionCatalog, rolePresetPermissions, tokenScopesForGlobal, tokenScopesForInstance, tokenScopesForNode } from "../lib/account-permissions";
@@ -141,7 +142,7 @@ function CenterUpdateCard() {
     <div className="section-heading"><div><h2>中心端升级</h2><p>当前版本 {overview.data.current_version} · {dockerDeployment ? "仅接受与 Docker 主机架构匹配的中心端 .tar.gz 镜像包" : "仅接受可信来源的 Windows x64 便携 ZIP"}，不验证发布者签名。</p></div><DownloadCloud size={22} /></div>
     <Card><div className="center-update-panel">
       <div className="center-update-picker">
-        <Field label="升级包" hint={`${!currentVersionIsOrdered ? "开发版本可替换为其他开发构建或正式版本" : "允许升级或同版本重装，禁止降级"}；最大 ${dockerDeployment ? "1 GiB" : "512 MiB"}`}><input type="file" accept={packageFormat === "tar.gz" ? ".tar.gz,application/gzip,application/x-gzip" : ".zip,application/zip"} disabled={busy} onChange={(event) => { setFile(event.target.files?.[0] || null); setUploadProgress(0); }} /></Field>
+        <Field label="升级包" hint={`${!currentVersionIsOrdered ? "开发版本可替换为其他开发构建或正式版本" : "允许升级或同版本重装，禁止降级"}；最大 ${dockerDeployment ? "1 GiB" : "512 MiB"}`}><FileUploadInput label="升级包" accept={packageFormat === "tar.gz" ? ".tar.gz,application/gzip,application/x-gzip" : ".zip,application/zip"} minBytes={1} maxBytes={dockerDeployment ? 1024 ** 3 : 512 * 1024 ** 2} fileName={file?.name || ""} disabled={busy} onFile={(selected) => { setFile(selected); setUploadProgress(0); }} /></Field>
         <Button disabled={!file || busy} loading={upload.isPending} onClick={() => { if (file && window.confirm(`确认使用“${file.name}”升级中心端？${dockerDeployment ? "容器镜像将获得 Docker Socket 的宿主机高权限；" : ""}服务会短暂离线，失败时将自动完整回滚。`)) upload.mutate(); }}><RefreshCw size={16} />一键升级</Button>
       </div>
       {upload.isPending && <div className="center-update-progress" role="progressbar" aria-valuenow={uploadProgress}><span style={{ width: `${uploadProgress}%` }} /><small>正在上传 {uploadProgress}%</small></div>}

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RealtimeProvider } from "../context/RealtimeContext";
@@ -113,7 +113,7 @@ async function inspectSmartPlugin(plan: SmartPluginPlan, packages: PackageRecord
   Object.defineProperty(archive, "arrayBuffer", { value: async () => new Uint8Array([0x37, 0x7a]).buffer });
   const fileInput = screen.getByRole("dialog").querySelector<HTMLInputElement>('input[type="file"]');
   if (!fileInput) throw new Error("smart plugin upload input is missing");
-  fireEvent.change(fileInput, { target: { files: [archive] } });
+  await act(async () => { fireEvent.change(fileInput, { target: { files: [archive] } }); });
   await screen.findByText("plugins.7z");
   fireEvent.click(screen.getByRole("button", { name: "开始识别" }));
   await screen.findByText("识别完成");

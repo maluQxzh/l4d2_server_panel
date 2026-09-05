@@ -1,3 +1,4 @@
+import { dropFile } from "./file-drop";
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 const owner = {
@@ -57,7 +58,7 @@ test("所有者上传便携 ZIP 后可跨短暂断线等待升级成功", async 
 
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: "中心端升级" })).toBeVisible();
-  await page.getByLabel("升级包").setInputFiles({ name: "upgrade.zip", mimeType: "application/zip", buffer: Buffer.from("trusted-test-package") });
+  await dropFile(page, page.getByTestId("file-dropzone"), { name: "upgrade.zip", mimeType: "application/zip", buffer: Buffer.from("trusted-test-package") });
   await page.getByRole("button", { name: "一键升级" }).click();
 
   await expect.poll(() => uploadSeen).toBeTruthy();
@@ -112,6 +113,12 @@ test("Docker 开发构建允许上传其他开发或正式镜像", async ({ page
   await page.goto("/settings");
   await expect(page.getByText("开发版本可替换为其他开发构建或正式版本；最大 1 GiB")).toBeVisible();
   await expect(page.getByLabel("升级包")).toHaveAttribute("accept", ".tar.gz,application/gzip,application/x-gzip");
+  await dropFile(page, page.getByTestId("file-dropzone"), { name: "wrong.zip", mimeType: "application/zip", buffer: Buffer.from("archive") });
+  await expect(page.getByRole("alert")).toContainText("不支持此文件类型");
+  await expect(page.getByRole("button", { name: "一键升级" })).toBeDisabled();
+  await dropFile(page, page.getByTestId("file-dropzone"), { name: "control.tar.gz", mimeType: "", buffer: Buffer.from("archive") });
+  await expect(page.getByText("已选择：control.tar.gz")).toBeVisible();
+  await expect(page.getByRole("button", { name: "一键升级" })).toBeEnabled();
 });
 
 test("Windows 开发构建允许上传其他开发或正式 ZIP", async ({ page }) => {
