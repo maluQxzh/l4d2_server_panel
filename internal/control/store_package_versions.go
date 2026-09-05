@@ -882,8 +882,9 @@ func deletePrunedPackageVersions(ctx context.Context, tx *sql.Tx, packageID stri
 }
 
 func pruneStoredPackageVersions(ctx context.Context, tx *sql.Tx, packageID string) error {
+	// SQLite requires LIMIT with OFFSET; -1 selects every row after the newest three.
 	_, err := tx.ExecContext(ctx, `DELETE FROM addon_package_versions WHERE id IN (
-		SELECT id FROM addon_package_versions WHERE package_id=?1 ORDER BY created_at DESC,id DESC OFFSET 3
+		SELECT id FROM addon_package_versions WHERE package_id=?1 ORDER BY created_at DESC,id DESC LIMIT -1 OFFSET 3
 	)`, packageID)
 	return err
 }
