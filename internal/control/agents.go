@@ -705,6 +705,14 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		return
 	}
 	for _, job := range jobs {
+		if job.Status == domain.JobCanceled {
+			// Cancellation uses only the base protocol and a job ID. An Agent
+			// rollback must not strand cancel_pending behind execution capabilities.
+			if err := h.dispatchPendingCancellation(ctx, client, nodeID, job.ID); err != nil {
+				return
+			}
+			continue
+		}
 		client.mu.Lock()
 		_, sent := client.sent[job.ID]
 		_, canceled := client.canceled[job.ID]
@@ -728,7 +736,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, mapImportV2Supported := client.capabilities["map_import_v2"]
 		_, mapHotReloadSupported := client.capabilities["map_hot_reload_v1"]
 		client.mu.Unlock()
-		if job.Status != domain.JobCanceled && (sent || canceled) {
+		if sent || canceled {
 			continue
 		}
 		if environmentJobTypes[job.Type] && !runtimeEnvironmentSupported {
@@ -809,34 +817,6 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 				// that predates absolute-path installation support.
 				continue
 			}
-		}
-		if job.Status == domain.JobCanceled {
-			// A cancel_pending row is the durable cancellation outbox. Re-send it
-			// on every dispatch pass (and after reconnect) until the Agent reports
-			// its real terminal outcome and the marker is cleared. This closes the
-			// MarkDispatched-before-WebSocket-write gap without guessing whether
-			// the Agent ever claimed the operation.
-			envelope, envelopeErr := protocol.NewEnvelope(protocol.TypeJobCancel, nodeID, job.ID, nil)
-			if envelopeErr != nil {
-				return
-			}
-			client.mu.Lock()
-			// Re-read while holding the same connection write lock used by the
-			// terminal acknowledgement. If a stale dispatch snapshot races a
-			// late success, either this check observes the terminal DB state and
-			// skips, or the cancel frame is ordered on the wire before its ACK.
-			current, currentErr := h.store.GetJob(ctx, job.ID)
-			cancelStillPending, _ := current.Result["cancel_pending"].(bool)
-			if currentErr != nil || current.Status != domain.JobCanceled || !cancelStillPending {
-				client.mu.Unlock()
-				continue
-			}
-			writeErr := client.writeJSONLocked(envelope)
-			client.mu.Unlock()
-			if writeErr != nil {
-				return
-			}
-			continue
 		}
 		outbound := job
 		outbound.Payload = cloneMap(job.Payload)
@@ -927,6 +907,26 @@ func cloneMap(source map[string]any) map[string]any {
 
 func isTerminalJobStatus(status domain.JobStatus) bool {
 	return status == domain.JobSucceeded || status == domain.JobFailed || status == domain.JobCanceled
+}
+
+func (h *AgentHub) dispatchPendingCancellation(ctx context.Context, client *agentConnection, nodeID, jobID string) error {
+	envelope, err := protocol.NewEnvelope(protocol.TypeJobCancel, nodeID, jobID, nil)
+	if err != nil {
+		return err
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	// Re-read under the connection write lock used by ACKs. A stale snapshot
+	// must never send a cancellation after the final acknowledgement.
+	current, err := h.store.GetJob(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	pending, _ := current.Result["cancel_pending"].(bool)
+	if current.NodeID != nodeID || current.Status != domain.JobCanceled || !pending {
+		return nil
+	}
+	return client.writeJSONLocked(envelope)
 }
 
 func jobChangesInstance(jobType string) bool {

@@ -26,7 +26,7 @@ func (s *Store) ApplyPendingJobProjection(ctx context.Context, id string) (domai
 	if err != nil {
 		return domain.Job{}, false, err
 	}
-	if !jobProjectionPending(current) {
+	if !jobProjectionPending(current) || !settledTerminalJob(current) {
 		return current, false, nil
 	}
 	cleanedPayload, payloadChanged := scrubTerminalJobPayload(current.Payload)
@@ -88,4 +88,31 @@ func (s *Store) ApplyPendingJobProjection(ctx context.Context, id string) (domai
 		return domain.Job{}, false, err
 	}
 	return projected, true, nil
+}
+
+// PendingJobProjectionIDs reads only IDs so large terminal results are loaded
+// one at a time. A keyset cursor prevents permanently failing old projections
+// from starving the rest of the outbox. Cancellation still requires the Agent.
+func (s *Store) PendingJobProjectionIDs(ctx context.Context, afterID string, limit int) ([]string, error) {
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM jobs WHERE id>?1
+		AND status IN ('succeeded','failed','canceled')
+		AND COALESCE(json_extract(result,'$.cancel_pending'),0)<>1
+		AND json_extract(result,'$._projection_pending')=1
+		ORDER BY id LIMIT ?2`, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]string, 0, limit)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }

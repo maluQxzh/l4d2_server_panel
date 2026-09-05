@@ -170,6 +170,9 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 		job.InstallationID, job.Type, job.Status, string(raw), job.IdempotencyKey, nullableUUID(job.RequestedBy), job.CreatedAt, requestFingerprint)
 	if err != nil {
 		if isSQLiteConstraint(err) {
+			if busyErr := instanceJobWriteConflict(ctx, tx, instanceID, action, payload); busyErr != nil {
+				return domain.Job{}, false, busyErr
+			}
 			return domain.Job{}, false, ErrConflict
 		}
 		return domain.Job{}, false, err

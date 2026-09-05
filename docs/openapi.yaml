@@ -2606,7 +2606,11 @@ components:
             { schema: { $ref: "#/components/schemas/ErrorResponse" } },
         }
     Conflict:
-      description: 版本、端口、任务锁、状态或传输源发生冲突
+      description: >-
+        版本、端口、任务锁、状态或传输源发生冲突。实例操作或配置修改因实例写锁被拒绝时，
+        code 仍为 conflict，message 包含阻塞任务 ID 及执行中、等待节点确认取消或结果尚未同步的说明；
+        不包含阻塞任务的参数或结果。已结束任务的待同步记录由中心端启动及后台维护主动重试，
+        活动任务和取消待确认任务不会被自动强制解锁。
       content:
         {
           application/json:

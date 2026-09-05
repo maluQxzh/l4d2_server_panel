@@ -49,6 +49,7 @@ type Server struct {
 	eventAuthRefreshInterval time.Duration
 	eventCatchupInterval     time.Duration
 	updates                  systemUpdateManager
+	projectionRecoveryCursor string // Used only by RunHousekeeping.
 }
 
 func NewServer(config Config, store *Store, logger *slog.Logger) *Server {
@@ -77,6 +78,7 @@ func (s *Server) Close() { s.agents.Close() }
 
 func (s *Server) RunHousekeeping(ctx context.Context) {
 	s.reconcileSystemUpdates(ctx)
+	s.reconcilePendingJobProjections(ctx)
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -85,6 +87,7 @@ func (s *Server) RunHousekeeping(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.reconcileSystemUpdates(ctx)
+			s.reconcilePendingJobProjections(ctx)
 			if err := s.store.AggregateMetrics(ctx); err != nil && ctx.Err() == nil {
 				s.logger.Error("aggregate monitoring metrics", "error", err)
 			}

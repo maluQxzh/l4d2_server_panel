@@ -694,17 +694,8 @@ func (s *Store) UpdateInstanceAndQueueWithFingerprint(ctx context.Context, id, n
 	if current.Status == domain.InstanceExternal {
 		return domain.Instance{}, domain.Job{}, false, fmt.Errorf("external instance is read-only until a controlled restart: %w", ErrConflict)
 	}
-	var busy bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE instance_id=?1
-		AND (status IN ('queued','dispatched','running')
-			OR (status='canceled' AND json_extract(result,'$.cancel_pending')=1)
-			OR (status IN ('succeeded','failed') AND json_extract(result,'$._projection_pending')=1))
-		AND type NOT IN ('a2s.info','a2s.players','rcon.players','list','check_update','logs.search','logs.chunk','backup.chunk','backup.upload.abort')
-		AND NOT (type='file' AND json_extract(payload,'$.operation')='read'))`, id).Scan(&busy); err != nil {
+	if err := instanceWriteConflict(ctx, tx, id); err != nil {
 		return domain.Instance{}, domain.Job{}, false, err
-	}
-	if busy {
-		return domain.Instance{}, domain.Job{}, false, ErrConflict
 	}
 	if expectedVersion > 0 && current.Version != expectedVersion {
 		return domain.Instance{}, domain.Job{}, false, ErrConflict
