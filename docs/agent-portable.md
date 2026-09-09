@@ -98,6 +98,8 @@ Windows Service 常驻模式使用：
 
 程序会自动请求 UAC，注册延迟自动启动的 `l4d2panel-agent` 服务，使用 `NT SERVICE\l4d2panel-agent` 虚拟服务账号，并把配置、数据目录、地图对象根、实例根和二进制 ACL 限制到服务 SID、Administrators 与 SYSTEM。目录 ACL 会把 SYSTEM/Administrators 的完全控制和服务 SID 的修改权限继承到之后创建的日志、journal、地图及其他子目录；配置文件和二进制保持非继承的文件权限。
 
+若旧版在 Windows 10 首次安装时报 `read runtime service paths: open instance root refused a reparse point`，错误发生在节点读取自身 `data` 目录的阶段；其中 `instance root` 是旧版底层通用文案，不一定指游戏目录。旧实现对完整 DOS 路径设置 `OBJ_DONT_REPARSE`，可能拒绝系统盘符映射。应替换包含卷根逐级打开修复的 Agent，保留原 `agent.yaml` 与 `data` 后重新执行上述 `install --config`。若配置已有 `node_id` 和 `credential`，不要再次使用已消费的注册令牌。更新后仍拒绝重解析点时，需检查数据目录及父目录是否实际为 Junction、符号链接或其他重解析点；不要关闭路径防护或删除节点数据来绕过。
+
 升级曾由旧版安装的节点后，以管理员身份幂等地重新执行同一条 `install --config .\agent.yaml` 命令即可重新同步现有部署根 ACL，不需要新注册令牌，也不会重建或清空 `data`。
 
 前台启动和服务安装都会在需要时自动注册。成功后 Agent 原子地把 `node_id` 和长期节点凭据写回 `agent.yaml`，并删除一次性令牌。未显式配置时，运行数据和实例目录分别为同目录的 `data` 与 `data/instances`。后续启动不再需要令牌：

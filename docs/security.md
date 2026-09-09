@@ -67,6 +67,8 @@ Control 在列表、单资源、任务、指标、通知、审计和 WebSocket �
 
 ## 文件、归档与下载
 
+- Windows Agent 的绝对根从卷根句柄开始逐组件打开。仅卷根通过 Win32 解析盘符，所有后续目录继续使用 `RootDirectory`、`OBJ_DONT_REPARSE`、`FILE_OPEN_REPARSE_POINT`、句柄属性复核及不共享删除；最终句柄路径必须与请求路径一致。不得在完整绝对路径打开失败后移除 no-follow 重试，也不得因首次安装没有状态文件而跳过根路径检查。
+
 - 自定义 SteamCMD 是节点管理权限下的显式信任决定。Control 只发送绝对路径；Agent 固定接受 Windows `steamcmd.exe` 或 Linux `steamcmd.sh`/`steamcmd`，逐组件拒绝符号链接和重解析点，拒绝游戏根目录内路径，以固定 `+quit` 自检成功后才原子激活。后续游戏维护仍只使用固定 SteamCMD 参数数组和收敛环境，不接受调用方可执行文件、Shell、参数或环境变量。节点离线时不能预存待执行路径。
 - 托管 SteamCMD 只从固定 Valve HTTPS 地址下载到 Agent 数据目录，归档限制条目、展开大小、路径和文件类型；修复采用 staging、备份和失败回滚。切换到自定义路径不会修改或删除自定义文件。
 

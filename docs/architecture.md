@@ -20,6 +20,8 @@ Windows 10/11 x64 与 Windows Server 2019+ 使用便携 ZIP，不依赖 Docker/W
 
 ## 节点协议与任务流
 
+Windows Agent 打开受管根时先取得卷根句柄，再从该句柄逐组件使用 NT `RootDirectory` 和 no-follow 检查打开目录，最后复核实际路径。这样避免 Windows 10 将完整 DOS 路径中的盘符映射误判为重解析点；服务首次安装读取空 `data` 时不要求已有运行环境记录，真实 Junction 或符号链接仍拒绝。
+
 1. 有全局管理权限的交互式管理员填写节点显示名称并创建短期一次性注册令牌；Control 在消费令牌时以该名称建立节点，不使用 Agent 主机名覆盖它。旧 API 创建的无标签令牌仍回退到 Agent 报告的名称。
 2. Windows 和 Linux 新节点统一使用旁置 Agent 文件布局：无子命令入口读取二进制同目录的 `agent.yaml` 并以前台便携模式运行；`install --config` 复用同一注册逻辑后注册为 systemd 或 Windows Service，使用平台专用低权限账号、故障重启和开机自启。缺少长期凭据时通过 HTTPS 交换节点 ID 和长期凭据，将凭据原子写回受限配置，并移除一次性令牌。同机回环或可信隔离局域网可以显式配置指向 `localhost`、回环、私网或链路本地 IP 的 HTTP；公网 HTTP 和明文 DNS 主机名会被拒绝。显式 `run --config` 仍可交给部署者选择的外部进程管理器；两种模式都不需要额外安装脚本层。
 3. Agent 主动建立带 Bearer 节点凭据的 WSS；上述明文局域网模式相应使用 WS。连接建立后发送协议版本、平台、能力、实例根、心跳和指标。

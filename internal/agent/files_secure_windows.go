@@ -309,9 +309,22 @@ func openManagedRootWindows(instancePath string, write bool) (windows.Handle, er
 	if err != nil {
 		return 0, err
 	}
-	ntPath, err := managedWindowsNTPath(abs)
-	if err != nil {
-		return 0, err
+	if strings.HasPrefix(abs, `\\.\`) {
+		return 0, ErrPathEscape
+	}
+	abs = stripWindowsExtendedPrefix(abs)
+	volume := filepath.VolumeName(abs)
+	if volume == "" {
+		return 0, ErrPathEscape
+	}
+	var parts []string
+	if relative := strings.TrimPrefix(abs[len(volume):], `\`); relative != "" {
+		parts = strings.Split(relative, `\`)
+	}
+	for _, component := range parts {
+		if !validWindowsManagedComponent(component) {
+			return 0, ErrPathEscape
+		}
 	}
 	access := uint32(windows.FILE_GENERIC_READ)
 	share := uint32(managedWindowsReadShare)
@@ -319,33 +332,56 @@ func openManagedRootWindows(instancePath string, write bool) (windows.Handle, er
 		access |= windows.FILE_GENERIC_WRITE
 		share = managedWindowsWriteShare
 	}
-	oa := &windows.OBJECT_ATTRIBUTES{
-		ObjectName: ntPath,
-		Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE,
-	}
-	oa.Length = uint32(unsafe.Sizeof(*oa))
-	var (
-		handle windows.Handle
-		iosb   windows.IO_STATUS_BLOCK
-	)
-	err = windows.NtCreateFile(&handle, access, oa, &iosb, nil, windows.FILE_ATTRIBUTE_DIRECTORY, share,
-		windows.FILE_OPEN, windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_OPEN_FOR_BACKUP_INTENT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
-		0, 0)
+	// On Windows 10, OBJ_DONT_REPARSE on an absolute NT DOS path can
+	// reject the drive's Object Manager link itself. Resolve only the volume
+	// root through Win32, then open every filesystem component relative to a
+	// pinned directory handle. Never retry a full path with no-follow disabled.
+	volumePath, err := windows.UTF16PtrFromString(volume + `\`)
 	if err != nil {
-		return 0, managedWindowsPathError("open instance root", err)
+		return 0, err
+	}
+	ancestorAccess := uint32(windows.FILE_TRAVERSE | windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE)
+	volumeAccess := ancestorAccess
+	if len(parts) == 0 {
+		volumeAccess = access
+	}
+	handle, err := windows.CreateFile(volumePath, volumeAccess, share, nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return 0, managedWindowsPathError("open managed volume root", err)
 	}
 	if err := validateWindowsHandle(handle, true); err != nil {
 		_ = windows.CloseHandle(handle)
 		return 0, err
 	}
+	for i, component := range parts {
+		componentAccess := ancestorAccess
+		if i == len(parts)-1 {
+			componentAccess = access
+		}
+		next, openErr := openRelativeWindows(handle, component, componentAccess, share, windows.FILE_OPEN,
+			windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_OPEN_FOR_BACKUP_INTENT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
+			windows.FILE_ATTRIBUTE_DIRECTORY)
+		if openErr != nil {
+			_ = windows.CloseHandle(handle)
+			return 0, managedWindowsPathError("open managed root component", openErr)
+		}
+		if validateErr := validateWindowsHandle(next, true); validateErr != nil {
+			_ = windows.CloseHandle(next)
+			_ = windows.CloseHandle(handle)
+			return 0, validateErr
+		}
+		_ = windows.CloseHandle(handle)
+		handle = next
+	}
 	finalPath, err := finalWindowsHandlePath(handle)
 	if err != nil {
 		_ = windows.CloseHandle(handle)
-		return 0, fmt.Errorf("resolve instance root handle: %w", err)
+		return 0, fmt.Errorf("resolve managed root handle: %w", err)
 	}
 	if !strings.EqualFold(filepath.Clean(finalPath), filepath.Clean(stripWindowsExtendedPrefix(abs))) {
 		_ = windows.CloseHandle(handle)
-		return 0, fmt.Errorf("instance root handle resolved to an unexpected path: %w", ErrPathEscape)
+		return 0, fmt.Errorf("managed root handle resolved to an unexpected path: %w", ErrPathEscape)
 	}
 	return handle, nil
 }
@@ -369,24 +405,6 @@ func stripWindowsExtendedPrefix(path string) string {
 		return `\\` + strings.TrimPrefix(path, `\\?\UNC\`)
 	}
 	return strings.TrimPrefix(path, `\\?\`)
-}
-
-func managedWindowsNTPath(path string) (*windows.NTUnicodeString, error) {
-	// filepath.Abs returns a DOS path. Translate it without accepting Win32
-	// device aliases in user-controlled relative components.
-	switch {
-	case strings.HasPrefix(path, `\\?\UNC\`):
-		path = `\??\UNC\` + strings.TrimPrefix(path, `\\?\UNC\`)
-	case strings.HasPrefix(path, `\\?\`):
-		path = `\??\` + strings.TrimPrefix(path, `\\?\`)
-	case strings.HasPrefix(path, `\\.\`):
-		return nil, ErrPathEscape
-	case strings.HasPrefix(path, `\\`):
-		path = `\??\UNC\` + strings.TrimPrefix(path, `\\`)
-	default:
-		path = `\??\` + path
-	}
-	return windows.NewNTUnicodeString(path)
 }
 
 func openRelativeWindows(parent windows.Handle, name string, access, share, disposition, options, attributes uint32) (windows.Handle, error) {

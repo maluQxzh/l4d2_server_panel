@@ -83,6 +83,21 @@ func TestLoadRuntimeServicePathsReturnsOnlyAbsoluteLocalPaths(t *testing.T) {
 	}
 }
 
+func TestLoadRuntimeServicePathsFirstInstall(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		data := filepath.Join(t.TempDir(), "data")
+		if existing {
+			if err := os.Mkdir(data, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		paths, err := LoadRuntimeServicePaths(data)
+		if err != nil || len(paths.InstallationPaths) != 0 {
+			t.Fatalf("first install (data exists=%v): paths=%#v, err=%v", existing, paths, err)
+		}
+	}
+}
+
 func TestRuntimeEnvironmentStoreRemovesLegacyRelativeInstallationPaths(t *testing.T) {
 	data := t.TempDir()
 	store, err := newRuntimeEnvironmentStore(&Config{DataDir: data})
