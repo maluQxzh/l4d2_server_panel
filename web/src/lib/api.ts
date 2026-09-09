@@ -495,6 +495,7 @@ export const api = {
   createUser: (payload: { username: string; display_name?: string; role_bindings: Array<Pick<RoleBinding, "role" | "permissions" | "scope_type" | "node_id" | "instance_id">> }) =>
     request<UserActivationResult>("/users", { method: "POST", body: JSON.stringify(payload) }),
   reissueUserActivation: (id: string) => request<UserActivationResult>(`/users/${encodeURIComponent(id)}/activation`, { method: "POST" }),
+  deleteUser: (id: string) => request<void>(`/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
   updateUser: (id: string, payload: { display_name?: string; password?: string; disabled?: boolean; role_bindings?: Array<{ role: Role; permissions?: RoleBinding["permissions"]; scope_type: "global" | "node" | "instance"; node_id?: string; instance_id?: string }> }) =>
     request<{ user: User }>(`/users/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) }),
   userRoleBindings: (id: string) => list<RoleBinding>(`/users/${encodeURIComponent(id)}/role-bindings`),

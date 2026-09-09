@@ -167,6 +167,8 @@ function UserModal({ target, actor, onClose }: { target: User | "new" | null; ac
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
   const [disabled, setDisabled] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [bindings, setBindings] = useState<EditableBinding[]>([{ role: "viewer", permissions: rolePresetPermissions("viewer"), scope_type: "global" }]);
   const [issuedCredential, setIssuedCredential] = useState<{ username: string; oneTimePassword: string; expiresAt: string } | null>(null);
 
@@ -175,6 +177,8 @@ function UserModal({ target, actor, onClose }: { target: User | "new" | null; ac
     setUsername(creating ? "" : existing?.username || "");
     setDisplayName(creating ? "" : existing?.display_name || "");
     setPassword("");
+    setDeleting(false);
+    setDeleteConfirmation("");
     setIssuedCredential(null);
     setDisabled(Boolean(existing?.disabled));
     setBindings(creating ? [{ role: "viewer", permissions: rolePresetPermissions("viewer"), scope_type: "global" }] : existing?.role_bindings === undefined ? [{ role: existing?.role || "viewer", permissions: rolePresetPermissions(existing?.role || "viewer"), scope_type: "global" }] : existing.role_bindings.map(cleanBinding));
@@ -226,17 +230,33 @@ function UserModal({ target, actor, onClose }: { target: User | "new" | null; ac
   });
 
   const updateBinding = (index: number, value: EditableBinding) => setBindings((items) => items.map((item, itemIndex) => itemIndex === index ? cleanBinding(value) : item));
+  const remove = useMutation({
+    mutationFn: () => existing ? api.deleteUser(existing.id) : Promise.reject(new Error("用户无效")),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["users"] });
+      void client.invalidateQueries({ queryKey: ["audit"] });
+      toast.push("账号已永久删除");
+      onClose();
+    },
+    onError: (error) => toast.push(error.message, "error"),
+  });
+  const busy = save.isPending || reissue.isPending || remove.isPending;
   const protectedOwner = Boolean(existing?.bootstrap_owner);
+  const deleteProtected = protectedOwner || existing?.id === actor?.id;
   const availableRoles: Role[] = actor?.role === "owner" ? ["owner", "admin", "operator", "viewer"] : ["admin", "operator", "viewer"];
   const close = () => {
+    if (busy) return;
     if (issuedCredential && !window.confirm("一次性密码关闭后无法再次查看。确认已经妥善复制？")) return;
     setIssuedCredential(null);
     onClose();
   };
+  if (deleting && existing) return <Modal open={open} onClose={close} title="永久删除账号" description="删除后无法恢复，请核对目标账号。" footer={<><Button variant="secondary" disabled={busy} onClick={() => setDeleting(false)}>返回</Button><Button variant="danger" loading={remove.isPending} disabled={busy || deleteProtected || deleteConfirmation !== existing.username} onClick={() => remove.mutate()}><Trash2 size={14} />确认永久删除</Button></>}>
+    <div className="form-stack"><div className="form-warning">将永久删除 {existing.display_name || existing.username}（{existing.username}）的账号、登录凭据和权限绑定，并立即撤销全部会话与 API Token。游戏资源、任务和历史审计记录会保留。</div><Field label="输入用户名以确认删除" hint={existing.username}><input aria-label="输入用户名以确认删除" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} disabled={busy} autoComplete="off" /></Field></div>
+  </Modal>;
   if (issuedCredential) return <Modal open={open} onClose={close} title="一次性密码已生成" description="请通过可信渠道交给用户；该密码关闭后无法再次查看。" footer={<Button onClick={close}>我已妥善保存</Button>}>
     <div className="activation-credential"><div><span>用户名</span><code>{issuedCredential.username}</code></div><div><span>一次性密码</span><code>{issuedCredential.oneTimePassword}</code></div><Button variant="secondary" onClick={() => void navigator.clipboard.writeText(`用户名：${issuedCredential.username}\n一次性密码：${issuedCredential.oneTimePassword}`)}><Clipboard size={15} />复制账号信息</Button><small>有效期至 {dateTime(issuedCredential.expiresAt)}。首次登录后只能设置新密码，不能访问其他功能。</small></div>
   </Modal>;
-  return <Modal open={open} onClose={close} title={creating ? "添加团队成员" : `管理 ${existing?.display_name || existing?.username || "用户"}`} description="角色用于一键填充预设，实际授权以每个范围勾选的具体权限为准。" footer={<>{existing?.account_state === "pending_activation" && <Button variant="secondary" onClick={() => reissue.mutate()} loading={reissue.isPending}><RefreshCw size={14} />重新生成一次性密码</Button>}<Button variant="secondary" onClick={close}>取消</Button><Button onClick={() => save.mutate()} loading={save.isPending} disabled={!valid}>{creating ? "创建账号并生成密码" : "保存更改"}</Button></>}>
+  return <Modal open={open} onClose={close} title={creating ? "添加团队成员" : `管理 ${existing?.display_name || existing?.username || "用户"}`} description="角色用于一键填充预设，实际授权以每个范围勾选的具体权限为准。" footer={<>{existing && <Button variant="danger" disabled={busy || deleteProtected} title={protectedOwner ? "首启根所有者不可删除" : existing.id === actor?.id ? "不能删除当前登录账号" : undefined} onClick={() => { setDeleteConfirmation(""); setDeleting(true); }}><Trash2 size={14} />删除账号</Button>}{existing?.account_state === "pending_activation" && <Button variant="secondary" onClick={() => reissue.mutate()} loading={reissue.isPending} disabled={busy}><RefreshCw size={14} />重新生成一次性密码</Button>}<Button variant="secondary" onClick={close} disabled={busy}>取消</Button><Button onClick={() => save.mutate()} loading={save.isPending} disabled={!valid || busy}>{creating ? "创建账号并生成密码" : "保存更改"}</Button></>}>
     <div className="form-stack"><div className="form-grid"><Field label="用户名"><input value={username} onChange={(event) => setUsername(event.target.value)} disabled={!creating} maxLength={128} autoComplete="username" /></Field><Field label="显示名称"><input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={128} /></Field></div>{creating ? <div className="setup-notice">账号创建后由系统生成一次性密码，有效期 24 小时；管理员不需要也不能指定用户的正式密码。</div> : existing?.account_state === "pending_activation" ? <div className="setup-notice">该账号尚未完成首次登录。可以重新生成一次性密码，旧密码会立即失效。</div> : <Field label="重置密码（可留空）" hint="至少 12 个字符；修改密码会撤销该账号的全部会话和 API Token"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={12} maxLength={1024} autoComplete="new-password" /></Field>}{!creating && <label className={`risk-check ${protectedOwner || existing?.id === actor?.id ? "risk-check--disabled" : ""}`}><input type="checkbox" checked={disabled} onChange={(event) => setDisabled(event.target.checked)} disabled={protectedOwner || existing?.id === actor?.id} /><LockKeyhole size={18} /><span><strong>停用账号</strong><small>{protectedOwner ? "首启根所有者不可停用" : existing?.id === actor?.id ? "不能停用当前登录账号" : "立即撤销该账号的全部会话和 API Token"}</small></span></label>}<div className="binding-editor"><div className="binding-editor__heading"><div><strong>资源权限绑定</strong><span>匹配范围的权限取并集；不支持显式拒绝</span></div><Button type="button" variant="secondary" onClick={() => setBindings((items) => [...items, { role: "viewer", permissions: rolePresetPermissions("viewer").filter((permission) => permissionAllowedAtScope(permission, "instance")), scope_type: "instance" }])} disabled={protectedOwner || bindings.length >= 50}><Plus size={14} />添加范围</Button></div>{bindings.length === 0 && <div className="form-warning">{emptyBindingsInvalid ? "至少保留一条权限绑定；如需撤销访问，请停用账号或调整为最小权限。" : "该账号当前没有权限绑定，因此不能访问任何受保护资源。可添加范围后再授予权限。"}</div>}{bindings.map((binding, index) => <div className="binding-block" key={`${index}-${binding.scope_type}`}><div className="binding-row"><Field label="角色预设"><select value={binding.role} disabled={protectedOwner} onChange={(event) => { const role = event.target.value as Role; const scope = role === "owner" ? "global" : binding.scope_type; updateBinding(index, { ...binding, role, scope_type: scope, permissions: rolePresetPermissions(role).filter((permission) => permissionAllowedAtScope(permission, scope)) }); }}>{availableRoles.map((role) => <option value={role} key={role}>{roleName(role)}</option>)}</select></Field><Field label="范围"><select value={binding.scope_type} disabled={protectedOwner || binding.role === "owner"} onChange={(event) => { const scope = event.target.value as EditableBinding["scope_type"]; updateBinding(index, { ...binding, scope_type: scope, permissions: (binding.permissions || []).filter((permission) => permissionAllowedAtScope(permission, scope)) }); }}><option value="global">全局</option><option value="node">单个节点</option><option value="instance">单个实例</option></select></Field>{binding.scope_type === "node" ? <Field label="节点"><select value={binding.node_id || ""} disabled={protectedOwner} onChange={(event) => updateBinding(index, { ...binding, node_id: event.target.value })}><option value="">请选择节点</option>{(nodes.data?.items || []).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field> : binding.scope_type === "instance" ? <Field label="实例"><select value={binding.instance_id || ""} disabled={protectedOwner} onChange={(event) => updateBinding(index, { ...binding, instance_id: event.target.value })}><option value="">请选择实例</option>{(instances.data?.items || []).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></Field> : <div className="binding-global-note"><ShieldCheck size={16} />适用于全部节点与实例</div>}<Button type="button" variant="danger" aria-label="删除权限绑定" onClick={() => setBindings((items) => items.filter((_, itemIndex) => itemIndex !== index))} disabled={protectedOwner}><Trash2 size={14} /></Button></div><PermissionCheckboxes binding={binding} disabled={protectedOwner || binding.role === "owner"} onChange={(permissions) => updateBinding(index, { ...binding, permissions })} /></div>)}{bindings.length > 0 && !bindingsValid && <div className="form-warning">每条绑定至少选择一个权限，并选择对应资源；同一资源不能重复绑定。</div>}</div></div>
   </Modal>;
 }

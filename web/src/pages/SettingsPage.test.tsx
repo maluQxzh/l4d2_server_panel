@@ -34,6 +34,49 @@ describe("设置页全局审计权限", () => {
     localStorage.clear();
   });
 
+  it("删除待激活停用账号前要求输入用户名，成功后刷新列表", async () => {
+    const target: User = { id: "delete-user", username: "delete-me", display_name: "待删除用户", role: "viewer", totp_enabled: false, account_state: "pending_activation", disabled: true, role_bindings: [], created_at: "2026-08-09T00:00:00Z" };
+    mockOwnerSettings(target);
+    const remove = vi.spyOn(api, "deleteUser").mockImplementation(async () => { vi.mocked(api.users).mockResolvedValue({ items: [] }); });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "管理" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除账号" }));
+    const confirm = screen.getByRole("button", { name: "确认永久删除" });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("输入用户名以确认删除"), { target: { value: "wrong" } });
+    expect(confirm).toBeDisabled();
+    expect(remove).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "返回" }));
+    expect(remove).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "删除账号" }));
+    fireEvent.change(screen.getByLabelText("输入用户名以确认删除"), { target: { value: target.username } });
+    fireEvent.click(screen.getByRole("button", { name: "确认永久删除" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(target.id));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("待删除用户")).not.toBeInTheDocument());
+  });
+
+  it.each([{ id: "owner-1", bootstrap_owner: false }, { id: "root", bootstrap_owner: true }])("不能删除当前账号或根所有者：$id", async (protectedAccount) => {
+    mockOwnerSettings({ ...protectedAccount, username: "owner", display_name: "受保护账号", role: "owner", account_state: "active", totp_enabled: false, created_at: "2026-08-09T00:00:00Z" });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "管理" }));
+    expect(screen.getByRole("button", { name: "删除账号" })).toBeDisabled();
+  });
+
+  it("删除失败保留确认窗口和账号", async () => {
+    const target: User = { id: "delete-user", username: "target", display_name: "保留用户", role: "viewer", account_state: "active", totp_enabled: false, created_at: "2026-08-09T00:00:00Z" };
+    mockOwnerSettings(target);
+    vi.spyOn(api, "deleteUser").mockRejectedValue(new Error("删除失败，请重试"));
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "管理" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除账号" }));
+    fireEvent.change(screen.getByLabelText("输入用户名以确认删除"), { target: { value: target.username } });
+    fireEvent.click(screen.getByRole("button", { name: "确认永久删除" }));
+    expect(await screen.findByText("删除失败，请重试")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText("保留用户")).toBeInTheDocument();
+  });
+
   it("没有 audit.read_global 时不查询或显示全局审计", async () => {
     authState.user = { role: "viewer", role_bindings: [] };
     const audit = vi.spyOn(api, "audit").mockResolvedValue({ items: [] });

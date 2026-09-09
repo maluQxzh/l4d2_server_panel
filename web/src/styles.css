@@ -375,7 +375,7 @@ h1, h2, h3, p { margin-top: 0; }
 .modal__header h2 { margin-bottom: 5px; font-size: 17px; }
 .modal__header p { margin: 0; color: var(--text-faint); font-size: 11px; line-height: 1.6; }
 .modal__body { min-height: 0; padding: 22px; overflow: auto; flex: 1 1 auto; overscroll-behavior: contain; scrollbar-width: thin; }
-.modal__footer { padding: 14px 22px; display: flex; flex: 0 0 auto; justify-content: flex-end; gap: 9px; background: rgba(0,0,0,.12); border-top: 1px solid var(--line); }
+.modal__footer { padding: 14px 22px; display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 9px; background: rgba(0,0,0,.12); border-top: 1px solid var(--line); }
 .field { display: flex; flex-direction: column; gap: 7px; color: #c5cec9; font-size: 11px; font-weight: 650; }
 .field input, .field select, .field textarea { width: 100%; min-height: 40px; padding: 0 11px; color: var(--text); background: #0d1311; border: 1px solid var(--line); border-radius: 7px; outline: none; font-size: 12px; font-weight: 450; transition: border .15s, box-shadow .15s; }
 .field textarea { padding: 10px 11px; resize: vertical; line-height: 1.55; }
@@ -1142,8 +1142,9 @@ html[data-density="compact"] .data-table td { padding-top: 8px; padding-bottom: 
   .settings-grid { grid-template-columns: 1fr; }
   .security-summary { grid-template-columns: 1fr; }
   .security-summary .button { grid-column: auto; }
-  .user-row { grid-template-columns: 34px 1fr auto; }
-  .user-row > span, .user-row > time, .user-row > .button { display: none; }
+  .user-row { grid-template-columns: 34px minmax(0, 1fr) auto; }
+  .user-row > div:nth-child(2) { min-width: 0; overflow-wrap: anywhere; }
+  .user-row > span, .user-row > time { display: none; }
   .login-intro { min-height: 390px; padding: 28px 24px; }
   .login-copy h1 { font-size: 45px; }
   .login-copy p { font-size: 11px; }

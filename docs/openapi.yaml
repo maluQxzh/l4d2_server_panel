@@ -2272,6 +2272,23 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
 
   /users/{userId}:
+    delete:
+      tags: [Users]
+      summary: 永久删除团队账号
+      description: |
+        仅交互式全局所有者会话（root_security），所有者 API Token 不能调用。
+        禁止删除当前登录账号或首启根所有者。物理删除账号及其会话、API Token、
+        TOTP 恢复码、激活凭据和权限绑定；保留游戏资源、任务和历史审计姓名。
+        无请求正文。删除不存在的用户也返回 204，因此重复请求（包括相同 Idempotency-Key）不会重复删除或写入删除审计。
+      x-interactive-session: true
+      parameters:
+        - { $ref: "#/components/parameters/UserID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      responses:
+        "204": { description: 账号已删除或已不存在 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
     patch:
       tags: [Users]
       summary: 修改成员、重置密码、禁用或替换全部绑定

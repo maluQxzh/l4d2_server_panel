@@ -48,6 +48,7 @@ func TestAdministratorCannotAccessAccountManagementHandlers(t *testing.T) {
 		handler http.HandlerFunc
 	}{
 		{name: "list users", method: http.MethodGet, path: "/api/v1/users", handler: server.handleListUsers},
+		{name: "delete user", method: http.MethodDelete, path: "/api/v1/users/user-id", handler: server.handleDeleteUser},
 		{name: "create user", method: http.MethodPost, path: "/api/v1/users", body: `{"username":"viewer","password":"long-enough-password","role":"viewer"}`, handler: server.handleCreateUser},
 		{name: "read bindings", method: http.MethodGet, path: "/api/v1/users/user-id/role-bindings", handler: server.handleUserRoleBindings},
 		{name: "update and password reset", method: http.MethodPatch, path: "/api/v1/users/user-id", body: `{"display_name":"Changed","password":"replacement-password"}`, handler: server.handleUpdateUser},

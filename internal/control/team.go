@@ -18,6 +18,49 @@ const roleBindingColumns = `id,user_id,role,scope_type,COALESCE(node_id,''),
 
 var errRootSecurityRequired = errors.New("global owner permission is required")
 
+var errProtectedUser = errors.New("the current account and bootstrap owner cannot be deleted")
+
+// DeleteTeamUser removes account credentials and bindings through the existing
+// foreign keys, while retaining resources and historical audit actor names.
+// An absent target is a successful no-op, including after a lost HTTP response.
+func (s *Store) DeleteTeamUser(ctx context.Context, actorID, userID string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if err := requireRootSecurityActor(ctx, tx, actorID); err != nil {
+		return false, err
+	}
+	if actorID == userID {
+		return false, errProtectedUser
+	}
+	var bootstrap bool
+	err = tx.QueryRowContext(ctx, `SELECT is_bootstrap_owner FROM users WHERE id=?1`, userID).Scan(&bootstrap)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if bootstrap {
+		return false, errProtectedUser
+	}
+	// The independently authorized actor remains an active global owner.
+	// Once requested_by becomes NULL, a user's keys must not enter the system
+	// job namespace or collide with keys belonging to another deleted account.
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET idempotency_key=NULL WHERE requested_by=?1`, userID); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id=?1`, userID); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func requireRootSecurityActor(ctx context.Context, tx *sql.Tx, actorID string) error {
 	var allowed bool
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS(

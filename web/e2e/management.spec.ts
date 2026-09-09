@@ -499,6 +499,42 @@ test("API Token 限定到实例并只显示一次明文", async ({ page }) => {
   expect(tokenBody?.expires_at).toEqual(expect.any(String));
 });
 
+test("删除停用团队账号需要确认并刷新列表", async ({ page }) => {
+  await authenticated(page);
+  await page.route("**/api/v1/nodes", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/instances", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/audit**", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/system/updates", (route) => json(route, { supported: false, history: [] }));
+  const target = { ...owner, id: "delete-user", username: "delete-me", display_name: "待删除用户", role: "viewer", disabled: true, account_state: "pending_activation", role_bindings: [] };
+  let deleted = false;
+  await page.route("**/api/v1/users", (route) => json(route, { items: deleted ? [owner] : [owner, target] }));
+  await page.route("**/api/v1/users/delete-user", async (route) => {
+    expect(route.request().method()).toBe("DELETE");
+    expect(route.request().headers()["x-csrf-token"]).toBe("csrf-test");
+    expect(route.request().headers()["idempotency-key"]).toBeTruthy();
+    deleted = true;
+    await route.fulfill({ status: 204 });
+  });
+  await page.goto("/settings");
+  await page.locator(".user-row").filter({ hasText: "待删除用户" }).getByRole("button", { name: "管理" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "删除账号" })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("user-delete-entry.png"), fullPage: true });
+  await dialog.getByRole("button", { name: "删除账号" }).click();
+  await expect(dialog.getByRole("button", { name: "确认永久删除" })).toBeDisabled();
+  await dialog.getByRole("button", { name: "返回" }).click();
+  expect(deleted).toBe(false);
+  await dialog.getByRole("button", { name: "删除账号" }).click();
+  await dialog.getByLabel("输入用户名以确认删除").fill(target.username);
+  await page.screenshot({ path: test.info().outputPath("user-delete-confirm.png"), fullPage: true });
+  await dialog.getByRole("button", { name: "确认永久删除" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(".user-row").filter({ hasText: "待删除用户" })).toHaveCount(0);
+  expect(deleted).toBe(true);
+  await page.locator(".user-row").getByRole("button", { name: "管理" }).click();
+  await expect(dialog.getByRole("button", { name: "删除账号" })).toBeDisabled();
+});
+
 test("创建团队用户并绑定单个节点角色", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/nodes", (route) => json(route, { items: [node] }));

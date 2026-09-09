@@ -308,6 +308,7 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Post("/users", s.handleCreateUser)
 			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Get("/users/{userID}/role-bindings", s.handleUserRoleBindings)
 			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Patch("/users/{userID}", s.handleUpdateUser)
+			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Delete("/users/{userID}", s.handleDeleteUser)
 			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Post("/users/{userID}/activation", s.handleReissueUserActivation)
 			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Get("/system/updates", s.handleListSystemUpdates)
 			r.With(s.requireInteractiveSession, s.requireGlobalPermission(PermissionRootSecurity)).Post("/system/updates", s.handleCreateSystemUpdate)

@@ -36,7 +36,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
 			"/api/v1/jobs/{jobID}/terminal-conflict/resolve":                      map[string]any{"post": map[string]any{"summary": "Keep the Control outcome and resolve a conflict"}},
 			"/api/v1/metrics":                                                     map[string]any{"get": map[string]any{"summary": "Query raw, 1m, or 1h metrics"}},
 			"/api/v1/users":                                                       map[string]any{"get": map[string]any{"summary": "List administrator team"}, "post": map[string]any{"summary": "Create a team member"}},
-			"/api/v1/users/{userID}":                                              map[string]any{"patch": map[string]any{"summary": "Update, disable, or replace role bindings"}},
+			"/api/v1/users/{userID}":                                              map[string]any{"patch": map[string]any{"summary": "Update, disable, or replace role bindings"}, "delete": map[string]any{"summary": "Permanently delete a team account (interactive global owner only)"}},
 			"/api/v1/users/{userID}/role-bindings":                                map[string]any{"get": map[string]any{"summary": "List role bindings"}},
 			"/api/v1/users/{userID}/activation":                                   map[string]any{"post": map[string]any{"summary": "Reissue a pending user's one-time password"}},
 			"/api/v1/notification-channels":                                       map[string]any{"get": map[string]any{"summary": "List notification channels"}, "post": map[string]any{"summary": "Create a notification channel"}},

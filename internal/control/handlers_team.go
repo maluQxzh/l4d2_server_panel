@@ -304,3 +304,28 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	s.audit(r, "user.updated", "user", updated.ID, metadata)
 	writeJSON(w, http.StatusOK, map[string]any{"user": updated})
 }
+
+func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	principal, allowed := requireAccountSecurity(w, r)
+	if !allowed {
+		return
+	}
+	userID := chi.URLParam(r, "userID")
+	deleted, err := s.store.DeleteTeamUser(r.Context(), principal.User.ID, userID)
+	if err != nil {
+		switch {
+		case errors.Is(err, errRootSecurityRequired):
+			writeError(w, http.StatusForbidden, "owner_permission_required", "只有全局所有者可以删除账号")
+		case errors.Is(err, errProtectedUser):
+			writeError(w, http.StatusConflict, "protected_user", "不能删除当前登录账号或首启根所有者")
+		default:
+			s.fail(w, err)
+		}
+		return
+	}
+	s.events.InvalidateAuthorization()
+	if deleted {
+		s.audit(r, "user.deleted", "user", userID, nil)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

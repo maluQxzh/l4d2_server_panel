@@ -5,6 +5,18 @@ describe("API 客户端", () => {
   beforeEach(() => setCsrfToken("csrf-test"));
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+  it("删除账号编码路径并携带认证、CSRF 和幂等键", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    await expect(api.deleteUser("user/one")).resolves.toBeUndefined();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/v1/users/user%2Fone");
+    expect(init?.method).toBe("DELETE");
+    expect(init?.body).toBeUndefined();
+    expect(init?.credentials).toBe("include");
+    expect(new Headers(init?.headers).get("X-CSRF-Token")).toBe("csrf-test");
+    expect(new Headers(init?.headers).get("Idempotency-Key")).toBeTruthy();
+  });
+
   it("写请求携带 CSRF 和幂等键", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ job_id: "job-1" }), { status: 202, headers: { "Content-Type": "application/json" } }));
     await api.instanceAction("instance-1", "restart");
