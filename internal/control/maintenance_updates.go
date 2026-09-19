@@ -34,7 +34,7 @@ const activeJobSQLPredicate = `(job.status IN ('queued','dispatched','running')
 
 const instanceWriteJobSQLPredicate = `(job.type NOT IN (
 	'a2s.info','a2s.players','rcon.players','list','check_update',
-	'logs.search','logs.chunk','backup.chunk','backup.upload.abort','inspect_plugin_archive','prepare_package','discard_prepared_package','prepared_install_queue'
+	'logs.search','logs.chunk','backup.chunk','backup.upload.abort','inspect_plugin_archive','prepare_package','discard_prepared_package','prepared_install_queue','scan_packages'
 )
 	AND NOT (job.type='file' AND json_extract(job.payload,'$.operation')='read'))`
 

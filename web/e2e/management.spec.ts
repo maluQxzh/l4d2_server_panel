@@ -59,6 +59,24 @@ function json(route: Route, body: unknown, status = 200) {
   return route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
 
+test("扫描结果作废后刷新仍提示重新扫描，扫描中仍可安装", async ({ page }) => {
+  await authenticated(page);
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, status: "stopped" } }));
+  await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: [] }));
+  let busy = false;
+  await page.route("**/api/v1/instances/instance-1/packages/scan", (route) => {
+    if (route.request().method() === "POST") { busy = true; return json(route, { job_id: "scan-new" }, 202); }
+    return json(route, { scan: { job_id: busy ? "scan-new" : "scan-old", status: busy ? "running" : "succeeded", busy, progress: busy ? 50 : 100, outcome: busy ? "pending" : "stale", registered_count: 0 } });
+  });
+  await page.goto("/instances/instance-1?tab=mods");
+  await expect(page.getByRole("status").filter({ hasText: "结果已作废" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("status").filter({ hasText: "结果已作废" })).toBeVisible();
+  await page.getByRole("button", { name: "扫描已安装" }).click();
+  await expect(page.getByRole("button", { name: "扫描已安装" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "安装模组", exact: true })).toBeEnabled();
+});
+
 test("预下载安装队列离开页面后恢复并可停止", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, status: "stopped" } }));
@@ -812,6 +830,7 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
   await page.route("**/api/v1/instances/instance-1/packages/package-2/versions", (route) => json(route, { items: [] }));
   let packageScan = false;
   await page.route("**/api/v1/instances/instance-1/packages/scan", (route) => {
+    if (route.request().method() === "GET") return json(route, { scan: null });
     packageScan = route.request().method() === "POST" && route.request().postData() === null && Boolean(route.request().headers()["idempotency-key"]);
     return json(route, { job_id: "job-package-scan" }, 202);
   });

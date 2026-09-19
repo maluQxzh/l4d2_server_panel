@@ -250,6 +250,7 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requireInstancePermission(PermissionPackagesRead)).Get("/instances/{instanceID}/package-operations/{jobID}", s.handlePackageOperationStatus)
 			r.With(s.requireInstancePermission(PermissionPackagesRead)).Get("/instances/{instanceID}/packages/{packageID}", s.handlePackageDetails)
 			r.With(s.requireInstancePermission(PermissionPackagesInstall)).Post("/instances/{instanceID}/packages/scan", s.handleScanInstalledPackages)
+			r.With(s.requireInstancePermission(PermissionPackagesInstall)).Get("/instances/{instanceID}/packages/scan", s.handleInstalledPackageScanStatus)
 			r.With(s.requireInstancePermission(PermissionPackagesInstall)).Post("/instances/{instanceID}/plugin-archives/inspections", s.handleCreatePluginArchiveInspection)
 			r.With(s.requireInstancePermission(PermissionPackagesInstall)).Get("/instances/{instanceID}/plugin-archives/inspections/{jobID}", s.handleGetPluginArchiveInspection)
 			r.With(s.requireInstancePermission(PermissionPackagesDelete)).Delete("/instances/{instanceID}/packages/{packageID}", s.handleDeletePackage)

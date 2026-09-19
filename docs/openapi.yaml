@@ -1173,6 +1173,36 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
 
   /instances/{instanceId}/packages/scan:
+    get:
+      tags: [Packages]
+      summary: 查看最近一次扫描及登记结果
+      description: >
+        需要 packages.install，不要求 jobs.read。仅返回状态与新增登记数量，不返回包清单、来源或主机路径。
+        busy 包含执行中、取消待确认与结果待投影；outcome 独立于不可变 Agent 终态。
+        succeeded 配合 stale 表示扫描期间有写操作或清单变更，未采用其结果，应在操作完成后重新扫描。
+      parameters: [{ $ref: "#/components/parameters/InstanceID" }]
+      responses:
+        "200":
+          description: 最近一次扫描；尚无记录时 scan 为 null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [scan]
+                properties:
+                  scan:
+                    nullable: true
+                    type: object
+                    required: [job_id, status, progress, busy, outcome, registered_count]
+                    properties:
+                      job_id: { type: string, format: uuid }
+                      status: { type: string, enum: [queued, dispatched, running, succeeded, failed, canceled] }
+                      progress: { type: integer, minimum: 0, maximum: 100 }
+                      busy: { type: boolean }
+                      outcome: { type: string, enum: [pending, applied, stale] }
+                      registered_count: { type: integer, minimum: 0, maximum: 1000 }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
     post:
       tags: [Packages]
       summary: 扫描并纳管实例中已安装的 VPK
@@ -1182,6 +1212,9 @@ paths:
         1000 个候选，并通过 no-follow 文件句柄执行 512 MiB、VPK v1/v2 结构、边界、逐项 CRC、
         大小和 SHA-256 校验。有效且尚未按路径登记的文件会幂等投影为可启停、可删除的普通 VPK 包；
         无效文件只在任务结果中报告，不会被改写或删除。
+        扫描不占实例写锁，每实例最多一个活动扫描（含取消待确认及投影）。Control 在创建时记录变更代际；
+        创建时已有写任务、后续写任务或登记/目标变更会使结果作废，整批不纳管，提示重新扫描。
+        已应用的投影重放不再写入；整包文件清单中的路径不会被扫描单独纳管。
       parameters:
         - { $ref: "#/components/parameters/InstanceID" }
         - { $ref: "#/components/parameters/CSRF" }

@@ -419,6 +419,25 @@ describe("游戏实例模组扫描", () => {
     expect(await screen.findByText(/扫描任务已提交/)).toBeInTheDocument();
   });
 
+  it("刷新显示扫描作废结果并允许重新扫描", async () => {
+    vi.spyOn(api, "packages").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "installedPackageScan").mockResolvedValue({ scan: { job_id: "scan-old", status: "succeeded", busy: false, progress: 100, outcome: "stale", registered_count: 0 } });
+    const scan = vi.spyOn(api, "scanInstalledPackages").mockResolvedValue({ job_id: "scan-new" });
+    renderPackagesPage({ ...instance, status: "stopped" });
+    expect(await screen.findByText("扫描期间实例发生变更，结果已作废；请在操作完成后重新扫描")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "扫描已安装" }));
+    await waitFor(() => expect(scan).toHaveBeenCalledWith(instance.id));
+  });
+
+  it("扫描正在同步时禁用重复扫描，但保留安装入口", async () => {
+    vi.spyOn(api, "packages").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "installedPackageScan").mockResolvedValue({ scan: { job_id: "scan", status: "succeeded", busy: true, progress: 100, outcome: "pending", registered_count: 0 } });
+    renderPackagesPage({ ...instance, status: "stopped" });
+    expect(await screen.findByText("扫描处理中 100%，其他操作可以继续")).toBeVisible();
+    expect(screen.getByRole("button", { name: "扫描已安装" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^安装模组$/ })).toBeEnabled();
+  });
+
   it("可按名称搜索和排序，并阻止运行中停用模组", async () => {
     vi.spyOn(api, "packages").mockResolvedValue({ items: [
       { id: "alpha", name: "Alpha.vpk", kind: "vpk", enabled: true, path: "left4dead2/addons/Alpha.vpk", installed_at: "2026-08-01T00:00:00Z" },

@@ -30,7 +30,7 @@ func TestPluginInspectionCanOverlapInstanceWrite(t *testing.T) {
 					t.Fatalf("%s classification=%v lock=%v", action, classified, locked)
 				}
 			}
-			for _, action := range []string{"stop", "scan_packages"} {
+			for _, action := range []string{"stop"} {
 				if _, _, err := store.QueueInstanceJob(ctx, instance.ID, action, nil, "", "another-"+action); !errors.Is(err, ErrConflict) {
 					t.Fatalf("second mutation %s was not excluded: %v", action, err)
 				}

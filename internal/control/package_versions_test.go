@@ -198,7 +198,11 @@ func TestInstalledPackageScanProjectionIsPathIdempotent(t *testing.T) {
 		},
 		"rejected": []any{}, "discovered_count": float64(2), "valid_count": float64(2), "rejected_count": float64(0),
 	}
-	job := domain.Job{ID: "scan-job", InstanceID: "instance", Type: "scan_packages", Status: domain.JobSucceeded, RequestedBy: "", Result: result}
+	job, _, err := store.QueueInstanceJob(ctx, "instance", "scan_packages", nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.Status, job.Result = domain.JobSucceeded, result
 	if err := store.ApplyJobResult(ctx, job); err != nil {
 		t.Fatal(err)
 	}

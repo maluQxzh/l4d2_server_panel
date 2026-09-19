@@ -176,17 +176,21 @@ func TestPackageRenamePermissionAndStatusScope(t *testing.T) {
 func TestPackageRenameConcurrentScanDoesNotDuplicateOrResurrectPaths(t *testing.T) {
 	s := packageRenameStore(t)
 	ctx := context.Background()
+	scan, _, err := s.QueueInstanceJob(ctx, "instance", "scan_packages", nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	rename, _, err := s.QueueInstanceJob(ctx, "instance", "rename_package", map[string]any{"package_id": "package", "name": "new", "filename": "new.vpk"}, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	scan := domain.Job{ID: "scan", InstanceID: "instance", CreatedAt: rename.CreatedAt.Add(-time.Second), Result: map[string]any{
+	scan.Result = map[string]any{
 		"kind": "installed_vpk_scan", "directory": "left4dead2/addons", "valid_count": 2, "rejected_count": 0, "discovered_count": 2, "rejected": []any{},
 		"packages": []any{
 			map[string]any{"name": "old.vpk", "path": "left4dead2/addons/old.vpk", "sha256": strings.Repeat("a", 64), "size": 10, "vpk_version": 1},
 			map[string]any{"name": "new.vpk", "path": "left4dead2/addons/new.vpk", "sha256": strings.Repeat("a", 64), "size": 10, "vpk_version": 1},
 		},
-	}}
+	}
 	if err := s.applyInstalledPackageScanResult(ctx, scan); err != nil {
 		t.Fatal(err)
 	}

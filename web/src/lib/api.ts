@@ -411,6 +411,9 @@ export const api = {
   packageDetails: (instanceId: string, packageId: string) => request<{ package: PackageRecord; files: PackageFileRecord[] }>(
     `/instances/${encodeURIComponent(instanceId)}/packages/${encodeURIComponent(packageId)}`,
   ),
+  installedPackageScan: (instanceId: string) => request<{ scan: { job_id: string; status: JobStatus; progress: number; busy: boolean; outcome: "pending" | "applied" | "stale"; registered_count: number } | null }>(
+    `/instances/${encodeURIComponent(instanceId)}/packages/scan`,
+  ),
   scanInstalledPackages: (instanceId: string) => request<{ job_id: string; idempotent_replay?: boolean }>(
     `/instances/${encodeURIComponent(instanceId)}/packages/scan`,
     { method: "POST" },

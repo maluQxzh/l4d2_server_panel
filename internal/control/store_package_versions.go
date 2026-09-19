@@ -167,35 +167,11 @@ func (s *Store) applyInstalledPackageScanResult(ctx context.Context, job domain.
 		return errors.New("installed package scan returned invalid scan counts")
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
+	type scannedPackage struct {
+		name, path, key, sha string
+		version              int
 	}
-	defer tx.Rollback()
-	// Defensively reserve both sides of a rename for delayed scan results,
-	// including a rename completed since this scan was
-	// queued, so a delayed inventory cannot resurrect its old path or duplicate
-	// the new file before the rename projection commits.
-	rows, err := tx.QueryContext(ctx, `SELECT path FROM addon_packages WHERE instance_id=?1
-		UNION SELECT json_extract(payload,'$.path') FROM jobs WHERE instance_id=?1 AND type='rename_package'
-		AND (holds_instance_write_lock=1 OR (status='succeeded' AND finished_at>=?2))
-		UNION SELECT json_extract(payload,'$.target_path') FROM jobs WHERE instance_id=?1 AND type='rename_package'
-		AND (holds_instance_write_lock=1 OR (status='succeeded' AND finished_at>=?2))`, job.InstanceID, job.CreatedAt)
-	if err != nil {
-		return err
-	}
-	existing := make(map[string]struct{})
-	for rows.Next() {
-		var path string
-		if err := rows.Scan(&path); err != nil {
-			rows.Close()
-			return err
-		}
-		existing[strings.ToLower(filepath.ToSlash(path))] = struct{}{}
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
+	verified := make([]scannedPackage, 0, len(rawPackages))
 
 	seen := make(map[string]struct{}, len(rawPackages))
 	for _, raw := range rawPackages {
@@ -226,16 +202,56 @@ func (s *Store) applyInstalledPackageScanResult(ctx context.Context, job domain.
 			return errors.New("installed package scan returned duplicate package paths")
 		}
 		seen[key] = struct{}{}
-		if _, registered := existing[key]; registered {
+		verified = append(verified, scannedPackage{name: name, path: path, key: key, sha: sha, version: version})
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	apply, err := packageScanProjectionTx(ctx, tx, job)
+	if err != nil {
+		return err
+	}
+	if !apply {
+		return tx.Commit()
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT path FROM addon_packages WHERE instance_id=?1 UNION SELECT path FROM addon_package_files WHERE instance_id=?1`, job.InstanceID)
+	if err != nil {
+		return err
+	}
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var path string
+		if err = rows.Scan(&path); err != nil {
+			break
+		}
+		existing[strings.ToLower(filepath.ToSlash(path))] = true
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	registered := int64(0)
+	for _, item := range verified {
+		if existing[item.key] {
 			continue
 		}
-		packageID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("installed-vpk:"+job.InstanceID+":"+key)).String()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,installed_by,last_job_id)
+		packageID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("installed-vpk:"+job.InstanceID+":"+item.key)).String()
+		result, err := tx.ExecContext(ctx, `INSERT INTO addon_packages(id,instance_id,name,kind,version,source,source_id,sha256,path,enabled,risk,installed_by,last_job_id)
 			VALUES(?1,?2,?3,'vpk',?4,'local_scan','',?5,?6,true,'normal',?7,?8) ON CONFLICT(id) DO NOTHING`,
-			packageID, job.InstanceID, name, fmt.Sprintf("v%d", version), sha, path, nullableUUID(job.RequestedBy), job.ID); err != nil {
+			packageID, job.InstanceID, item.name, fmt.Sprintf("v%d", item.version), item.sha, item.path, nullableUUID(job.RequestedBy), job.ID)
+		if err != nil {
 			return err
 		}
-		existing[key] = struct{}{}
+		registered += resultRowsAffected(result)
+		existing[item.key] = true
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE package_scan_runs SET outcome='applied',registered_count=?2 WHERE job_id=?1`, job.ID, registered); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
