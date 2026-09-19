@@ -90,6 +90,7 @@ export const jobLabels: Record<string, string> = {
   rcon: "执行 RCON",
   install_package: "安装模组",
   install_mod: "安装模组",
+  prepared_install_queue: "预下载包安装队列",
   prepare_package: "预下载包",
   discard_prepared_package: "清理预下载包",
   install_plugin: "安装插件",

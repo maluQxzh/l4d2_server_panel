@@ -923,7 +923,7 @@ paths:
       description: >
         需要 packages.install，不要求 jobs.read。返回最近两小时最多 64 条准备记录，不含来源、正文或主机路径。
         supported 表示当前在线 Agent 支持 prepared_packages_v1；ready 表示准备成功、未过期且未提交消费。
-        安装后须等待 consume_status 为终态且 busy=false，才能安全提交下一项。
+        queues 返回最近 10 个服务端安装队列（活动优先）。queue_id 表示等待清单已预留该包；消费任务仍以终态且 busy=false 为完成边界。
       parameters: [{ $ref: "#/components/parameters/InstanceID" }]
       responses:
         "200":
@@ -937,6 +937,17 @@ paths:
                   supported: { type: boolean }
                   qq_flash_supported: { type: boolean, description: 当前在线 Agent 同时支持 prepared_packages_v1 与 prepared_qq_flash_v1 }
                   items: { type: array, maxItems: 64, items: { $ref: "#/components/schemas/PreparedPackage" } }
+                  queues:
+                    type: array
+                    maxItems: 10
+                    items:
+                      type: object
+                      required: [id, status, progress, message]
+                      properties:
+                        id: { type: string, format: uuid }
+                        status: { type: string, enum: [queued, running, succeeded, failed, canceled] }
+                        progress: { type: integer, minimum: 0, maximum: 100 }
+                        message: { type: string }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
     post:
@@ -980,6 +991,64 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/JobReference" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/prepared-install-queues:
+    post:
+      tags: [Packages]
+      summary: 持久保存预下载包的顺序安装清单
+      description: >
+        需要 packages.install 和非空 Idempotency-Key。按 prepared_ids 顺序接受 1–16 个已就绪且未过期的包，整批原子提交。
+        每实例最多一个活动队列，返回 Control 本地协调任务 job_id；等待清单不持有实例写锁，不派发给 Agent。
+        关闭页面或退出会话后继续执行。每项创建及首次派发前重新检查原用户当前权限、账号状态、
+        原 API Token 的有效期/撤销/范围（若使用 Token）、准备有效期、实例状态和目标归属。
+        上一安装任务终态且写锁释放后才创建下一任务。失败、过期或权限失效停止剩余清单；
+        停止的未提交包解除预留，已创建安装任务的包仍只能消费一次。旧 Agent 或离线时等待兼容节点。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [prepared_ids]
+              properties:
+                prepared_ids: { type: array, minItems: 1, maxItems: 16, uniqueItems: true, items: { type: string, format: uuid } }
+                acknowledge_native_risk: { type: boolean, default: false }
+      responses:
+        "202":
+          description: 队列已持久保存或返回原幂等任务
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/prepared-install-queues/{jobId}/cancel:
+    post:
+      tags: [Packages]
+      summary: 停止服务端队列的后续安装
+      description: >
+        需要当前实例 packages.install，不要求 jobs.cancel。jobId 必须是本实例的协调任务。
+        重复停止幂等；仅解除未提交条目的预留，已创建的安装任务继续执行，可在任务中心单独取消。
+        不产生 Agent cancel_pending。成功/失败的已结束队列返回 conflict。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/JobID" }
+        - { $ref: "#/components/parameters/CSRF" }
+      responses:
+        "200": { description: 队列已停止，返回 job 和 cancel_delivered=false }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -4191,6 +4260,7 @@ components:
         ready: { type: boolean }
         expires_at: { type: string, format: date-time }
         size: { type: integer, format: int64, maximum: 536870912 }
+        queue_id: { type: string, format: uuid, description: 正在等待的服务端安装队列 ID }
         consume_job_id: { type: string, format: uuid }
         consume_status: { type: string, enum: [queued, dispatched, running, succeeded, failed, canceled] }
         busy: { type: boolean, description: 消费任务是否仍持有实例写锁（含待投影及待取消确认） }

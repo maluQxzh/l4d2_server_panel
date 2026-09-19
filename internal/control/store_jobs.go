@@ -651,7 +651,7 @@ func (s *Store) JobsForDispatch(ctx context.Context, nodeID string, limit int) (
 		SELECT jobs.*,(jobs.type='update' AND jobs.requested_by IS NULL
 			AND json_extract(jobs.payload,'$.maintenance')=1
 			AND jobs.idempotency_key LIKE 'maintenance:update:%') AS automatic_maintenance
-		FROM jobs WHERE jobs.node_id=?1 AND (
+		FROM jobs WHERE jobs.node_id=?1 AND jobs.type<>'prepared_install_queue' AND (
 			jobs.status IN ('queued','dispatched','running')
 			OR (jobs.status='canceled' AND json_extract(jobs.result,'$.cancel_pending')=1)
 			OR (jobs.status IN ('succeeded','failed') AND json_extract(jobs.result,'$._projection_pending')=1)
@@ -736,6 +736,14 @@ func (s *Store) MarkDispatched(ctx context.Context, id string) (bool, error) {
 	}
 	if isAutomaticMaintenanceUpdate(current) != isAutomaticMaintenanceUpdate(preflight) || current.InstanceID != preflight.InstanceID || current.Type != preflight.Type {
 		return false, errors.New("job dispatch identity changed while claiming")
+	}
+	if current.Type == preparedInstallQueueType {
+		return false, nil
+	}
+	if ok, err := validateQueuedPreparedInstallTx(ctx, tx, current); err != nil {
+		return false, err
+	} else if !ok {
+		return false, tx.Commit()
 	}
 	if current.Type == "a2s.info" && current.RequestedBy == "" {
 		var eligible bool
@@ -826,6 +834,16 @@ func (s *Store) CancelJob(ctx context.Context, id string) (domain.Job, domain.Jo
 	}
 	if !ValidJobTransition(current.Status, domain.JobCanceled) {
 		return domain.Job{}, current.Status, ErrConflict
+	}
+	if current.Type == preparedInstallQueueType {
+		if err := finishPreparedInstallQueueTx(ctx, tx, id, domain.JobCanceled, "已停止后续安装，已提交的安装任务继续执行"); err != nil {
+			return domain.Job{}, current.Status, err
+		}
+		if err := tx.Commit(); err != nil {
+			return domain.Job{}, current.Status, err
+		}
+		updated, err := s.GetJob(ctx, id)
+		return updated, current.Status, err
 	}
 	result := map[string]any{}
 	cancelPending := current.Status != domain.JobQueued && current.Status != domain.JobCanceled

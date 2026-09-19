@@ -65,6 +65,7 @@ export interface PreparedPackage {
   ready?: boolean;
   expires_at?: string;
   size?: number;
+  queue_id?: string;
   consume_job_id?: string;
   consume_status?: JobStatus;
   busy?: boolean;
@@ -184,9 +185,16 @@ async function waitForTransfer(path: string): Promise<TransferChunk> {
 }
 
 export const api = {
-  preparedPackages: (instanceId: string) => request<{ items: PreparedPackage[]; supported: boolean; qq_flash_supported?: boolean }>(`/instances/${encodeURIComponent(instanceId)}/prepared-packages`),
+  preparedPackages: (instanceId: string) => request<{ items: PreparedPackage[]; queues?: { id: string; status: JobStatus; progress: number; message: string }[]; supported: boolean; qq_flash_supported?: boolean }>(`/instances/${encodeURIComponent(instanceId)}/prepared-packages`),
   preparePackage: (instanceId: string, payload: { kind: string; name?: string; source?: string; content_base64?: string; source_transport?: "qq_flash" }) => request<{ job_id: string }>(
     `/instances/${encodeURIComponent(instanceId)}/prepared-packages`, { method: "POST", body: JSON.stringify(payload) },
+  ),
+  queuePreparedInstalls: (instanceId: string, ids: string[], risk: boolean, key: string) => request<{ job_id: string }>(
+    `/instances/${encodeURIComponent(instanceId)}/prepared-install-queues`,
+    { method: "POST", body: JSON.stringify({ prepared_ids: ids, acknowledge_native_risk: risk }), headers: { "Idempotency-Key": key } },
+  ),
+  stopPreparedInstallQueue: (instanceId: string, id: string) => request(
+    `/instances/${encodeURIComponent(instanceId)}/prepared-install-queues/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" },
   ),
   installPreparedPackage: (instanceId: string, id: string, risk: boolean, key: string) => request<{ job_id: string }>(
     `/instances/${encodeURIComponent(instanceId)}/prepared-packages/${encodeURIComponent(id)}/install`,

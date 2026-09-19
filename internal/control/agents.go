@@ -52,15 +52,16 @@ func (c *agentConnection) writeJSONLocked(value any) error {
 }
 
 type AgentHub struct {
-	store             *Store
-	events            *EventBroker
-	log               *slog.Logger
-	masterKey         []byte
-	validateInstances func(context.Context, string, []string) error
-	now               func() time.Time
-	mu                sync.RWMutex
-	conns             map[string]*agentConnection
-	upgrader          websocket.Upgrader
+	store                *Store
+	events               *EventBroker
+	log                  *slog.Logger
+	masterKey            []byte
+	validateInstances    func(context.Context, string, []string) error
+	now                  func() time.Time
+	mu                   sync.RWMutex
+	conns                map[string]*agentConnection
+	preparedQueueCursors map[string]string
+	upgrader             websocket.Upgrader
 }
 
 func NewAgentHub(store *Store, events *EventBroker, logger *slog.Logger, masterKey []byte) *AgentHub {
@@ -108,6 +109,7 @@ func (h *AgentHub) Disconnect(nodeID string) {
 	h.mu.Lock()
 	client := h.conns[nodeID]
 	delete(h.conns, nodeID)
+	delete(h.preparedQueueCursors, nodeID)
 	h.mu.Unlock()
 	if client != nil {
 		_ = client.conn.Close()
@@ -169,6 +171,7 @@ func (h *AgentHub) Serve(node domain.Node, remoteAddress string, w http.Response
 		h.mu.Lock()
 		if h.conns[node.ID] == client {
 			delete(h.conns, node.ID)
+			delete(h.preparedQueueCursors, node.ID)
 			_ = h.store.SetNodeOffline(context.Background(), node.ID)
 			_ = h.store.CreateNotification(context.Background(), "critical", "node.offline", "Node offline",
 				node.Name+" disconnected from the control plane", node.ID, nil)
@@ -693,6 +696,7 @@ func (h *AgentHub) forgetCompleted(nodeID, jobID string) {
 }
 
 func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
+	h.advancePreparedInstallQueues(ctx, nodeID)
 	h.mu.RLock()
 	client := h.conns[nodeID]
 	h.mu.RUnlock()

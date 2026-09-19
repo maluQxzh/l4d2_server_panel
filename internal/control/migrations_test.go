@@ -36,6 +36,7 @@ func TestSQLiteMigrationChecksums(t *testing.T) {
 		"018_pending_job_projection_index.sql":       "8eb499362eb135bd24dc366e58bcebfb138b27a512366b6ba292e7afe7f21960",
 		"019_parallel_plugin_inspection.sql":         "4e9da14d3fe9462e32d1cae24304ae6c874616b6f22dde74693cbbd4264b3d75",
 		"020_prepared_packages.sql":                  "d3c19e20b9a5eeae87f11a45528cb584c67b06e6112605651eeca15622f39e5b",
+		"021_prepared_install_queue.sql":             "507ad1f75aa6d94dfee535d0007cbf0fb8aeb8bd3c0396c3c7098bac88ae3623",
 	}
 	root := filepath.Join("..", "..", "migrations", "sqlite")
 	entries, err := os.ReadDir(root)

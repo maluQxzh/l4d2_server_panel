@@ -77,6 +77,7 @@ func (s *Server) Handler() http.Handler { return s.handler }
 func (s *Server) Close() { s.agents.Close() }
 
 func (s *Server) RunHousekeeping(ctx context.Context) {
+	s.agents.advancePreparedInstallQueues(ctx, "")
 	s.reconcileSystemUpdates(ctx)
 	s.reconcilePendingJobProjections(ctx)
 	ticker := time.NewTicker(30 * time.Second)
@@ -86,6 +87,7 @@ func (s *Server) RunHousekeeping(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			s.agents.advancePreparedInstallQueues(ctx, "")
 			s.reconcileSystemUpdates(ctx)
 			s.reconcilePendingJobProjections(ctx)
 			if err := s.store.AggregateMetrics(ctx); err != nil && ctx.Err() == nil {
@@ -280,6 +282,8 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requireInstancePermission(PermissionPackagesInstall)).Post("/instances/{instanceID}/packages/qq-flash", s.handleImportQQFlashFile)
 			r.With(s.requireInstancePermission(PermissionPackagesInstall)).Get("/instances/{instanceID}/prepared-packages", s.handlePreparedPackages)
 			r.With(s.requireInstancePermission(PermissionPackagesInstall)).Post("/instances/{instanceID}/prepared-packages", s.handlePreparePackage)
+			r.With(s.requireInstancePermission(PermissionPackagesInstall)).Post("/instances/{instanceID}/prepared-install-queues", s.handleQueuePreparedInstalls)
+			r.With(s.requireInstancePermission(PermissionPackagesInstall)).Post("/instances/{instanceID}/prepared-install-queues/{jobID}/cancel", s.handleStopPreparedInstallQueue)
 			r.With(s.requireInstancePermission(PermissionPackagesInstall)).Post("/instances/{instanceID}/prepared-packages/{jobID}/install", s.handleConsumePreparedPackage)
 			r.With(s.requireInstancePermission(PermissionPackagesInstall)).Delete("/instances/{instanceID}/prepared-packages/{jobID}", s.handleConsumePreparedPackage)
 			r.With(s.requireInstancePermission(PermissionPackagesInstall)).Post("/instances/{instanceID}/files/qq-flash", s.handleImportQQFlashFile)

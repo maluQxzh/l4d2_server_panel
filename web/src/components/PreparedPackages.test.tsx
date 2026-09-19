@@ -9,41 +9,46 @@ const pack = (id: string): PreparedPackage => ({ id, name: `${id}.vpk`, kind: "v
 const wrap = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ToastProvider><PreparedPackages instanceId="instance" plugins={false} /></ToastProvider></QueryClientProvider>);
 afterEach(() => vi.restoreAllMocks());
 
-it("刷新后的准备记录可以依次安装，写锁冲突复用幂等键", async () => {
-  vi.spyOn(window, "confirm").mockReturnValue(true);
-  const items = [pack("one"), pack("two")];
-  vi.spyOn(api, "preparedPackages").mockImplementation(async () => ({ supported: true, items }));
-  const install = vi.spyOn(api, "installPreparedPackage")
-    .mockRejectedValueOnce(new ApiError("busy", 409, "conflict", "instance_busy"))
-    .mockImplementation(async (_instance, id) => {
-      const item = items.find((p) => p.id === id)!;
-      item.ready = false; item.consume_job_id = `job-${id}`; item.consume_status = "succeeded"; item.busy = false;
-      return { job_id: `job-${id}` };
-    });
-  wrap();
-  fireEvent.click(await screen.findByRole("button", { name: "依次安装就绪包（2）" }));
-  await screen.findByText(/等待实例空闲/);
-  await screen.findByText("所选预下载包已安装完成", {}, { timeout: 3000 });
-  expect(install.mock.calls.map((call) => call[1])).toEqual(["one", "one", "two"]);
-  expect(install.mock.calls[0][3]).toBe(install.mock.calls[1][3]);
-  expect(install.mock.calls[1][3]).not.toBe(install.mock.calls[2][3]);
-});
-
-it("结果未同步时不提交下一包，离开页面终止后续安装", async () => {
+it("一次提交完整清单，离开页面不取消服务端队列", async () => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
   const items = [pack("one"), pack("two")];
   vi.spyOn(api, "preparedPackages").mockResolvedValue({ supported: true, items });
-  const install = vi.spyOn(api, "installPreparedPackage").mockImplementation(async () => {
-    items[0].consume_job_id = "job"; items[0].consume_status = "succeeded"; items[0].busy = true;
-    return { job_id: "job" };
-  });
+  const install = vi.spyOn(api, "queuePreparedInstalls").mockResolvedValue({ job_id: "batch" });
+  const stop = vi.spyOn(api, "stopPreparedInstallQueue");
   const view = wrap();
   fireEvent.click(await screen.findByRole("button", { name: "依次安装就绪包（2）" }));
-  await screen.findByText(/正在安装 one.vpk/);
+  await screen.findByText("安装队列已保存，关闭页面后仍会继续");
   expect(install).toHaveBeenCalledTimes(1);
+  expect(install).toHaveBeenCalledWith("instance", ["one", "two"], false, expect.any(String));
   view.unmount();
-  await new Promise((resolve) => setTimeout(resolve, 1050));
-  expect(install).toHaveBeenCalledTimes(1);
+  expect(stop).not.toHaveBeenCalled();
+});
+
+it("刷新恢复服务端等待和停止入口，无需任务列表权限", async () => {
+  vi.spyOn(api, "preparedPackages").mockResolvedValue({ supported: true, items: [{ ...pack("one"), ready: false, queue_id: "batch" }], queues: [{ id: "batch", status: "queued", progress: 0, message: "" }] });
+  const stop = vi.spyOn(api, "stopPreparedInstallQueue").mockResolvedValue({});
+  wrap();
+  expect(await screen.findByText("one.vpk · 等待安装")).toBeVisible();
+  expect(screen.getByRole("button", { name: "安装 one.vpk" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "丢弃 one.vpk" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "停止后续安装" }));
+  await waitFor(() => expect(stop).toHaveBeenCalledWith("instance", "batch"));
+});
+
+it("提交响应丢失后重试使用同一幂等键", async () => {
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  vi.spyOn(api, "preparedPackages").mockResolvedValue({ supported: true, items: [pack("one")] });
+  const install = vi.spyOn(api, "queuePreparedInstalls").mockRejectedValueOnce(new Error("网络中断")).mockResolvedValue({ job_id: "batch" });
+  wrap();
+  fireEvent.click(await screen.findByRole("button", { name: "依次安装就绪包（1）" }));
+  await screen.findByText("网络中断");
+  fireEvent.click(screen.getByRole("button", { name: "依次安装就绪包（1）" }));
+  await screen.findByText("安装队列已保存，关闭页面后仍会继续");
+  expect(install.mock.calls[0][3]).toBe(install.mock.calls[1][3]);
+  // Once accepted, a later install of released waiting items is a new intent.
+  fireEvent.click(screen.getByRole("button", { name: "依次安装就绪包（1）" }));
+  await waitFor(() => expect(install).toHaveBeenCalledTimes(3));
+  expect(install.mock.calls[2][3]).not.toBe(install.mock.calls[1][3]);
 });
 
 it("丢弃就绪包无需安装且失败显示提示", async () => {

@@ -157,7 +157,7 @@ func validateJobUpdate(job domain.Job, nodeID string, envelope protocol.Envelope
 	if envelope.JobID == "" || uuid.Validate(envelope.JobID) != nil {
 		return errors.New("job update has an invalid job ID")
 	}
-	if job.ID != envelope.JobID || job.NodeID != nodeID {
+	if job.ID != envelope.JobID || job.NodeID != nodeID || job.Type == preparedInstallQueueType {
 		return ErrUnauthorized
 	}
 	if len(update.Message) > maxAgentJobMessageBytes {

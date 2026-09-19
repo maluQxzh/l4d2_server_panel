@@ -51,6 +51,10 @@ func preparedMetadata(job domain.Job) (domain.PreparedPackage, error) {
 // Called inside the immediate queue transaction, after idempotent replay and
 // before insertion. No browser-supplied path, hash or size becomes authoritative.
 func preparedConsumptionPayload(ctx context.Context, tx *sql.Tx, instanceID, nodeID, action string, payload map[string]any) (map[string]any, error) {
+	return preparedConsumptionPayloadForQueue(ctx, tx, instanceID, nodeID, action, payload, "", "")
+}
+
+func preparedConsumptionPayloadForQueue(ctx context.Context, tx *sql.Tx, instanceID, nodeID, action string, payload map[string]any, queueID, claimID string) (map[string]any, error) {
 	if action != "install_mod" && action != "discard_prepared_package" {
 		return nil, ErrConflict
 	}
@@ -63,7 +67,7 @@ func preparedConsumptionPayload(ctx context.Context, tx *sql.Tx, instanceID, nod
 		return nil, err
 	}
 	var claimed bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE type IN ('install_mod','discard_prepared_package') AND json_type(payload,'$.prepared_package_id')='text' AND json_extract(payload,'$.prepared_package_id')=?1)`, id).Scan(&claimed); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE type IN ('install_mod','discard_prepared_package') AND json_type(payload,'$.prepared_package_id')='text' AND json_extract(payload,'$.prepared_package_id')=?1 AND id<>?2) OR EXISTS(SELECT 1 FROM prepared_install_queue_items WHERE prepared_id=?1 AND state='waiting' AND queue_id<>?3)`, id, claimID, queueID).Scan(&claimed); err != nil {
 		return nil, err
 	}
 	if claimed {
@@ -288,7 +292,38 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 			s.fail(w, err)
 			return
 		}
+		var queueID string
+		err = s.store.db.QueryRowContext(r.Context(), `SELECT queue_id FROM prepared_install_queue_items WHERE prepared_id=?1 AND state='waiting'`, job.ID).Scan(&queueID)
+		if err == nil {
+			item["ready"] = false
+			item["queue_id"] = queueID
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			s.fail(w, err)
+			return
+		}
 		items = append(items, item)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1), "qq_flash_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1)})
+	queueRows, err := s.store.db.QueryContext(r.Context(), `SELECT j.id,j.status,j.progress,j.message FROM prepared_install_queues q JOIN jobs j ON j.id=q.job_id WHERE q.instance_id=?1 ORDER BY q.active DESC,j.created_at DESC,j.id DESC LIMIT 10`, instance.ID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	queues := []map[string]any{}
+	for queueRows.Next() {
+		var id, status, message string
+		var progress int
+		if err = queueRows.Scan(&id, &status, &progress, &message); err != nil {
+			break
+		}
+		queues = append(queues, map[string]any{"id": id, "status": status, "progress": progress, "message": message})
+	}
+	if err == nil {
+		err = queueRows.Err()
+	}
+	queueRows.Close()
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "queues": queues, "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1), "qq_flash_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1)})
 }
