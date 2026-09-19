@@ -1035,9 +1035,11 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
   const smartSourceReady = qqFlashPlugin ? Boolean(source.trim()) : Boolean(upload);
   const ordinarySourceReady = official ? (!qqFlashPlugin || Boolean(source.trim())) : hasSource;
   const prepared = usePreparedPackages(instance.id, open);
-  const canPrepare = prepared.data?.supported && !qqFlashPlugin && ["vpk_url", "smx", "native"].includes(kind);
+  const qqPrepare = qqFlashVPK || qqFlashPlugin;
+  const singleFileQQPlugin = qqFlashPlugin && ["smx", "native"].includes(kind);
+  const canPrepare = prepared.data?.supported && ["vpk_url", "qq_flash", "smx", "native"].includes(kind) && (!qqPrepare || prepared.data.qq_flash_supported);
   const prepare = useMutation({
-    mutationFn: () => api.preparePackage(instance.id, { kind: kind === "vpk_url" ? "vpk" : kind, name: upload?.name, source: source.trim() || undefined, content_base64: upload?.contentBase64 }),
+    mutationFn: () => api.preparePackage(instance.id, { kind: kind === "vpk_url" || qqFlashVPK ? "vpk" : kind, name: qqPrepare ? undefined : upload?.name, source: source.trim() || undefined, content_base64: qqPrepare ? undefined : upload?.contentBase64, source_transport: qqPrepare ? "qq_flash" : undefined }),
     onSuccess: () => {
       toast.push("预下载任务已提交，可继续准备其他包；完成后在预下载列表安装");
       void client.invalidateQueries({ queryKey: ["instances", instance.id, "prepared-packages"] });
@@ -1046,21 +1048,22 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
     },
     onError: (error: Error) => toast.push(error.message, "error"),
   });
-  const primaryDisabled = sourceModBlocked || (smart ? !smartSourceReady || !smartPlan || !smartReady : !ordinarySourceReady) || (needsRisk && !risk);
+  const primaryDisabled = singleFileQQPlugin || sourceModBlocked || (smart ? !smartSourceReady || !smartPlan || !smartReady : !ordinarySourceReady) || (needsRisk && !risk);
   const defaultTransportLabel = smart ? "本机上传" : official ? "官方下载" : "HTTPS / 本机上传";
   return <Modal open={open} onClose={() => { if (!prepare.isPending) resetAndClose(); }} title={pluginSection ? "安装插件或服务端组件" : "安装模组"} description={smart ? `${qqFlashPlugin ? "通过 QQ 闪传获取" : "上传"} ZIP、7Z 或 RAR；目标 Agent 会先识别每个插件文件夹和目标路径，确认预览后再整批安装。` : (qqFlashVPK || qqFlashPlugin) ? "节点直接从 QQ 闪传暂存并检查完整分享，文件正文不经过 Control 或浏览器。" : "HTTPS 下载和本机上传都会经过大小、哈希、路径与内容格式检查。"} footer={<><Button variant="secondary" onClick={resetAndClose} disabled={prepare.isPending}>取消</Button>{canPrepare && <Button variant="secondary" onClick={() => prepare.mutate()} loading={prepare.isPending} disabled={!hasSource || install.isPending}>预下载，稍后安装</Button>}{smart && !smartPlan ? <Button onClick={() => inspection.mutate()} loading={inspection.isPending} disabled={!smartSourceReady}><Search size={16} />开始识别</Button> : <Button onClick={submitInstall} loading={install.isPending} disabled={primaryDisabled || prepare.isPending}>{qqFlashVPK || qqFlashPlugin ? <CloudDownload size={16} /> : <Download size={16} />}{qqFlashVPK ? "导入 VPK" : smart ? `安装 ${selectedSmartFolders.length} 个插件` : "提交安装"}</Button>}</>}>
     <div className="form-stack">
       <Field label="类型"><select disabled={prepare.isPending} value={kind} onChange={(event) => { setKind(event.target.value); setTransport("default"); setSource(""); setUpload(null); setPathEncoding("auto"); clearSmartPlan(); }}>{pluginSection ? <><option value="smart">智能识别</option><option value="smx">单文件 SMX 插件</option><option value="native">单文件原生扩展</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option></> : <><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="qq_flash">QQ闪传（玩家上传 VPK）</option></>}</select></Field>
       {pluginSection && <Field label="传输方式"><select disabled={prepare.isPending} value={transport} onChange={(event) => { setTransport(event.target.value as "default" | "qq_flash"); setSource(""); setUpload(null); setPathEncoding("auto"); clearSmartPlan(); }}><option value="default">{defaultTransportLabel}</option><option value="qq_flash">QQ 闪传</option></select></Field>}
+      {qqPrepare && ["qq_flash", "smx", "native"].includes(kind) && <div className="form-note"><CloudDownload size={18} /><span><strong>单文件可先预下载</strong><small>{prepared.data?.qq_flash_supported ? "分享须恰好包含一个与所选类型一致的文件，最大 512 MiB；预下载完成后到列表安装。压缩包和多文件 VPK 分享请使用原导入流程。" : "请更新并连接 Agent 以使用 QQ 闪传单文件预下载。"}</small></span></div>}
       {sourceModBlocked && <div className="form-note"><ShieldAlert size={18} /><span><strong>请先安装 Metamod:Source</strong><small>SourceMod 依赖 Metamod；Metamod 安装并验证成功后才能提交 SourceMod 安装。</small></span></div>}
       {smart && <Field label="压缩包路径编码" hint="自动模式优先使用 UTF-8，并在 ZIP 旧式文件名无效时回退 GBK；仍不正确时可显式选择原始编码。"><select aria-label="压缩包路径编码" value={pathEncoding} onChange={(event) => { setPathEncoding(event.target.value as MapPathEncoding); clearSmartPlan(); }}><option value="auto">自动（推荐）</option><option value="utf8">UTF-8</option><option value="gbk">GBK（简体中文旧压缩包）</option><option value="big5">Big5（繁体中文旧压缩包）</option></select></Field>}
       {qqFlashVPK ? <>
         <Field label="固定目标目录"><input value="left4dead2/addons" readOnly /></Field>
-        <Field label="QQ闪传分享链接" hint="可直接粘贴 QQ 分享文本；支持直接 VPK，以及最多嵌套 3 层的 ZIP、7Z、RAR 压缩包。"><textarea rows={4} value={source} onChange={(event) => setSource(event.target.value)} placeholder="链接：https://qfile.qq.com/q/Example123" spellCheck={false} /></Field>
+        <Field label="QQ闪传分享链接" hint="可直接粘贴 QQ 分享文本；支持直接 VPK，以及最多嵌套 3 层的 ZIP、7Z、RAR 压缩包。"><textarea disabled={prepare.isPending} rows={4} value={source} onChange={(event) => setSource(event.target.value)} placeholder="链接：https://qfile.qq.com/q/Example123" spellCheck={false} /></Field>
         <div className="form-note"><CloudDownload size={18} /><span><strong>仅接收经过校验的 VPK</strong><small>节点会先完整暂存分享，限制下载与解压总量，拒绝加密包、危险路径和任何非 VPK 文件。成功后每个 VPK 会单独出现在本页，可启停和删除。</small></span></div>
       </> : <>
         {qqFlashPlugin ? <>
-          <Field label="QQ 闪传分享链接" hint="分享中必须只有一个实际包文件；智能识别支持 ZIP、7Z、RAR，组件整包会继续按所选类型校验。"><textarea rows={4} value={source} onChange={(event) => { setSource(event.target.value); clearSmartPlan(); }} placeholder="链接：https://qfile.qq.com/q/Example123" spellCheck={false} /></Field>
+          <Field label="QQ 闪传分享链接" hint="分享中必须只有一个实际包文件；智能识别支持 ZIP、7Z、RAR，组件整包会继续按所选类型校验。"><textarea disabled={prepare.isPending} rows={4} value={source} onChange={(event) => { setSource(event.target.value); clearSmartPlan(); }} placeholder="链接：https://qfile.qq.com/q/Example123" spellCheck={false} /></Field>
           <div className="form-note"><CloudDownload size={18} /><span><strong>节点直连下载</strong><small>最多下载 2 GiB，并保留至少 1 GiB 可用空间；下载后的包仍经过现有路径、归档和安装校验。</small></span></div>
         </> : official ? <div className="form-note"><ShieldCheck size={18} /><span><strong>自动解析官方稳定版</strong><small>Agent 只接受 AlliedModders 官方白名单地址，并按节点系统选择压缩包。</small></span></div> : !smart && <Field label={kind === "workshop" ? "项目或合集 ID" : "HTTPS 来源"} hint={canUpload ? "填写 URL，或在下方从本机选择一个文件" : undefined}><input disabled={prepare.isPending} value={source} onChange={(event) => { setSource(event.target.value); setUpload(null); clearSmartPlan(); }} placeholder={kind === "workshop" ? "例如：123456789" : "https://example.org/plugin.zip"} /></Field>}
         {canUpload && <Field label={smart ? "插件压缩包" : "从本机上传"} hint={smart ? "支持 ZIP、7Z、RAR；单个文件上限 100 MiB。可包含多个顶层插件文件夹" : "单个文件上限 100 MiB；载荷会加密保存，并只发送给目标节点"}><FileUploadInput key={kind} label={smart ? "插件压缩包" : "从本机上传"} accept={accept} minBytes={1} maxBytes={100 * 1024 * 1024} fileName={upload?.name || ""} disabled={install.isPending || inspection.isPending || prepare.isPending} onFile={chooseUpload} /></Field>}

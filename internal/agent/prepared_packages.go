@@ -188,7 +188,23 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 		return nil, errors.New("instance is not registered")
 	}
 	name, kind := exactPayloadString(job.Payload, "name"), exactPayloadString(job.Payload, "kind")
-	if _, err := domain.PreparedPackageTarget(kind, name); err != nil {
+	transport := exactPayloadString(job.Payload, "source_transport")
+	if transport != "" && transport != "qq_flash" {
+		return nil, errors.New("unsupported preparation source transport")
+	}
+	if transport == "qq_flash" {
+		if !domain.ValidPreparedPackageKind(kind) || name != "" || exactPayloadString(job.Payload, "content_base64") != "" {
+			return nil, errors.New("QQ flash preparation requires a single-file kind and share source only")
+		}
+		// Preserve the v1 on-disk reservation format even before QQ metadata is
+		// known, so an older Agent can clean interrupted preparations after rollback.
+		name = "preparing.smx"
+		if kind == "vpk" {
+			name = "preparing.vpk"
+		} else if kind == "native" {
+			name = "preparing.so"
+		}
+	} else if _, err := domain.PreparedPackageTarget(kind, name); err != nil {
 		return nil, err
 	}
 	content, source := exactPayloadString(job.Payload, "content_base64"), exactPayloadString(job.Payload, "source")
@@ -236,6 +252,12 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 			return nil, errors.New("invalid uploaded package")
 		}
 		_, err = writeFileWithinNoFollow(root, job.ID+".bin", bytes.NewReader(raw), secureWriteOptions{Mode: 0600, ExpectedSize: int64(len(raw)), Replace: false})
+	} else if transport == "qq_flash" {
+		client := e.preparedQQClient
+		if client == nil {
+			client = newQQFlashClient(e.safeDownloadLimiter())
+		}
+		record.Name, err = downloadPreparedQQPackage(ctx, client, source, root, job.ID+".bin", kind, progress)
 	} else {
 		// Account for this single-stream HTTPS transfer in the shared node budget.
 		release, acquireErr := e.safeDownloadLimiter().acquire(ctx)
@@ -254,6 +276,9 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		if transport == "qq_flash" {
+			return nil, errors.New("QQ 闪传预下载失败：请确认分享有效、仅含一个与所选类型一致的文件且不超过 512 MiB；压缩包或多文件请使用原导入流程")
 		}
 		return nil, errors.New("包下载或上传暂存失败，请检查来源及节点磁盘")
 	}

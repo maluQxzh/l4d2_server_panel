@@ -59,6 +59,10 @@ func sealJobPayloadSecrets(masterKey []byte, jobType string, payload map[string]
 			payload["source_ciphertext"] = sealed
 			parsed.RawQuery, parsed.Fragment, parsed.User = "", "", nil
 			payload["source"] = parsed.String()
+			if jobType == "prepare_package" && stringFromAny(payload["source_transport"]) == "qq_flash" {
+				// The share path itself is a locator, not just its query string.
+				payload["source"] = encryptedValuePlaceholder
+			}
 		}
 		content := stringFromAny(payload["content_base64"])
 		if content != "" {

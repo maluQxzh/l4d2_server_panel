@@ -935,6 +935,7 @@ paths:
                 required: [items, supported]
                 properties:
                   supported: { type: boolean }
+                  qq_flash_supported: { type: boolean, description: 当前在线 Agent 同时支持 prepared_packages_v1 与 prepared_qq_flash_v1 }
                   items: { type: array, maxItems: 64, items: { $ref: "#/components/schemas/PreparedPackage" } }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -946,7 +947,9 @@ paths:
         每节点最多 16 个准备槽、同时准备 2 个，共享节点下载限额。从开始准备起一小时有效。
         仅接受 HTTPS 或 base64 上传之一；HTTPS 最大 512 MiB，上传解码后最大 100 MiB。
         name 是安全 basename，上传必须提供，HTTPS 可省略并从 URL 路径推导。
-        不支持 Workshop、QQ 闪传或组件整包。到期、取消或崩溃未完成的暂存由 Agent 回收。
+        source_transport=qq_flash 时额外需要 prepared_qq_flash_v1，source 为 QQ 分享 URL 或分享文本，
+        不接受 name/content_base64；分享必须恰好包含一个符合所选类型的单文件且不超过 512 MiB，名称取验证后的分享元数据。
+        不支持 Workshop、QQ 多文件/归档或组件整包。到期、取消或崩溃未完成的暂存由 Agent 回收。
       parameters:
         - { $ref: "#/components/parameters/InstanceID" }
         - { $ref: "#/components/parameters/CSRF" }
@@ -966,8 +969,9 @@ paths:
                   not: { required: [source] }
               properties:
                 kind: { type: string, enum: [vpk, smx, plugin, native] }
+                source_transport: { type: string, enum: [qq_flash], description: 省略时为 HTTPS 或上传；qq_flash 时 source 必填且 name/content_base64 禁止提供 }
                 name: { type: string, minLength: 1, maxLength: 240, description: "安全文件名；VPK 为 .vpk，SMX/plugin 为 .smx，native 为 .dll 或 .so；UTF-8 最多 240 字节" }
-                source: { type: string, format: uri, maxLength: 4096 }
+                source: { type: string, maxLength: 4096, description: HTTPS URL；QQ 闪传模式也接受分享文本，服务端规范化为固定分享 URL }
                 content_base64: { type: string, format: byte }
       responses:
         "202":

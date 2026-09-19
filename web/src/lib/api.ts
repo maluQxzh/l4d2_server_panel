@@ -184,8 +184,8 @@ async function waitForTransfer(path: string): Promise<TransferChunk> {
 }
 
 export const api = {
-  preparedPackages: (instanceId: string) => request<{ items: PreparedPackage[]; supported: boolean }>(`/instances/${encodeURIComponent(instanceId)}/prepared-packages`),
-  preparePackage: (instanceId: string, payload: { kind: string; name?: string; source?: string; content_base64?: string }) => request<{ job_id: string }>(
+  preparedPackages: (instanceId: string) => request<{ items: PreparedPackage[]; supported: boolean; qq_flash_supported?: boolean }>(`/instances/${encodeURIComponent(instanceId)}/prepared-packages`),
+  preparePackage: (instanceId: string, payload: { kind: string; name?: string; source?: string; content_base64?: string; source_transport?: "qq_flash" }) => request<{ job_id: string }>(
     `/instances/${encodeURIComponent(instanceId)}/prepared-packages`, { method: "POST", body: JSON.stringify(payload) },
   ),
   installPreparedPackage: (instanceId: string, id: string, risk: boolean, key: string) => request<{ job_id: string }>(

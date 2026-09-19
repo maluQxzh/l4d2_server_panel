@@ -120,6 +120,83 @@ func TestPreparedPackagePermissionAndSecretStorage(t *testing.T) {
 	}
 }
 
+func TestPreparedQQMetadataAndLegacyCapability(t *testing.T) {
+	s := packageRenameStore(t)
+	job := readyPreparedJob(t, s)
+	job.Payload["source_transport"] = "qq_flash"
+	job.Payload["name"] = ""
+	job.Result["name"] = "OriginalCase.vpk"
+	if _, err := preparedMetadata(job); err != nil {
+		t.Fatal(err)
+	}
+	job.Result["name"] = "../unsafe.vpk"
+	if _, err := preparedMetadata(job); err == nil {
+		t.Fatal("unsafe discovered name accepted")
+	}
+	ctx := context.Background()
+	queued, _, err := s.QueueInstanceJob(ctx, "instance", "prepare_package", map[string]any{"kind": "vpk", "source_transport": "qq_flash", "source": "https://qfile.qq.com/q/SecretCASE"}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := recoveryServer(t, s)
+	server.agents.conns["node"] = &agentConnection{capabilities: map[string]struct{}{protocol.CapabilityPreparedPackagesV1: {}, "absolute_game_paths": {}}}
+	defer delete(server.agents.conns, "node")
+	server.agents.Dispatch(ctx, "node")
+	actual, err := s.GetJob(ctx, queued.ID)
+	if err != nil || actual.Status != domain.JobQueued {
+		t.Fatalf("legacy Agent received QQ preparation: %v", err)
+	}
+	for _, body := range []string{
+		`{"kind":"vpk","source":"https://example.com/file.vpk","source_transport":"qq_flash"}`,
+		`{"kind":"vpk","source":"https://qfile.qq.com/q/share01","source_transport":"unknown"}`,
+		`{"kind":"smart","source":"https://qfile.qq.com/q/share01","source_transport":"qq_flash"}`,
+		`{"kind":"vpk","name":"forged.vpk","source":"https://qfile.qq.com/q/share01","source_transport":"qq_flash"}`,
+		`{"kind":"vpk","content_base64":"YQ==","source":"https://qfile.qq.com/q/share01","source_transport":"qq_flash"}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		response := httptest.NewRecorder()
+		server.handlePreparePackage(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("invalid preparation: %d %s", response.Code, response.Body)
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"kind":"vpk","source":"https://qfile.qq.com/q/share01","source_transport":"qq_flash"}`))
+	route := chi.NewRouteContext()
+	route.URLParams.Add("instanceID", "instance")
+	request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, route))
+	response := httptest.NewRecorder()
+	server.handlePreparePackage(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "agent_upgrade_required") {
+		t.Fatalf("old Agent accepted QQ: %d %s", response.Code, response.Body)
+	}
+}
+
+func TestPreparedQQListAndConsumeUseValidatedName(t *testing.T) {
+	s := packageRenameStore(t)
+	job := readyPreparedJob(t, s)
+	job.Payload["name"], job.Payload["source_transport"] = "", "qq_flash"
+	job.Result["name"] = "ActualName.vpk"
+	payload, _ := json.Marshal(job.Payload)
+	result, _ := json.Marshal(job.Result)
+	if _, err := s.db.Exec(`UPDATE jobs SET payload=?2,result=?3 WHERE id=?1`, job.ID, string(payload), string(result)); err != nil {
+		t.Fatal(err)
+	}
+	server := recoveryServer(t, s)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	route := chi.NewRouteContext()
+	route.URLParams.Add("instanceID", "instance")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, route))
+	res := httptest.NewRecorder()
+	server.handlePreparedPackages(res, req)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"name":"ActualName.vpk"`) || !strings.Contains(res.Body.String(), `"ready":true`) {
+		t.Fatalf("QQ list lost validated name: %d %s", res.Code, res.Body)
+	}
+	install, _, err := s.QueueInstanceJob(context.Background(), "instance", "install_mod", map[string]any{"prepared_package_id": job.ID, "name": "forged.vpk"}, "", "")
+	if err != nil || install.Payload["name"] != "ActualName.vpk" {
+		t.Fatalf("QQ consume name mismatch: %v %#v", err, install.Payload)
+	}
+}
+
 func TestPreparedPackageSlotsAndCapabilityGate(t *testing.T) {
 	s := packageRenameStore(t)
 	ctx := context.Background()
@@ -205,65 +282,78 @@ func TestPreparedPackageHTTPInstallListAndReplay(t *testing.T) {
 }
 
 func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
-	s := packageRenameStore(t)
-	server := recoveryServer(t, s)
-	node, err := s.GetNode(context.Background(), "node")
-	if err != nil {
-		t.Fatal(err)
-	}
-	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { server.agents.Serve(node, "127.0.0.1", w, r) }))
-	defer endpoint.Close()
-	connection, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(endpoint.URL, "http"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.Close()
-	hello, err := protocol.NewEnvelope(protocol.TypeHello, "node", "", protocol.Hello{Capabilities: []string{protocol.CapabilityPreparedPackagesV1, "absolute_game_paths"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := connection.WriteJSON(hello); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for !server.agents.Supports("node", protocol.CapabilityPreparedPackagesV1) {
-		if time.Now().After(deadline) {
-			t.Fatal("Agent capability not registered")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	source := "https://example.com/MixedCase.vpk?Token=SecretCASE"
-	body, _ := json.Marshal(map[string]any{"kind": "vpk", "source": source})
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
-	route := chi.NewRouteContext()
-	route.URLParams.Add("instanceID", "instance")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, route))
-	req = req.WithContext(context.WithValue(req.Context(), principalContextKey, Principal{User: domain.User{Role: domain.RoleOwner}}))
-	res := httptest.NewRecorder()
-	server.handlePreparePackage(res, req)
-	if res.Code != http.StatusAccepted {
-		t.Fatalf("prepare: %d %s", res.Code, res.Body)
-	}
-	_ = connection.SetReadDeadline(time.Now().Add(2 * time.Second))
-	var envelope protocol.Envelope
-	if err := connection.ReadJSON(&envelope); err != nil {
-		t.Fatal(err)
-	}
-	if envelope.Type != protocol.TypeJob {
-		t.Fatalf("unexpected envelope: %s", envelope.Type)
-	}
-	var command protocol.JobCommand
-	if err := json.Unmarshal(envelope.Payload, &command); err != nil {
-		t.Fatal(err)
-	}
-	if command.Job.Type != "prepare_package" || command.Job.Payload["source"] != source || command.Job.Payload["name"] != "MixedCase.vpk" {
-		t.Fatalf("dispatch metadata changed: %#v", command.Job.Payload)
-	}
-	stored, err := s.GetJob(context.Background(), command.Job.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.Payload["source"] == source || stored.Payload["source_ciphertext"] == nil {
-		t.Fatal("source not encrypted at rest")
+	for _, qq := range []bool{false, true} {
+		t.Run(map[bool]string{false: "HTTPS", true: "QQ"}[qq], func(t *testing.T) {
+			s := packageRenameStore(t)
+			server := recoveryServer(t, s)
+			node, err := s.GetNode(context.Background(), "node")
+			if err != nil {
+				t.Fatal(err)
+			}
+			endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { server.agents.Serve(node, "127.0.0.1", w, r) }))
+			defer endpoint.Close()
+			connection, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(endpoint.URL, "http"), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer connection.Close()
+			hello, err := protocol.NewEnvelope(protocol.TypeHello, "node", "", protocol.Hello{Capabilities: []string{protocol.CapabilityPreparedPackagesV1, protocol.CapabilityPreparedQQFlashV1, "absolute_game_paths"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := connection.WriteJSON(hello); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for !server.agents.Supports("node", protocol.CapabilityPreparedPackagesV1) {
+				if time.Now().After(deadline) {
+					t.Fatal("Agent capability not registered")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			source := "https://example.com/MixedCase.vpk?Token=SecretCASE"
+			payload := map[string]any{"kind": "vpk", "source": source}
+			if qq {
+				source = "https://qfile.qq.com/q/SecretCASE"
+				payload["source"] = source
+				payload["source_transport"] = "qq_flash"
+			}
+			body, _ := json.Marshal(payload)
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+			route := chi.NewRouteContext()
+			route.URLParams.Add("instanceID", "instance")
+			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, route))
+			req = req.WithContext(context.WithValue(req.Context(), principalContextKey, Principal{User: domain.User{Role: domain.RoleOwner}}))
+			res := httptest.NewRecorder()
+			server.handlePreparePackage(res, req)
+			if res.Code != http.StatusAccepted {
+				t.Fatalf("prepare: %d %s", res.Code, res.Body)
+			}
+			_ = connection.SetReadDeadline(time.Now().Add(2 * time.Second))
+			var envelope protocol.Envelope
+			if err := connection.ReadJSON(&envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.Type != protocol.TypeJob {
+				t.Fatalf("unexpected envelope: %s", envelope.Type)
+			}
+			var command protocol.JobCommand
+			if err := json.Unmarshal(envelope.Payload, &command); err != nil {
+				t.Fatal(err)
+			}
+			if command.Job.Type != "prepare_package" || command.Job.Payload["source"] != source || (qq && command.Job.Payload["name"] != "") || (!qq && command.Job.Payload["name"] != "MixedCase.vpk") {
+				t.Fatalf("dispatch metadata changed: %#v", command.Job.Payload)
+			}
+			stored, err := s.GetJob(context.Background(), command.Job.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Payload["source"] == source || stored.Payload["source_ciphertext"] == nil {
+				t.Fatal("source not encrypted at rest")
+			}
+			if qq && stored.Payload["source"] != encryptedValuePlaceholder {
+				t.Fatal("share locator persisted in clear")
+			}
+		})
 	}
 }

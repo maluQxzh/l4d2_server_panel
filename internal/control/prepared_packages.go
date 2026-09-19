@@ -39,7 +39,7 @@ func preparedMetadata(job domain.Job) (domain.PreparedPackage, error) {
 	}
 	if err != nil || job.Type != "prepare_package" || job.Status != domain.JobSucceeded ||
 		item.ID != job.ID || item.InstanceID != job.InstanceID || item.NodeID != job.NodeID ||
-		item.Name != stringFromAny(job.Payload["name"]) || item.Kind != stringFromAny(job.Payload["kind"]) ||
+		(stringFromAny(job.Payload["source_transport"]) != "qq_flash" && item.Name != stringFromAny(job.Payload["name"])) || item.Kind != stringFromAny(job.Payload["kind"]) ||
 		!validRequestFingerprint(item.SHA256) || item.Size <= 0 || item.Size > domain.PreparedPackageMaxBytes ||
 		item.ExpiresAt.IsZero() || item.ExpiresAt.After(job.CreatedAt.Add(2*time.Hour)) {
 		return item, fmt.Errorf("预下载结果无效或未完成: %w", ErrConflict)
@@ -99,10 +99,11 @@ func preparedConsumptionPayload(ctx context.Context, tx *sql.Tx, instanceID, nod
 
 func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Kind    string `json:"kind"`
-		Name    string `json:"name"`
-		Source  string `json:"source"`
-		Content string `json:"content_base64"`
+		Kind      string `json:"kind"`
+		Name      string `json:"name"`
+		Source    string `json:"source"`
+		Content   string `json:"content_base64"`
+		Transport string `json:"source_transport"`
 	}
 	if !decodeJSONWithLimit(w, r, &request, protocol.MaxPackageUploadEnvelopeBytes) {
 		return
@@ -110,6 +111,23 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 	if len(request.Source) > 4096 {
 		writeError(w, http.StatusBadRequest, "invalid_source", "HTTPS 地址过长")
 		return
+	}
+	request.Kind = strings.ToLower(strings.TrimSpace(request.Kind))
+	if request.Transport != "" && request.Transport != "qq_flash" {
+		writeError(w, http.StatusBadRequest, "invalid_source", "不支持的预下载传输方式")
+		return
+	}
+	if request.Transport == "qq_flash" {
+		if !domain.ValidPreparedPackageKind(request.Kind) || request.Name != "" || request.Content != "" {
+			writeError(w, http.StatusBadRequest, "invalid_package", "QQ 闪传预下载仅接受单文件类型和分享链接")
+			return
+		}
+		var err error
+		request.Source, err = normalizeQQFlashShareURL(request.Source)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_source", "请输入有效的 QQ 闪传分享链接")
+			return
+		}
 	}
 	instanceID := chi.URLParam(r, "instanceID")
 	instance, err := s.store.GetInstance(r.Context(), instanceID)
@@ -121,7 +139,11 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "agent_upgrade_required", "请确保节点在线并升级 Agent 后使用预下载")
 		return
 	}
-	if request.Source != "" {
+	if request.Transport == "qq_flash" && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1) {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用 QQ 闪传预下载")
+		return
+	}
+	if request.Source != "" && request.Transport == "" {
 		u, err := url.Parse(request.Source)
 		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
 			writeError(w, http.StatusBadRequest, "invalid_source", "预下载仅接受 HTTPS 地址")
@@ -132,9 +154,11 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	request.Kind, request.Name = strings.ToLower(strings.TrimSpace(request.Kind)), strings.TrimSpace(request.Name)
-	if _, err := domain.PreparedPackageTarget(request.Kind, request.Name); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_package", err.Error())
-		return
+	if request.Transport == "" {
+		if _, err := domain.PreparedPackageTarget(request.Kind, request.Name); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_package", err.Error())
+			return
+		}
 	}
 	payload := map[string]any{"kind": request.Kind, "name": request.Name, "source": request.Source, "content_base64": request.Content}
 	if (request.Source == "") == (request.Content == "") {
@@ -144,6 +168,9 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 	if err := validatePackageUpload(payload); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_package", err.Error())
 		return
+	}
+	if request.Transport != "" {
+		payload["source_transport"] = request.Transport
 	}
 	principal := principalFromContext(r.Context())
 	fingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "package-prepare", instanceID, "prepare_package", payload)
@@ -217,7 +244,7 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 	}
 	// Polling only needs the public metadata, never a potentially 100 MiB
 	// encrypted upload body. Project before transferring rows into Go.
-	columns := strings.Replace(jobColumns, ",payload,", ",json_object('name',json_extract(payload,'$.name'),'kind',json_extract(payload,'$.kind')),", 1)
+	columns := strings.Replace(jobColumns, ",payload,", ",json_object('name',json_extract(payload,'$.name'),'kind',json_extract(payload,'$.kind'),'source_transport',json_extract(payload,'$.source_transport')),", 1)
 	rows, err := s.store.db.QueryContext(r.Context(), `SELECT `+columns+` FROM jobs WHERE instance_id=?1 AND type='prepare_package'
 		AND created_at>?2 ORDER BY created_at DESC,id DESC LIMIT 64`, instance.ID, time.Now().Add(-2*time.Hour))
 	if err != nil {
@@ -244,6 +271,7 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 	for _, job := range jobs {
 		item := map[string]any{"id": job.ID, "name": stringFromAny(job.Payload["name"]), "kind": stringFromAny(job.Payload["kind"]), "status": job.Status, "progress": job.Progress}
 		if meta, err := preparedMetadata(job); err == nil {
+			item["name"] = meta.Name
 			item["expires_at"] = meta.ExpiresAt
 			item["ready"] = meta.ExpiresAt.After(time.Now())
 			item["size"] = meta.Size
@@ -262,5 +290,5 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 		}
 		items = append(items, item)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1)})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1), "qq_flash_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1)})
 }

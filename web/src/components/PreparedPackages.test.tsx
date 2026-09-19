@@ -54,3 +54,10 @@ it("丢弃就绪包无需安装且失败显示提示", async () => {
   await waitFor(() => expect(discard).toHaveBeenCalledWith("instance", "one"));
   await screen.findByText("权限已撤销");
 });
+
+it("QQ 分享未解析名称时显示准备占位且禁止安装", async () => {
+  vi.spyOn(api, "preparedPackages").mockResolvedValue({ supported: true, qq_flash_supported: true, items: [{ ...pack("one"), name: "", status: "running", ready: false, progress: 10 }] });
+  wrap();
+  expect(await screen.findByRole("button", { name: "安装 QQ 闪传单文件" })).toBeDisabled();
+  expect(screen.getByText("QQ 闪传单文件 · 准备中 10%")).toBeVisible();
+});

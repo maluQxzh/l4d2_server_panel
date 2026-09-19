@@ -11,6 +11,15 @@ const PreparedPackageMaxBytes int64 = 512 << 20
 const PreparedPackageTTL = time.Hour
 const PreparedPackageSlots = 16
 
+func ValidPreparedPackageKind(kind string) bool {
+	switch kind {
+	case "vpk", "smx", "plugin", "native":
+		return true
+	default:
+		return false
+	}
+}
+
 // PreparedPackage contains no source URL, upload body or host path. ID is a job
 // ID, not a bearer credential: both ends must enforce node/instance binding.
 type PreparedPackage struct {

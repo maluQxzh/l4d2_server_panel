@@ -726,6 +726,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, packageDeleteSupported := client.capabilities["package_delete_v1"]
 		_, packageRenameSupported := client.capabilities["package_rename_v1"]
 		_, preparedPackagesSupported := client.capabilities[protocol.CapabilityPreparedPackagesV1]
+		_, preparedQQFlashSupported := client.capabilities[protocol.CapabilityPreparedQQFlashV1]
 		_, backupDeleteSupported := client.capabilities["backup_delete_v1"]
 		_, pluginBackupSupported := client.capabilities["plugin_backup_7z_v1"]
 		_, componentPackageDeleteSupported := client.capabilities["component_package_delete_v1"]
@@ -763,6 +764,9 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 			continue
 		}
 		if (job.Type == "prepare_package" || job.Type == "discard_prepared_package" || stringFromAny(job.Payload["prepared_package_id"]) != "") && !preparedPackagesSupported {
+			continue
+		}
+		if job.Type == "prepare_package" && stringFromAny(job.Payload["source_transport"]) == "qq_flash" && !preparedQQFlashSupported {
 			continue
 		}
 		if job.Type == "delete_package" && !packageDeleteSupported {

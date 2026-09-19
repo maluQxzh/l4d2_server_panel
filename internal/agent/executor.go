@@ -54,6 +54,7 @@ type Executor struct {
 	preparedMu                 sync.Mutex
 	preparedActive             map[string]bool
 	preparedSlots              chan struct{}
+	preparedQQClient           *qqFlashClient
 	mapReloadRCON              localRCONExecuteFunc
 }
 

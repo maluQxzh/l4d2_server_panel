@@ -95,6 +95,52 @@ test("预下载包刷新后可恢复并在实例忙时等待安装", async ({ pa
   expect(keys.length).toBeGreaterThanOrEqual(2); expect(new Set(keys).size).toBe(1);
 });
 
+for (const kind of ["vpk", "smx", "native"] as const) {
+  test(`QQ 闪传 ${kind} 单文件使用预下载且不触发原安装`, async ({ page }) => {
+    await authenticated(page);
+    await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, status: "stopped" } }));
+    await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: [] }));
+    let submitted = false;
+    await page.route("**/api/v1/instances/instance-1/prepared-packages", (route) => {
+      if (route.request().method() === "POST") {
+        expect(route.request().postDataJSON()).toEqual({ kind, source: "https://qfile.qq.com/q/SecretCASE", source_transport: "qq_flash" });
+        submitted = true;
+        return json(route, { job_id: "qq-prepared" }, 202);
+      }
+      return json(route, { supported: true, qq_flash_supported: true, items: [] });
+    });
+    await page.route("**/api/v1/instances/instance-1/actions", () => { throw new Error("preparation must not submit installation"); });
+    await page.goto(`/instances/instance-1?tab=${kind === "vpk" ? "mods" : "plugins"}`);
+    await page.getByRole("button", { name: kind === "vpk" ? "安装模组" : "安装插件", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("combobox").first().selectOption(kind === "vpk" ? "qq_flash" : kind);
+    if (kind !== "vpk") {
+      await dialog.getByRole("combobox").nth(1).selectOption("qq_flash");
+      await expect(dialog.getByRole("button", { name: "提交安装", exact: true })).toBeDisabled();
+    }
+    await dialog.locator("textarea").fill("https://qfile.qq.com/q/SecretCASE");
+    await expect(dialog.getByText("单文件可先预下载", { exact: true })).toBeVisible();
+    await dialog.getByRole("button", { name: "预下载，稍后安装" }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(submitted).toBe(true);
+  });
+}
+
+test("旧 Agent 隐藏 QQ 预下载但保留 HTTPS 预下载", async ({ page }) => {
+  await authenticated(page);
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance }));
+  await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/instances/instance-1/prepared-packages", (route) => json(route, { supported: true, qq_flash_supported: false, items: [] }));
+  await page.goto("/instances/instance-1?tab=mods");
+  await page.getByRole("button", { name: "安装模组", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("combobox").first().selectOption("vpk_url");
+  await expect(dialog.getByRole("button", { name: "预下载，稍后安装" })).toBeVisible();
+  await dialog.getByRole("combobox").first().selectOption("qq_flash");
+  await expect(dialog.getByRole("button", { name: "预下载，稍后安装" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "导入 VPK", exact: true })).toBeVisible();
+});
+
 test("批量包操作等待实例占用解除并复用原幂等键", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, status: "stopped" } }));

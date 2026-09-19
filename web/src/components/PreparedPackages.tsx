@@ -32,20 +32,20 @@ export function PreparedPackages({ instanceId, plugins }: { instanceId: string; 
     try {
       for (const item of queue) {
         if (canceled()) break;
-        setMessage(`准备安装 ${item.name}`);
+        setMessage(`准备安装 ${item.name || "QQ 闪传单文件"}`);
         const key = newIdempotencyKey();
-        const response = await submitWhenInstanceReady(() => api.installPreparedPackage(instanceId, item.id, native, key), canceled, (text) => setMessage(`${item.name}：${text}`));
+        const response = await submitWhenInstanceReady(() => api.installPreparedPackage(instanceId, item.id, native, key), canceled, (text) => setMessage(`${item.name || "QQ 闪传单文件"}：${text}`));
         const deadline = Date.now() + 10 * 60_000;
         while (!canceled()) {
           const state = await api.preparedPackages(instanceId);
           if (canceled()) break;
           const current = state.items.find((p) => p.id === item.id && p.consume_job_id === response.job_id);
           if (current && !current.busy && ["succeeded", "failed", "canceled"].includes(current.consume_status || "")) {
-            if (current.consume_status !== "succeeded") throw new Error(`${item.name} 安装失败或已取消；请查看任务 ${response.job_id}，重新准备后再试`);
+            if (current.consume_status !== "succeeded") throw new Error(`${item.name || "QQ 闪传单文件"} 安装失败或已取消；请查看任务 ${response.job_id}，重新准备后再试`);
             break;
           }
           if (Date.now() >= deadline) throw new Error(`安装仍未结束，已停止后续提交；请查看任务 ${response.job_id}`);
-          setMessage(`正在安装 ${item.name}，等待任务完成`);
+          setMessage(`正在安装 ${item.name || "QQ 闪传单文件"}，等待任务完成`);
           await new Promise((resolve) => setTimeout(resolve, 1000));
         }
         if (!canceled()) await refresh();
@@ -63,9 +63,9 @@ export function PreparedPackages({ instanceId, plugins }: { instanceId: string; 
     {query.error && <p role="alert">无法刷新预下载状态，请稍后重试</p>}
     <div className="package-batch__actions"><Button variant="secondary" disabled={busy || !ready.length} onClick={() => void install(ready)}>依次安装就绪包（{ready.length}）</Button>{busy && <Button variant="secondary" onClick={() => { stopped.current = true; }}>停止后续安装</Button>}</div>
     {message && <p role="status">{message}</p>}
-    {items.map((item) => <div key={item.id} className="package-batch__actions"><span>{item.name} · {item.consume_job_id ? ({ queued: "已提交", dispatched: "已派发", running: "处理中", succeeded: "处理完成", failed: "处理失败，请重新准备", canceled: "已取消" }[item.consume_status || "queued"]) : item.ready ? "可安装" : item.status === "succeeded" ? "已过期或不可用" : item.status === "failed" ? "准备失败，请查看任务中心" : item.status === "canceled" ? "已取消" : `准备中 ${item.progress}%`}</span>
-      <Button variant="secondary" disabled={busy || !item.ready} onClick={() => void install([item])}>安装 {item.name}</Button>
-      {!item.consume_job_id && item.status === "succeeded" && <Button variant="ghost" disabled={busy} onClick={() => { void api.discardPreparedPackage(instanceId, item.id).then(refresh).catch((error: Error) => toast.push(error.message, "error")); }}>丢弃 {item.name}</Button>}
+    {items.map((item) => <div key={item.id} className="package-batch__actions"><span>{item.name || "QQ 闪传单文件"} · {item.consume_job_id ? ({ queued: "已提交", dispatched: "已派发", running: "处理中", succeeded: "处理完成", failed: "处理失败，请重新准备", canceled: "已取消" }[item.consume_status || "queued"]) : item.ready ? "可安装" : item.status === "succeeded" ? "已过期或不可用" : item.status === "failed" ? "准备失败，请查看任务中心" : item.status === "canceled" ? "已取消" : `准备中 ${item.progress}%`}</span>
+      <Button variant="secondary" disabled={busy || !item.ready} onClick={() => void install([item])}>安装 {item.name || "QQ 闪传单文件"}</Button>
+      {!item.consume_job_id && item.status === "succeeded" && <Button variant="ghost" disabled={busy} onClick={() => { void api.discardPreparedPackage(instanceId, item.id).then(refresh).catch((error: Error) => toast.push(error.message, "error")); }}>丢弃 {item.name || "QQ 闪传单文件"}</Button>}
     </div>)}
   </section>;
 }
