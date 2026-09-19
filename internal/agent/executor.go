@@ -55,6 +55,8 @@ type Executor struct {
 	preparedActive             map[string]bool
 	preparedSlots              chan struct{}
 	preparedQQClient           *qqFlashClient
+	smartPreviewMu             sync.Mutex
+	smartPreviews              map[string]*smartPreview
 	mapReloadRCON              localRCONExecuteFunc
 }
 
@@ -1869,6 +1871,11 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 	}
 	if qqFlashTransport && (source == "" || uploadedContent != "") {
 		return nil, errors.New("QQ flash package transport requires one share link and no uploaded content")
+	}
+	if kind == "smart" {
+		if result, hit, err := e.installSmartPreview(ctx, job, payload, instancePath, progress); hit || err != nil {
+			return result, err
+		}
 	}
 	if kind == "workshop" || kind == "workshop_item" {
 		if uploadedContent != "" {

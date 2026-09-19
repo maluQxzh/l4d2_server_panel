@@ -180,6 +180,21 @@ func (e *Executor) reservePrepared(job domain.Job, record preparedPackageRecord)
 	return root, nil
 }
 
+func (e *Executor) acquirePreparationSlot(ctx context.Context) (func(), error) {
+	e.preparedMu.Lock()
+	if e.preparedSlots == nil {
+		e.preparedSlots = make(chan struct{}, 2)
+	}
+	slots := e.preparedSlots
+	e.preparedMu.Unlock()
+	select {
+	case slots <- struct{}{}:
+		return func() { <-slots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress ProgressFunc) (result map[string]any, err error) {
 	if !preparedID(job.ID) || job.NodeID != e.config.NodeID {
 		return nil, errors.New("invalid preparation job binding")
@@ -216,18 +231,11 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 			return nil, err
 		}
 	}
-	e.preparedMu.Lock()
-	if e.preparedSlots == nil {
-		e.preparedSlots = make(chan struct{}, 2)
+	release, err := e.acquirePreparationSlot(ctx)
+	if err != nil {
+		return nil, err
 	}
-	slots := e.preparedSlots
-	e.preparedMu.Unlock()
-	select {
-	case slots <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	defer func() { <-slots }()
+	defer release()
 	record := preparedPackageRecord{PreparedPackage: domain.PreparedPackage{ID: job.ID, NodeID: job.NodeID, InstanceID: job.InstanceID, Name: name, Kind: kind, ExpiresAt: time.Now().UTC().Add(domain.PreparedPackageTTL)}}
 	root, err := e.reservePrepared(job, record)
 	if err != nil {

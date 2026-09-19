@@ -135,6 +135,17 @@ func (e *Executor) inspectSmartPluginArchive(ctx context.Context, job domain.Job
 	if err != nil {
 		return nil, err
 	}
+	release, err := e.acquirePreparationSlot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	requestKey := smartPreviewRequestKey(job, payload, instancePath)
+	previewID, err := e.reserveSmartPreview()
+	if err != nil {
+		return nil, err
+	}
+	defer e.finishSmartPreview(previewID)
 	var archivePath, archiveSHA string
 	var cleanup func()
 	if strings.EqualFold(strings.TrimSpace(payload.SourceTransport), "qq_flash") {
@@ -151,7 +162,7 @@ func (e *Executor) inspectSmartPluginArchive(ctx context.Context, job domain.Job
 	}
 	defer cleanup()
 	progress(20, "extracting plugin archive safely")
-	plan, _, extractedCleanup, err := e.prepareSmartPluginPlan(ctx, archivePath, payload.Name, archiveSHA, payload.PathEncoding, instancePath)
+	plan, extracted, extractedCleanup, err := e.prepareSmartPluginPlan(ctx, archivePath, payload.Name, archiveSHA, payload.PathEncoding, instancePath)
 	if extractedCleanup != nil {
 		defer extractedCleanup()
 	}
@@ -159,6 +170,9 @@ func (e *Executor) inspectSmartPluginArchive(ctx context.Context, job domain.Job
 		return nil, err
 	}
 	if err := overlaySmartManagedPaths(&plan, payload.RegisteredPaths); err != nil {
+		return nil, err
+	}
+	if err := e.saveSmartPreview(ctx, previewID, requestKey, plan, extracted); err != nil {
 		return nil, err
 	}
 	progress(100, "plugin archive inspection completed")
@@ -248,6 +262,10 @@ func (e *Executor) prepareSmartPluginPlan(ctx context.Context, archivePath, arch
 }
 
 func buildSmartPluginPlan(extracted, archiveName, archiveSHA, pathEncoding, format string, expanded int64, files []extractedMapFile, instancePath string) (smartPluginPlan, error) {
+	return buildSmartPluginPlanFromSources(extracted, archiveName, archiveSHA, pathEncoding, format, expanded, files, instancePath, nil)
+}
+
+func buildSmartPluginPlanFromSources(extracted, archiveName, archiveSHA, pathEncoding, format string, expanded int64, files []extractedMapFile, instancePath string, sources map[string]string) (smartPluginPlan, error) {
 	groups, err := groupSmartPluginFiles(archiveName, files)
 	if err != nil {
 		return smartPluginPlan{}, err
@@ -273,7 +291,11 @@ func buildSmartPluginPlan(extracted, archiveName, archiveSHA, pathEncoding, form
 			}
 			mapped.SourcePath = item.Relative
 			mapped.ID = smartStableID("file", item.Relative)
-			hash, size, err := hashFile(item.Path)
+			source := item.Relative
+			if sources != nil {
+				source = sources[item.Relative]
+			}
+			hash, size, err := hashRegularFileWithinNoFollow(extracted, source, maxSmartPluginEntry)
 			if err != nil {
 				return smartPluginPlan{}, err
 			}
@@ -544,6 +566,10 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 	if err != nil {
 		return nil, err
 	}
+	return e.installSmartPluginPlan(job, payload, plan, extracted, instancePath, nil, progress)
+}
+
+func (e *Executor) installSmartPluginPlan(job domain.Job, payload operationPayload, plan smartPluginPlan, extracted, instancePath string, sources map[string]string, progress ProgressFunc) (map[string]any, error) {
 	if err := overlaySmartManagedPaths(&plan, payload.RegisteredPaths); err != nil {
 		return nil, err
 	}
@@ -637,7 +663,11 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 			} else if !errors.Is(hashErr, os.ErrNotExist) {
 				return nil, fmt.Errorf("inspect final target %q: %w", target, hashErr)
 			}
-			source, err := ResolveWithin(extracted, filepath.FromSlash(file.SourcePath))
+			sourceRelative := file.SourcePath
+			if sources != nil {
+				sourceRelative = sources[file.SourcePath]
+			}
+			source, err := ResolveWithin(extracted, filepath.FromSlash(sourceRelative))
 			if err != nil {
 				return nil, err
 			}
@@ -691,7 +721,11 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 		return nil, errors.New("smart plugin archive contains native code and requires acknowledge_native_risk")
 	}
 	progress(45, "creating atomic plugin rollback state")
-	rollbackRoot, err := os.MkdirTemp(filepath.Dir(extracted), "smart-rollback-*")
+	staging, err := ensureDataSubdirectory(e.config.DataDir, "staging")
+	if err != nil {
+		return nil, err
+	}
+	rollbackRoot, err := os.MkdirTemp(staging, "smart-rollback-*")
 	if err != nil {
 		return nil, err
 	}
@@ -762,7 +796,7 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 		if packageID == "" {
 			continue
 		}
-		state := smartPluginState{Version: 1, PackageID: packageID, InstanceID: job.InstanceID, Name: folder.Name, Enabled: true, ArchiveSHA: archiveSHA, UpdatedAt: time.Now().UTC()}
+		state := smartPluginState{Version: 1, PackageID: packageID, InstanceID: job.InstanceID, Name: folder.Name, Enabled: true, ArchiveSHA: plan.ArchiveSHA256, UpdatedAt: time.Now().UTC()}
 		for _, item := range pending {
 			if item.folderID != folder.ID {
 				continue
@@ -800,7 +834,7 @@ func (e *Executor) installSmartPluginArchive(ctx context.Context, job domain.Job
 		}
 	}
 	progress(100, "smart plugin archive installed")
-	return map[string]any{"kind": "smart", "archive_sha256": archiveSHA, "packages": results, "restart_required": running}, nil
+	return map[string]any{"kind": "smart", "archive_sha256": plan.ArchiveSHA256, "packages": results, "restart_required": running}, nil
 }
 
 func copyManagedFileBetweenRoots(sourceRoot, sourceRelative, targetRoot, targetRelative string) error {

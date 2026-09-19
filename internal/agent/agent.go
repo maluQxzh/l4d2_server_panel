@@ -166,6 +166,9 @@ func (a *Agent) Close() error {
 
 func (a *Agent) runLogCleanup(ctx context.Context) {
 	cleanup := func() {
+		if err := a.executor.cleanupSmartPreviews(time.Now()); err != nil {
+			a.logger.Printf("smart preview retention: %v", err)
+		}
 		if err := a.executor.cleanupPreparedPackages(time.Now()); err != nil {
 			a.logger.Printf("prepared package retention: %v", err)
 		}
