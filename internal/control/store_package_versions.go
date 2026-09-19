@@ -241,6 +241,17 @@ func (s *Store) applyInstalledPackageScanResult(ctx context.Context, job domain.
 }
 
 func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error {
+	if stringFromAny(job.Payload["prepared_package_id"]) != "" {
+		target, err := domain.PreparedPackageTarget(stringFromAny(job.Payload["kind"]), stringFromAny(job.Payload["name"]))
+		kind := stringFromAny(job.Payload["kind"])
+		if kind == "smx" {
+			kind = "plugin"
+		}
+		if err != nil || stringFromAny(job.Result["path"]) != target || stringFromAny(job.Result["kind"]) != kind ||
+			stringFromAny(job.Result["sha256"]) != stringFromAny(job.Payload["expected_sha256"]) || intFromAny(job.Result["size"]) != intFromAny(job.Payload["expected_size"]) {
+			return errors.New("prepared installation result does not match its immutable input")
+		}
+	}
 	if strings.EqualFold(stringFromAny(job.Result["kind"]), "smart") {
 		return s.applySmartPluginInstallResult(ctx, job)
 	}

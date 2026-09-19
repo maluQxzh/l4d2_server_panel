@@ -59,6 +59,42 @@ function json(route: Route, body: unknown, status = 200) {
   return route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
 
+test("预下载包刷新后可恢复并在实例忙时等待安装", async ({ page }) => {
+  await authenticated(page);
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, status: "stopped" } }));
+  await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: [] }));
+  let prepared = false;
+  let consumed = false;
+  let allowInstall = false;
+  const keys: string[] = [];
+  await page.route("**/api/v1/instances/instance-1/prepared-packages", (route) => {
+    if (route.request().method() === "POST") {
+      expect(route.request().postDataJSON()).toMatchObject({ kind: "vpk", source: "https://example.com/campaign.vpk" });
+      prepared = true; return json(route, { job_id: "prepared-one" }, 202);
+    }
+    return json(route, { supported: true, items: prepared ? [{ id: "prepared-one", name: "campaign.vpk", kind: "vpk", status: "succeeded", progress: 100, ready: !consumed, consume_job_id: consumed ? "install-one" : undefined, consume_status: consumed ? "succeeded" : undefined, busy: false }] : [] });
+  });
+  await page.route("**/api/v1/instances/instance-1/prepared-packages/prepared-one/install", (route) => {
+    keys.push(route.request().headers()["idempotency-key"]);
+    if (!allowInstall) return json(route, { error: { code: "conflict", reason: "instance_busy", message: "实例被占用" } }, 409);
+    consumed = true; return json(route, { job_id: "install-one" }, 202);
+  });
+  await page.goto("/instances/instance-1?tab=mods");
+  await page.getByRole("button", { name: "安装模组", exact: true }).click();
+  await page.getByRole("dialog").getByRole("combobox").first().selectOption("vpk_url");
+  await page.getByRole("dialog").getByRole("textbox").fill("https://example.com/campaign.vpk");
+  await page.getByRole("button", { name: "预下载，稍后安装" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "依次安装就绪包（1）" })).toBeEnabled();
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "依次安装就绪包（1）" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "等待实例空闲" })).toBeVisible();
+  allowInstall = true;
+  await expect(page.getByText("所选预下载包已安装完成")).toBeVisible();
+  expect(keys.length).toBeGreaterThanOrEqual(2); expect(new Set(keys).size).toBe(1);
+});
+
 test("批量包操作等待实例占用解除并复用原幂等键", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, status: "stopped" } }));
@@ -868,7 +904,7 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
   await expect.poll(() => smartFileWrite).toMatchObject({ content: "enabled = 0", expected_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" });
   await page.getByRole("button", { name: "安装插件" }).click();
   await expect(page.getByLabel("类型").locator("option")).toHaveText([
-    "智能识别", "官方 SourceMod 稳定版", "官方 Metamod:Source 稳定版",
+    "智能识别", "单文件 SMX 插件", "单文件原生扩展", "官方 SourceMod 稳定版", "官方 Metamod:Source 稳定版",
     "第三方 SourceMod 整包", "第三方 Metamod 整包",
   ]);
   await page.getByLabel("类型").selectOption("metamod");

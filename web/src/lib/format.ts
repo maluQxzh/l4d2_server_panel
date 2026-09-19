@@ -90,6 +90,8 @@ export const jobLabels: Record<string, string> = {
   rcon: "执行 RCON",
   install_package: "安装模组",
   install_mod: "安装模组",
+  prepare_package: "预下载包",
+  discard_prepared_package: "清理预下载包",
   install_plugin: "安装插件",
   qq_flash_import: "QQ闪传 VPK 导入",
   scan_packages: "扫描已安装 VPK",

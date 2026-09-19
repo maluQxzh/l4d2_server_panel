@@ -132,6 +132,17 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 			return domain.Job{}, false, err
 		}
 	}
+	if action == "prepare_package" {
+		if err := reservePreparedJobSlot(ctx, tx, nodeID); err != nil {
+			return domain.Job{}, false, err
+		}
+	}
+	if id := stringFromAny(payload["prepared_package_id"]); id != "" {
+		payload, err = preparedConsumptionPayload(ctx, tx, instanceID, nodeID, action, payload)
+		if err != nil {
+			return domain.Job{}, false, err
+		}
+	}
 	if action == "toggle_package" {
 		enabled, ok := payload["enabled"].(bool)
 		if !ok {

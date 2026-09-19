@@ -56,6 +56,20 @@ export interface UserActivationResult {
   expires_at: string;
 }
 
+export interface PreparedPackage {
+  id: string;
+  name: string;
+  kind: string;
+  status: JobStatus;
+  progress: number;
+  ready?: boolean;
+  expires_at?: string;
+  size?: number;
+  consume_job_id?: string;
+  consume_status?: JobStatus;
+  busy?: boolean;
+}
+
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -170,6 +184,17 @@ async function waitForTransfer(path: string): Promise<TransferChunk> {
 }
 
 export const api = {
+  preparedPackages: (instanceId: string) => request<{ items: PreparedPackage[]; supported: boolean }>(`/instances/${encodeURIComponent(instanceId)}/prepared-packages`),
+  preparePackage: (instanceId: string, payload: { kind: string; name?: string; source?: string; content_base64?: string }) => request<{ job_id: string }>(
+    `/instances/${encodeURIComponent(instanceId)}/prepared-packages`, { method: "POST", body: JSON.stringify(payload) },
+  ),
+  installPreparedPackage: (instanceId: string, id: string, risk: boolean, key: string) => request<{ job_id: string }>(
+    `/instances/${encodeURIComponent(instanceId)}/prepared-packages/${encodeURIComponent(id)}/install`,
+    { method: "POST", body: JSON.stringify({ acknowledge_native_risk: risk }), headers: { "Idempotency-Key": key } },
+  ),
+  discardPreparedPackage: (instanceId: string, id: string) => request<{ job_id: string }>(
+    `/instances/${encodeURIComponent(instanceId)}/prepared-packages/${encodeURIComponent(id)}`, { method: "DELETE" },
+  ),
   bootstrapStatus: async () => {
     const result = await request<{ required: boolean; key_configured: boolean; csrf_token?: string }>("/auth/bootstrap");
     bootstrapCsrfToken = result.required ? result.csrf_token || "" : "";

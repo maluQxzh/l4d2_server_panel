@@ -38,6 +38,7 @@ const (
 	CapabilitySameSessionTerminalRetryV1 = "same_session_terminal_retry_v1"
 	CapabilitySmartPluginArchiveV2       = "smart_plugin_archive_v2"
 	CapabilityTerminalConflictV1         = "terminal_conflict_v1"
+	CapabilityPreparedPackagesV1         = "prepared_packages_v1"
 )
 
 const MaxJobUpdateMessageBytes = 2 << 10

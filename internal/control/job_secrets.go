@@ -48,7 +48,7 @@ func sealJobPayloadSecrets(masterKey []byte, jobType string, payload map[string]
 		}
 		payload["source_ciphertext"] = sealed
 		payload["source"] = encryptedValuePlaceholder
-	case "install_mod", "install_package", "inspect_plugin_archive":
+	case "install_mod", "install_package", "inspect_plugin_archive", "prepare_package":
 		source := stringFromAny(payload["source"])
 		parsed, err := url.Parse(source)
 		if err == nil && strings.EqualFold(parsed.Scheme, "https") && parsed.Host != "" {
@@ -146,7 +146,7 @@ func unsealJobPayloadSecrets(masterKey []byte, jobType string, payload map[strin
 		pairs = append(pairs, [2]string{"command_ciphertext", "command"})
 	case "restart":
 		pairs = append(pairs, [2]string{"existing_rcon_password_ciphertext", "existing_rcon_password"})
-	case "install_mod", "install_package", "inspect_plugin_archive", "qq_flash_import", "map.import.qq_flash":
+	case "install_mod", "install_package", "inspect_plugin_archive", "prepare_package", "qq_flash_import", "map.import.qq_flash":
 		pairs = append(pairs, [2]string{"source_ciphertext", "source"}, [2]string{"content_base64_ciphertext", "content_base64"})
 	case "file":
 		pairs = append(pairs, [2]string{"content_ciphertext", "content"}, [2]string{"content_base64_ciphertext", "content_base64"},
@@ -271,6 +271,16 @@ func stripJobFields(jobType string, jobPayload, jobResult map[string]any) {
 	switch jobType {
 	case "delete", "detach":
 		delete(jobResult, "quarantine_path")
+	case "prepare_package":
+		for key := range jobResult {
+			switch key {
+			case "id", "node_id", "instance_id", "name", "kind", "sha256", "size", "expires_at":
+			default:
+				delete(jobResult, key)
+			}
+		}
+	case "discard_prepared_package":
+		retainOnlyJobField(jobResult, "discarded")
 	case "backup":
 		delete(jobResult, "path")
 		delete(jobResult, "weekly_path")

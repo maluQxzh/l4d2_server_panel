@@ -51,6 +51,9 @@ type Executor struct {
 	telemetry                  map[string]instanceTelemetry
 	maps                       *mapStore
 	mapStoreErr                error
+	preparedMu                 sync.Mutex
+	preparedActive             map[string]bool
+	preparedSlots              chan struct{}
 	mapReloadRCON              localRCONExecuteFunc
 }
 
@@ -133,6 +136,10 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 	}
 	progress(1, "preparing operation")
 	switch action {
+	case "prepare_package":
+		return e.preparePackage(ctx, job, progress)
+	case "discard_prepared_package":
+		return e.consumePreparedPackage(ctx, job, true, progress)
 	case "map.import.qq.flash", "map.assign", "map.unassign", "map.verify", "map.delete", "map.inventory":
 		return e.executeMapTask(ctx, action, job, progress)
 	case "environment.inspect":
@@ -236,6 +243,9 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 	case "delete", "detach":
 		return e.deleteInstance(ctx, job, action == "detach", progress)
 	case "install_mod", "install_package":
+		if payloadString(job.Payload, "prepared_package_id") != "" {
+			return e.consumePreparedPackage(ctx, job, false, progress)
+		}
 		return e.installMod(ctx, job, progress)
 	case "rename_package":
 		return e.renamePackage(ctx, job, progress)
@@ -263,6 +273,9 @@ func (e *Executor) replaceSteamClient(path string) {
 }
 
 func agentJobRequiresInstanceLock(action string, payload map[string]any) bool {
+	if action == "prepare_package" || action == "discard_prepared_package" {
+		return false
+	}
 	// check_update reads Steam app metadata and the same appmanifest/files that
 	// update replaces. It therefore participates in the instance lock even
 	// though it does not mutate files. A2S/RCON status and bounded file/log
@@ -290,6 +303,10 @@ func normalizeJobType(value string) string {
 	value = strings.ReplaceAll(value, "_", ".")
 	value = strings.TrimPrefix(value, "instance.")
 	switch value {
+	case "prepare.package":
+		return "prepare_package"
+	case "discard.prepared.package":
+		return "discard_prepared_package"
 	case "file.list", "files.list":
 		return "list"
 	case "file.manage", "files":

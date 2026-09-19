@@ -916,6 +916,127 @@ paths:
                       items: { $ref: "#/components/schemas/AddonPackage" },
                     }
 
+  /instances/{instanceId}/prepared-packages:
+    get:
+      tags: [Packages]
+      summary: 列出实例最近的预下载包及消费进度
+      description: >
+        需要 packages.install，不要求 jobs.read。返回最近两小时最多 64 条准备记录，不含来源、正文或主机路径。
+        supported 表示当前在线 Agent 支持 prepared_packages_v1；ready 表示准备成功、未过期且未提交消费。
+        安装后须等待 consume_status 为终态且 busy=false，才能安全提交下一项。
+      parameters: [{ $ref: "#/components/parameters/InstanceID" }]
+      responses:
+        "200":
+          description: 持久准备记录
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, supported]
+                properties:
+                  supported: { type: boolean }
+                  items: { type: array, maxItems: 64, items: { $ref: "#/components/schemas/PreparedPackage" } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [Packages]
+      summary: 将单文件包预下载到节点暂存目录
+      description: >
+        需要 packages.install 和在线 Agent prepared_packages_v1。创建 prepare_package，不取得实例写锁。
+        每节点最多 16 个准备槽、同时准备 2 个，共享节点下载限额。从开始准备起一小时有效。
+        仅接受 HTTPS 或 base64 上传之一；HTTPS 最大 512 MiB，上传解码后最大 100 MiB。
+        name 是安全 basename，上传必须提供，HTTPS 可省略并从 URL 路径推导。
+        不支持 Workshop、QQ 闪传或组件整包。到期、取消或崩溃未完成的暂存由 Agent 回收。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [kind]
+              oneOf:
+                - required: [source]
+                  not: { required: [content_base64] }
+                - required: [content_base64, name]
+                  not: { required: [source] }
+              properties:
+                kind: { type: string, enum: [vpk, smx, plugin, native] }
+                name: { type: string, minLength: 1, maxLength: 240, description: "安全文件名；VPK 为 .vpk，SMX/plugin 为 .smx，native 为 .dll 或 .so；UTF-8 最多 240 字节" }
+                source: { type: string, format: uri, maxLength: 4096 }
+                content_base64: { type: string, format: byte }
+      responses:
+        "202":
+          description: 准备任务已排队或返回同一幂等任务
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/prepared-packages/{jobId}/install:
+    post:
+      tags: [Packages]
+      summary: 安装已准备的单文件包
+      description: >
+        需要 packages.install 和 Agent prepared_packages_v1。jobId 是准备任务 ID，且必须属于当前实例/节点。
+        Control 从持久准备结果派生名称、类型、摘要和大小，不接受调用者指定目标路径。
+        安装取得实例写锁并再次校验字节和目标归属；忙碌返回 conflict 和 reason=instance_busy，未创建消费任务。
+        每个准备 ID 只接受一次安装或丢弃意图，失败或取消后须重新准备；原幂等键仍重放原任务。
+        VPK/SMX 使用版本快照及失败回滚，原生扩展使用原子复制并强制风险确认。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/JobID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                acknowledge_native_risk: { type: boolean, default: false }
+      responses:
+        "202":
+          description: 安装任务已排队或返回同一幂等任务
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /instances/{instanceId}/prepared-packages/{jobId}:
+    delete:
+      tags: [Packages]
+      summary: 丢弃已完成的预下载包
+      description: >
+        需要 packages.install 和 Agent prepared_packages_v1。创建 discard_prepared_package，不取得实例写锁。
+        可以提交已过期的记录；不能丢弃已有消费意图的准备 ID。物理文件也可能已被 Agent 到期清理。
+      parameters:
+        - { $ref: "#/components/parameters/InstanceID" }
+        - { $ref: "#/components/parameters/JobID" }
+        - { $ref: "#/components/parameters/CSRF" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "202":
+          description: 丢弃任务已排队或返回同一幂等任务
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobReference" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /instances/{instanceId}/packages/{packageId}/rename:
     post:
       tags: [Packages]
@@ -4053,6 +4174,22 @@ components:
         created_at: { type: string, format: date-time }
         started_at: { type: [string, "null"], format: date-time }
         finished_at: { type: [string, "null"], format: date-time }
+
+    PreparedPackage:
+      type: object
+      required: [id, name, kind, status, progress]
+      properties:
+        id: { type: string, format: uuid, description: 准备任务 ID，不是访问凭据 }
+        name: { type: string }
+        kind: { type: string, enum: [vpk, smx, plugin, native] }
+        status: { type: string, enum: [queued, dispatched, running, succeeded, failed, canceled] }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        ready: { type: boolean }
+        expires_at: { type: string, format: date-time }
+        size: { type: integer, format: int64, maximum: 536870912 }
+        consume_job_id: { type: string, format: uuid }
+        consume_status: { type: string, enum: [queued, dispatched, running, succeeded, failed, canceled] }
+        busy: { type: boolean, description: 消费任务是否仍持有实例写锁（含待投影及待取消确认） }
 
     JobReference:
       type: object

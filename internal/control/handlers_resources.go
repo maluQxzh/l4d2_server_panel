@@ -534,6 +534,10 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	if request.Payload == nil {
 		request.Payload = make(map[string]any)
 	}
+	if _, ok := request.Payload["prepared_package_id"]; ok {
+		writeError(w, http.StatusBadRequest, "dedicated_endpoint_required", "prepared packages must use the prepared-packages endpoint")
+		return
+	}
 	if request.Type == "delete" || request.Type == "detach" {
 		writeError(w, http.StatusBadRequest, "dedicated_delete_required", "delete and detach must use DELETE /api/v1/instances/{instanceId}?mode=quarantine|detach")
 		return
