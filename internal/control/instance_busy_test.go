@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -38,8 +39,20 @@ func TestInstanceBusyResponseIdentifiesLockWithoutTaskSecrets(t *testing.T) {
 					!strings.Contains(body, "blocking-job") || !strings.Contains(body, state.message) || strings.Contains(body, "secret-") {
 					t.Fatalf("incorrect or leaking busy response: %d %s", recorder.Code, body)
 				}
+				var structured map[string]map[string]string
+				if err := json.Unmarshal(recorder.Body.Bytes(), &structured); err != nil || structured["error"]["reason"] != "instance_busy" || structured["error"]["blocking_job_id"] != "blocking-job" {
+					t.Fatalf("missing retry classification: %s (%v)", body, err)
+				}
 			}
 		})
+	}
+}
+
+func TestGenericConflictDoesNotAllowAutomaticRetry(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	(&Server{}).fail(recorder, ErrConflict)
+	if recorder.Code != http.StatusConflict || strings.Contains(recorder.Body.String(), "instance_busy") {
+		t.Fatalf("generic conflict became retryable: %s", recorder.Body.String())
 	}
 }
 

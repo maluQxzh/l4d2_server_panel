@@ -59,6 +59,34 @@ function json(route: Route, body: unknown, status = 200) {
   return route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
 
+test("批量包操作等待实例占用解除并复用原幂等键", async ({ page }) => {
+  await authenticated(page);
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, status: "stopped" } }));
+  await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: [{
+    id: "package-1", instance_id: instance.id, name: "等待测试.vpk", kind: "vpk", enabled: true,
+    path: "left4dead2/addons/test.vpk", sha256: "a".repeat(64), installed_at: "2026-08-01T00:00:00Z",
+  }] }));
+  const keys: string[] = [];
+  let release = false;
+  await page.route("**/api/v1/instances/instance-1/actions", (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({ type: "toggle_package", payload: { package_id: "package-1", enabled: false } });
+    keys.push(route.request().headers()["idempotency-key"]);
+    if (!release) return json(route, { error: { code: "conflict", reason: "instance_busy", blocking_job_id: "blocking", message: "实例被任务 blocking 占用" } }, 409);
+    return json(route, { job_id: "batch-job" }, 202);
+  });
+  await page.route("**/api/v1/instances/instance-1/package-operations/batch-job", (route) => json(route, { status: "succeeded", busy: false }));
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.goto("/instances/instance-1?tab=mods");
+  await page.getByRole("checkbox", { name: "选择 等待测试.vpk" }).check();
+  await page.getByRole("button", { name: "批量停用" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "等待实例空闲" })).toBeVisible();
+  release = true;
+  await expect(page.getByText("等待测试.vpk：停用成功")).toBeVisible();
+  expect(keys.length).toBeGreaterThanOrEqual(2);
+  expect(keys[0]).toBeTruthy();
+  expect(new Set(keys).size).toBe(1);
+});
+
 test("拖拽模组、插件压缩包和实例文件复用现有上传流程", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, status: "stopped" } }));

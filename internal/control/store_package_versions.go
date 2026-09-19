@@ -172,8 +172,8 @@ func (s *Store) applyInstalledPackageScanResult(ctx context.Context, job domain.
 		return err
 	}
 	defer tx.Rollback()
-	// Scans do not take the instance write barrier. Reserve both sides of a
-	// concurrent rename, including a rename completed since this scan was
+	// Defensively reserve both sides of a rename for delayed scan results,
+	// including a rename completed since this scan was
 	// queued, so a delayed inventory cannot resurrect its old path or duplicate
 	// the new file before the rename projection commits.
 	rows, err := tx.QueryContext(ctx, `SELECT path FROM addon_packages WHERE instance_id=?1

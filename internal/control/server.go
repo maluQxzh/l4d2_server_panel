@@ -610,6 +610,16 @@ func statusForError(err error) (int, string) {
 
 func (s *Server) fail(w http.ResponseWriter, err error) {
 	status, code := statusForError(err)
+	var busy *instanceBusyError
+	if errors.As(err, &busy) {
+		// Add a machine-readable reason without changing the existing 409 code.
+		// Only a rejected, uncommitted write is safe for the browser to retry.
+		writeJSON(w, status, map[string]any{"error": map[string]any{
+			"code": code, "message": busy.Error(), "reason": "instance_busy",
+			"blocking_job_id": busy.jobID,
+		}})
+		return
+	}
 	message := "request failed"
 	if status < 500 {
 		message = err.Error()

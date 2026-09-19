@@ -2772,6 +2772,8 @@ components:
           properties:
             code: { type: string }
             message: { type: string }
+            reason: { type: string, enum: [instance_busy], description: "仅实例写锁占用时返回；请求未创建任务，可使用原幂等键和原正文有界重试。其他 conflict 不可自动重试。" }
+            blocking_job_id: { type: string, description: "instance_busy 对应的阻塞任务 ID，不授予该任务的详情读取权限。" }
 
     BootstrapStatus:
       type: object

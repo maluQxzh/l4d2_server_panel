@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { api, ApiError } from "../lib/api";
+import { api, ApiError, newIdempotencyKey } from "../lib/api";
+import { submitWhenInstanceReady } from "../lib/instanceBusy";
 import type { InstanceRecord, PackageRecord } from "../lib/types";
 import { Button, Field, Modal } from "./ui";
 import { useToast } from "../context/ToastContext";
@@ -41,12 +42,20 @@ export function PackageBatchControls({ instance, items, selected, setSelected, c
 }) {
   const client = useQueryClient();
   const stopped = useRef(false);
+  const generation = useRef(0);
   const all = useRef<HTMLInputElement>(null);
   const [results, setResults] = useState<BatchResult[]>([]);
   const [progress, setProgress] = useState("");
   const chosen = items.filter((item) => selected.includes(item.id));
   useEffect(() => { if (all.current) all.current.indeterminate = chosen.length > 0 && chosen.length < items.length; }, [chosen.length, items.length]);
-  useEffect(() => { stopped.current = false; return () => { stopped.current = true; }; }, []);
+  useEffect(() => {
+    generation.current++;
+    stopped.current = false;
+    setBusy(false);
+    setResults([]);
+    setProgress("");
+    return () => { stopped.current = true; generation.current++; };
+  }, [instance.id, setBusy]);
   const run = async (action: "enable" | "disable" | "delete") => {
     if (busy || !chosen.length) return;
     const eligible = chosen.filter((item) => !packageBatchBlocker(item, action, instance));
@@ -56,6 +65,8 @@ export function PackageBatchControls({ instance, items, selected, setSelected, c
     const live = action === "enable" && instance.status !== "stopped" && eligible.some((item) => item.kind === "smart");
     if (live && (!window.confirm("实例正在运行。启用只会移动插件入口文件，已加载模块不会立刻变化。仍要继续吗？") || !window.confirm("请再次确认：本次变更需要重启实例才能完整生效。"))) return;
     stopped.current = false;
+    const runGeneration = generation.current;
+    const canceled = () => stopped.current || generation.current !== runGeneration;
     setBusy(true);
     const report: BatchResult[] = chosen.filter((item) => packageBatchBlocker(item, action, instance)).map((item) => ({ id: item.id, name: item.name, message: `跳过：${packageBatchBlocker(item, action, instance)}`, success: false }));
     setResults([...report]);
@@ -64,15 +75,25 @@ export function PackageBatchControls({ instance, items, selected, setSelected, c
     const queue = action === "delete" ? [...eligible].sort((a, b) => rank(a) - rank(b)) : eligible;
     try {
       for (const [index, item] of queue.entries()) {
-        if (stopped.current) break;
+        if (canceled()) break;
         setProgress(`${verb} ${index + 1} / ${queue.length}：${item.name}`);
         let jobID = "";
         try {
-          const response = action === "delete" ? await api.deletePackage(instance.id, item.id) : await api.instanceAction(instance.id, "toggle_package", { package_id: item.id, enabled: action === "enable", acknowledge_live_changes: live, acknowledge_restart_required: live });
+          const key = newIdempotencyKey();
+          const payload = { package_id: item.id, enabled: action === "enable", acknowledge_live_changes: live, acknowledge_restart_required: live };
+          const response = await submitWhenInstanceReady(
+            () => action === "delete" ? api.deletePackage(instance.id, item.id, key) : api.instanceAction(instance.id, "toggle_package", payload, key),
+            canceled,
+            (message) => setProgress(`${verb} ${index + 1} / ${queue.length}：${item.name} · ${message}`),
+          );
+          if (generation.current !== runGeneration) return;
+          setProgress(`${verb} ${index + 1} / ${queue.length}：${item.name}`);
           jobID = response.job_id;
-          const status = await waitPackageOperation(instance.id, jobID, () => stopped.current);
+          const status = await waitPackageOperation(instance.id, jobID, canceled);
+          if (generation.current !== runGeneration) return;
           report.push({ id: item.id, name: item.name, message: status === "succeeded" ? `${verb}成功` : `任务${status === "failed" ? "失败" : "已取消"}，请在任务中心查看 ${jobID}`, success: status === "succeeded" });
         } catch (error) {
+          if (generation.current !== runGeneration) return;
           report.push({ id: item.id, name: item.name, message: error instanceof Error ? error.message : "操作失败", success: false });
           // An uncertain submission or polling failure must not send more writes.
           if (jobID || !(error instanceof ApiError) || error.status >= 500) stopped.current = true;
@@ -81,6 +102,9 @@ export function PackageBatchControls({ instance, items, selected, setSelected, c
         await client.invalidateQueries({ queryKey: ["instances", instance.id, "packages"] });
       }
     } finally {
+      // The same route component can be reused when navigating to another
+      // instance. An old batch must neither resume nor overwrite the new UI.
+      if (generation.current !== runGeneration) return;
       setSelected(selected.filter((id) => !report.some((item) => item.id === id && item.success)));
       setProgress(stopped.current ? "已停止后续操作；已提交的任务请到任务中心查看" : `批量操作结束：成功 ${report.filter((item) => item.success).length} 项，失败或跳过 ${report.filter((item) => !item.success).length} 项`);
       setBusy(false);
@@ -97,7 +121,7 @@ export function PackageBatchControls({ instance, items, selected, setSelected, c
       {busy ? <Button variant="secondary" onClick={() => { stopped.current = true; }}>停止后续操作</Button> : chosen.length > 0 && <Button variant="ghost" onClick={() => setSelected([])}>取消选择</Button>}
     </div>
     {progress && <p role="status">{progress}</p>}
-    {busy && <p>逐项等待任务完成；离开此页会停止提交后续操作。</p>}
+    {busy && <p>实例被占用时自动等待，最长 10 分钟；逐项完成操作。离开此页会停止提交后续操作。</p>}
     {results.length > 0 && <details open><summary>操作结果</summary><ul>{results.map((item) => <li key={item.id}>{item.name}：{item.message}</li>)}</ul></details>}
   </div>;
 }

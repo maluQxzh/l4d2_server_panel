@@ -20,6 +20,63 @@ function Batch({ items, current = instance, canToggle = true, canDelete = true }
 afterEach(() => vi.restoreAllMocks());
 
 describe("包批量操作", () => {
+  it("实例占用时等待并复用幂等键，不跳过当前条目", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const action = vi.spyOn(api, "instanceAction")
+      .mockRejectedValueOnce(new ApiError("实例被任务 blocking 占用", 409, "conflict", "instance_busy", "blocking"))
+      .mockResolvedValue({ job_id: "done" });
+    vi.spyOn(api, "packageOperationStatus").mockResolvedValue({ status: "succeeded", busy: false });
+    wrap(<Batch items={[pack("one"), pack("two")]} />);
+    fireEvent.click(screen.getByRole("button", { name: "批量停用" }));
+    await screen.findByText(/等待实例空闲/);
+    expect(action).toHaveBeenCalledTimes(1);
+    await screen.findByText(/批量操作结束：成功 2 项/, {}, { timeout: 3000 });
+    expect(action.mock.calls.map((call) => call[2]?.package_id)).toEqual(["one", "one", "two"]);
+    expect(action.mock.calls[0][3]).toBeTruthy();
+    expect(action.mock.calls[0][3]).toBe(action.mock.calls[1][3]);
+    expect(action.mock.calls[1][3]).not.toBe(action.mock.calls[2][3]);
+  });
+
+  it("停止等待后不提交当前条目或后续条目", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const action = vi.spyOn(api, "instanceAction").mockRejectedValue(new ApiError("忙", 409, "conflict", "instance_busy"));
+    wrap(<Batch items={[pack("one"), pack("two")]} />);
+    fireEvent.click(screen.getByRole("button", { name: "批量停用" }));
+    await screen.findByText(/等待实例空闲/);
+    fireEvent.click(screen.getByRole("button", { name: "停止后续操作" }));
+    await screen.findByText("已停止后续操作；已提交的任务请到任务中心查看", {}, { timeout: 3000 });
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it("离开页面后停止等待，不补交操作", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const action = vi.spyOn(api, "instanceAction").mockRejectedValue(new ApiError("忙", 409, "conflict", "instance_busy"));
+    const view = wrap(<Batch items={[pack("one"), pack("two")]} />);
+    fireEvent.click(screen.getByRole("button", { name: "批量停用" }));
+    await screen.findByText(/等待实例空闲/);
+    view.unmount();
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it("复用页面切换实例后，旧批次不会继续或覆盖新页面状态", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const action = vi.spyOn(api, "instanceAction").mockRejectedValue(new ApiError("忙", 409, "conflict", "instance_busy"));
+    function SwitchInstance() {
+      const [id, setID] = useState("first");
+      return <><button onClick={() => setID("second")}>切换实例</button><Batch current={{ ...instance, id }} items={[pack("one")]} /></>;
+    }
+    wrap(<SwitchInstance />);
+    fireEvent.click(screen.getByRole("button", { name: "批量停用" }));
+    await screen.findByText(/等待实例空闲/);
+    fireEvent.click(screen.getByRole("button", { name: "切换实例" }));
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/等待实例空闲/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/已停止后续操作/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "批量停用" })).toBeEnabled();
+  });
+
   it("等待前一项完成投影后才提交下一项，并保留失败条目", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const action = vi.spyOn(api, "instanceAction").mockResolvedValueOnce({ job_id: "job-1" }).mockResolvedValueOnce({ job_id: "job-2" });

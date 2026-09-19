@@ -5,6 +5,19 @@ describe("API 客户端", () => {
   beforeEach(() => setCsrfToken("csrf-test"));
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+  it("保留实例占用原因，并允许批量操作复用同一个幂等键", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "conflict", message: "实例被占用", reason: "instance_busy", blocking_job_id: "blocking" } }), { status: 409 }))
+      .mockResolvedValue(new Response(JSON.stringify({ job_id: "next" }), { status: 202 }));
+    await expect(api.instanceAction("instance", "toggle_package", { package_id: "one" }, "same-key"))
+      .rejects.toMatchObject({ status: 409, code: "conflict", reason: "instance_busy", blockingJobId: "blocking" });
+    await api.instanceAction("instance", "toggle_package", { package_id: "one" }, "same-key");
+    expect(fetchMock.mock.calls.slice(0, 2).map(([, init]) => new Headers(init?.headers).get("Idempotency-Key"))).toEqual(["same-key", "same-key"]);
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ job_id: "delete" }), { status: 202 }));
+    await api.deletePackage("instance", "one", "delete-key");
+    expect(new Headers(fetchMock.mock.calls[2][1]?.headers).get("Idempotency-Key")).toBe("delete-key");
+  });
+
   it("删除账号编码路径并携带认证、CSRF 和幂等键", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
     await expect(api.deleteUser("user/one")).resolves.toBeUndefined();

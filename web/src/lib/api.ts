@@ -59,12 +59,16 @@ export interface UserActivationResult {
 export class ApiError extends Error {
   status: number;
   code: string;
+  reason?: string;
+  blockingJobId?: string;
 
-  constructor(message: string, status: number, code = "request_failed") {
+  constructor(message: string, status: number, code = "request_failed", reason?: string, blockingJobId?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.reason = reason;
+    this.blockingJobId = blockingJobId;
   }
 }
 
@@ -72,7 +76,7 @@ export function setCsrfToken(token?: string) {
   csrfToken = token || "";
 }
 
-function newIdempotencyKey() {
+export function newIdempotencyKey() {
   return typeof crypto?.randomUUID === "function"
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -106,9 +110,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
   }
   if (!response.ok) {
-    const error = body.error as { message?: string; code?: string } | string | undefined;
+    const error = body.error as { message?: string; code?: string; reason?: string; blocking_job_id?: string } | string | undefined;
     const message = typeof error === "string" ? error : error?.message;
-    throw new ApiError(message || `请求失败（${response.status}）`, response.status, typeof error === "object" ? error?.code : undefined);
+    throw new ApiError(message || `请求失败（${response.status}）`, response.status,
+      typeof error === "object" ? error?.code : undefined,
+      typeof error === "object" ? error?.reason : undefined,
+      typeof error === "object" ? error?.blocking_job_id : undefined);
   }
   return body as T;
 }
@@ -297,9 +304,9 @@ export const api = {
     `/instances/${encodeURIComponent(id)}?mode=${mode}`,
     { method: "DELETE" },
   ),
-  instanceAction: (id: string, type: string, payload?: Record<string, unknown>) => request<{ job_id: string }>(
+  instanceAction: (id: string, type: string, payload?: Record<string, unknown>, idempotencyKey?: string) => request<{ job_id: string }>(
     `/instances/${encodeURIComponent(id)}/actions`,
-    { method: "POST", body: JSON.stringify({ type, payload }) },
+    { method: "POST", body: JSON.stringify({ type, payload }), headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined },
   ),
   inspectPluginArchive: async (instanceId: string, payload: { name?: string; content_base64?: string; source?: string; source_transport?: "qq_flash"; path_encoding?: MapPathEncoding }): Promise<SmartPluginPlan> => {
     const encodedID = encodeURIComponent(instanceId);
@@ -389,9 +396,9 @@ export const api = {
   packageOperationStatus: (instanceId: string, jobId: string) => request<{ status: JobStatus; busy: boolean }>(
     `/instances/${encodeURIComponent(instanceId)}/package-operations/${encodeURIComponent(jobId)}`,
   ),
-  deletePackage: (instanceId: string, packageId: string) => request<{ job_id: string }>(
+  deletePackage: (instanceId: string, packageId: string, idempotencyKey?: string) => request<{ job_id: string }>(
     `/instances/${encodeURIComponent(instanceId)}/packages/${encodeURIComponent(packageId)}`,
-    { method: "DELETE" },
+    { method: "DELETE", headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined },
   ),
   backups: (instanceId: string) => list<BackupRecord>(`/instances/${encodeURIComponent(instanceId)}/backups`),
   createPluginBackup: (instanceId: string, layout: "preserve" | "compact") => request<{ job_id: string; idempotent_replay?: boolean }>(
