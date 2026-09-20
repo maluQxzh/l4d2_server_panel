@@ -169,6 +169,9 @@ func (a *Agent) runLogCleanup(ctx context.Context) {
 		if err := a.executor.cleanupPreparedVPKBundles(time.Now()); err != nil {
 			a.logger.Printf("prepared VPK bundle retention: %v", err)
 		}
+		if err := a.executor.cleanupLegacySmartPreviews(); err != nil {
+			a.logger.Printf("legacy smart preview retention: %v", err)
+		}
 		if err := a.executor.cleanupSmartPreviews(time.Now()); err != nil {
 			a.logger.Printf("smart preview retention: %v", err)
 		}

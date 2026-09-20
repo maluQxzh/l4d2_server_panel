@@ -57,6 +57,7 @@ type Executor struct {
 	preparedQQClient           *qqFlashClient
 	smartPreviewMu             sync.Mutex
 	smartPreviews              map[string]*smartPreview
+	smartPreviewsLoaded        bool
 	mapReloadRCON              localRCONExecuteFunc
 }
 

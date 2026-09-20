@@ -18,9 +18,8 @@ import (
 const smartPreviewSlots = 4
 const smartPreviewTTL = time.Hour
 
-// Only a live Executor owns these records. Restarting deliberately drops the
-// optimization and uses the original archive verification path. On-disk files
-// have random flat names; neither metadata nor a cached plan is trusted from disk.
+// Active operations remain process-local. Ready inputs have an authenticated
+// manifest; targets and permissions are always reconstructed before installation.
 type smartPreview struct {
 	requestKey string
 	plan       smartPluginPlan
@@ -28,6 +27,7 @@ type smartPreview struct {
 	expires    time.Time
 	active     bool
 	ready      bool
+	record     smartPreviewRecord
 }
 
 func smartPreviewRequestKey(job domain.Job, payload operationPayload, instancePath string) string {
@@ -62,13 +62,19 @@ func (e *Executor) removeSmartPreviewLocked(root, id string) error {
 			return err
 		}
 	}
+	if err := deleteManagedFileNoFollow(root, id+".json"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	delete(e.smartPreviews, id)
 	return nil
 }
 
 func (e *Executor) cleanupSmartPreviewsLocked(now time.Time) error {
-	root, err := ensureDataSubdirectory(e.config.DataDir, "smart-previews")
+	root, err := ensureDataSubdirectory(e.config.DataDir, smartPreviewDirectory)
 	if err != nil {
+		return err
+	}
+	if err := e.restoreSmartPreviewsLocked(root, now); err != nil {
 		return err
 	}
 	active := false
@@ -81,12 +87,13 @@ func (e *Executor) cleanupSmartPreviewsLocked(now time.Time) error {
 			continue
 		}
 		active = active || preview.active
+		keep[id+".json"] = true
 		for _, name := range preview.sources {
 			keep[name] = true
 		}
 	}
 	// Atomic writes may still be creating their temporary names. Sweep orphaned
-	// flat files only while idle, including the first cleanup after a restart.
+	// flat files only while idle, after restoring valid records on restart.
 	if active {
 		return nil
 	}
@@ -99,7 +106,7 @@ func (e *Executor) cleanupSmartPreviewsLocked(now time.Time) error {
 		if keep[name] {
 			continue
 		}
-		if !((strings.HasSuffix(name, ".bin") && preparedID(strings.TrimSuffix(name, ".bin"))) || strings.HasPrefix(name, ".managed-")) {
+		if !smartPreviewStagingName(name) && !strings.HasPrefix(name, ".managed-") {
 			return errors.New("unexpected smart preview staging entry")
 		}
 		if err := deleteManagedFileNoFollow(root, name); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -118,7 +125,7 @@ func (e *Executor) reserveSmartPreview() (string, error) {
 	if len(e.smartPreviews) >= smartPreviewSlots {
 		return "", nil // Optional cache: inspection still works when it is full.
 	}
-	root, err := ensureDataSubdirectory(e.config.DataDir, "smart-previews")
+	root, err := ensureDataSubdirectory(e.config.DataDir, smartPreviewDirectory)
 	if err != nil {
 		return "", err
 	}
@@ -131,7 +138,8 @@ func (e *Executor) reserveSmartPreview() (string, error) {
 		e.smartPreviews = make(map[string]*smartPreview)
 	}
 	id := uuid.NewString()
-	e.smartPreviews[id] = &smartPreview{active: true, expires: time.Now().Add(smartPreviewTTL)}
+	created := time.Now().UTC()
+	e.smartPreviews[id] = &smartPreview{active: true, expires: created.Add(smartPreviewTTL), record: smartPreviewRecord{Version: 1, ID: id, CreatedAt: created, ExpiresAt: created.Add(smartPreviewTTL)}}
 	return id, nil
 }
 
@@ -153,14 +161,16 @@ func (e *Executor) saveSmartPreview(ctx context.Context, id, requestKey string, 
 	if id == "" {
 		return ctx.Err()
 	}
-	root, err := ensureDataSubdirectory(e.config.DataDir, "smart-previews")
+	root, err := ensureDataSubdirectory(e.config.DataDir, smartPreviewDirectory)
 	if err != nil {
 		return err
 	}
 	sources := make(map[string]string, plan.FileCount)
+	inputs := make([]smartPreviewInput, 0, plan.FileCount)
 	for _, folder := range plan.Folders {
 		for _, file := range folder.Files {
-			sources[file.SourcePath] = uuid.NewString() + ".bin"
+			sources[file.SourcePath] = smartPreviewDataFile(id, len(inputs))
+			inputs = append(inputs, smartPreviewInput{Source: file.SourcePath, SHA256: file.SHA256, Size: file.Size})
 		}
 	}
 	e.smartPreviewMu.Lock()
@@ -193,9 +203,22 @@ func (e *Executor) saveSmartPreview(ctx context.Context, id, requestKey string, 
 			}
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	e.smartPreviewMu.Lock()
-	preview.requestKey, preview.plan, preview.ready = requestKey, plan, true
-	e.smartPreviewMu.Unlock()
+	defer e.smartPreviewMu.Unlock()
+	record := preview.record
+	record.RequestKey, record.ArchiveName, record.ArchiveSHA256 = requestKey, plan.ArchiveName, plan.ArchiveSHA256
+	record.PathEncoding, record.Fingerprint, record.Format = plan.PathEncoding, plan.Fingerprint, plan.Format
+	record.ExpandedBytes, record.Files = plan.ExpandedBytes, inputs
+	// Unenrolled test/local executors retain the original in-memory optimization.
+	if e.config.Credential != "" {
+		if err := saveSmartPreviewRecord(root, record, e.config.Credential); err != nil {
+			return err
+		}
+	}
+	preview.requestKey, preview.plan, preview.ready, preview.record = requestKey, plan, true, record
 	return nil
 }
 
@@ -214,6 +237,20 @@ func (e *Executor) installSmartPreview(ctx context.Context, job domain.Job, payl
 	for candidate, cached := range e.smartPreviews {
 		if cached.ready && !cached.active && cached.requestKey == key && cached.plan.Fingerprint == payload.InspectionFingerprint {
 			id, preview = candidate, cached
+			// Commit the one-attempt claim before hashing or modifying the instance.
+			// A crash after this point must not resurrect the cached preparation.
+			if e.config.Credential != "" {
+				root, err := ensureDataSubdirectory(e.config.DataDir, smartPreviewDirectory)
+				if err == nil {
+					claimed := cached.record
+					claimed.Claimed = true
+					err = saveSmartPreviewRecord(root, claimed, e.config.Credential)
+				}
+				if err != nil {
+					e.smartPreviewMu.Unlock()
+					return nil, true, err
+				}
+			}
 			cached.active, cached.ready = true, false // One attempt, including failure.
 			break
 		}
@@ -226,11 +263,25 @@ func (e *Executor) installSmartPreview(ctx context.Context, job domain.Job, payl
 	if err := ctx.Err(); err != nil {
 		return nil, true, err
 	}
-	root, err := ensureDataSubdirectory(e.config.DataDir, "smart-previews")
+	root, err := ensureDataSubdirectory(e.config.DataDir, smartPreviewDirectory)
 	if err != nil {
 		return nil, true, err
 	}
 	progress(20, "正在复用预检文件并重新核对内容与目标状态")
+	for index, file := range preview.record.Files {
+		if err := ctx.Err(); err != nil {
+			return nil, true, err
+		}
+		in, err := openManagedFileNoFollow(root, smartPreviewDataFile(id, index))
+		if err != nil {
+			return nil, true, err
+		}
+		info, statErr := in.Stat()
+		closeErr := in.Close()
+		if statErr != nil || closeErr != nil || !info.Mode().IsRegular() || info.Size() != file.Size {
+			return nil, true, errors.New("smart preview input size changed")
+		}
+	}
 	files := make([]extractedMapFile, 0, preview.plan.FileCount)
 	for source := range preview.sources {
 		files = append(files, extractedMapFile{Relative: source})

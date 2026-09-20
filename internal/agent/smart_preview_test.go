@@ -17,6 +17,7 @@ func smartPreviewFixture(t *testing.T) (*Executor, string, domain.Job, string) {
 	t.Helper()
 	e, _, instance := uploadedPackageExecutor(t)
 	e.locks = newKeyedLocker()
+	e.config.Credential = "test-smart-preview-credential"
 	encoded := base64.StdEncoding.EncodeToString(smartTestZIP(t, map[string]string{"sample.smx": "smx-content"}))
 	job := domain.Job{ID: "inspection", Type: "inspect_plugin_archive", InstanceID: "instance", Payload: map[string]any{
 		"name": "sample.zip", "content_base64": encoded,
@@ -51,7 +52,7 @@ func TestSmartPreviewReusesPreparationAndCleansConsumedFiles(t *testing.T) {
 		t.Fatalf("cache was not consumed: used=%v records=%d", used, len(e.smartPreviews))
 	}
 	assertFileContent(t, filepath.Join(instance, "left4dead2/addons/sourcemod/plugins/sample.smx"), "smx-content")
-	entries, err := os.ReadDir(filepath.Join(e.config.DataDir, "smart-previews"))
+	entries, err := os.ReadDir(filepath.Join(e.config.DataDir, smartPreviewDirectory))
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("consumed files remain: %v %v", entries, err)
 	}
@@ -68,6 +69,12 @@ func TestSmartPreviewQQSourceBindingAndActiveCleanup(t *testing.T) {
 	payload.Name, payload.ContentBase64 = "", ""
 	payload.SourceTransport, payload.Source = "qq_flash", "https://qfile.qq.com/q/share01"
 	e.smartPreviews[id].requestKey = smartPreviewRequestKey(job, payload, instance)
+	record := e.smartPreviews[id].record
+	record.RequestKey = e.smartPreviews[id].requestKey
+	if err := saveSmartPreviewRecord(filepath.Join(e.config.DataDir, smartPreviewDirectory), record, e.config.Credential); err != nil {
+		t.Fatal(err)
+	}
+	e = NewExecutor(e.config, e.paths, e.registry, e.processes, e.logger)
 	changed := payload
 	changed.Source = "https://qfile.qq.com/q/share02"
 	if _, hit, err := e.installSmartPreview(context.Background(), job, changed, instance, func(int, string) {}); hit || err != nil {
@@ -90,14 +97,22 @@ func TestSmartPreviewQQSourceBindingAndActiveCleanup(t *testing.T) {
 }
 
 func TestSmartPreviewRejectsChangedContentTargetAndOwnership(t *testing.T) {
-	for _, scenario := range []string{"content", "link", "target", "ownership", "commit"} {
+	for _, scenario := range []string{"content", "same-size-content", "missing", "link", "target", "ownership", "commit"} {
 		t.Run(scenario, func(t *testing.T) {
 			e, instance, job, id := smartPreviewFixture(t)
-			cachePath := filepath.Join(e.config.DataDir, "smart-previews", e.smartPreviews[id].sources["sample.smx"])
+			cachePath := filepath.Join(e.config.DataDir, smartPreviewDirectory, e.smartPreviews[id].sources["sample.smx"])
 			target := filepath.Join(instance, "left4dead2/addons/sourcemod/plugins/sample.smx")
 			switch scenario {
 			case "content":
 				if err := os.WriteFile(cachePath, []byte("tampered"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "same-size-content":
+				if err := os.WriteFile(cachePath, []byte("bad-content"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "missing":
+				if err := os.Remove(cachePath); err != nil {
 					t.Fatal(err)
 				}
 			case "link":
@@ -121,6 +136,7 @@ func TestSmartPreviewRejectsChangedContentTargetAndOwnership(t *testing.T) {
 			case "ownership":
 				job.Payload["registered_paths"] = map[string]string{"left4dead2/addons/sourcemod/plugins/sample.smx": "another-package"}
 			}
+			e = NewExecutor(e.config, e.paths, e.registry, e.processes, e.logger)
 			_, err := e.Execute(context.Background(), job, func(progress int, _ string) {
 				if scenario == "commit" && progress == 60 {
 					if err := os.WriteFile(cachePath, []byte("changed after validation"), 0600); err != nil {
@@ -141,12 +157,15 @@ func TestSmartPreviewRejectsChangedContentTargetAndOwnership(t *testing.T) {
 }
 
 func TestSmartPreviewMissBindingExpiryRestartAndCapacity(t *testing.T) {
-	for _, scenario := range []string{"instance", "node", "path", "source", "encoding", "fingerprint", "expired", "restart"} {
+	for _, scenario := range []string{"instance", "node", "path", "source", "encoding", "fingerprint", "expired"} {
 		t.Run(scenario, func(t *testing.T) {
 			e, instance, job, id := smartPreviewFixture(t)
 			payload, err := decodeOperation(job)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if scenario != "expired" {
+				e = NewExecutor(e.config, e.paths, e.registry, e.processes, e.logger)
 			}
 			switch scenario {
 			case "instance":
@@ -163,18 +182,16 @@ func TestSmartPreviewMissBindingExpiryRestartAndCapacity(t *testing.T) {
 				payload.InspectionFingerprint = strings.Repeat("0", 64)
 			case "expired":
 				e.smartPreviews[id].expires = time.Now().Add(-time.Second)
-			case "restart":
-				e = NewExecutor(e.config, e.paths, e.registry, e.processes, e.logger)
 			}
 			if _, hit, err := e.installSmartPreview(context.Background(), job, payload, instance, func(int, string) {}); err != nil || hit {
 				t.Fatalf("unexpected cache hit: %v %v", hit, err)
 			}
-			if scenario == "expired" || scenario == "restart" {
+			if scenario == "expired" {
 				// Full API still installs from the original archive after a miss.
 				if _, err := e.Execute(context.Background(), job, nil); err != nil {
 					t.Fatal(err)
 				}
-				entries, err := os.ReadDir(filepath.Join(e.config.DataDir, "smart-previews"))
+				entries, err := os.ReadDir(filepath.Join(e.config.DataDir, smartPreviewDirectory))
 				if err != nil || len(entries) != 0 {
 					t.Fatalf("expired/orphan data remains: %v %v", entries, err)
 				}
@@ -182,6 +199,7 @@ func TestSmartPreviewMissBindingExpiryRestartAndCapacity(t *testing.T) {
 		})
 	}
 	e, _, _, _ := smartPreviewFixture(t)
+	e = NewExecutor(e.config, e.paths, e.registry, e.processes, e.logger)
 	var reservations []string
 	for i := 1; i < smartPreviewSlots; i++ {
 		id, err := e.reserveSmartPreview()
