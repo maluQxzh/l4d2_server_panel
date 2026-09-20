@@ -253,7 +253,7 @@ func commitQQPackageVPK(source, instancePath, target, expectedSHA256 string, exp
 		}
 		return false, errors.New("QQ flash VPK target already exists with different content")
 	}
-	err := copyVerifiedQQVPK(source, instancePath, target, expectedSHA256, expectedSize, 0640)
+	err := copyVerifiedPackageFile(source, instancePath, target, expectedSHA256, expectedSize, maxPackageDownload, 0640)
 	if err == nil {
 		return false, nil
 	}
@@ -263,9 +263,9 @@ func commitQQPackageVPK(source, instancePath, target, expectedSHA256 string, exp
 	return false, fmt.Errorf("install QQ flash VPK %s: %w", filepath.Base(target), err)
 }
 
-func copyVerifiedQQVPK(source, root, target, sha string, size int64, mode os.FileMode) error {
-	if size <= 0 || size > maxPackageDownload {
-		return errors.New("invalid VPK commit size")
+func copyVerifiedPackageFile(source, root, target, sha string, size, limit int64, mode os.FileMode) error {
+	if size <= 0 || size > limit {
+		return errors.New("invalid package commit size")
 	}
 	in, err := openManagedFileNoFollow(filepath.Dir(source), filepath.Base(source))
 	if err != nil {
@@ -274,7 +274,7 @@ func copyVerifiedQQVPK(source, root, target, sha string, size int64, mode os.Fil
 	defer in.Close()
 	info, err := in.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() != size {
-		return errors.New("VPK source size changed before commit")
+		return errors.New("package source size changed before commit")
 	}
 	_, err = writeFileWithinNoFollow(root, target, in, secureWriteOptions{Mode: mode, ExpectedSize: size, ExpectedSHA256: sha, Replace: false, RejectExistingLink: true})
 	return err

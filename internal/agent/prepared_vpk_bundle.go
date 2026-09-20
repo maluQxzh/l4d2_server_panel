@@ -230,7 +230,7 @@ func (e *Executor) prepareVPKBundle(ctx context.Context, job domain.Job, progres
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if err := copyVerifiedQQVPK(file.input.Path, root, preparedBundleFile(job.ID, index), file.sha256, file.size, 0600); err != nil {
+		if err := copyVerifiedPackageFile(file.input.Path, root, preparedBundleFile(job.ID, index), file.sha256, file.size, maxPackageDownload, 0600); err != nil {
 			return nil, err
 		}
 	}

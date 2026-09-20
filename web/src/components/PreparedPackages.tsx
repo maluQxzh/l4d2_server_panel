@@ -17,7 +17,7 @@ export function PreparedPackages({ instanceId, plugins }: { instanceId: string; 
   const generation = useRef(0);
   const lastSubmission = useRef<{ signature: string; key: string } | undefined>(undefined);
   useEffect(() => { generation.current++; setBusy(false); setMessage(""); lastSubmission.current = undefined; return () => { generation.current++; }; }, [instanceId, plugins]);
-  const items = (query.data?.items || []).filter((item) => plugins ? !["vpk", "qq_vpk_bundle"].includes(item.kind) : ["vpk", "qq_vpk_bundle"].includes(item.kind));
+  const items = (query.data?.items || []).filter((item) => plugins ? !["vpk", "qq_vpk_bundle", "workshop"].includes(item.kind) : ["vpk", "qq_vpk_bundle", "workshop"].includes(item.kind));
   const queues = query.data?.queues || [];
   const active = queues.find((queue) => ["queued", "running"].includes(queue.status));
   if (!query.data?.supported && !items.length && !queues.length) return null;

@@ -777,6 +777,11 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		if (job.Type == "prepare_package" || job.Type == "discard_prepared_package" || stringFromAny(job.Payload["prepared_package_id"]) != "") && stringFromAny(job.Payload["kind"]) == domain.PreparedVPKBundleKind && !preparedVPKBundlesSupported {
 			continue
 		}
+		if (job.Type == "prepare_package" || job.Type == "discard_prepared_package" || stringFromAny(job.Payload["prepared_package_id"]) != "") && stringFromAny(job.Payload["kind"]) == domain.PreparedWorkshopKind {
+			if _, ok := client.capabilities[protocol.CapabilityPreparedWorkshopV1]; !ok {
+				continue
+			}
+		}
 		if job.Type == "delete_package" && !packageDeleteSupported {
 			continue
 		}

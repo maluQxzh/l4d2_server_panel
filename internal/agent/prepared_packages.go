@@ -196,6 +196,9 @@ func (e *Executor) acquirePreparationSlot(ctx context.Context) (func(), error) {
 }
 
 func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress ProgressFunc) (result map[string]any, err error) {
+	if exactPayloadString(job.Payload, "kind") == domain.PreparedWorkshopKind {
+		return e.prepareWorkshop(ctx, job, progress)
+	}
 	if exactPayloadString(job.Payload, "kind") == domain.PreparedVPKBundleKind {
 		return e.prepareVPKBundle(ctx, job, progress)
 	}
@@ -316,6 +319,9 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 }
 
 func (e *Executor) consumePreparedPackage(ctx context.Context, job domain.Job, discard bool, progress ProgressFunc) (map[string]any, error) {
+	if exactPayloadString(job.Payload, "kind") == domain.PreparedWorkshopKind {
+		return e.consumePreparedWorkshop(ctx, job, discard, progress)
+	}
 	if exactPayloadString(job.Payload, "kind") == domain.PreparedVPKBundleKind {
 		return e.consumePreparedVPKBundle(ctx, job, discard, progress)
 	}

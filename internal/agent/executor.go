@@ -35,6 +35,7 @@ type Executor struct {
 	processes                  *ProcessManager
 	steam                      steamOperations
 	steamMu                    sync.RWMutex
+	workshopLocks              *keyedLocker
 	runtimeEnvironment         *runtimeEnvironmentStore
 	logger                     *log.Logger
 	locks                      *keyedLocker

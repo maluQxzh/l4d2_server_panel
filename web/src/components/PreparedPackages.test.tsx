@@ -76,3 +76,14 @@ it("QQ 分享未解析名称时显示准备占位且禁止安装", async () => {
   expect(await screen.findByRole("button", { name: "安装 QQ 闪传单文件" })).toBeDisabled();
   expect(screen.getByText("QQ 闪传单文件 · 准备中 10%")).toBeVisible();
 });
+
+
+it("Workshop 准备显示在模组列表并加入持久安装队列", async () => {
+  vi.spyOn(api, "preparedPackages").mockResolvedValue({ supported: true, workshop_supported: true, items: [{ ...pack("workshop"), kind: "workshop", name: "Workshop 文件包", file_count: 2 }] });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  const queue = vi.spyOn(api, "queuePreparedInstalls").mockResolvedValue({ job_id: "queue" });
+  wrap();
+  await screen.findByText("Workshop 文件包（2 个 VPK） · 可安装");
+  fireEvent.click(screen.getByRole("button", { name: "安装 Workshop 文件包" }));
+  await waitFor(() => expect(queue).toHaveBeenCalledWith("instance", ["workshop"], false, expect.any(String)));
+});

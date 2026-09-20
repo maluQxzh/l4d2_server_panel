@@ -18,15 +18,18 @@ import (
 )
 
 func reservePreparedJobSlot(ctx context.Context, tx *sql.Tx, nodeID, kind string) error {
-	var count, bundles int
-	err := tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(json_extract(p.payload,'$.kind')='qq_vpk_bundle'),0) FROM jobs p WHERE p.node_id=?1 AND p.type='prepare_package'
+	var count, bundles, workshops int
+	err := tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(json_extract(p.payload,'$.kind')='qq_vpk_bundle'),0),COALESCE(sum(json_extract(p.payload,'$.kind')='workshop'),0) FROM jobs p WHERE p.node_id=?1 AND p.type='prepare_package'
 		AND (p.status IN ('queued','dispatched','running') OR (p.status='canceled' AND json_extract(p.result,'$.cancel_pending')=1)
-		OR (p.status='succeeded' AND p.created_at>?2 AND NOT EXISTS(SELECT 1 FROM jobs c WHERE c.type IN ('install_mod','discard_prepared_package') AND json_type(c.payload,'$.prepared_package_id')='text' AND json_extract(c.payload,'$.prepared_package_id')=p.id)))`, nodeID, time.Now().Add(-2*time.Hour)).Scan(&count, &bundles)
+		OR (p.status='succeeded' AND p.created_at>?2 AND NOT EXISTS(SELECT 1 FROM jobs c WHERE c.type IN ('install_mod','discard_prepared_package') AND json_type(c.payload,'$.prepared_package_id')='text' AND json_extract(c.payload,'$.prepared_package_id')=p.id)))`, nodeID, time.Now().Add(-2*time.Hour)).Scan(&count, &bundles, &workshops)
 	if err != nil {
 		return err
 	}
 	if count >= domain.PreparedPackageSlots {
 		return fmt.Errorf("节点预下载队列已满，请完成或丢弃已有包: %w", ErrConflict)
+	}
+	if kind == domain.PreparedWorkshopKind && workshops >= domain.PreparedWorkshopSlots {
+		return fmt.Errorf("Workshop 预下载暂存已满: %w", ErrConflict)
 	}
 	if kind == domain.PreparedVPKBundleKind && bundles >= domain.PreparedVPKBundleSlots {
 		return fmt.Errorf("节点整包预下载队列已满，请完成或丢弃已有文件包: %w", ErrConflict)
@@ -41,6 +44,9 @@ func preparedMetadata(job domain.Job) (domain.PreparedPackage, error) {
 		err = json.Unmarshal(raw, &item)
 	}
 	limit := domain.PreparedPackageMaxBytes
+	if item.Kind == domain.PreparedWorkshopKind {
+		limit = domain.PreparedWorkshopMaxBytes
+	}
 	if item.Kind == domain.PreparedVPKBundleKind {
 		limit = domain.PreparedVPKBundleMaxBytes
 	}
@@ -55,6 +61,13 @@ func preparedMetadata(job domain.Job) (domain.PreparedPackage, error) {
 		var bundle domain.PreparedVPKBundle
 		if json.Unmarshal(raw, &bundle) != nil || bundle.Validate() != nil || stringFromAny(job.Payload["source_transport"]) != "qq_flash" {
 			return item, fmt.Errorf("预下载文件包清单无效: %w", ErrConflict)
+		}
+		return item, nil
+	}
+	if item.Kind == domain.PreparedWorkshopKind {
+		var bundle domain.PreparedWorkshop
+		if json.Unmarshal(raw, &bundle) != nil || bundle.Validate() != nil || bundle.SourceID != stringFromAny(job.Payload["source"]) || stringFromAny(job.Payload["source_transport"]) != "" {
+			return item, fmt.Errorf("Workshop 准备清单无效: %w", ErrConflict)
 		}
 		return item, nil
 	}
@@ -98,14 +111,24 @@ func preparedConsumptionPayloadForQueue(ctx context.Context, tx *sql.Tx, instanc
 	if action == "install_mod" && item.Kind == "native" && !risk {
 		return nil, errors.New("原生扩展安装必须确认第三方代码风险")
 	}
-	if action == "install_mod" && item.Kind == domain.PreparedVPKBundleKind {
-		var bundle domain.PreparedVPKBundle
+	if action == "install_mod" && (item.Kind == domain.PreparedVPKBundleKind || item.Kind == domain.PreparedWorkshopKind) {
 		raw, _ := json.Marshal(job.Result)
-		_ = json.Unmarshal(raw, &bundle) // Already fully validated by preparedMetadata.
-		targets := make([]string, 0, len(bundle.Files))
-		for index, file := range bundle.Files {
-			target, _ := domain.PreparedVPKBundleTarget(item.ID, index, file.Name)
-			targets = append(targets, target)
+		targets := []string{}
+		// Metadata and all targets were validated by preparedMetadata above.
+		if item.Kind == domain.PreparedWorkshopKind {
+			var workshop domain.PreparedWorkshop
+			_ = json.Unmarshal(raw, &workshop)
+			for _, file := range workshop.Files {
+				target, _ := file.Target()
+				targets = append(targets, target)
+			}
+		} else {
+			var bundle domain.PreparedVPKBundle
+			_ = json.Unmarshal(raw, &bundle)
+			for index, file := range bundle.Files {
+				target, _ := domain.PreparedVPKBundleTarget(item.ID, index, file.Name)
+				targets = append(targets, target)
+			}
 		}
 		rawTargets, _ := json.Marshal(targets)
 		var owned bool
@@ -164,6 +187,14 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if request.Kind == domain.PreparedWorkshopKind {
+		request.Source = strings.TrimSpace(request.Source)
+		if !domain.ValidWorkshopID(request.Source) || request.Name != "" || request.Content != "" || request.Transport != "" {
+			writeError(w, http.StatusBadRequest, "invalid_package", "Workshop 预下载仅接受项目或合集数字 ID")
+			return
+		}
+		request.Name = domain.PreparedWorkshopName
+	}
 	instanceID := chi.URLParam(r, "instanceID")
 	instance, err := s.store.GetInstance(r.Context(), instanceID)
 	if err != nil {
@@ -182,7 +213,11 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用 QQ 闪传整包预下载")
 		return
 	}
-	if request.Source != "" && request.Transport == "" {
+	if request.Kind == domain.PreparedWorkshopKind && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedWorkshopV1) {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用 Workshop 预下载")
+		return
+	}
+	if request.Source != "" && request.Transport == "" && request.Kind != domain.PreparedWorkshopKind {
 		u, err := url.Parse(request.Source)
 		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
 			writeError(w, http.StatusBadRequest, "invalid_source", "预下载仅接受 HTTPS 地址")
@@ -193,7 +228,7 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	request.Kind, request.Name = strings.ToLower(strings.TrimSpace(request.Kind)), strings.TrimSpace(request.Name)
-	if request.Transport == "" {
+	if request.Transport == "" && request.Kind != domain.PreparedWorkshopKind {
 		if _, err := domain.PreparedPackageTarget(request.Kind, request.Name); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_package", err.Error())
 			return
@@ -256,6 +291,13 @@ func (s *Server) handleConsumePreparedPackage(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedWorkshopV1) {
+		prepared, err := s.store.GetJob(r.Context(), chi.URLParam(r, "jobID"))
+		if err == nil && prepared.InstanceID == instanceID && stringFromAny(prepared.Payload["kind"]) == domain.PreparedWorkshopKind {
+			writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用 Workshop 预下载")
+			return
+		}
+	}
 	payload := map[string]any{"prepared_package_id": chi.URLParam(r, "jobID"), "acknowledge_native_risk": request.Risk}
 	principal := principalFromContext(r.Context())
 	fingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "prepared-package-consume", instanceID, action, payload)
@@ -290,7 +332,7 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 	}
 	// Polling only needs the public metadata, never a potentially 100 MiB
 	// encrypted upload body. Project before transferring rows into Go.
-	columns := strings.Replace(jobColumns, ",payload,", ",json_object('name',json_extract(payload,'$.name'),'kind',json_extract(payload,'$.kind'),'source_transport',json_extract(payload,'$.source_transport')),", 1)
+	columns := strings.Replace(jobColumns, ",payload,", ",json_object('name',json_extract(payload,'$.name'),'kind',json_extract(payload,'$.kind'),'source_transport',json_extract(payload,'$.source_transport'),'source',CASE WHEN json_extract(payload,'$.kind')='workshop' THEN json_extract(payload,'$.source') ELSE '' END),", 1)
 	rows, err := s.store.db.QueryContext(r.Context(), `SELECT `+columns+` FROM jobs WHERE instance_id=?1 AND type='prepare_package'
 		AND created_at>?2 ORDER BY created_at DESC,id DESC LIMIT 64`, instance.ID, time.Now().Add(-2*time.Hour))
 	if err != nil {
@@ -324,7 +366,7 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 			item["expires_at"] = meta.ExpiresAt
 			item["ready"] = meta.ExpiresAt.After(time.Now())
 			item["size"] = meta.Size
-			if meta.Kind == domain.PreparedVPKBundleKind {
+			if meta.Kind == domain.PreparedVPKBundleKind || meta.Kind == domain.PreparedWorkshopKind {
 				if files, ok := job.Result["files"].([]any); ok {
 					item["file_count"] = len(files)
 				}
@@ -375,5 +417,5 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "queues": queues, "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1), "vpk_bundles_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedVPKBundlesV1), "qq_flash_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1)})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "queues": queues, "workshop_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedWorkshopV1), "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1), "vpk_bundles_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedVPKBundlesV1), "qq_flash_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1)})
 }

@@ -282,8 +282,9 @@ func TestPreparedPackageHTTPInstallListAndReplay(t *testing.T) {
 }
 
 func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
-	for _, sourceKind := range []string{"HTTPS", "QQ", "QQ bundle", "QQ bundle old Agent"} {
-		qq := sourceKind != "HTTPS"
+	for _, sourceKind := range []string{"HTTPS", "QQ", "QQ bundle", "QQ bundle old Agent", "Workshop", "Workshop old Agent"} {
+		qq := strings.HasPrefix(sourceKind, "QQ")
+		workshop := strings.HasPrefix(sourceKind, "Workshop")
 		t.Run(sourceKind, func(t *testing.T) {
 			s := packageRenameStore(t)
 			server := recoveryServer(t, s)
@@ -301,6 +302,9 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 			capabilities := []string{protocol.CapabilityPreparedPackagesV1, protocol.CapabilityPreparedQQFlashV1, "absolute_game_paths"}
 			if sourceKind != "QQ bundle old Agent" {
 				capabilities = append(capabilities, protocol.CapabilityPreparedVPKBundlesV1)
+			}
+			if sourceKind == "Workshop" {
+				capabilities = append(capabilities, protocol.CapabilityPreparedWorkshopV1)
 			}
 			hello, err := protocol.NewEnvelope(protocol.TypeHello, "node", "", protocol.Hello{Capabilities: capabilities})
 			if err != nil {
@@ -326,6 +330,10 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 				payload["source"] = source
 				payload["source_transport"] = "qq_flash"
 			}
+			if workshop {
+				source = "123"
+				payload = map[string]any{"kind": "workshop", "source": source}
+			}
 			body, _ := json.Marshal(payload)
 			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
 			route := chi.NewRouteContext()
@@ -334,16 +342,25 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 			req = req.WithContext(context.WithValue(req.Context(), principalContextKey, Principal{User: domain.User{Role: domain.RoleOwner}}))
 			res := httptest.NewRecorder()
 			server.handlePreparePackage(res, req)
-			if sourceKind == "QQ bundle old Agent" {
+			if strings.HasSuffix(sourceKind, "old Agent") {
 				if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "agent_upgrade_required") {
 					t.Fatalf("old Agent accepted bundle preparation: %d %s", res.Code, res.Body)
 				}
 				// Requests already queued before a rollback must also stay queued.
-				queued, _, err := s.QueueInstanceJob(context.Background(), "instance", "prepare_package", map[string]any{"kind": domain.PreparedVPKBundleKind, "source_transport": "qq_flash"}, "", "")
+				queuedPayload := map[string]any{"kind": domain.PreparedVPKBundleKind, "source_transport": "qq_flash"}
+				if workshop {
+					queuedPayload = map[string]any{"kind": "workshop", "source": "123", "name": domain.PreparedWorkshopName}
+				}
+				queued, _, err := s.QueueInstanceJob(context.Background(), "instance", "prepare_package", queuedPayload, "", "")
 				if err != nil {
 					t.Fatal(err)
 				}
-				prepared, _ := readyPreparedBundle(t, s)
+				var prepared domain.Job
+				if workshop {
+					prepared, _ = readyPreparedWorkshop(t, s)
+				} else {
+					prepared, _ = readyPreparedBundle(t, s)
+				}
 				consumer, _, err := s.QueueInstanceJob(context.Background(), "instance", "discard_prepared_package", map[string]any{"prepared_package_id": prepared.ID}, "", "")
 				if err != nil {
 					t.Fatal(err)
@@ -372,14 +389,14 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 			if err := json.Unmarshal(envelope.Payload, &command); err != nil {
 				t.Fatal(err)
 			}
-			if command.Job.Type != "prepare_package" || command.Job.Payload["source"] != source || (qq && command.Job.Payload["name"] != "") || (!qq && command.Job.Payload["name"] != "MixedCase.vpk") {
+			if command.Job.Type != "prepare_package" || command.Job.Payload["source"] != source || (qq && command.Job.Payload["name"] != "") || (sourceKind == "HTTPS" && command.Job.Payload["name"] != "MixedCase.vpk") || (workshop && command.Job.Payload["name"] != domain.PreparedWorkshopName) {
 				t.Fatalf("dispatch metadata changed: %#v", command.Job.Payload)
 			}
 			stored, err := s.GetJob(context.Background(), command.Job.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if stored.Payload["source"] == source || stored.Payload["source_ciphertext"] == nil {
+			if !workshop && (stored.Payload["source"] == source || stored.Payload["source_ciphertext"] == nil) {
 				t.Fatal("source not encrypted at rest")
 			}
 			if qq && stored.Payload["source"] != encryptedValuePlaceholder {

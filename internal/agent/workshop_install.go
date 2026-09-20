@@ -20,7 +20,7 @@ type workshopDownload struct {
 
 const maxWorkshopFilenameTitleBytes = 200
 
-func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source string, progress ProgressFunc) (map[string]any, error) {
+func (e *Executor) visitWorkshopDownloads(ctx context.Context, source string, progress ProgressFunc, visit func(workshopDownload) error) (map[string]any, error) {
 	if err := validateWorkshopID(source); err != nil {
 		return nil, err
 	}
@@ -50,33 +50,68 @@ func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source s
 		return nil, fmt.Errorf("resolve Workshop item titles: %w", err)
 	}
 
-	downloads := make([]workshopDownload, 0, len(itemIDs))
 	downloadErrors := make([]string, 0)
 	for index, itemID := range itemIDs {
 		baseProgress := 5 + index*55/len(itemIDs)
 		progress(baseProgress, fmt.Sprintf("downloading Workshop item %s (%d/%d)", itemID, index+1, len(itemIDs)))
-		files, err := e.steamClient().WorkshopItem(ctx, itemID, func(p int, message string) {
-			if p > 0 {
-				progress(baseProgress+p*55/(100*len(itemIDs)), message)
+		e.steamMu.Lock()
+		if e.workshopLocks == nil {
+			e.workshopLocks = newKeyedLocker()
+		}
+		locks := e.workshopLocks
+		e.steamMu.Unlock()
+		var snapshotErr error
+		err := func() error {
+			release, err := locks.acquire(ctx, itemID)
+			if err != nil {
+				return err
 			}
-		})
+			defer release()
+			files, err := e.steamClient().WorkshopItem(ctx, itemID, func(p int, message string) {
+				if p > 0 {
+					progress(baseProgress+p*55/(100*len(itemIDs)), message)
+				}
+			})
+			if err != nil {
+				return err
+			}
+			title, ok := titles[itemID]
+			if !ok {
+				return fmt.Errorf("Workshop title resolver omitted item %s", itemID)
+			}
+			snapshotErr = visit(workshopDownload{itemID: itemID, title: title, files: files})
+			return snapshotErr
+		}()
+		if snapshotErr != nil {
+			return nil, snapshotErr
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
 			downloadErrors = append(downloadErrors, fmt.Sprintf("%s: %s", itemID, boundedError(err)))
-			continue
 		}
-		title, ok := titles[itemID]
-		if !ok {
-			return nil, fmt.Errorf("Workshop title resolver omitted item %s", itemID)
-		}
-		downloads = append(downloads, workshopDownload{itemID: itemID, title: title, files: files})
 	}
 	if len(downloadErrors) > 0 {
 		return nil, fmt.Errorf("Workshop download failed for %d item(s): %s", len(downloadErrors), strings.Join(downloadErrors, "; "))
 	}
 
+	result := map[string]any{"kind": "workshop", "source_id": source, "source_ids": itemIDs, "collection": isCollection}
+	if lookupErr != nil {
+		result["collection_lookup_warning"] = boundedError(lookupErr)
+	}
+	return result, nil
+}
+
+func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source string, progress ProgressFunc) (map[string]any, error) {
+	downloads := []workshopDownload{}
+	result, err := e.visitWorkshopDownloads(ctx, source, progress, func(download workshopDownload) error {
+		downloads = append(downloads, download)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	record, ok := e.registry.Get(job.InstanceID)
 	if !ok {
 		return nil, errors.New("instance is not registered")
@@ -137,12 +172,7 @@ func (e *Executor) installWorkshop(ctx context.Context, job domain.Job, source s
 		})
 	}
 	progress(100, "Workshop package installed")
-	result := map[string]any{
-		"kind": "workshop", "source_id": source, "source_ids": itemIDs, "collection": isCollection, "files": installed,
-	}
-	if lookupErr != nil {
-		result["collection_lookup_warning"] = boundedError(lookupErr)
-	}
+	result["files"] = installed
 	return result, nil
 }
 

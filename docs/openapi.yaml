@@ -936,6 +936,7 @@ paths:
                 properties:
                   supported: { type: boolean }
                   qq_flash_supported: { type: boolean, description: 当前在线 Agent 同时支持 prepared_packages_v1 与 prepared_qq_flash_v1 }
+                  workshop_supported: { type: boolean, description: 当前在线 Agent 支持 prepared_workshop_v1，可准备 Workshop 项目或合集 }
                   vpk_bundles_supported: { type: boolean, description: 当前在线 Agent 还支持 prepared_vpk_bundles_v1，可预下载多文件及 VPK 归档 }
                   items: { type: array, maxItems: 64, items: { $ref: "#/components/schemas/PreparedPackage" } }
                   queues:
@@ -957,7 +958,7 @@ paths:
       description: >
         需要 packages.install 和在线 Agent prepared_packages_v1。创建 prepare_package，不取得实例写锁。
         每节点最多 16 个准备槽、同时准备 2 个，共享节点下载限额。从开始准备起一小时有效。
-        仅接受 HTTPS 或 base64 上传之一；HTTPS 最大 512 MiB，上传解码后最大 100 MiB。
+        单文件默认接受 HTTPS 或 base64 上传之一；HTTPS 最大 512 MiB，上传解码后最大 100 MiB。
         name 是安全 basename，上传必须提供，HTTPS 可省略并从 URL 路径推导。
         source_transport=qq_flash 时额外需要 prepared_qq_flash_v1，source 为 QQ 分享 URL 或分享文本，
         不接受 name/content_base64；单文件类型要求分享恰好包含一个符合类型的文件且不超过 512 MiB，名称取验证后的分享元数据。
@@ -965,7 +966,11 @@ paths:
         此类型允许多文件及仅含 VPK 的 ZIP/7Z/RAR（最多三层嵌套），下载和展开分别最多 2 GiB，
         最终 VPK 总计最多 2 GiB/1000 个，单个仍不得超过 512 MiB。每节点最多 4 个整包槽，包含在 Control 的 16 个总准备槽内。
         整包与单文件/智能预检共享 2 个执行槽，Agent 重启后仍可使用就绪整包；每个文件在安装前重新校验。
-        不支持 Workshop 或组件整包。到期、取消或崩溃未完成的暂存由 Agent 回收。
+        kind=workshop 额外要求 prepared_workshop_v1，仅接受 source 为 1–20 位数字项目/合集 ID，禁止 name/content_base64/source_transport。
+        每节点最多 4 个 Workshop 暂存槽（包含在总计 16 个槽内），单份快照最多 8 GiB/1000 文件、合集最多 200 项，沿用共享两个准备执行槽及一小时有效期。
+        使用固定 Valve 接口和匿名 SteamCMD App 550，遵守节点 SteamCMD 并发限额，不解析 Workshop VPK 内容或套用 512 MiB 限制。
+        准备只写节点暂存，重启可恢复；安装重新验证全部摘要和目标归属后 no-replace 提交，失败回滚新增文件。
+        尚不支持组件整包。到期、取消或崩溃未完成的暂存由 Agent 回收。
       parameters:
         - { $ref: "#/components/parameters/InstanceID" }
         - { $ref: "#/components/parameters/CSRF" }
@@ -984,10 +989,10 @@ paths:
                 - required: [content_base64, name]
                   not: { required: [source] }
               properties:
-                kind: { type: string, enum: [vpk, smx, plugin, native, qq_vpk_bundle] }
-                source_transport: { type: string, enum: [qq_flash], description: 省略时为 HTTPS 或上传；qq_flash 时 source 必填且 name/content_base64 禁止提供 }
+                kind: { type: string, enum: [vpk, smx, plugin, native, qq_vpk_bundle, workshop] }
+                source_transport: { type: string, enum: [qq_flash], description: Workshop 必须省略，其他类型省略时为 HTTPS 或上传；qq_flash 时 source 必填且 name/content_base64 禁止提供 }
                 name: { type: string, minLength: 1, maxLength: 240, description: "安全文件名；VPK 为 .vpk，SMX/plugin 为 .smx，native 为 .dll 或 .so；UTF-8 最多 240 字节" }
-                source: { type: string, maxLength: 4096, description: HTTPS URL；QQ 闪传模式也接受分享文本，服务端规范化为固定分享 URL }
+                source: { type: string, maxLength: 4096, description: HTTPS URL；Workshop 为 1–20 位数字项目/合集 ID；QQ 闪传模式也接受分享文本，服务端规范化为固定分享 URL }
                 content_base64: { type: string, format: byte }
       responses:
         "202":
@@ -1067,6 +1072,7 @@ paths:
         Control 从持久准备结果派生名称、类型、摘要和大小，不接受调用者指定目标路径。
         安装取得实例写锁并再次校验字节和目标归属；忙碌返回 conflict 和 reason=instance_busy，未创建消费任务。
         每个准备 ID 只接受一次安装或丢弃意图，失败或取消后须重新准备；原幂等键仍重放原任务。
+        workshop 需要 prepared_workshop_v1，固定名称与文件清单来自已持久化的准备结果，安装前复核目标归属，投影逐项匹配原清单。
         qq_vpk_bundle 需要 prepared_vpk_bundles_v1；每个 VPK 的目标由准备 ID、序号和安全名称推导，
         重新校验完整清单、摘要、结构及 CRC 后才开始不覆盖写入，失败回滚本次新增文件。
         单文件 VPK/SMX 使用版本快照及失败回滚，原生扩展使用原子复制并强制风险确认；QQ VPK 整包沿用 QQ 导入的不覆盖语义。
@@ -4294,13 +4300,13 @@ components:
       properties:
         id: { type: string, format: uuid, description: 准备任务 ID，不是访问凭据 }
         name: { type: string }
-        kind: { type: string, enum: [vpk, smx, plugin, native, qq_vpk_bundle] }
+        kind: { type: string, enum: [vpk, smx, plugin, native, qq_vpk_bundle, workshop] }
         status: { type: string, enum: [queued, dispatched, running, succeeded, failed, canceled] }
         progress: { type: integer, minimum: 0, maximum: 100 }
         ready: { type: boolean }
         expires_at: { type: string, format: date-time }
-        size: { type: integer, format: int64, maximum: 2147483648, description: 单文件最多 512 MiB；qq_vpk_bundle 为全部 VPK 总大小，最多 2 GiB }
-        file_count: { type: integer, minimum: 1, maximum: 1000, description: 已就绪 VPK 文件包的文件数 }
+        size: { type: integer, format: int64, maximum: 8589934592, description: 单文件最多 512 MiB；qq_vpk_bundle 总大小最多 2 GiB；workshop 快照总大小最多 8 GiB }
+        file_count: { type: integer, minimum: 1, maximum: 1000, description: 已就绪 QQ VPK 或 Workshop 文件包的文件数 }
         queue_id: { type: string, format: uuid, description: 正在等待的服务端安装队列 ID }
         consume_job_id: { type: string, format: uuid }
         consume_status: { type: string, enum: [queued, dispatched, running, succeeded, failed, canceled] }
