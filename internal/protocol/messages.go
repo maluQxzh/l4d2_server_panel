@@ -40,6 +40,7 @@ const (
 	CapabilityTerminalConflictV1         = "terminal_conflict_v1"
 	CapabilityPreparedPackagesV1         = "prepared_packages_v1"
 	CapabilityPreparedQQFlashV1          = "prepared_qq_flash_v1"
+	CapabilityPreparedVPKBundlesV1       = "prepared_vpk_bundles_v1"
 )
 
 const MaxJobUpdateMessageBytes = 2 << 10

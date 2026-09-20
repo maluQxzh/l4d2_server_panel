@@ -196,6 +196,9 @@ func (e *Executor) acquirePreparationSlot(ctx context.Context) (func(), error) {
 }
 
 func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress ProgressFunc) (result map[string]any, err error) {
+	if exactPayloadString(job.Payload, "kind") == domain.PreparedVPKBundleKind {
+		return e.prepareVPKBundle(ctx, job, progress)
+	}
 	if !preparedID(job.ID) || job.NodeID != e.config.NodeID {
 		return nil, errors.New("invalid preparation job binding")
 	}
@@ -313,6 +316,9 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 }
 
 func (e *Executor) consumePreparedPackage(ctx context.Context, job domain.Job, discard bool, progress ProgressFunc) (map[string]any, error) {
+	if exactPayloadString(job.Payload, "kind") == domain.PreparedVPKBundleKind {
+		return e.consumePreparedVPKBundle(ctx, job, discard, progress)
+	}
 	id := exactPayloadString(job.Payload, "prepared_package_id")
 	if !preparedID(id) {
 		return nil, errors.New("invalid prepared package ID")

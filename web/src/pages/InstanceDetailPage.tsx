@@ -1049,9 +1049,10 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
   const prepared = usePreparedPackages(instance.id, open);
   const qqPrepare = qqFlashVPK || qqFlashPlugin;
   const singleFileQQPlugin = qqFlashPlugin && ["smx", "native"].includes(kind);
+  const qqBundlePrepare = qqFlashVPK && prepared.data?.vpk_bundles_supported;
   const canPrepare = prepared.data?.supported && ["vpk_url", "qq_flash", "smx", "native"].includes(kind) && (!qqPrepare || prepared.data.qq_flash_supported);
   const prepare = useMutation({
-    mutationFn: () => api.preparePackage(instance.id, { kind: kind === "vpk_url" || qqFlashVPK ? "vpk" : kind, name: qqPrepare ? undefined : upload?.name, source: source.trim() || undefined, content_base64: qqPrepare ? undefined : upload?.contentBase64, source_transport: qqPrepare ? "qq_flash" : undefined }),
+    mutationFn: () => api.preparePackage(instance.id, { kind: qqBundlePrepare ? "qq_vpk_bundle" : kind === "vpk_url" || qqFlashVPK ? "vpk" : kind, name: qqPrepare ? undefined : upload?.name, source: source.trim() || undefined, content_base64: qqPrepare ? undefined : upload?.contentBase64, source_transport: qqPrepare ? "qq_flash" : undefined }),
     onSuccess: () => {
       toast.push("预下载任务已提交，可继续准备其他包；完成后在预下载列表安装");
       void client.invalidateQueries({ queryKey: ["instances", instance.id, "prepared-packages"] });
@@ -1066,7 +1067,7 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
     <div className="form-stack">
       <Field label="类型"><select disabled={prepare.isPending} value={kind} onChange={(event) => { setKind(event.target.value); setTransport("default"); setSource(""); setUpload(null); setPathEncoding("auto"); clearSmartPlan(); }}>{pluginSection ? <><option value="smart">智能识别</option><option value="smx">单文件 SMX 插件</option><option value="native">单文件原生扩展</option><option value="sourcemod">官方 SourceMod 稳定版</option><option value="metamod">官方 Metamod:Source 稳定版</option><option value="sourcemod_url">第三方 SourceMod 整包</option><option value="metamod_url">第三方 Metamod 整包</option></> : <><option value="workshop">Workshop 项目 / 合集 ID</option><option value="vpk_url">VPK 文件</option><option value="qq_flash">QQ闪传（玩家上传 VPK）</option></>}</select></Field>
       {pluginSection && <Field label="传输方式"><select disabled={prepare.isPending} value={transport} onChange={(event) => { setTransport(event.target.value as "default" | "qq_flash"); setSource(""); setUpload(null); setPathEncoding("auto"); clearSmartPlan(); }}><option value="default">{defaultTransportLabel}</option><option value="qq_flash">QQ 闪传</option></select></Field>}
-      {qqPrepare && ["qq_flash", "smx", "native"].includes(kind) && <div className="form-note"><CloudDownload size={18} /><span><strong>单文件可先预下载</strong><small>{prepared.data?.qq_flash_supported ? "分享须恰好包含一个与所选类型一致的文件，最大 512 MiB；预下载完成后到列表安装。压缩包和多文件 VPK 分享请使用原导入流程。" : "请更新并连接 Agent 以使用 QQ 闪传单文件预下载。"}</small></span></div>}
+      {qqPrepare && ["qq_flash", "smx", "native"].includes(kind) && <div className="form-note"><CloudDownload size={18} /><span><strong>{qqBundlePrepare ? "多文件和压缩包可先预下载" : "单文件可先预下载"}</strong><small>{qqBundlePrepare ? "支持多个 VPK 或仅含 VPK 的 ZIP、7Z、RAR；总下载和展开分别最多 2 GiB、最多 1000 个 VPK，单文件最多 512 MiB。准备不占实例写锁，完成后可加入持久安装队列。" : prepared.data?.qq_flash_supported ? "分享须恰好包含一个与所选类型一致的文件，最大 512 MiB；预下载完成后到列表安装。压缩包和多文件 VPK 分享请使用原导入流程。" : "请更新并连接 Agent 以使用 QQ 闪传单文件预下载。"}</small></span></div>}
       {sourceModBlocked && <div className="form-note"><ShieldAlert size={18} /><span><strong>请先安装 Metamod:Source</strong><small>SourceMod 依赖 Metamod；Metamod 安装并验证成功后才能提交 SourceMod 安装。</small></span></div>}
       {smart && <Field label="压缩包路径编码" hint="自动模式优先使用 UTF-8，并在 ZIP 旧式文件名无效时回退 GBK；仍不正确时可显式选择原始编码。"><select aria-label="压缩包路径编码" value={pathEncoding} onChange={(event) => { setPathEncoding(event.target.value as MapPathEncoding); clearSmartPlan(); }}><option value="auto">自动（推荐）</option><option value="utf8">UTF-8</option><option value="gbk">GBK（简体中文旧压缩包）</option><option value="big5">Big5（繁体中文旧压缩包）</option></select></Field>}
       {qqFlashVPK ? <>

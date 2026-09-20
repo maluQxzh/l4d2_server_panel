@@ -282,8 +282,9 @@ func TestPreparedPackageHTTPInstallListAndReplay(t *testing.T) {
 }
 
 func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
-	for _, qq := range []bool{false, true} {
-		t.Run(map[bool]string{false: "HTTPS", true: "QQ"}[qq], func(t *testing.T) {
+	for _, sourceKind := range []string{"HTTPS", "QQ", "QQ bundle", "QQ bundle old Agent"} {
+		qq := sourceKind != "HTTPS"
+		t.Run(sourceKind, func(t *testing.T) {
 			s := packageRenameStore(t)
 			server := recoveryServer(t, s)
 			node, err := s.GetNode(context.Background(), "node")
@@ -297,7 +298,11 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer connection.Close()
-			hello, err := protocol.NewEnvelope(protocol.TypeHello, "node", "", protocol.Hello{Capabilities: []string{protocol.CapabilityPreparedPackagesV1, protocol.CapabilityPreparedQQFlashV1, "absolute_game_paths"}})
+			capabilities := []string{protocol.CapabilityPreparedPackagesV1, protocol.CapabilityPreparedQQFlashV1, "absolute_game_paths"}
+			if sourceKind != "QQ bundle old Agent" {
+				capabilities = append(capabilities, protocol.CapabilityPreparedVPKBundlesV1)
+			}
+			hello, err := protocol.NewEnvelope(protocol.TypeHello, "node", "", protocol.Hello{Capabilities: capabilities})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -313,6 +318,9 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 			}
 			source := "https://example.com/MixedCase.vpk?Token=SecretCASE"
 			payload := map[string]any{"kind": "vpk", "source": source}
+			if strings.HasPrefix(sourceKind, "QQ bundle") {
+				payload["kind"] = domain.PreparedVPKBundleKind
+			}
 			if qq {
 				source = "https://qfile.qq.com/q/SecretCASE"
 				payload["source"] = source
@@ -326,6 +334,29 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 			req = req.WithContext(context.WithValue(req.Context(), principalContextKey, Principal{User: domain.User{Role: domain.RoleOwner}}))
 			res := httptest.NewRecorder()
 			server.handlePreparePackage(res, req)
+			if sourceKind == "QQ bundle old Agent" {
+				if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "agent_upgrade_required") {
+					t.Fatalf("old Agent accepted bundle preparation: %d %s", res.Code, res.Body)
+				}
+				// Requests already queued before a rollback must also stay queued.
+				queued, _, err := s.QueueInstanceJob(context.Background(), "instance", "prepare_package", map[string]any{"kind": domain.PreparedVPKBundleKind, "source_transport": "qq_flash"}, "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				prepared, _ := readyPreparedBundle(t, s)
+				consumer, _, err := s.QueueInstanceJob(context.Background(), "instance", "discard_prepared_package", map[string]any{"prepared_package_id": prepared.ID}, "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				server.agents.Dispatch(context.Background(), "node")
+				for _, id := range []string{queued.ID, consumer.ID} {
+					stored, err := s.GetJob(context.Background(), id)
+					if err != nil || stored.Status != domain.JobQueued {
+						t.Fatalf("incompatible queued task dispatched: %s %v", stored.Status, err)
+					}
+				}
+				return
+			}
 			if res.Code != http.StatusAccepted {
 				t.Fatalf("prepare: %d %s", res.Code, res.Body)
 			}

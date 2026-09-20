@@ -17,16 +17,19 @@ import (
 	"github.com/l4d2-panel/l4d2panel/internal/protocol"
 )
 
-func reservePreparedJobSlot(ctx context.Context, tx *sql.Tx, nodeID string) error {
-	var count int
-	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM jobs p WHERE p.node_id=?1 AND p.type='prepare_package'
+func reservePreparedJobSlot(ctx context.Context, tx *sql.Tx, nodeID, kind string) error {
+	var count, bundles int
+	err := tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(json_extract(p.payload,'$.kind')='qq_vpk_bundle'),0) FROM jobs p WHERE p.node_id=?1 AND p.type='prepare_package'
 		AND (p.status IN ('queued','dispatched','running') OR (p.status='canceled' AND json_extract(p.result,'$.cancel_pending')=1)
-		OR (p.status='succeeded' AND p.created_at>?2 AND NOT EXISTS(SELECT 1 FROM jobs c WHERE c.type IN ('install_mod','discard_prepared_package') AND json_type(c.payload,'$.prepared_package_id')='text' AND json_extract(c.payload,'$.prepared_package_id')=p.id)))`, nodeID, time.Now().Add(-2*time.Hour)).Scan(&count)
+		OR (p.status='succeeded' AND p.created_at>?2 AND NOT EXISTS(SELECT 1 FROM jobs c WHERE c.type IN ('install_mod','discard_prepared_package') AND json_type(c.payload,'$.prepared_package_id')='text' AND json_extract(c.payload,'$.prepared_package_id')=p.id)))`, nodeID, time.Now().Add(-2*time.Hour)).Scan(&count, &bundles)
 	if err != nil {
 		return err
 	}
 	if count >= domain.PreparedPackageSlots {
 		return fmt.Errorf("节点预下载队列已满，请完成或丢弃已有包: %w", ErrConflict)
+	}
+	if kind == domain.PreparedVPKBundleKind && bundles >= domain.PreparedVPKBundleSlots {
+		return fmt.Errorf("节点整包预下载队列已满，请完成或丢弃已有文件包: %w", ErrConflict)
 	}
 	return nil
 }
@@ -37,12 +40,23 @@ func preparedMetadata(job domain.Job) (domain.PreparedPackage, error) {
 	if err == nil {
 		err = json.Unmarshal(raw, &item)
 	}
+	limit := domain.PreparedPackageMaxBytes
+	if item.Kind == domain.PreparedVPKBundleKind {
+		limit = domain.PreparedVPKBundleMaxBytes
+	}
 	if err != nil || job.Type != "prepare_package" || job.Status != domain.JobSucceeded ||
 		item.ID != job.ID || item.InstanceID != job.InstanceID || item.NodeID != job.NodeID ||
 		(stringFromAny(job.Payload["source_transport"]) != "qq_flash" && item.Name != stringFromAny(job.Payload["name"])) || item.Kind != stringFromAny(job.Payload["kind"]) ||
-		!validRequestFingerprint(item.SHA256) || item.Size <= 0 || item.Size > domain.PreparedPackageMaxBytes ||
+		!validRequestFingerprint(item.SHA256) || item.Size <= 0 || item.Size > limit ||
 		item.ExpiresAt.IsZero() || item.ExpiresAt.After(job.CreatedAt.Add(2*time.Hour)) {
 		return item, fmt.Errorf("预下载结果无效或未完成: %w", ErrConflict)
+	}
+	if item.Kind == domain.PreparedVPKBundleKind {
+		var bundle domain.PreparedVPKBundle
+		if json.Unmarshal(raw, &bundle) != nil || bundle.Validate() != nil || stringFromAny(job.Payload["source_transport"]) != "qq_flash" {
+			return item, fmt.Errorf("预下载文件包清单无效: %w", ErrConflict)
+		}
+		return item, nil
 	}
 	_, err = domain.PreparedPackageTarget(item.Kind, item.Name)
 	return item, err
@@ -84,7 +98,24 @@ func preparedConsumptionPayloadForQueue(ctx context.Context, tx *sql.Tx, instanc
 	if action == "install_mod" && item.Kind == "native" && !risk {
 		return nil, errors.New("原生扩展安装必须确认第三方代码风险")
 	}
-	if action == "install_mod" {
+	if action == "install_mod" && item.Kind == domain.PreparedVPKBundleKind {
+		var bundle domain.PreparedVPKBundle
+		raw, _ := json.Marshal(job.Result)
+		_ = json.Unmarshal(raw, &bundle) // Already fully validated by preparedMetadata.
+		targets := make([]string, 0, len(bundle.Files))
+		for index, file := range bundle.Files {
+			target, _ := domain.PreparedVPKBundleTarget(item.ID, index, file.Name)
+			targets = append(targets, target)
+		}
+		rawTargets, _ := json.Marshal(targets)
+		var owned bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM addon_package_files WHERE instance_id=?1 AND lower(path) IN (SELECT lower(value) FROM json_each(?2))) OR EXISTS(SELECT 1 FROM addon_packages WHERE instance_id=?1 AND lower(path) IN (SELECT lower(value) FROM json_each(?2)))`, instanceID, string(rawTargets)).Scan(&owned); err != nil {
+			return nil, err
+		}
+		if owned {
+			return nil, fmt.Errorf("文件包目标已由其他包管理: %w", ErrConflict)
+		}
+	} else if action == "install_mod" {
 		target, err := domain.PreparedPackageTarget(item.Kind, item.Name)
 		if err != nil {
 			return nil, err
@@ -122,8 +153,8 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Transport == "qq_flash" {
-		if !domain.ValidPreparedPackageKind(request.Kind) || request.Name != "" || request.Content != "" {
-			writeError(w, http.StatusBadRequest, "invalid_package", "QQ 闪传预下载仅接受单文件类型和分享链接")
+		if (!domain.ValidPreparedPackageKind(request.Kind) && request.Kind != domain.PreparedVPKBundleKind) || request.Name != "" || request.Content != "" {
+			writeError(w, http.StatusBadRequest, "invalid_package", "QQ 闪传预下载仅接受支持的类型和分享链接")
 			return
 		}
 		var err error
@@ -145,6 +176,10 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Transport == "qq_flash" && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1) {
 		writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用 QQ 闪传预下载")
+		return
+	}
+	if request.Kind == domain.PreparedVPKBundleKind && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedVPKBundlesV1) {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用 QQ 闪传整包预下载")
 		return
 	}
 	if request.Source != "" && request.Transport == "" {
@@ -214,6 +249,13 @@ func (s *Server) handleConsumePreparedPackage(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusConflict, "agent_upgrade_required", "目标 Agent 不支持预下载包，请先升级")
 		return
 	}
+	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedVPKBundlesV1) {
+		prepared, err := s.store.GetJob(r.Context(), chi.URLParam(r, "jobID"))
+		if err == nil && prepared.InstanceID == instanceID && stringFromAny(prepared.Payload["kind"]) == domain.PreparedVPKBundleKind {
+			writeError(w, http.StatusConflict, "agent_upgrade_required", "目标 Agent 不支持整包预下载，请先升级")
+			return
+		}
+	}
 	payload := map[string]any{"prepared_package_id": chi.URLParam(r, "jobID"), "acknowledge_native_risk": request.Risk}
 	principal := principalFromContext(r.Context())
 	fingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "prepared-package-consume", instanceID, action, payload)
@@ -274,11 +316,19 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 	items := []map[string]any{}
 	for _, job := range jobs {
 		item := map[string]any{"id": job.ID, "name": stringFromAny(job.Payload["name"]), "kind": stringFromAny(job.Payload["kind"]), "status": job.Status, "progress": job.Progress}
+		if item["kind"] == domain.PreparedVPKBundleKind {
+			item["name"] = domain.PreparedVPKBundleName
+		}
 		if meta, err := preparedMetadata(job); err == nil {
 			item["name"] = meta.Name
 			item["expires_at"] = meta.ExpiresAt
 			item["ready"] = meta.ExpiresAt.After(time.Now())
 			item["size"] = meta.Size
+			if meta.Kind == domain.PreparedVPKBundleKind {
+				if files, ok := job.Result["files"].([]any); ok {
+					item["file_count"] = len(files)
+				}
+			}
 		}
 		var claimID, status string
 		var busy bool
@@ -325,5 +375,5 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "queues": queues, "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1), "qq_flash_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1)})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "queues": queues, "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1), "vpk_bundles_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedVPKBundlesV1), "qq_flash_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1)})
 }

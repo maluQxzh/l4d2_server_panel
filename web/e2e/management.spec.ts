@@ -118,6 +118,42 @@ test("预下载安装队列离开页面后恢复并可停止", async ({ page }) 
   expect(keys[0]).toBeTruthy();
 });
 
+test("QQ 多文件压缩包可预下载并在刷新后加入持久安装队列", async ({ page }) => {
+  await authenticated(page);
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, status: "stopped" } }));
+  await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: [] }));
+  let prepared = false;
+  let queued = false;
+  await page.route("**/api/v1/instances/instance-1/prepared-packages", (route) => {
+    if (route.request().method() === "POST") {
+      expect(route.request().postDataJSON()).toEqual({ kind: "qq_vpk_bundle", source: "https://qfile.qq.com/q/BundleCASE", source_transport: "qq_flash" });
+      prepared = true;
+      return json(route, { job_id: "bundle" }, 202);
+    }
+    return json(route, { supported: true, qq_flash_supported: true, vpk_bundles_supported: true, items: prepared ? [{ id: "bundle", name: "QQ 闪传 VPK 文件包", kind: "qq_vpk_bundle", status: "succeeded", progress: 100, ready: !queued, file_count: 3, queue_id: queued ? "batch" : undefined }] : [], queues: queued ? [{ id: "batch", status: "queued", progress: 0, message: "等待实例空闲" }] : [] });
+  });
+  await page.route("**/api/v1/instances/instance-1/prepared-install-queues", (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({ prepared_ids: ["bundle"] });
+    queued = true;
+    return json(route, { job_id: "batch" }, 202);
+  });
+  await page.goto("/instances/instance-1?tab=mods");
+  await page.getByRole("button", { name: "安装模组", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("combobox").first().selectOption("qq_flash");
+  await expect(dialog.getByText("多文件和压缩包可先预下载", { exact: true })).toBeVisible();
+  await dialog.locator("textarea").fill("https://qfile.qq.com/q/BundleCASE");
+  await dialog.getByRole("button", { name: "预下载，稍后安装" }).click();
+  await expect(dialog).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText("QQ 闪传 VPK 文件包（3 个 VPK） · 可安装", { exact: true })).toBeVisible();
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "安装 QQ 闪传 VPK 文件包", exact: true }).click();
+  await expect(page.getByRole("button", { name: "停止后续安装" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("QQ 闪传 VPK 文件包（3 个 VPK） · 等待安装", { exact: true })).toBeVisible();
+});
+
 for (const kind of ["vpk", "smx", "native"] as const) {
   test(`QQ 闪传 ${kind} 单文件使用预下载且不触发原安装`, async ({ page }) => {
     await authenticated(page);

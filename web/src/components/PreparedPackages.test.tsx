@@ -9,6 +9,16 @@ const pack = (id: string): PreparedPackage => ({ id, name: `${id}.vpk`, kind: "v
 const wrap = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ToastProvider><PreparedPackages instanceId="instance" plugins={false} /></ToastProvider></QueryClientProvider>);
 afterEach(() => vi.restoreAllMocks());
 
+it("VPK 文件包在模组列表展示文件数并可与单文件一起排队", async () => {
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  vi.spyOn(api, "preparedPackages").mockResolvedValue({ supported: true, vpk_bundles_supported: true, items: [pack("one"), { ...pack("bundle"), kind: "qq_vpk_bundle", name: "QQ 闪传 VPK 文件包", file_count: 3 }] });
+  const install = vi.spyOn(api, "queuePreparedInstalls").mockResolvedValue({ job_id: "batch" });
+  wrap();
+  expect(await screen.findByText("QQ 闪传 VPK 文件包（3 个 VPK） · 可安装")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "依次安装就绪包（2）" }));
+  await waitFor(() => expect(install).toHaveBeenCalledWith("instance", ["one", "bundle"], false, expect.any(String)));
+});
+
 it("一次提交完整清单，离开页面不取消服务端队列", async () => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
   const items = [pack("one"), pack("two")];

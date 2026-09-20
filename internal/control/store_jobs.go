@@ -133,7 +133,7 @@ func (s *Store) QueueInstanceJobWithFingerprint(ctx context.Context, instanceID,
 		}
 	}
 	if action == "prepare_package" {
-		if err := reservePreparedJobSlot(ctx, tx, nodeID); err != nil {
+		if err := reservePreparedJobSlot(ctx, tx, nodeID, stringFromAny(payload["kind"])); err != nil {
 			return domain.Job{}, false, err
 		}
 	}

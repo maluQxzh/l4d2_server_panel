@@ -257,6 +257,9 @@ func (s *Store) applyInstalledPackageScanResult(ctx context.Context, job domain.
 }
 
 func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error {
+	if stringFromAny(job.Payload["kind"]) == domain.PreparedVPKBundleKind {
+		return s.applyPreparedVPKBundleResult(ctx, job)
+	}
 	if stringFromAny(job.Payload["prepared_package_id"]) != "" {
 		target, err := domain.PreparedPackageTarget(stringFromAny(job.Payload["kind"]), stringFromAny(job.Payload["name"]))
 		kind := stringFromAny(job.Payload["kind"])
