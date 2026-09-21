@@ -42,6 +42,7 @@ const (
 	CapabilityPreparedQQFlashV1          = "prepared_qq_flash_v1"
 	CapabilityPreparedVPKBundlesV1       = "prepared_vpk_bundles_v1"
 	CapabilityPreparedWorkshopV1         = "prepared_workshop_v1"
+	CapabilityPreparedExtensionsV1       = "prepared_extensions_v1"
 )
 
 const MaxJobUpdateMessageBytes = 2 << 10

@@ -83,7 +83,7 @@ Agent 永久清理时只接收 Control 墓碑中的 `root_index + entry_name`，
 
 安装官方 SourceMod/Metamod 时，Agent 并行请求固定的 `api.country.is` 与 `api.ip.sb`，由服务端根据请求的公网出口 IP 返回两位国家代码。只有两个结果都有效、相同且不是 `CN` 时保留 GitHub 和 AlliedModders 官方源优先；任一结果为 `CN`、查询失败、格式异常或两个结果冲突时，均把全部已通过 GitHub 官方摘要保护的镜像提前，再回退官方源。查询结果不持久化，也不进入任务或日志。
 
-SourceMod 安装具有强制的 Metamod:Source 前置依赖。Control 只在该实例已有成功投影且启用的 Metamod 组件时接受 SourceMod 安装请求；Agent 在解析或下载 SourceMod 包之前还会以 no-follow 方式检查 `metamod.vdf` 和当前平台的 Metamod 加载二进制，防止中心记录漂移或调用绕过。操作内部超时属于任务失败并保留具体错误，只有显式取消上下文才产生 `canceled` 终态。
+SourceMod 安装具有强制的 Metamod:Source 前置依赖。Control 只在该实例已有成功投影且启用的 Metamod 组件时接受 SourceMod 安装请求；即时安装时，Agent 在解析或下载 SourceMod 包之前还会以 no-follow 方式检查 `metamod.vdf` 和当前平台的 Metamod 加载二进制，防止中心记录漂移或调用绕过。操作内部超时属于任务失败并保留具体错误，只有显式取消上下文才产生 `canceled` 终态。
 
 结构化配置只保存面板启动资料，不生成 `left4dead2/cfg/l4d2panel.cfg`。Agent 在启动参数末尾通过固定的 `+exec server.cfg` 显式加载管理员维护的 `left4dead2/cfg/server.cfg`；文件名不可由调用者替换，密码也不会进入进程参数，`server.cfg` 是唯一游戏配置源。难度作为受控的 `+z_difficulty` 参数传递。RCON 密码是可留空的中心端加密连接凭据，必须由管理员在 `server.cfg` 中配置相同值；留空不阻止启动，进程成功时实例仍为 `running`，但 RCON 查询、广播和优雅停服不可用。API 只投影 `rcon_configured` 布尔值，不回读密码。结构化配置只保留当前值，不保存历史版本；客户端在 PATCH JSON 正文中提交 `version` 作为内部修订号做乐观并发控制。
 
@@ -211,3 +211,9 @@ Agent 声明 `terminal_conflict_v1` 时，Control 若发现终态上报与不可
 节点在独立 prepared-workshop 平面目录按准备 UUID 和序号存储快照，严格 JSON 清单绑定节点、实例、开始准备起一小时有效期、来源项目、稳定名称、大小与 SHA-256；清单只接受有限大小、数量与安全名称，不接收主机路径。未完成/已领取/过期数据及孤儿按固定文件名 no-follow 回收，活动任务受保护。Workshop 载荷不做 VPK 结构/CRC/虚拟内容冲突检查，也不套用普通 VPK 的 512 MiB 上限；保留来源普通无链接文件、精确大小/摘要、安全提交及 no-replace。
 
 就绪快照跨 Agent 重启恢复，沿用原消费唯一约束、RBAC、幂等和持久安装队列；旧 Agent 不接收新准备/消费任务，等待清单不会先创建不兼容安装子任务。安装取得实例写锁，先持久领取、复核全部文件与当前归属，再提交固定 addons 目录，失败/取消回滚本次新增文件。Control 把终态结果逐项对照原准备清单，来源、名称、目标、摘要、大小、版本与文件数必须一致，整批事务投影并保持重放幂等；不新增数据库 schema，不改变 journal/ACK、取消确认或投影屏障。
+
+## 第三方组件归档准备
+
+`prepared_extensions_v1` 将调用者提供的 SourceMod/Metamod ZIP/tar.gz 原归档接入现有 `prepare_package` 和持久安装清单。沿用共享两个准备执行槽、Control 总计十六个暂存槽、一小时 TTL、HTTPS/QQ 512 MiB 和上传 100 MiB 限额；固定 `prepared-extensions/<UUID>.bin/.json` 与旧单文件目录隔离，Agent 重启只恢复就绪未领取包。准备不访问实例文件、不提前判断依赖、不停止游戏，只完成下载和文件大小/摘要校验；展开仍在写任务中进行。
+
+Control 在创建安装意图的同一立即事务内读取最新组件 ID、文件清单和全实例文件归属；SourceMod 提交清单及逐项执行前要求已纳管启用的 Metamod。队列缺少新能力时不创建组件写任务，旧 Agent 不接收准备、消费或丢弃任务。Agent 领取先落盘，再校验绑定、有效期、大小和摘要，消费时检查原生风险和磁盘 Metamod 加载文件，调用原 `installServerExtension` 保留 RCON、检查点、保护已有 admins_simple.ini、启动验证及失败恢复。Control 对终态的组件类型、归档摘要/整数大小、组件 ID 和验证命令逐项绑定输入，再复用组件清单投影。官方自动选版与智能插件的独立队列条目尚未接入。

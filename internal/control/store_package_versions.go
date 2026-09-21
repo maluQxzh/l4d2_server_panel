@@ -263,7 +263,11 @@ func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error
 	if stringFromAny(job.Payload["kind"]) == domain.PreparedVPKBundleKind {
 		return s.applyPreparedVPKBundleResult(ctx, job)
 	}
-	if stringFromAny(job.Payload["prepared_package_id"]) != "" {
+	if stringFromAny(job.Payload["prepared_package_id"]) != "" && domain.PreparedExtensionKind(stringFromAny(job.Payload["kind"])) {
+		if err := validatePreparedExtensionResult(job); err != nil {
+			return err
+		}
+	} else if stringFromAny(job.Payload["prepared_package_id"]) != "" {
 		target, err := domain.PreparedPackageTarget(stringFromAny(job.Payload["kind"]), stringFromAny(job.Payload["name"]))
 		kind := stringFromAny(job.Payload["kind"])
 		if kind == "smx" {

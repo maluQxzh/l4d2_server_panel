@@ -24,6 +24,23 @@ type preparedPackageRecord struct {
 	Claim string `json:"claim,omitempty"`
 }
 
+func preparedPackageDirectory(kind string) string {
+	if domain.PreparedExtensionKind(kind) {
+		return "prepared-extensions"
+	}
+	return "prepared-packages"
+}
+
+func (e *Executor) cleanupPreparedExtensions(now time.Time) error {
+	e.preparedMu.Lock()
+	defer e.preparedMu.Unlock()
+	root, err := ensureDataSubdirectory(e.config.DataDir, "prepared-extensions")
+	if err != nil {
+		return err
+	}
+	return e.cleanupPreparedLocked(root, now)
+}
+
 func preparedID(id string) bool {
 	parsed, err := uuid.Parse(id)
 	return err == nil && parsed.String() == id
@@ -49,7 +66,7 @@ func readPreparedPackage(root, id string) (preparedPackageRecord, error) {
 	if record.ID != id || record.InstanceID == "" || record.NodeID == "" || record.ExpiresAt.IsZero() {
 		return record, errors.New("invalid prepared package record")
 	}
-	if _, err := domain.PreparedPackageTarget(record.Kind, record.Name); err != nil {
+	if err := domain.ValidatePreparedPackageName(record.Kind, record.Name); err != nil {
 		return record, err
 	}
 	return record, nil
@@ -136,7 +153,7 @@ func (e *Executor) cleanupPreparedPackages(now time.Time) error {
 func (e *Executor) reservePrepared(job domain.Job, record preparedPackageRecord) (string, error) {
 	e.preparedMu.Lock()
 	defer e.preparedMu.Unlock()
-	root, err := ensureDataSubdirectory(e.config.DataDir, "prepared-packages")
+	root, err := ensureDataSubdirectory(e.config.DataDir, preparedPackageDirectory(record.Kind))
 	if err != nil {
 		return "", err
 	}
@@ -214,18 +231,21 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 		return nil, errors.New("unsupported preparation source transport")
 	}
 	if transport == "qq_flash" {
-		if !domain.ValidPreparedPackageKind(kind) || name != "" || exactPayloadString(job.Payload, "content_base64") != "" {
+		if (!domain.ValidPreparedPackageKind(kind) && !domain.PreparedExtensionKind(kind)) || name != "" || exactPayloadString(job.Payload, "content_base64") != "" {
 			return nil, errors.New("QQ flash preparation requires a single-file kind and share source only")
 		}
 		// Preserve the v1 on-disk reservation format even before QQ metadata is
 		// known, so an older Agent can clean interrupted preparations after rollback.
 		name = "preparing.smx"
+		if domain.PreparedExtensionKind(kind) {
+			name = "preparing.zip"
+		}
 		if kind == "vpk" {
 			name = "preparing.vpk"
 		} else if kind == "native" {
 			name = "preparing.so"
 		}
-	} else if _, err := domain.PreparedPackageTarget(kind, name); err != nil {
+	} else if err := domain.ValidatePreparedPackageName(kind, name); err != nil {
 		return nil, err
 	}
 	content, source := exactPayloadString(job.Payload, "content_base64"), exactPayloadString(job.Payload, "source")
@@ -292,6 +312,9 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 			return nil, ctx.Err()
 		}
 		if transport == "qq_flash" {
+			if domain.PreparedExtensionKind(kind) {
+				return nil, errors.New("QQ 闪传组件预下载失败：分享须有效且仅含一个不超过 512 MiB 的 ZIP 或 tar.gz 包")
+			}
 			return nil, errors.New("QQ 闪传预下载失败：请确认分享有效、仅含一个与所选类型一致的文件且不超过 512 MiB；压缩包或多文件请使用原导入流程")
 		}
 		return nil, errors.New("包下载或上传暂存失败，请检查来源及节点磁盘")
@@ -335,7 +358,7 @@ func (e *Executor) consumePreparedPackage(ctx context.Context, job domain.Job, d
 	}
 	defer release()
 	e.preparedMu.Lock()
-	root, err := ensureDataSubdirectory(e.config.DataDir, "prepared-packages")
+	root, err := ensureDataSubdirectory(e.config.DataDir, preparedPackageDirectory(exactPayloadString(job.Payload, "kind")))
 	if err != nil {
 		e.preparedMu.Unlock()
 		return nil, err
@@ -383,6 +406,20 @@ func (e *Executor) consumePreparedPackage(ctx context.Context, job domain.Job, d
 	instancePath, err := e.instancePath(instance)
 	if err != nil {
 		return nil, err
+	}
+	if domain.PreparedExtensionKind(record.Kind) {
+		if !payload.RiskConfirmed && !payload.AcknowledgeRisk {
+			return nil, errors.New("组件包安装必须确认第三方原生代码风险")
+		}
+		if record.Kind == "sourcemod" {
+			if err := requireMetamodInstalled(instancePath); err != nil {
+				return nil, err
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return e.installServerExtension(ctx, job, payload, instance, instancePath, record.Kind, filepath.Join(root, id+".bin"), sha, size, "", progress)
 	}
 	target, err := domain.PreparedPackageTarget(record.Kind, record.Name)
 	if err != nil {

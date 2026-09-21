@@ -190,6 +190,42 @@ test("Workshop 合集可预下载并在刷新后加入持久安装队列", async
   await expect(page.getByText("Workshop 文件包（3 个 VPK） · 等待安装", { exact: true })).toBeVisible();
 });
 
+test("第三方组件可预下载并在刷新后确认风险加入持久队列", async ({ page }) => {
+  await authenticated(page);
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, status: "stopped" } }));
+  await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: [] }));
+  let prepared = false;
+  let queued = false;
+  await page.route("**/api/v1/instances/instance-1/prepared-packages", (route) => {
+    if (route.request().method() === "POST") {
+      expect(route.request().postDataJSON()).toEqual({ kind: "metamod", source: "https://example.com/meta.zip" });
+      prepared = true;
+      return json(route, { job_id: "bundle" }, 202);
+    }
+    return json(route, { supported: true, qq_flash_supported: true, extensions_supported: true, items: prepared ? [{ id: "bundle", name: "meta.zip", kind: "metamod", status: "succeeded", progress: 100, ready: !queued, queue_id: queued ? "batch" : undefined }] : [], queues: queued ? [{ id: "batch", status: "queued", progress: 0, message: "等待实例空闲" }] : [] });
+  });
+  await page.route("**/api/v1/instances/instance-1/prepared-install-queues", (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({ prepared_ids: ["bundle"], acknowledge_native_risk: true });
+    queued = true;
+    return json(route, { job_id: "batch" }, 202);
+  });
+  await page.goto("/instances/instance-1?tab=plugins");
+  await page.getByRole("button", { name: "安装插件", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("combobox").first().selectOption("metamod_url");
+  await expect(dialog.getByText("组件整包可先预下载", { exact: true })).toBeVisible();
+  await dialog.getByLabel("HTTPS 来源").fill("https://example.com/meta.zip");
+  await dialog.getByRole("button", { name: "预下载，稍后安装" }).click();
+  await expect(dialog).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText("meta.zip · 可安装", { exact: true })).toBeVisible();
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "安装 meta.zip", exact: true }).click();
+  await expect(page.getByRole("button", { name: "停止后续安装" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("meta.zip · 等待安装", { exact: true })).toBeVisible();
+});
+
 for (const kind of ["vpk", "smx", "native"] as const) {
   test(`QQ 闪传 ${kind} 单文件使用预下载且不触发原安装`, async ({ page }) => {
     await authenticated(page);

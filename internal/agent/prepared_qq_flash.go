@@ -20,7 +20,7 @@ func downloadPreparedQQPackage(ctx context.Context, client *qqFlashClient, sourc
 	}
 	file := files[0]
 	name := path.Base(file.Relative)
-	if _, err := domain.PreparedPackageTarget(kind, name); err != nil {
+	if err := domain.ValidatePreparedPackageName(kind, name); err != nil {
 		return "", err
 	}
 	if file.File.Size <= 0 || file.File.Size > domain.PreparedPackageMaxBytes {

@@ -282,9 +282,10 @@ func TestPreparedPackageHTTPInstallListAndReplay(t *testing.T) {
 }
 
 func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
-	for _, sourceKind := range []string{"HTTPS", "QQ", "QQ bundle", "QQ bundle old Agent", "Workshop", "Workshop old Agent"} {
+	for _, sourceKind := range []string{"HTTPS", "QQ", "QQ bundle", "QQ bundle old Agent", "Workshop", "Workshop old Agent", "Extension", "Extension old Agent", "QQ extension"} {
 		qq := strings.HasPrefix(sourceKind, "QQ")
 		workshop := strings.HasPrefix(sourceKind, "Workshop")
+		extension := strings.Contains(strings.ToLower(sourceKind), "extension")
 		t.Run(sourceKind, func(t *testing.T) {
 			s := packageRenameStore(t)
 			server := recoveryServer(t, s)
@@ -302,6 +303,9 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 			capabilities := []string{protocol.CapabilityPreparedPackagesV1, protocol.CapabilityPreparedQQFlashV1, "absolute_game_paths"}
 			if sourceKind != "QQ bundle old Agent" {
 				capabilities = append(capabilities, protocol.CapabilityPreparedVPKBundlesV1)
+			}
+			if extension && !strings.HasSuffix(sourceKind, "old Agent") {
+				capabilities = append(capabilities, protocol.CapabilityPreparedExtensionsV1)
 			}
 			if sourceKind == "Workshop" {
 				capabilities = append(capabilities, protocol.CapabilityPreparedWorkshopV1)
@@ -322,6 +326,10 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 			}
 			source := "https://example.com/MixedCase.vpk?Token=SecretCASE"
 			payload := map[string]any{"kind": "vpk", "source": source}
+			if extension {
+				source = "https://example.com/extension.zip?Token=SecretCASE"
+				payload["kind"], payload["source"] = "sourcemod", source
+			}
 			if strings.HasPrefix(sourceKind, "QQ bundle") {
 				payload["kind"] = domain.PreparedVPKBundleKind
 			}
@@ -351,12 +359,17 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 				if workshop {
 					queuedPayload = map[string]any{"kind": "workshop", "source": "123", "name": domain.PreparedWorkshopName}
 				}
+				if extension {
+					queuedPayload = map[string]any{"kind": "metamod", "name": "extension.zip", "source": "https://example.com/extension.zip"}
+				}
 				queued, _, err := s.QueueInstanceJob(context.Background(), "instance", "prepare_package", queuedPayload, "", "")
 				if err != nil {
 					t.Fatal(err)
 				}
 				var prepared domain.Job
-				if workshop {
+				if extension {
+					prepared = readyPreparedExtension(t, s, "metamod")
+				} else if workshop {
 					prepared, _ = readyPreparedWorkshop(t, s)
 				} else {
 					prepared, _ = readyPreparedBundle(t, s)

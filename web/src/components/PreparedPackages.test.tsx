@@ -9,6 +9,19 @@ const pack = (id: string): PreparedPackage => ({ id, name: `${id}.vpk`, kind: "v
 const wrap = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ToastProvider><PreparedPackages instanceId="instance" plugins={false} /></ToastProvider></QueryClientProvider>);
 afterEach(() => vi.restoreAllMocks());
 
+it("组件整包必须再次确认原生风险才提交持久队列", async () => {
+  vi.spyOn(api, "preparedPackages").mockResolvedValue({ supported: true, extensions_supported: true, items: [{ ...pack("extension"), kind: "metamod", name: "meta.zip" }] });
+  const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(true).mockReturnValueOnce(false);
+  const queue = vi.spyOn(api, "queuePreparedInstalls").mockResolvedValue({ job_id: "batch" });
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ToastProvider><PreparedPackages instanceId="instance" plugins /></ToastProvider></QueryClientProvider>);
+  fireEvent.click(await screen.findByRole("button", { name: "安装 meta.zip" }));
+  expect(confirm).toHaveBeenCalledTimes(2);
+  expect(queue).not.toHaveBeenCalled();
+  confirm.mockReturnValue(true);
+  fireEvent.click(screen.getByRole("button", { name: "安装 meta.zip" }));
+  await waitFor(() => expect(queue).toHaveBeenCalledWith("instance", ["extension"], true, expect.any(String)));
+});
+
 it("VPK 文件包在模组列表展示文件数并可与单文件一起排队", async () => {
   vi.spyOn(window, "confirm").mockReturnValue(true);
   vi.spyOn(api, "preparedPackages").mockResolvedValue({ supported: true, vpk_bundles_supported: true, items: [pack("one"), { ...pack("bundle"), kind: "qq_vpk_bundle", name: "QQ 闪传 VPK 文件包", file_count: 3 }] });

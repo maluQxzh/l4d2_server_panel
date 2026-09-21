@@ -11,6 +11,25 @@ const PreparedPackageMaxBytes int64 = 512 << 20
 const PreparedPackageTTL = time.Hour
 const PreparedPackageSlots = 16
 
+func PreparedExtensionKind(kind string) bool {
+	return kind == "sourcemod" || kind == "metamod"
+}
+
+// Component archives have no single destination; installation validates every
+// expanded target against the component's allowlist and current ownership.
+func ValidatePreparedPackageName(kind, name string) error {
+	if PreparedExtensionKind(kind) {
+		lower := strings.ToLower(name)
+		if ValidatePackageName(name) != nil || (!strings.HasSuffix(lower, ".zip") && !strings.HasSuffix(lower, ".tar.gz")) {
+			return errors.New("组件包名称无效")
+		}
+		_, _, _, err := PackageRenamePaths("plugin", "left4dead2/addons/sourcemod/plugins/package.smx", name+".smx")
+		return err
+	}
+	_, err := PreparedPackageTarget(kind, name)
+	return err
+}
+
 func ValidPreparedPackageKind(kind string) bool {
 	switch kind {
 	case "vpk", "smx", "plugin", "native":

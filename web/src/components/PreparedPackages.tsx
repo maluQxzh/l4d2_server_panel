@@ -25,7 +25,7 @@ export function PreparedPackages({ instanceId, plugins }: { instanceId: string; 
   const install = async (queue: PreparedPackage[]) => {
     if (busy || active || !queue.length) return;
     if (!window.confirm(`确认依次安装 ${queue.length} 个预下载包？关闭页面后仍会继续；安装期间可能重启实例。`)) return;
-    const native = queue.some((item) => item.kind === "native");
+    const native = queue.some((item) => ["native", "sourcemod", "metamod"].includes(item.kind));
     if (native && !window.confirm("其中含第三方原生扩展，会在节点执行原生代码。确认了解并接受该风险？")) return;
     const epoch = generation.current;
     const ids = queue.map((item) => item.id);

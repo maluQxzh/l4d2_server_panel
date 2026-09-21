@@ -936,6 +936,7 @@ paths:
                 properties:
                   supported: { type: boolean }
                   qq_flash_supported: { type: boolean, description: 当前在线 Agent 同时支持 prepared_packages_v1 与 prepared_qq_flash_v1 }
+                  extensions_supported: { type: boolean, description: 当前在线 Agent 支持 prepared_extensions_v1，可预下载第三方 SourceMod/Metamod 整包 }
                   workshop_supported: { type: boolean, description: 当前在线 Agent 支持 prepared_workshop_v1，可准备 Workshop 项目或合集 }
                   vpk_bundles_supported: { type: boolean, description: 当前在线 Agent 还支持 prepared_vpk_bundles_v1，可预下载多文件及 VPK 归档 }
                   items: { type: array, maxItems: 64, items: { $ref: "#/components/schemas/PreparedPackage" } }
@@ -970,7 +971,10 @@ paths:
         每节点最多 4 个 Workshop 暂存槽（包含在总计 16 个槽内），单份快照最多 8 GiB/1000 文件、合集最多 200 项，沿用共享两个准备执行槽及一小时有效期。
         使用固定 Valve 接口和匿名 SteamCMD App 550，遵守节点 SteamCMD 并发限额，不解析 Workshop VPK 内容或套用 512 MiB 限制。
         准备只写节点暂存，重启可恢复；安装重新验证全部摘要和目标归属后 no-replace 提交，失败回滚新增文件。
-        尚不支持组件整包。到期、取消或崩溃未完成的暂存由 Agent 回收。
+        kind=sourcemod/metamod 额外要求 prepared_extensions_v1，只接受调用者提供的 ZIP/tar.gz 上传、HTTPS 或单文件 QQ 分享，不执行官方自动选版。
+        组件预下载只校验文件名、大小与 SHA-256；归档展开和逐文件安全检查仍在正式安装时执行。
+        组件消费必须 acknowledge_native_risk=true，SourceMod 提交安装清单前须已有启用的 Metamod，逐项执行时重新检查依赖和文件归属。
+        安装复用组件停服、检查点、保护 admins_simple.ini、A2S/RCON 验证和失败恢复。到期、取消或崩溃未完成的暂存由 Agent 回收。
       parameters:
         - { $ref: "#/components/parameters/InstanceID" }
         - { $ref: "#/components/parameters/CSRF" }
@@ -989,9 +993,9 @@ paths:
                 - required: [content_base64, name]
                   not: { required: [source] }
               properties:
-                kind: { type: string, enum: [vpk, smx, plugin, native, qq_vpk_bundle, workshop] }
+                kind: { type: string, enum: [vpk, smx, plugin, native, qq_vpk_bundle, workshop, sourcemod, metamod] }
                 source_transport: { type: string, enum: [qq_flash], description: Workshop 必须省略，其他类型省略时为 HTTPS 或上传；qq_flash 时 source 必填且 name/content_base64 禁止提供 }
-                name: { type: string, minLength: 1, maxLength: 240, description: "安全文件名；VPK 为 .vpk，SMX/plugin 为 .smx，native 为 .dll 或 .so；UTF-8 最多 240 字节" }
+                name: { type: string, minLength: 1, maxLength: 240, description: "安全文件名；VPK 为 .vpk，SMX/plugin 为 .smx，native 为 .dll 或 .so；sourcemod/metamod 为 .zip 或 .tar.gz；UTF-8 最多 240 字节" }
                 source: { type: string, maxLength: 4096, description: HTTPS URL；Workshop 为 1–20 位数字项目/合集 ID；QQ 闪传模式也接受分享文本，服务端规范化为固定分享 URL }
                 content_base64: { type: string, format: byte }
       responses:
@@ -1033,7 +1037,7 @@ paths:
               required: [prepared_ids]
               properties:
                 prepared_ids: { type: array, minItems: 1, maxItems: 16, uniqueItems: true, items: { type: string, format: uuid } }
-                acknowledge_native_risk: { type: boolean, default: false }
+                acknowledge_native_risk: { type: boolean, default: false, description: 原生 DLL/SO 和第三方 SourceMod/Metamod 整包安装必须为 true }
       responses:
         "202":
           description: 队列已持久保存或返回原幂等任务
@@ -1089,7 +1093,7 @@ paths:
               type: object
               additionalProperties: false
               properties:
-                acknowledge_native_risk: { type: boolean, default: false }
+                acknowledge_native_risk: { type: boolean, default: false, description: 原生 DLL/SO 和第三方 SourceMod/Metamod 整包安装必须为 true }
       responses:
         "202":
           description: 安装任务已排队或返回同一幂等任务
@@ -3825,7 +3829,7 @@ components:
           maxLength: 139810136
           writeOnly: true
           description: 本机上传包；Base64 解码后的原始文件最大 100 MiB，必须同时提供安全的文件名 name。
-        acknowledge_native_risk: { type: boolean, default: false }
+        acknowledge_native_risk: { type: boolean, default: false, description: 原生 DLL/SO 和第三方 SourceMod/Metamod 整包安装必须为 true }
         package_id: { type: string, format: uuid }
         enabled: { type: boolean }
         backup_id: { type: string, format: uuid }
@@ -4300,7 +4304,7 @@ components:
       properties:
         id: { type: string, format: uuid, description: 准备任务 ID，不是访问凭据 }
         name: { type: string }
-        kind: { type: string, enum: [vpk, smx, plugin, native, qq_vpk_bundle, workshop] }
+        kind: { type: string, enum: [vpk, smx, plugin, native, qq_vpk_bundle, workshop, sourcemod, metamod] }
         status: { type: string, enum: [queued, dispatched, running, succeeded, failed, canceled] }
         progress: { type: integer, minimum: 0, maximum: 100 }
         ready: { type: boolean }

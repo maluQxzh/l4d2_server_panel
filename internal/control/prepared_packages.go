@@ -71,7 +71,7 @@ func preparedMetadata(job domain.Job) (domain.PreparedPackage, error) {
 		}
 		return item, nil
 	}
-	_, err = domain.PreparedPackageTarget(item.Kind, item.Name)
+	err = domain.ValidatePreparedPackageName(item.Kind, item.Name)
 	return item, err
 }
 
@@ -108,7 +108,7 @@ func preparedConsumptionPayloadForQueue(ctx context.Context, tx *sql.Tx, instanc
 		return nil, fmt.Errorf("预下载包已过期，请重新准备: %w", ErrConflict)
 	}
 	risk, _ := payload["acknowledge_native_risk"].(bool)
-	if action == "install_mod" && item.Kind == "native" && !risk {
+	if action == "install_mod" && (item.Kind == "native" || domain.PreparedExtensionKind(item.Kind)) && !risk {
 		return nil, errors.New("原生扩展安装必须确认第三方代码风险")
 	}
 	if action == "install_mod" && (item.Kind == domain.PreparedVPKBundleKind || item.Kind == domain.PreparedWorkshopKind) {
@@ -138,7 +138,7 @@ func preparedConsumptionPayloadForQueue(ctx context.Context, tx *sql.Tx, instanc
 		if owned {
 			return nil, fmt.Errorf("文件包目标已由其他包管理: %w", ErrConflict)
 		}
-	} else if action == "install_mod" {
+	} else if action == "install_mod" && !domain.PreparedExtensionKind(item.Kind) {
 		target, err := domain.PreparedPackageTarget(item.Kind, item.Name)
 		if err != nil {
 			return nil, err
@@ -151,8 +151,14 @@ func preparedConsumptionPayloadForQueue(ctx context.Context, tx *sql.Tx, instanc
 			return nil, fmt.Errorf("该文件已由整包插件或组件管理，请通过原包更新: %w", ErrConflict)
 		}
 	}
-	return map[string]any{"prepared_package_id": item.ID, "name": item.Name, "kind": item.Kind,
-		"expected_sha256": item.SHA256, "expected_size": item.Size, "risk_confirmed": risk, "acknowledge_native_risk": risk}, nil
+	result := map[string]any{"prepared_package_id": item.ID, "name": item.Name, "kind": item.Kind,
+		"expected_sha256": item.SHA256, "expected_size": item.Size, "risk_confirmed": risk, "acknowledge_native_risk": risk}
+	if action == "install_mod" && domain.PreparedExtensionKind(item.Kind) {
+		if err := preparedExtensionInventory(ctx, tx, instanceID, item.Kind, result); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
 func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +182,7 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Transport == "qq_flash" {
-		if (!domain.ValidPreparedPackageKind(request.Kind) && request.Kind != domain.PreparedVPKBundleKind) || request.Name != "" || request.Content != "" {
+		if (!domain.ValidPreparedPackageKind(request.Kind) && !domain.PreparedExtensionKind(request.Kind) && request.Kind != domain.PreparedVPKBundleKind) || request.Name != "" || request.Content != "" {
 			writeError(w, http.StatusBadRequest, "invalid_package", "QQ 闪传预下载仅接受支持的类型和分享链接")
 			return
 		}
@@ -213,6 +219,10 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用 QQ 闪传整包预下载")
 		return
 	}
+	if domain.PreparedExtensionKind(request.Kind) && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedExtensionsV1) {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用组件整包预下载")
+		return
+	}
 	if request.Kind == domain.PreparedWorkshopKind && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedWorkshopV1) {
 		writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用 Workshop 预下载")
 		return
@@ -229,7 +239,7 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 	}
 	request.Kind, request.Name = strings.ToLower(strings.TrimSpace(request.Kind)), strings.TrimSpace(request.Name)
 	if request.Transport == "" && request.Kind != domain.PreparedWorkshopKind {
-		if _, err := domain.PreparedPackageTarget(request.Kind, request.Name); err != nil {
+		if err := domain.ValidatePreparedPackageName(request.Kind, request.Name); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_package", err.Error())
 			return
 		}
@@ -295,6 +305,13 @@ func (s *Server) handleConsumePreparedPackage(w http.ResponseWriter, r *http.Req
 		prepared, err := s.store.GetJob(r.Context(), chi.URLParam(r, "jobID"))
 		if err == nil && prepared.InstanceID == instanceID && stringFromAny(prepared.Payload["kind"]) == domain.PreparedWorkshopKind {
 			writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用 Workshop 预下载")
+			return
+		}
+	}
+	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedExtensionsV1) {
+		prepared, err := s.store.GetJob(r.Context(), chi.URLParam(r, "jobID"))
+		if err == nil && prepared.InstanceID == instanceID && domain.PreparedExtensionKind(stringFromAny(prepared.Payload["kind"])) {
+			writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用组件整包预下载")
 			return
 		}
 	}
@@ -417,5 +434,5 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "queues": queues, "workshop_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedWorkshopV1), "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1), "vpk_bundles_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedVPKBundlesV1), "qq_flash_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1)})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "queues": queues, "extensions_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedExtensionsV1), "workshop_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedWorkshopV1), "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1), "vpk_bundles_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedVPKBundlesV1), "qq_flash_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1)})
 }
