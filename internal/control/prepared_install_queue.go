@@ -228,6 +228,9 @@ func (s *Store) advancePreparedInstallQueue(ctx context.Context, id string, comp
 	if domain.PreparedExtensionKind(stringFromAny(payload["kind"])) && (len(bundleCompatible) < 3 || !bundleCompatible[2]) {
 		return false, nil
 	}
+	if boolFromAny(payload["official"]) && (len(bundleCompatible) < 4 || !bundleCompatible[3]) {
+		return false, nil
+	}
 	if !compatible || (stringFromAny(payload["kind"]) == domain.PreparedVPKBundleKind && (len(bundleCompatible) == 0 || !bundleCompatible[0])) {
 		return false, nil
 	}
@@ -332,7 +335,7 @@ func (h *AgentHub) advancePreparedInstallQueues(ctx context.Context, nodeID stri
 	}
 	h.mu.Unlock()
 	for _, item := range targets {
-		changed, err := h.store.advancePreparedInstallQueue(ctx, item.id, h.Supports(item.node, protocol.CapabilityPreparedPackagesV1), h.Supports(item.node, protocol.CapabilityPreparedVPKBundlesV1), h.Supports(item.node, protocol.CapabilityPreparedWorkshopV1), h.Supports(item.node, protocol.CapabilityPreparedExtensionsV1))
+		changed, err := h.store.advancePreparedInstallQueue(ctx, item.id, h.Supports(item.node, protocol.CapabilityPreparedPackagesV1), h.Supports(item.node, protocol.CapabilityPreparedVPKBundlesV1), h.Supports(item.node, protocol.CapabilityPreparedWorkshopV1), h.Supports(item.node, protocol.CapabilityPreparedExtensionsV1), h.Supports(item.node, protocol.CapabilityPreparedOfficialExtensionsV1))
 		if err != nil {
 			h.log.Error("advance prepared install queue", "job_id", item.id, "error", err)
 			continue

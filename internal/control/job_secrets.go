@@ -278,7 +278,7 @@ func stripJobFields(jobType string, jobPayload, jobResult map[string]any) {
 	case "prepare_package":
 		for key := range jobResult {
 			switch key {
-			case "id", "node_id", "instance_id", "name", "kind", "sha256", "size", "expires_at":
+			case "id", "node_id", "instance_id", "name", "kind", "sha256", "size", "expires_at", "official", "version":
 			default:
 				delete(jobResult, key)
 			}

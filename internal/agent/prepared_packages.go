@@ -24,7 +24,10 @@ type preparedPackageRecord struct {
 	Claim string `json:"claim,omitempty"`
 }
 
-func preparedPackageDirectory(kind string) string {
+func preparedPackageDirectory(kind string, official bool) string {
+	if official {
+		return "prepared-official-extensions"
+	}
 	if domain.PreparedExtensionKind(kind) {
 		return "prepared-extensions"
 	}
@@ -34,11 +37,16 @@ func preparedPackageDirectory(kind string) string {
 func (e *Executor) cleanupPreparedExtensions(now time.Time) error {
 	e.preparedMu.Lock()
 	defer e.preparedMu.Unlock()
-	root, err := ensureDataSubdirectory(e.config.DataDir, "prepared-extensions")
-	if err != nil {
-		return err
+	for _, directory := range []string{"prepared-extensions", "prepared-official-extensions"} {
+		root, err := ensureDataSubdirectory(e.config.DataDir, directory)
+		if err != nil {
+			return err
+		}
+		if err := e.cleanupPreparedLocked(root, now); err != nil {
+			return err
+		}
 	}
-	return e.cleanupPreparedLocked(root, now)
+	return nil
 }
 
 func preparedID(id string) bool {
@@ -65,6 +73,9 @@ func readPreparedPackage(root, id string) (preparedPackageRecord, error) {
 	}
 	if record.ID != id || record.InstanceID == "" || record.NodeID == "" || record.ExpiresAt.IsZero() {
 		return record, errors.New("invalid prepared package record")
+	}
+	if record.Official && (!domain.PreparedExtensionKind(record.Kind) || (record.Ready && !domain.ValidPreparedOfficialVersion(record.Version))) || (!record.Official && record.Version != "") {
+		return record, errors.New("invalid prepared origin")
 	}
 	if err := domain.ValidatePreparedPackageName(record.Kind, record.Name); err != nil {
 		return record, err
@@ -153,7 +164,7 @@ func (e *Executor) cleanupPreparedPackages(now time.Time) error {
 func (e *Executor) reservePrepared(job domain.Job, record preparedPackageRecord) (string, error) {
 	e.preparedMu.Lock()
 	defer e.preparedMu.Unlock()
-	root, err := ensureDataSubdirectory(e.config.DataDir, preparedPackageDirectory(record.Kind))
+	root, err := ensureDataSubdirectory(e.config.DataDir, preparedPackageDirectory(record.Kind, record.Official))
 	if err != nil {
 		return "", err
 	}
@@ -213,6 +224,11 @@ func (e *Executor) acquirePreparationSlot(ctx context.Context) (func(), error) {
 }
 
 func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress ProgressFunc) (result map[string]any, err error) {
+	official, _ := job.Payload["official"].(bool)
+	if official && (!domain.PreparedExtensionKind(exactPayloadString(job.Payload, "kind")) || exactPayloadString(job.Payload, "name") != "" || exactPayloadString(job.Payload, "source") != "" || exactPayloadString(job.Payload, "content_base64") != "" || exactPayloadString(job.Payload, "source_transport") != "") {
+		return nil, errors.New("official preparation accepts only a component kind")
+	}
+
 	if exactPayloadString(job.Payload, "kind") == domain.PreparedWorkshopKind {
 		return e.prepareWorkshop(ctx, job, progress)
 	}
@@ -227,6 +243,9 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 	}
 	name, kind := exactPayloadString(job.Payload, "name"), exactPayloadString(job.Payload, "kind")
 	transport := exactPayloadString(job.Payload, "source_transport")
+	if official {
+		name = kind + "-official.zip"
+	}
 	if transport != "" && transport != "qq_flash" {
 		return nil, errors.New("unsupported preparation source transport")
 	}
@@ -249,7 +268,7 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 		return nil, err
 	}
 	content, source := exactPayloadString(job.Payload, "content_base64"), exactPayloadString(job.Payload, "source")
-	if (content == "") == (source == "") {
+	if !official && (content == "") == (source == "") {
 		return nil, errors.New("provide exactly one upload or HTTPS source")
 	}
 	if source != "" {
@@ -262,7 +281,7 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 		return nil, err
 	}
 	defer release()
-	record := preparedPackageRecord{PreparedPackage: domain.PreparedPackage{ID: job.ID, NodeID: job.NodeID, InstanceID: job.InstanceID, Name: name, Kind: kind, ExpiresAt: time.Now().UTC().Add(domain.PreparedPackageTTL)}}
+	record := preparedPackageRecord{PreparedPackage: domain.PreparedPackage{ID: job.ID, NodeID: job.NodeID, InstanceID: job.InstanceID, Name: name, Kind: kind, Official: official, ExpiresAt: time.Now().UTC().Add(domain.PreparedPackageTTL)}}
 	root, err := e.reservePrepared(job, record)
 	if err != nil {
 		return nil, err
@@ -277,7 +296,9 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 	}()
 	progress(10, "正在下载到节点暂存目录，不占用实例写锁")
 	local := filepath.Join(root, job.ID+".bin")
-	if content != "" {
+	if official {
+		err = e.downloadPreparedOfficialExtension(ctx, root, &record, progress)
+	} else if content != "" {
 		if len(content) > protocol.MaxEncodedPackageUploadBytes {
 			return nil, errors.New("uploaded package exceeds 100 MiB")
 		}
@@ -320,8 +341,9 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 		return nil, errors.New("包下载或上传暂存失败，请检查来源及节点磁盘")
 	}
 	progress(70, "正在校验暂存包")
+	verifiedSHA, verifiedSize := record.SHA256, record.Size
 	record.SHA256, record.Size, err = hashRegularFileWithinNoFollow(root, job.ID+".bin", domain.PreparedPackageMaxBytes)
-	if err != nil || record.Size == 0 {
+	if err != nil || record.Size == 0 || (official && (record.SHA256 != verifiedSHA || record.Size != verifiedSize)) {
 		return nil, errors.New("invalid prepared file size or hash")
 	}
 	if kind == "vpk" {
@@ -348,6 +370,7 @@ func (e *Executor) consumePreparedPackage(ctx context.Context, job domain.Job, d
 	if exactPayloadString(job.Payload, "kind") == domain.PreparedVPKBundleKind {
 		return e.consumePreparedVPKBundle(ctx, job, discard, progress)
 	}
+	official, _ := job.Payload["official"].(bool)
 	id := exactPayloadString(job.Payload, "prepared_package_id")
 	if !preparedID(id) {
 		return nil, errors.New("invalid prepared package ID")
@@ -358,17 +381,17 @@ func (e *Executor) consumePreparedPackage(ctx context.Context, job domain.Job, d
 	}
 	defer release()
 	e.preparedMu.Lock()
-	root, err := ensureDataSubdirectory(e.config.DataDir, preparedPackageDirectory(exactPayloadString(job.Payload, "kind")))
+	root, err := ensureDataSubdirectory(e.config.DataDir, preparedPackageDirectory(exactPayloadString(job.Payload, "kind"), official))
 	if err != nil {
 		e.preparedMu.Unlock()
 		return nil, err
 	}
 	record, err := readPreparedPackage(root, id)
-	if err != nil || record.NodeID != job.NodeID || record.NodeID != e.config.NodeID || record.InstanceID != job.InstanceID || e.preparedActive[id] || record.Claim != "" {
+	if err != nil || record.NodeID != job.NodeID || record.NodeID != e.config.NodeID || record.InstanceID != job.InstanceID || record.Official != official || e.preparedActive[id] || record.Claim != "" {
 		e.preparedMu.Unlock()
 		return nil, errors.New("预下载包已失效、被使用或不属于此实例，请重新准备")
 	}
-	if !discard && (!record.Ready || !record.ExpiresAt.After(time.Now()) || record.SHA256 != exactPayloadString(job.Payload, "expected_sha256") || record.Size != int64Payload(job.Payload, "expected_size") || record.Kind != exactPayloadString(job.Payload, "kind") || record.Name != exactPayloadString(job.Payload, "name")) {
+	if !discard && (!record.Ready || !record.ExpiresAt.After(time.Now()) || record.SHA256 != exactPayloadString(job.Payload, "expected_sha256") || record.Size != int64Payload(job.Payload, "expected_size") || record.Kind != exactPayloadString(job.Payload, "kind") || record.Name != exactPayloadString(job.Payload, "name") || record.Version != exactPayloadString(job.Payload, "version")) {
 		e.preparedMu.Unlock()
 		return nil, errors.New("prepared package metadata mismatch or expired")
 	}
@@ -408,7 +431,7 @@ func (e *Executor) consumePreparedPackage(ctx context.Context, job domain.Job, d
 		return nil, err
 	}
 	if domain.PreparedExtensionKind(record.Kind) {
-		if !payload.RiskConfirmed && !payload.AcknowledgeRisk {
+		if !record.Official && !payload.RiskConfirmed && !payload.AcknowledgeRisk {
 			return nil, errors.New("组件包安装必须确认第三方原生代码风险")
 		}
 		if record.Kind == "sourcemod" {
@@ -419,7 +442,11 @@ func (e *Executor) consumePreparedPackage(ctx context.Context, job domain.Job, d
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return e.installServerExtension(ctx, job, payload, instance, instancePath, record.Kind, filepath.Join(root, id+".bin"), sha, size, "", progress)
+		result, err := e.installServerExtension(ctx, job, payload, instance, instancePath, record.Kind, filepath.Join(root, id+".bin"), sha, size, record.Version, progress)
+		if err == nil && record.Official {
+			result["official"] = true
+		}
+		return result, err
 	}
 	target, err := domain.PreparedPackageTarget(record.Kind, record.Name)
 	if err != nil {

@@ -226,6 +226,42 @@ test("第三方组件可预下载并在刷新后确认风险加入持久队列",
   await expect(page.getByText("meta.zip · 等待安装", { exact: true })).toBeVisible();
 });
 
+test("官方稳定版无来源输入即可预下载并固定版本排队", async ({ page }) => {
+  await authenticated(page);
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, status: "stopped" } }));
+  await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: [] }));
+  let prepared = false;
+  let queued = false;
+  await page.route("**/api/v1/instances/instance-1/prepared-packages", (route) => {
+    if (route.request().method() === "POST") {
+      expect(route.request().postDataJSON()).toEqual({ kind: "metamod", official: true });
+      prepared = true;
+      return json(route, { job_id: "bundle" }, 202);
+    }
+    return json(route, { supported: true, qq_flash_supported: true, extensions_supported: true, official_extensions_supported: true, items: prepared ? [{ id: "bundle", name: "meta.zip", kind: "metamod", official: true, version: "1.12", status: "succeeded", progress: 100, ready: !queued, queue_id: queued ? "batch" : undefined }] : [], queues: queued ? [{ id: "batch", status: "queued", progress: 0, message: "等待实例空闲" }] : [] });
+  });
+  await page.route("**/api/v1/instances/instance-1/prepared-install-queues", (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({ prepared_ids: ["bundle"], acknowledge_native_risk: false });
+    queued = true;
+    return json(route, { job_id: "batch" }, 202);
+  });
+  await page.goto("/instances/instance-1?tab=plugins");
+  await page.getByRole("button", { name: "安装插件", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("combobox").first().selectOption("metamod");
+  await expect(dialog.getByText("官方稳定版可先预下载", { exact: true })).toBeVisible();
+  await expect(dialog.getByLabel("HTTPS 来源")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "预下载，稍后安装" }).click();
+  await expect(dialog).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText("meta.zip（官方 1.12） · 可安装", { exact: true })).toBeVisible();
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "安装 meta.zip", exact: true }).click();
+  await expect(page.getByRole("button", { name: "停止后续安装" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("meta.zip（官方 1.12） · 等待安装", { exact: true })).toBeVisible();
+});
+
 for (const kind of ["vpk", "smx", "native"] as const) {
   test(`QQ 闪传 ${kind} 单文件使用预下载且不触发原安装`, async ({ page }) => {
     await authenticated(page);

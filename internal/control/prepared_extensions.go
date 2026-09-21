@@ -19,6 +19,8 @@ func validatePreparedExtensionResult(job domain.Job) error {
 		PackageID string `json:"package_id"`
 		Verified  bool   `json:"verified"`
 		Command   string `json:"verification_command"`
+		Official  bool   `json:"official"`
+		Version   string `json:"version"`
 	}
 	raw, err := json.Marshal(job.Result)
 	if err != nil {
@@ -28,7 +30,7 @@ func validatePreparedExtensionResult(job domain.Job) error {
 	if stringFromAny(job.Payload["kind"]) == "sourcemod" {
 		command = "sm version"
 	}
-	if json.Unmarshal(raw, &result) != nil || !result.Verified || result.Command != command || result.Kind != stringFromAny(job.Payload["kind"]) || result.SHA256 != stringFromAny(job.Payload["expected_sha256"]) || result.Size != int64FromAny(job.Payload["expected_size"]) || result.PackageID != stringFromAny(job.Payload["package_id"]) {
+	if json.Unmarshal(raw, &result) != nil || result.Official != boolFromAny(job.Payload["official"]) || result.Version != stringFromAny(job.Payload["version"]) || !result.Verified || result.Command != command || result.Kind != stringFromAny(job.Payload["kind"]) || result.SHA256 != stringFromAny(job.Payload["expected_sha256"]) || result.Size != int64FromAny(job.Payload["expected_size"]) || result.PackageID != stringFromAny(job.Payload["package_id"]) {
 		return errors.New("prepared extension result does not match its verified immutable input")
 	}
 	return nil

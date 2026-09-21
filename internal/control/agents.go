@@ -787,6 +787,11 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 				continue
 			}
 		}
+		if (job.Type == "prepare_package" || job.Type == "discard_prepared_package" || stringFromAny(job.Payload["prepared_package_id"]) != "") && boolFromAny(job.Payload["official"]) {
+			if _, ok := client.capabilities[protocol.CapabilityPreparedOfficialExtensionsV1]; !ok {
+				continue
+			}
+		}
 		if job.Type == "delete_package" && !packageDeleteSupported {
 			continue
 		}

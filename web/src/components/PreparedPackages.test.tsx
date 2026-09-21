@@ -9,6 +9,17 @@ const pack = (id: string): PreparedPackage => ({ id, name: `${id}.vpk`, kind: "v
 const wrap = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ToastProvider><PreparedPackages instanceId="instance" plugins={false} /></ToastProvider></QueryClientProvider>);
 afterEach(() => vi.restoreAllMocks());
 
+it("官方组件展示固定版本且无需第三方风险确认", async () => {
+  vi.spyOn(api, "preparedPackages").mockResolvedValue({ supported: true, official_extensions_supported: true, items: [{ ...pack("official"), name: "meta.zip", kind: "metamod", official: true, version: "1.12" }] });
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  const queue = vi.spyOn(api, "queuePreparedInstalls").mockResolvedValue({ job_id: "batch" });
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ToastProvider><PreparedPackages instanceId="instance" plugins /></ToastProvider></QueryClientProvider>);
+  await screen.findByText("meta.zip（官方 1.12） · 可安装");
+  fireEvent.click(screen.getByRole("button", { name: "安装 meta.zip" }));
+  await waitFor(() => expect(queue).toHaveBeenCalledWith("instance", ["official"], false, expect.any(String)));
+  expect(confirm).toHaveBeenCalledTimes(1);
+});
+
 it("组件整包必须再次确认原生风险才提交持久队列", async () => {
   vi.spyOn(api, "preparedPackages").mockResolvedValue({ supported: true, extensions_supported: true, items: [{ ...pack("extension"), kind: "metamod", name: "meta.zip" }] });
   const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(true).mockReturnValueOnce(false);

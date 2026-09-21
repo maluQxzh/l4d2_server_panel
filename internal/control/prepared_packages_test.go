@@ -282,7 +282,8 @@ func TestPreparedPackageHTTPInstallListAndReplay(t *testing.T) {
 }
 
 func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
-	for _, sourceKind := range []string{"HTTPS", "QQ", "QQ bundle", "QQ bundle old Agent", "Workshop", "Workshop old Agent", "Extension", "Extension old Agent", "QQ extension"} {
+	for _, sourceKind := range []string{"HTTPS", "QQ", "QQ bundle", "QQ bundle old Agent", "Workshop", "Workshop old Agent", "Extension", "Extension old Agent", "QQ extension", "Official extension", "Official extension old Agent"} {
+		official := strings.HasPrefix(sourceKind, "Official")
 		qq := strings.HasPrefix(sourceKind, "QQ")
 		workshop := strings.HasPrefix(sourceKind, "Workshop")
 		extension := strings.Contains(strings.ToLower(sourceKind), "extension")
@@ -304,8 +305,11 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 			if sourceKind != "QQ bundle old Agent" {
 				capabilities = append(capabilities, protocol.CapabilityPreparedVPKBundlesV1)
 			}
-			if extension && !strings.HasSuffix(sourceKind, "old Agent") {
+			if extension && (official || !strings.HasSuffix(sourceKind, "old Agent")) {
 				capabilities = append(capabilities, protocol.CapabilityPreparedExtensionsV1)
+			}
+			if official && !strings.HasSuffix(sourceKind, "old Agent") {
+				capabilities = append(capabilities, protocol.CapabilityPreparedOfficialExtensionsV1)
 			}
 			if sourceKind == "Workshop" {
 				capabilities = append(capabilities, protocol.CapabilityPreparedWorkshopV1)
@@ -342,6 +346,10 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 				source = "123"
 				payload = map[string]any{"kind": "workshop", "source": source}
 			}
+			if official {
+				source = ""
+				payload = map[string]any{"kind": "metamod", "official": true}
+			}
 			body, _ := json.Marshal(payload)
 			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
 			route := chi.NewRouteContext()
@@ -362,12 +370,17 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 				if extension {
 					queuedPayload = map[string]any{"kind": "metamod", "name": "extension.zip", "source": "https://example.com/extension.zip"}
 				}
+				if official {
+					queuedPayload = map[string]any{"kind": "metamod", "official": true}
+				}
 				queued, _, err := s.QueueInstanceJob(context.Background(), "instance", "prepare_package", queuedPayload, "", "")
 				if err != nil {
 					t.Fatal(err)
 				}
 				var prepared domain.Job
-				if extension {
+				if official {
+					prepared = readyPreparedOfficialExtension(t, s)
+				} else if extension {
 					prepared = readyPreparedExtension(t, s, "metamod")
 				} else if workshop {
 					prepared, _ = readyPreparedWorkshop(t, s)
@@ -402,14 +415,14 @@ func TestPreparedPackageHTTPDispatchPreservesSource(t *testing.T) {
 			if err := json.Unmarshal(envelope.Payload, &command); err != nil {
 				t.Fatal(err)
 			}
-			if command.Job.Type != "prepare_package" || command.Job.Payload["source"] != source || (qq && command.Job.Payload["name"] != "") || (sourceKind == "HTTPS" && command.Job.Payload["name"] != "MixedCase.vpk") || (workshop && command.Job.Payload["name"] != domain.PreparedWorkshopName) {
+			if command.Job.Type != "prepare_package" || stringFromAny(command.Job.Payload["source"]) != source || (qq && command.Job.Payload["name"] != "") || (sourceKind == "HTTPS" && command.Job.Payload["name"] != "MixedCase.vpk") || (workshop && command.Job.Payload["name"] != domain.PreparedWorkshopName) {
 				t.Fatalf("dispatch metadata changed: %#v", command.Job.Payload)
 			}
 			stored, err := s.GetJob(context.Background(), command.Job.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !workshop && (stored.Payload["source"] == source || stored.Payload["source_ciphertext"] == nil) {
+			if !official && !workshop && (stored.Payload["source"] == source || stored.Payload["source_ciphertext"] == nil) {
 				t.Fatal("source not encrypted at rest")
 			}
 			if qq && stored.Payload["source"] != encryptedValuePlaceholder {

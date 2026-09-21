@@ -50,6 +50,20 @@ type PreparedPackage struct {
 	SHA256     string    `json:"sha256"`
 	Size       int64     `json:"size"`
 	ExpiresAt  time.Time `json:"expires_at"`
+	Official   bool      `json:"official,omitempty"`
+	Version    string    `json:"version,omitempty"`
+}
+
+func ValidPreparedOfficialVersion(version string) bool {
+	if version == "" || len(version) > 128 {
+		return false
+	}
+	for _, c := range version {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '.' || c == '-' || c == '_' || c == '+') {
+			return false
+		}
+	}
+	return version != "." && version != ".."
 }
 
 func PreparedPackageTarget(kind, name string) (string, error) {

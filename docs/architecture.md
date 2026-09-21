@@ -216,4 +216,10 @@ Agent 声明 `terminal_conflict_v1` 时，Control 若发现终态上报与不可
 
 `prepared_extensions_v1` 将调用者提供的 SourceMod/Metamod ZIP/tar.gz 原归档接入现有 `prepare_package` 和持久安装清单。沿用共享两个准备执行槽、Control 总计十六个暂存槽、一小时 TTL、HTTPS/QQ 512 MiB 和上传 100 MiB 限额；固定 `prepared-extensions/<UUID>.bin/.json` 与旧单文件目录隔离，Agent 重启只恢复就绪未领取包。准备不访问实例文件、不提前判断依赖、不停止游戏，只完成下载和文件大小/摘要校验；展开仍在写任务中进行。
 
-Control 在创建安装意图的同一立即事务内读取最新组件 ID、文件清单和全实例文件归属；SourceMod 提交清单及逐项执行前要求已纳管启用的 Metamod。队列缺少新能力时不创建组件写任务，旧 Agent 不接收准备、消费或丢弃任务。Agent 领取先落盘，再校验绑定、有效期、大小和摘要，消费时检查原生风险和磁盘 Metamod 加载文件，调用原 `installServerExtension` 保留 RCON、检查点、保护已有 admins_simple.ini、启动验证及失败恢复。Control 对终态的组件类型、归档摘要/整数大小、组件 ID 和验证命令逐项绑定输入，再复用组件清单投影。官方自动选版与智能插件的独立队列条目尚未接入。
+Control 在创建安装意图的同一立即事务内读取最新组件 ID、文件清单和全实例文件归属；SourceMod 提交清单及逐项执行前要求已纳管启用的 Metamod。队列缺少新能力时不创建组件写任务，旧 Agent 不接收准备、消费或丢弃任务。Agent 领取先落盘，再校验绑定、有效期、大小和摘要，消费时检查原生风险和磁盘 Metamod 加载文件，调用原 `installServerExtension` 保留 RCON、检查点、保护已有 admins_simple.ini、启动验证及失败恢复。Control 对终态的组件类型、归档摘要/整数大小、组件 ID 和验证命令逐项绑定输入，再复用组件清单投影。智能插件的独立队列条目尚未接入。
+
+## 官方组件持久准备
+
+`prepared_official_extensions_v1` 在已有组件准备能力之上增加显式 `official=true`，只接受 SourceMod/Metamod 类型，不接收名称、来源、上传或传输方式。官方解析与下载仍使用现有 AlliedModders 稳定页、节点平台、受限 HTTPS、官方回退和官方摘要保护镜像策略；准备执行共享两个槽及下载限额，不占实例写锁。开始准备起一小时有效，原归档最多 512 MiB，占 Control 十六个总槽之一。
+
+Agent 在 `prepared-official-extensions` 独立目录保存带官方标记和固定版本的归档快照。解析结果的类型、平台、资产名称和版本必须匹配，下载后以 no-follow 读取重新核对摘要/大小，持久就绪前再次核对同一批字节。新字段省略零值，旧单文件、QQ、Workshop 和第三方组件元数据与摘要格式保持兼容。Control 从原准备任务验证官方标记，消费载荷的版本、名称、摘要和大小来自持久结果；Agent 消费时再次匹配这些字段，从就绪记录直接安装，不再查询最新版。官方准备无需第三方风险确认；依赖、RCON、当前所有权、检查点、启动验证和回滚仍逐项执行。终态投影额外匹配官方标记和固定版本，禁止把第三方包提升为官方包。缺少新能力的 Agent 不接收准备/消费/丢弃任务，队列不提前占写锁。

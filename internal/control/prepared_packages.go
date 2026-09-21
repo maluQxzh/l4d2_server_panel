@@ -43,6 +43,9 @@ func preparedMetadata(job domain.Job) (domain.PreparedPackage, error) {
 	if err == nil {
 		err = json.Unmarshal(raw, &item)
 	}
+	if item.Official != boolFromAny(job.Payload["official"]) || (item.Official && (!domain.PreparedExtensionKind(item.Kind) || !domain.ValidPreparedOfficialVersion(item.Version))) || (!item.Official && item.Version != "") {
+		return item, fmt.Errorf("预下载来源或版本无效: %w", ErrConflict)
+	}
 	limit := domain.PreparedPackageMaxBytes
 	if item.Kind == domain.PreparedWorkshopKind {
 		limit = domain.PreparedWorkshopMaxBytes
@@ -52,7 +55,7 @@ func preparedMetadata(job domain.Job) (domain.PreparedPackage, error) {
 	}
 	if err != nil || job.Type != "prepare_package" || job.Status != domain.JobSucceeded ||
 		item.ID != job.ID || item.InstanceID != job.InstanceID || item.NodeID != job.NodeID ||
-		(stringFromAny(job.Payload["source_transport"]) != "qq_flash" && item.Name != stringFromAny(job.Payload["name"])) || item.Kind != stringFromAny(job.Payload["kind"]) ||
+		(!boolFromAny(job.Payload["official"]) && stringFromAny(job.Payload["source_transport"]) != "qq_flash" && item.Name != stringFromAny(job.Payload["name"])) || item.Kind != stringFromAny(job.Payload["kind"]) ||
 		!validRequestFingerprint(item.SHA256) || item.Size <= 0 || item.Size > limit ||
 		item.ExpiresAt.IsZero() || item.ExpiresAt.After(job.CreatedAt.Add(2*time.Hour)) {
 		return item, fmt.Errorf("预下载结果无效或未完成: %w", ErrConflict)
@@ -108,7 +111,7 @@ func preparedConsumptionPayloadForQueue(ctx context.Context, tx *sql.Tx, instanc
 		return nil, fmt.Errorf("预下载包已过期，请重新准备: %w", ErrConflict)
 	}
 	risk, _ := payload["acknowledge_native_risk"].(bool)
-	if action == "install_mod" && (item.Kind == "native" || domain.PreparedExtensionKind(item.Kind)) && !risk {
+	if action == "install_mod" && (item.Kind == "native" || domain.PreparedExtensionKind(item.Kind)) && !item.Official && !risk {
 		return nil, errors.New("原生扩展安装必须确认第三方代码风险")
 	}
 	if action == "install_mod" && (item.Kind == domain.PreparedVPKBundleKind || item.Kind == domain.PreparedWorkshopKind) {
@@ -158,6 +161,9 @@ func preparedConsumptionPayloadForQueue(ctx context.Context, tx *sql.Tx, instanc
 			return nil, err
 		}
 	}
+	if item.Official {
+		result["official"], result["version"] = true, item.Version
+	}
 	return result, nil
 }
 
@@ -168,6 +174,7 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 		Source    string `json:"source"`
 		Content   string `json:"content_base64"`
 		Transport string `json:"source_transport"`
+		Official  bool   `json:"official"`
 	}
 	if !decodeJSONWithLimit(w, r, &request, protocol.MaxPackageUploadEnvelopeBytes) {
 		return
@@ -177,6 +184,10 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.Kind = strings.ToLower(strings.TrimSpace(request.Kind))
+	if request.Official && (!domain.PreparedExtensionKind(request.Kind) || request.Name != "" || request.Source != "" || request.Content != "" || request.Transport != "") {
+		writeError(w, http.StatusBadRequest, "invalid_package", "官方预下载只接受组件类型，不接受来源、上传或自定义名称")
+		return
+	}
 	if request.Transport != "" && request.Transport != "qq_flash" {
 		writeError(w, http.StatusBadRequest, "invalid_source", "不支持的预下载传输方式")
 		return
@@ -223,6 +234,10 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用组件整包预下载")
 		return
 	}
+	if request.Official && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedOfficialExtensionsV1) {
+		writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用官方组件预下载")
+		return
+	}
 	if request.Kind == domain.PreparedWorkshopKind && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedWorkshopV1) {
 		writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用 Workshop 预下载")
 		return
@@ -238,14 +253,17 @@ func (s *Server) handlePreparePackage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	request.Kind, request.Name = strings.ToLower(strings.TrimSpace(request.Kind)), strings.TrimSpace(request.Name)
-	if request.Transport == "" && request.Kind != domain.PreparedWorkshopKind {
+	if !request.Official && request.Transport == "" && request.Kind != domain.PreparedWorkshopKind {
 		if err := domain.ValidatePreparedPackageName(request.Kind, request.Name); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_package", err.Error())
 			return
 		}
 	}
 	payload := map[string]any{"kind": request.Kind, "name": request.Name, "source": request.Source, "content_base64": request.Content}
-	if (request.Source == "") == (request.Content == "") {
+	if request.Official {
+		payload["official"] = true
+	}
+	if !request.Official && (request.Source == "") == (request.Content == "") {
 		writeError(w, http.StatusBadRequest, "invalid_package", "请选择一个上传文件或 HTTPS 来源")
 		return
 	}
@@ -315,6 +333,13 @@ func (s *Server) handleConsumePreparedPackage(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+	if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedOfficialExtensionsV1) {
+		prepared, err := s.store.GetJob(r.Context(), chi.URLParam(r, "jobID"))
+		if err == nil && prepared.InstanceID == instanceID && boolFromAny(prepared.Payload["official"]) {
+			writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用官方组件预下载")
+			return
+		}
+	}
 	payload := map[string]any{"prepared_package_id": chi.URLParam(r, "jobID"), "acknowledge_native_risk": request.Risk}
 	principal := principalFromContext(r.Context())
 	fingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "prepared-package-consume", instanceID, action, payload)
@@ -349,7 +374,7 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 	}
 	// Polling only needs the public metadata, never a potentially 100 MiB
 	// encrypted upload body. Project before transferring rows into Go.
-	columns := strings.Replace(jobColumns, ",payload,", ",json_object('name',json_extract(payload,'$.name'),'kind',json_extract(payload,'$.kind'),'source_transport',json_extract(payload,'$.source_transport'),'source',CASE WHEN json_extract(payload,'$.kind')='workshop' THEN json_extract(payload,'$.source') ELSE '' END),", 1)
+	columns := strings.Replace(jobColumns, ",payload,", ",json_object('official',json(CASE WHEN json_extract(payload,'$.official')=1 THEN 'true' ELSE 'false' END),'name',json_extract(payload,'$.name'),'kind',json_extract(payload,'$.kind'),'source_transport',json_extract(payload,'$.source_transport'),'source',CASE WHEN json_extract(payload,'$.kind')='workshop' THEN json_extract(payload,'$.source') ELSE '' END),", 1)
 	rows, err := s.store.db.QueryContext(r.Context(), `SELECT `+columns+` FROM jobs WHERE instance_id=?1 AND type='prepare_package'
 		AND created_at>?2 ORDER BY created_at DESC,id DESC LIMIT 64`, instance.ID, time.Now().Add(-2*time.Hour))
 	if err != nil {
@@ -375,11 +400,15 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 	items := []map[string]any{}
 	for _, job := range jobs {
 		item := map[string]any{"id": job.ID, "name": stringFromAny(job.Payload["name"]), "kind": stringFromAny(job.Payload["kind"]), "status": job.Status, "progress": job.Progress}
+		if boolFromAny(job.Payload["official"]) {
+			item["name"] = stringFromAny(job.Payload["kind"]) + " 官方稳定版"
+		}
 		if item["kind"] == domain.PreparedVPKBundleKind {
 			item["name"] = domain.PreparedVPKBundleName
 		}
 		if meta, err := preparedMetadata(job); err == nil {
 			item["name"] = meta.Name
+			item["official"], item["version"] = meta.Official, meta.Version
 			item["expires_at"] = meta.ExpiresAt
 			item["ready"] = meta.ExpiresAt.After(time.Now())
 			item["size"] = meta.Size
@@ -434,5 +463,5 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "queues": queues, "extensions_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedExtensionsV1), "workshop_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedWorkshopV1), "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1), "vpk_bundles_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedVPKBundlesV1), "qq_flash_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1)})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "queues": queues, "official_extensions_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedExtensionsV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedOfficialExtensionsV1), "extensions_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedExtensionsV1), "workshop_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedWorkshopV1), "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1), "vpk_bundles_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedVPKBundlesV1), "qq_flash_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1)})
 }
