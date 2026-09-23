@@ -82,7 +82,7 @@ func TestPreparedExtensionSourcesAndRestart(t *testing.T) {
 }
 
 func TestPreparedExtensionRejectsRiskTamperBindingAndExpiry(t *testing.T) {
-	for _, scenario := range []string{"risk", "rcon", "bytes", "binding", "expiry", "name"} {
+	for _, scenario := range []string{"risk", "rcon", "bytes", "staged", "binding", "expiry", "name"} {
 		t.Run(scenario, func(t *testing.T) {
 			e, data, _ := preparedExecutor(t)
 			job, install := prepareExtensionTest(t, e, "metamod", "")
@@ -99,6 +99,12 @@ func TestPreparedExtensionRejectsRiskTamperBindingAndExpiry(t *testing.T) {
 					t.Fatal(err)
 				}
 				want = "bytes changed"
+			case "staged":
+				staged := filepath.Join(root, job.ID+".files", "left4dead2", "addons", "metamod", "bin", "server.dll")
+				if err := os.WriteFile(staged, []byte("changed staged"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				want = "staged package file changed"
 			case "binding":
 				install.NodeID = "other"
 				want = "不属于"

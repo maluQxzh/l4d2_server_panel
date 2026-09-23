@@ -40,7 +40,7 @@ func requireMetamodInstalled(instancePath string) error {
 	return nil
 }
 
-func (e *Executor) installServerExtension(ctx context.Context, job domain.Job, payload operationPayload, record InstanceRecord, instancePath, componentKind, localSource, downloadedHash string, downloadedSize int64, version string, progress ProgressFunc) (map[string]any, error) {
+func (e *Executor) installServerExtension(ctx context.Context, job domain.Job, payload operationPayload, record InstanceRecord, instancePath, componentKind, localSource, downloadedHash string, downloadedSize int64, version, stagedRoot string, stagedFiles []string, progress ProgressFunc) (map[string]any, error) {
 	if payload.RCONPassword == "" {
 		return nil, errors.New("RCON password is required to verify a server extension installation")
 	}
@@ -93,10 +93,21 @@ func (e *Executor) installServerExtension(ctx context.Context, job domain.Job, p
 		return nil, errors.New("extension checkpoint did not return a recoverable path")
 	}
 
-	progress(45, "extracting extension package safely")
+	progress(45, "installing extension package from validated staging")
 	stagingDir, installErr := ensureDataSubdirectory(e.config.DataDir, "staging")
 	var files, preserved []string
-	if installErr == nil {
+	if installErr == nil && stagedRoot != "" {
+		files, preserved, installErr = installStagedPackage(instancePath, stagedRoot, stagedFiles, packageArchiveInstallOptions{
+			AllowNative: true, PackageID: packageID, RegisteredPaths: payload.RegisteredPaths,
+			ValidateTarget: func(value string) error { return validateServerExtensionInstallTarget(componentKind, value) },
+			PreserveExisting: func() map[string]bool {
+				if componentKind == "sourcemod" {
+					return map[string]bool{sourceModAdminsSimplePath: true}
+				}
+				return nil
+			}(),
+		})
+	} else if installErr == nil {
 		options := packageArchiveInstallOptions{
 			AllowNative: true, PackageID: packageID, RegisteredPaths: payload.RegisteredPaths,
 			ValidateTarget: func(value string) error { return validateServerExtensionInstallTarget(componentKind, value) },

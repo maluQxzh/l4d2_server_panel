@@ -40,23 +40,39 @@ func installPackageArchive(instancePath, archivePath, stagingParent string, opti
 		return nil, nil, err
 	}
 	defer os.RemoveAll(staging)
-	f, err := os.Open(archivePath)
+	files, err := stagePackageArchive(archivePath, staging, options.AllowNative)
 	if err != nil {
 		return nil, nil, err
+	}
+	return installStagedPackage(instancePath, staging, files, options)
+}
+
+// stagePackageArchive performs only archive format, path, link, file-count and
+// expansion-limit checks. It never reads or writes an instance directory, so a
+// caller can persist this output before acquiring an instance write lock.
+func stagePackageArchive(archivePath, staging string, allowNative bool) ([]string, error) {
+	if err := os.MkdirAll(staging, 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return nil, err
 	}
 	reader := bufio.NewReader(f)
 	magic, _ := reader.Peek(4)
 	f.Close()
-	var files []string
 	if len(magic) >= 2 && magic[0] == 'P' && magic[1] == 'K' {
-		files, err = stageZIPArchive(archivePath, staging, options.AllowNative)
-	} else if len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b {
-		files, err = stageTarGZArchive(archivePath, staging, options.AllowNative)
-	} else {
-		return nil, nil, errors.New("package must be a ZIP or tar.gz archive")
+		return stageZIPArchive(archivePath, staging, allowNative)
 	}
-	if err != nil {
-		return nil, nil, err
+	if len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		return stageTarGZArchive(archivePath, staging, allowNative)
+	}
+	return nil, errors.New("package must be a ZIP or tar.gz archive")
+}
+
+func installStagedPackage(instancePath, staging string, files []string, options packageArchiveInstallOptions) ([]string, []string, error) {
+	if len(files) == 0 || len(files) > maxPackageFiles {
+		return nil, nil, errors.New("staged package contains an invalid file list")
 	}
 	preserved := make([]string, 0, len(options.PreserveExisting))
 	for _, rel := range files {

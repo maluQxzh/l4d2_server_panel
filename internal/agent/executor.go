@@ -2097,7 +2097,7 @@ func (e *Executor) installMod(ctx context.Context, job domain.Job, progress Prog
 	if kind != "sourcemod" && kind != "sourcemod_url" && kind != "metamod" && kind != "metamod_url" {
 		return nil, fmt.Errorf("unsupported package kind %q", payload.Kind)
 	}
-	result, err := e.installServerExtension(ctx, job, payload, record, instancePath, componentKind, localSource, downloadedHash, downloadedSize, officialVersion, progress)
+	result, err := e.installServerExtension(ctx, job, payload, record, instancePath, componentKind, localSource, downloadedHash, downloadedSize, officialVersion, "", nil, progress)
 	if err != nil {
 		return nil, err
 	}

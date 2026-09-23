@@ -3,7 +3,9 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,8 +22,113 @@ import (
 
 type preparedPackageRecord struct {
 	domain.PreparedPackage
-	Ready bool   `json:"ready"`
-	Claim string `json:"claim,omitempty"`
+	Ready                bool   `json:"ready"`
+	Claim                string `json:"claim,omitempty"`
+	Staged               bool   `json:"staged,omitempty"`
+	StagedManifestSHA256 string `json:"staged_manifest_sha256,omitempty"`
+}
+
+type stagedPackageFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+}
+
+type stagedPackageManifest struct {
+	Files []stagedPackageFile `json:"files"`
+}
+
+const stagedPackageManifestLimit = 24 << 20
+
+func stagedPackageManifestName(id string) string  { return id + ".manifest" }
+func stagedPackageDirectoryName(id string) string { return id + ".files" }
+
+func saveStagedPackageManifest(root, id string, manifest stagedPackageManifest) (string, error) {
+	if !preparedID(id) || len(manifest.Files) == 0 || len(manifest.Files) > maxPackageFiles {
+		return "", errors.New("invalid staged package manifest")
+	}
+	raw, err := json.Marshal(manifest)
+	if err != nil || len(raw) > stagedPackageManifestLimit {
+		return "", errors.New("staged package manifest exceeds limit")
+	}
+	if _, err := writeFileWithinNoFollow(root, stagedPackageManifestName(id), bytes.NewReader(raw), managedRawWriteOptions(len(raw), 0600)); err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func readStagedPackageManifest(root, id, expectedDigest, kind string) (stagedPackageManifest, error) {
+	var manifest stagedPackageManifest
+	if !preparedID(id) || len(expectedDigest) != 64 {
+		return manifest, errors.New("invalid staged package manifest binding")
+	}
+	raw, err := readRegularFileWithinNoFollow(root, stagedPackageManifestName(id), stagedPackageManifestLimit)
+	if err != nil {
+		return manifest, err
+	}
+	digest := sha256.Sum256(raw)
+	if !strings.EqualFold(hex.EncodeToString(digest[:]), expectedDigest) {
+		return manifest, errors.New("staged package manifest changed")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&manifest); err != nil {
+		return manifest, err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF || len(manifest.Files) == 0 || len(manifest.Files) > maxPackageFiles {
+		return manifest, errors.New("invalid staged package manifest")
+	}
+	seen := make(map[string]bool, len(manifest.Files))
+	for _, file := range manifest.Files {
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(file.Path)))
+		if clean != file.Path || (!strings.HasPrefix(clean, "left4dead2/addons/") && !strings.HasPrefix(clean, "left4dead2/cfg/")) || seen[strings.ToLower(filepath.ToSlash(file.Path))] || len(file.SHA256) != 64 || file.Size <= 0 {
+			return manifest, errors.New("invalid staged package file manifest")
+		}
+		if _, err := hex.DecodeString(file.SHA256); err != nil {
+			return manifest, errors.New("invalid staged package file digest")
+		}
+		seen[strings.ToLower(filepath.ToSlash(file.Path))] = true
+	}
+	return manifest, nil
+}
+
+func (e *Executor) stageExtensionPackage(root, id, archive, kind string) (string, error) {
+	stagedRoot := filepath.Join(root, stagedPackageDirectoryName(id))
+	files, err := stagePackageArchive(archive, stagedRoot, true)
+	if err != nil {
+		return "", err
+	}
+	manifest := stagedPackageManifest{Files: make([]stagedPackageFile, 0, len(files))}
+	for _, file := range files {
+		sha, size, err := hashRegularFileWithinNoFollow(stagedRoot, file, maxPackageExpanded)
+		if err != nil {
+			return "", err
+		}
+		manifest.Files = append(manifest.Files, stagedPackageFile{Path: file, SHA256: sha, Size: size})
+	}
+	digest, err := saveStagedPackageManifest(root, id, manifest)
+	if err != nil {
+		return "", err
+	}
+	return digest, nil
+}
+
+func verifyStagedExtensionPackage(root, id, kind, digest string) (string, []string, error) {
+	manifest, err := readStagedPackageManifest(root, id, digest, kind)
+	if err != nil {
+		return "", nil, err
+	}
+	stagedRoot := filepath.Join(root, stagedPackageDirectoryName(id))
+	files := make([]string, 0, len(manifest.Files))
+	for _, file := range manifest.Files {
+		sha, size, hashErr := hashRegularFileWithinNoFollow(stagedRoot, file.Path, maxPackageExpanded)
+		if hashErr != nil || !strings.EqualFold(sha, file.SHA256) || size != file.Size {
+			return "", nil, errors.New("staged package file changed")
+		}
+		files = append(files, file.Path)
+	}
+	return stagedRoot, files, nil
 }
 
 func preparedPackageDirectory(kind string, official bool) string {
@@ -77,6 +184,12 @@ func readPreparedPackage(root, id string) (preparedPackageRecord, error) {
 	if record.Official && (!domain.PreparedExtensionKind(record.Kind) || (record.Ready && !domain.ValidPreparedOfficialVersion(record.Version))) || (!record.Official && record.Version != "") {
 		return record, errors.New("invalid prepared origin")
 	}
+	if record.Staged && !domain.PreparedExtensionKind(record.Kind) {
+		return record, errors.New("invalid staged package kind")
+	}
+	if record.Staged && (len(record.StagedManifestSHA256) != 64 || strings.Trim(record.StagedManifestSHA256, "0123456789abcdefABCDEF") != "") {
+		return record, errors.New("invalid staged package manifest digest")
+	}
 	if err := domain.ValidatePreparedPackageName(record.Kind, record.Name); err != nil {
 		return record, err
 	}
@@ -97,12 +210,45 @@ func removePreparedPackage(root, id string) error {
 		return errors.New("invalid prepared package ID")
 	}
 	// Flat fixed paths only; no caller path, directory traversal or recursive delete.
-	for _, suffix := range []string{".bin", ".json"} {
+	for _, suffix := range []string{".bin", ".json", ".manifest"} {
 		if err := deleteManagedFileNoFollow(root, id+suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 	}
+	staged := filepath.Join(root, stagedPackageDirectoryName(id))
+	if err := removePreparedStagedTree(staged); err != nil {
+		return err
+	}
 	return nil
+}
+
+func removePreparedStagedTree(root string) error {
+	info, err := os.Lstat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if isReparseOrSymlink(info) || !info.IsDir() {
+		return errors.New("invalid staged package directory")
+	}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		entryInfo, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if isReparseOrSymlink(entryInfo) || (!entryInfo.IsDir() && !entryInfo.Mode().IsRegular()) {
+			return errors.New("invalid staged package entry")
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return os.RemoveAll(root)
 }
 
 // Caller holds preparedMu. Active tasks are never cleaned, even if their TTL
@@ -122,6 +268,28 @@ func (e *Executor) cleanupPreparedLocked(root string, now time.Time) error {
 					}
 				}
 			}
+		}
+		if strings.HasSuffix(entry.Name(), ".manifest") {
+			id := strings.TrimSuffix(entry.Name(), ".manifest")
+			if preparedID(id) && !e.preparedActive[id] {
+				if _, err := os.Lstat(filepath.Join(root, id+".json")); errors.Is(err, os.ErrNotExist) {
+					if err := deleteManagedFileNoFollow(root, entry.Name()); err != nil {
+						return err
+					}
+				}
+			}
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), ".files") {
+			id := strings.TrimSuffix(entry.Name(), ".files")
+			if preparedID(id) && !e.preparedActive[id] {
+				if _, err := os.Lstat(filepath.Join(root, id+".json")); errors.Is(err, os.ErrNotExist) {
+					if err := removePreparedStagedTree(filepath.Join(root, entry.Name())); err != nil {
+						return err
+					}
+				}
+			}
+			continue
 		}
 		// Atomic staging writes may leave temporary files after a process crash.
 		// Never remove temporaries while any live preparation/commit uses this root.
@@ -352,6 +520,14 @@ func (e *Executor) preparePackage(ctx context.Context, job domain.Job, progress 
 			return nil, errors.New("VPK 结构、CRC 或摘要校验失败")
 		}
 	}
+	if domain.PreparedExtensionKind(kind) {
+		digest, stageErr := e.stageExtensionPackage(root, job.ID, local, kind)
+		if stageErr != nil {
+			return nil, fmt.Errorf("安全解包组件包失败: %w", stageErr)
+		}
+		record.Staged = true
+		record.StagedManifestSHA256 = digest
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -418,6 +594,14 @@ func (e *Executor) consumePreparedPackage(ctx context.Context, job domain.Job, d
 	if err != nil || sha != record.SHA256 || size != record.Size {
 		return nil, errors.New("prepared package bytes changed")
 	}
+	stagedRoot := ""
+	var stagedFiles []string
+	if domain.PreparedExtensionKind(record.Kind) && record.Staged {
+		stagedRoot, stagedFiles, err = verifyStagedExtensionPackage(root, id, record.Kind, record.StagedManifestSHA256)
+		if err != nil {
+			return nil, err
+		}
+	}
 	payload, err := decodeOperation(job)
 	if err != nil {
 		return nil, err
@@ -442,7 +626,7 @@ func (e *Executor) consumePreparedPackage(ctx context.Context, job domain.Job, d
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		result, err := e.installServerExtension(ctx, job, payload, instance, instancePath, record.Kind, filepath.Join(root, id+".bin"), sha, size, record.Version, progress)
+		result, err := e.installServerExtension(ctx, job, payload, instance, instancePath, record.Kind, filepath.Join(root, id+".bin"), sha, size, record.Version, stagedRoot, stagedFiles, progress)
 		if err == nil && record.Official {
 			result["official"] = true
 		}
