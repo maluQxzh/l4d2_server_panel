@@ -195,7 +195,7 @@ describe("API 客户端", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ job_id: "inspect-1" }), { status: 202, headers: { "Content-Type": "application/json" } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ job_id: "inspect-1", status: "succeeded", progress: 100, plan }), { status: 200, headers: { "Content-Type": "application/json" } }));
 
-    await expect(api.inspectPluginArchive("实例/一", { name: "plugins.7z", content_base64: "YWJj" })).resolves.toEqual(plan);
+    await expect(api.inspectPluginArchive("实例/一", { name: "plugins.7z", content_base64: "YWJj" })).resolves.toEqual({ ...plan, inspection_job_id: "inspect-1" });
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "/api/v1/instances/%E5%AE%9E%E4%BE%8B%2F%E4%B8%80/plugin-archives/inspections",
       "/api/v1/instances/%E5%AE%9E%E4%BE%8B%2F%E4%B8%80/plugin-archives/inspections/inspect-1",

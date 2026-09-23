@@ -182,7 +182,12 @@ func (e *Executor) inspectSmartPluginArchive(ctx context.Context, job domain.Job
 	}
 	// The ID is an opaque Agent-side handle for a future durable install
 	// queue. It is never accepted as a filesystem path or authorization token.
-	result["preview_id"] = previewID
+	e.smartPreviewMu.Lock()
+	if cached := e.smartPreviews[previewID]; cached != nil && cached.ready && e.config.Credential != "" && job.NodeID != "" && job.NodeID == e.config.NodeID {
+		result["preview_id"] = previewID
+		result["preview_expires_at"] = cached.expires.UTC().Format(time.RFC3339Nano)
+	}
+	e.smartPreviewMu.Unlock()
 	return result, nil
 }
 

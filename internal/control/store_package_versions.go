@@ -257,6 +257,16 @@ func (s *Store) applyInstalledPackageScanResult(ctx context.Context, job domain.
 }
 
 func (s *Store) applyInstallModResult(ctx context.Context, job domain.Job) error {
+	// Smart queue children use the inspection job as their prepared id, but
+	// consume an Agent-side preview handle rather than a prepared package
+	// archive. Project this special result before the generic prepared-package
+	// validators so it cannot be interpreted as a VPK/extension package.
+	if stringFromAny(job.Payload["smart_preview_id"]) != "" {
+		if !strings.EqualFold(stringFromAny(job.Payload["kind"]), "smart") || !strings.EqualFold(stringFromAny(job.Result["kind"]), "smart") {
+			return errors.New("smart plugin result does not match its immutable preview input")
+		}
+		return s.applySmartPluginInstallResult(ctx, job)
+	}
 	if stringFromAny(job.Payload["prepared_package_id"]) != "" && stringFromAny(job.Payload["kind"]) == domain.PreparedWorkshopKind {
 		return s.applyPreparedWorkshopResult(ctx, job)
 	}
@@ -521,6 +531,21 @@ func (s *Store) applySmartPluginInstallResult(ctx context.Context, job domain.Jo
 		return err
 	}
 	defer tx.Rollback()
+	if stringFromAny(job.Payload["smart_preview_id"]) != "" {
+		if err := validatePreparedSmartResultTx(ctx, tx, job); err != nil {
+			return err
+		}
+	}
+	// A terminal replay after a committed projection must not overwrite later
+	// package edits or duplicate inventory timestamps.
+	var projected bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM addon_packages WHERE instance_id=?1 AND last_job_id=?2)`, job.InstanceID, job.ID).Scan(&projected); err != nil {
+		return err
+	}
+	if projected {
+		return tx.Commit()
+	}
+
 	seenPackages := make(map[string]bool, len(rawPackages))
 	seenPaths := make(map[string]bool)
 	for _, raw := range rawPackages {

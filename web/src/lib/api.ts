@@ -37,6 +37,7 @@ import type {
   MapRecord,
   MapPathEncoding,
   SmartPluginPlan,
+  SmartPluginSelection,
   TerminalOutcomeConflict,
 } from "./types";
 
@@ -188,13 +189,13 @@ async function waitForTransfer(path: string): Promise<TransferChunk> {
 }
 
 export const api = {
-  preparedPackages: (instanceId: string) => request<{ items: PreparedPackage[]; queues?: { id: string; status: JobStatus; progress: number; message: string }[]; supported: boolean; qq_flash_supported?: boolean; vpk_bundles_supported?: boolean; workshop_supported?: boolean; extensions_supported?: boolean; official_extensions_supported?: boolean }>(`/instances/${encodeURIComponent(instanceId)}/prepared-packages`),
+  preparedPackages: (instanceId: string) => request<{ items: PreparedPackage[]; queues?: { id: string; status: JobStatus; progress: number; message: string }[]; supported: boolean; qq_flash_supported?: boolean; vpk_bundles_supported?: boolean; workshop_supported?: boolean; extensions_supported?: boolean; official_extensions_supported?: boolean; smart_plugins_supported?: boolean }>(`/instances/${encodeURIComponent(instanceId)}/prepared-packages`),
   preparePackage: (instanceId: string, payload: { kind: string; official?: boolean; name?: string; source?: string; content_base64?: string; source_transport?: "qq_flash" }) => request<{ job_id: string }>(
     `/instances/${encodeURIComponent(instanceId)}/prepared-packages`, { method: "POST", body: JSON.stringify(payload) },
   ),
-  queuePreparedInstalls: (instanceId: string, ids: string[], risk: boolean, key: string) => request<{ job_id: string }>(
+  queuePreparedInstalls: (instanceId: string, ids: string[], risk: boolean, key: string, options?: { acknowledge_live_changes?: boolean; acknowledge_restart_required?: boolean; smart_packages?: Record<string, SmartPluginSelection[]> }) => request<{ job_id: string }>(
     `/instances/${encodeURIComponent(instanceId)}/prepared-install-queues`,
-    { method: "POST", body: JSON.stringify({ prepared_ids: ids, acknowledge_native_risk: risk }), headers: { "Idempotency-Key": key } },
+    { method: "POST", body: JSON.stringify({ prepared_ids: ids, acknowledge_native_risk: risk, ...options }), headers: { "Idempotency-Key": key } },
   ),
   stopPreparedInstallQueue: (instanceId: string, id: string) => request(
     `/instances/${encodeURIComponent(instanceId)}/prepared-install-queues/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" },
@@ -354,7 +355,7 @@ export const api = {
       const response = await request<{ status: JobStatus; progress: number; message?: string; error?: string; plan?: SmartPluginPlan }>(
         `/instances/${encodedID}/plugin-archives/inspections/${encodeURIComponent(created.job_id)}`,
       );
-      if (response.status === "succeeded" && response.plan) return response.plan;
+      if (response.status === "succeeded" && response.plan) return { ...response.plan, inspection_job_id: created.job_id };
       if (["failed", "canceled"].includes(response.status)) {
         throw new ApiError(response.error || response.message || "插件压缩包识别失败", 409, "plugin_inspection_failed");
       }

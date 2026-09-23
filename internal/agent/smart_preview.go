@@ -216,6 +216,14 @@ func (e *Executor) saveSmartPreview(ctx context.Context, id, requestKey, nodeID,
 	defer e.smartPreviewMu.Unlock()
 	record := preview.record
 	record.RequestKey, record.NodeID, record.InstanceID = requestKey, nodeID, instanceID
+	if instance, ok := e.registry.Get(instanceID); ok {
+		instancePath, err := e.instancePath(instance)
+		if err != nil {
+			return err
+		}
+		digest := sha256.Sum256([]byte(instancePath))
+		record.InstancePathSHA256 = hex.EncodeToString(digest[:])
+	}
 	record.ArchiveName, record.ArchiveSHA256 = plan.ArchiveName, plan.ArchiveSHA256
 	record.PathEncoding, record.Fingerprint, record.Format = plan.PathEncoding, plan.Fingerprint, plan.Format
 	record.ExpandedBytes, record.Files = plan.ExpandedBytes, inputs
@@ -251,10 +259,13 @@ func (e *Executor) installSmartPreview(ctx context.Context, job domain.Job, payl
 	var preview *smartPreview
 	if payload.SmartPreviewID != "" {
 		cached := e.smartPreviews[payload.SmartPreviewID]
+		pathDigest := sha256.Sum256([]byte(instancePath))
 		if cached != nil && cached.ready && !cached.active &&
-			(cached.record.NodeID == "" || cached.record.NodeID == job.NodeID) &&
-			(cached.record.InstanceID == "" || cached.record.InstanceID == job.InstanceID) &&
-			(cached.plan.Fingerprint == payload.InspectionFingerprint || payload.InspectionFingerprint == "") {
+			job.NodeID != "" && job.NodeID == e.config.NodeID && e.config.Credential != "" &&
+			cached.record.NodeID == job.NodeID && cached.record.InstanceID == job.InstanceID &&
+			cached.record.InstancePathSHA256 == hex.EncodeToString(pathDigest[:]) &&
+			cached.plan.Fingerprint == payload.InspectionFingerprint &&
+			cached.plan.PathEncoding == firstNonEmpty(payload.PathEncoding, "auto") {
 			id, preview = payload.SmartPreviewID, cached
 		}
 	} else {
@@ -285,6 +296,9 @@ func (e *Executor) installSmartPreview(ctx context.Context, job domain.Job, payl
 	}
 	e.smartPreviewMu.Unlock()
 	if preview == nil {
+		if payload.SmartPreviewID != "" {
+			return nil, true, errors.New("智能插件预检快照已失效、被使用或绑定不匹配，请重新识别")
+		}
 		return nil, false, nil
 	}
 	defer e.finishSmartPreview(id)

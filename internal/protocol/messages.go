@@ -44,6 +44,7 @@ const (
 	CapabilityPreparedWorkshopV1           = "prepared_workshop_v1"
 	CapabilityPreparedExtensionsV1         = "prepared_extensions_v1"
 	CapabilityPreparedOfficialExtensionsV1 = "prepared_official_extensions_v1"
+	CapabilityPreparedSmartPluginsV1       = "prepared_smart_plugins_v1"
 )
 
 const MaxJobUpdateMessageBytes = 2 << 10

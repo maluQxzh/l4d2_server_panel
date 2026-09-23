@@ -792,6 +792,11 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 				continue
 			}
 		}
+		if stringFromAny(job.Payload["smart_preview_id"]) != "" {
+			if _, ok := client.capabilities[protocol.CapabilityPreparedSmartPluginsV1]; !ok {
+				continue
+			}
+		}
 		if job.Type == "delete_package" && !packageDeleteSupported {
 			continue
 		}

@@ -22,23 +22,24 @@ const smartPreviewMetadataLimit = 24 << 20 // 5000 bounded source paths plus dig
 // The credential authenticates local metadata with domain separation. Rotating
 // it invalidates this optional cache; the original archive workflow still works.
 type smartPreviewRecord struct {
-	Version       int                 `json:"version"`
-	ID            string              `json:"id"`
-	NodeID        string              `json:"node_id,omitempty"`
-	InstanceID    string              `json:"instance_id,omitempty"`
-	RequestKey    string              `json:"request_key"`
-	CreatedAt     time.Time           `json:"created_at"`
-	ExpiresAt     time.Time           `json:"expires_at"`
-	ArchiveName   string              `json:"archive_name"`
-	ArchiveSHA256 string              `json:"archive_sha256"`
-	PathEncoding  string              `json:"path_encoding"`
-	Fingerprint   string              `json:"fingerprint"`
-	ExpandedBytes int64               `json:"expanded_bytes"`
-	Format        string              `json:"format"`
-	PlanSHA256    string              `json:"plan_sha256,omitempty"`
-	Files         []smartPreviewInput `json:"files"`
-	Claimed       bool                `json:"claimed"`
-	MAC           string              `json:"mac"`
+	Version            int                 `json:"version"`
+	ID                 string              `json:"id"`
+	NodeID             string              `json:"node_id,omitempty"`
+	InstanceID         string              `json:"instance_id,omitempty"`
+	InstancePathSHA256 string              `json:"instance_path_sha256,omitempty"`
+	RequestKey         string              `json:"request_key"`
+	CreatedAt          time.Time           `json:"created_at"`
+	ExpiresAt          time.Time           `json:"expires_at"`
+	ArchiveName        string              `json:"archive_name"`
+	ArchiveSHA256      string              `json:"archive_sha256"`
+	PathEncoding       string              `json:"path_encoding"`
+	Fingerprint        string              `json:"fingerprint"`
+	ExpandedBytes      int64               `json:"expanded_bytes"`
+	Format             string              `json:"format"`
+	PlanSHA256         string              `json:"plan_sha256,omitempty"`
+	Files              []smartPreviewInput `json:"files"`
+	Claimed            bool                `json:"claimed"`
+	MAC                string              `json:"mac"`
 }
 
 type smartPreviewInput struct {

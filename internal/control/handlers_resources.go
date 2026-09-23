@@ -534,6 +534,10 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	if request.Payload == nil {
 		request.Payload = make(map[string]any)
 	}
+	if _, ok := request.Payload["smart_preview_id"]; ok {
+		writeError(w, http.StatusBadRequest, "invalid_action_payload", "请通过智能插件安装队列消费预检句柄")
+		return
+	}
 	if _, ok := request.Payload["prepared_package_id"]; ok {
 		writeError(w, http.StatusBadRequest, "dedicated_endpoint_required", "prepared packages must use the prepared-packages endpoint")
 		return

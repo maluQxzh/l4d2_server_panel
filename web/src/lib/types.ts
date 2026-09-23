@@ -452,6 +452,7 @@ export interface SmartPluginFolderPlan {
 
 export interface SmartPluginPlan {
 	preview_id?: string;
+	inspection_job_id?: string;
 	version: number;
   archive_name: string;
   archive_sha256: string;

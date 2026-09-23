@@ -89,7 +89,7 @@ func preparedConsumptionPayloadForQueue(ctx context.Context, tx *sql.Tx, instanc
 		return nil, ErrConflict
 	}
 	id := stringFromAny(payload["prepared_package_id"])
-	job, err := scanJob(tx.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=?1 AND instance_id=?2 AND node_id=?3 AND type='prepare_package'`, id, instanceID, nodeID))
+	job, err := scanJob(tx.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs WHERE id=?1 AND instance_id=?2 AND node_id=?3 AND type IN ('prepare_package','inspect_plugin_archive')`, id, instanceID, nodeID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -102,6 +102,12 @@ func preparedConsumptionPayloadForQueue(ctx context.Context, tx *sql.Tx, instanc
 	}
 	if claimed {
 		return nil, fmt.Errorf("预下载包已提交安装或丢弃: %w", ErrConflict)
+	}
+	if job.Type == "inspect_plugin_archive" {
+		return preparedSmartConsumptionPayload(ctx, tx, instanceID, action, payload, job)
+	}
+	if _, ok := payload["smart_packages"]; ok {
+		return nil, fmt.Errorf("普通预下载包不能携带智能插件选择: %w", ErrConflict)
 	}
 	item, err := preparedMetadata(job)
 	if err != nil {
@@ -463,5 +469,5 @@ func (s *Server) handlePreparedPackages(w http.ResponseWriter, r *http.Request) 
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "queues": queues, "official_extensions_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedExtensionsV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedOfficialExtensionsV1), "extensions_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedExtensionsV1), "workshop_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedWorkshopV1), "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1), "vpk_bundles_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedVPKBundlesV1), "qq_flash_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1)})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "queues": queues, "smart_plugins_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilitySmartPluginArchiveV2) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedSmartPluginsV1), "official_extensions_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedExtensionsV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedOfficialExtensionsV1), "extensions_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedExtensionsV1), "workshop_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedWorkshopV1), "supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1), "vpk_bundles_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedVPKBundlesV1), "qq_flash_supported": s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedPackagesV1) && s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedQQFlashV1)})
 }

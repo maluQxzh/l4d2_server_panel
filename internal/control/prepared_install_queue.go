@@ -18,8 +18,28 @@ import (
 const preparedInstallQueueType = "prepared_install_queue"
 
 type preparedInstallQueueRequest struct {
-	IDs  []string `json:"prepared_ids"`
-	Risk bool     `json:"acknowledge_native_risk"`
+	IDs                        []string                            `json:"prepared_ids"`
+	Risk                       bool                                `json:"acknowledge_native_risk"`
+	AcknowledgeLiveChanges     bool                                `json:"acknowledge_live_changes"`
+	AcknowledgeRestartRequired bool                                `json:"acknowledge_restart_required"`
+	SmartPackages              map[string][]preparedSmartSelection `json:"smart_packages,omitempty"`
+}
+
+type preparedSmartSelection struct {
+	FolderID  string            `json:"folder_id"`
+	PackageID string            `json:"package_id,omitempty"`
+	Overrides map[string]string `json:"overrides,omitempty"`
+	Takeovers []string          `json:"takeovers,omitempty"`
+}
+
+func smartQueuePayload(request preparedInstallQueueRequest, id string) map[string]any {
+	payload := map[string]any{"prepared_package_id": id, "acknowledge_native_risk": request.Risk}
+	if selections, ok := request.SmartPackages[id]; ok {
+		payload["smart_packages"] = selections
+		payload["acknowledge_live_changes"] = request.AcknowledgeLiveChanges
+		payload["acknowledge_restart_required"] = request.AcknowledgeRestartRequired
+	}
+	return payload
 }
 
 // A session delegates durable work to its user; closing the browser or logging
@@ -74,6 +94,11 @@ func (s *Store) QueuePreparedInstalls(ctx context.Context, instanceID string, re
 		}
 		seen[id] = true
 	}
+	for id, selections := range request.SmartPackages {
+		if !seen[id] || len(selections) == 0 || len(selections) > 256 {
+			return domain.Job{}, false, errors.New("智能插件选择必须对应请求中的预检包")
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.Job{}, false, err
@@ -100,11 +125,17 @@ func (s *Store) QueuePreparedInstalls(ctx context.Context, instanceID string, re
 		return domain.Job{}, false, fmt.Errorf("外部实例须先受控重启: %w", ErrConflict)
 	}
 	for _, id := range request.IDs {
-		if _, err := preparedConsumptionPayload(ctx, tx, instanceID, nodeID, "install_mod", map[string]any{"prepared_package_id": id, "acknowledge_native_risk": request.Risk}); err != nil {
+		if _, smart := request.SmartPackages[id]; smart {
+			var jobType string
+			if err := tx.QueryRowContext(ctx, `SELECT type FROM jobs WHERE id=?1 AND instance_id=?2`, id, instanceID).Scan(&jobType); err != nil || jobType != "inspect_plugin_archive" {
+				return domain.Job{}, false, fmt.Errorf("智能插件选择必须对应插件预检任务: %w", ErrConflict)
+			}
+		}
+		if _, err := preparedConsumptionPayload(ctx, tx, instanceID, nodeID, "install_mod", smartQueuePayload(request, id)); err != nil {
 			return domain.Job{}, false, err
 		}
 	}
-	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, InstanceID: instanceID, Type: preparedInstallQueueType, Status: domain.JobQueued, RequestedBy: principal.User.ID, IdempotencyKey: key, CreatedAt: time.Now().UTC(), Payload: map[string]any{"prepared_ids": request.IDs, "acknowledge_native_risk": request.Risk}}
+	job := domain.Job{ID: uuid.NewString(), NodeID: nodeID, InstanceID: instanceID, Type: preparedInstallQueueType, Status: domain.JobQueued, RequestedBy: principal.User.ID, IdempotencyKey: key, CreatedAt: time.Now().UTC(), Payload: map[string]any{"prepared_ids": request.IDs, "acknowledge_native_risk": request.Risk, "acknowledge_live_changes": request.AcknowledgeLiveChanges, "acknowledge_restart_required": request.AcknowledgeRestartRequired, "smart_packages": request.SmartPackages}}
 	raw, err := json.Marshal(job.Payload)
 	if err != nil {
 		return domain.Job{}, false, err
@@ -208,7 +239,15 @@ func (s *Store) advancePreparedInstallQueue(ctx context.Context, id string, comp
 	} else if err != nil {
 		return false, err
 	}
-	payload, err := preparedConsumptionPayloadForQueue(ctx, tx, job.InstanceID, job.NodeID, "install_mod", map[string]any{"prepared_package_id": preparedID, "acknowledge_native_risk": job.Payload["acknowledge_native_risk"]}, id, "")
+	itemPayload := map[string]any{"prepared_package_id": preparedID, "acknowledge_native_risk": job.Payload["acknowledge_native_risk"]}
+	if smart, ok := job.Payload["smart_packages"].(map[string]any); ok {
+		if selections, exists := smart[preparedID]; exists {
+			itemPayload["smart_packages"] = selections
+			itemPayload["acknowledge_live_changes"] = job.Payload["acknowledge_live_changes"]
+			itemPayload["acknowledge_restart_required"] = job.Payload["acknowledge_restart_required"]
+		}
+	}
+	payload, err := preparedConsumptionPayloadForQueue(ctx, tx, job.InstanceID, job.NodeID, "install_mod", itemPayload, id, "")
 	if err != nil {
 		if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
 			return finish(domain.JobFailed, "预下载包已过期、不可用或目标归属已变化，已停止后续安装")
@@ -226,6 +265,9 @@ func (s *Store) advancePreparedInstallQueue(ctx context.Context, id string, comp
 		return false, nil
 	}
 	if domain.PreparedExtensionKind(stringFromAny(payload["kind"])) && (len(bundleCompatible) < 3 || !bundleCompatible[2]) {
+		return false, nil
+	}
+	if stringFromAny(payload["kind"]) == "smart" && (len(bundleCompatible) < 5 || !bundleCompatible[4]) {
 		return false, nil
 	}
 	if boolFromAny(payload["official"]) && (len(bundleCompatible) < 4 || !bundleCompatible[3]) {
@@ -335,7 +377,7 @@ func (h *AgentHub) advancePreparedInstallQueues(ctx context.Context, nodeID stri
 	}
 	h.mu.Unlock()
 	for _, item := range targets {
-		changed, err := h.store.advancePreparedInstallQueue(ctx, item.id, h.Supports(item.node, protocol.CapabilityPreparedPackagesV1), h.Supports(item.node, protocol.CapabilityPreparedVPKBundlesV1), h.Supports(item.node, protocol.CapabilityPreparedWorkshopV1), h.Supports(item.node, protocol.CapabilityPreparedExtensionsV1), h.Supports(item.node, protocol.CapabilityPreparedOfficialExtensionsV1))
+		changed, err := h.store.advancePreparedInstallQueue(ctx, item.id, h.Supports(item.node, protocol.CapabilityPreparedPackagesV1), h.Supports(item.node, protocol.CapabilityPreparedVPKBundlesV1), h.Supports(item.node, protocol.CapabilityPreparedWorkshopV1), h.Supports(item.node, protocol.CapabilityPreparedExtensionsV1), h.Supports(item.node, protocol.CapabilityPreparedOfficialExtensionsV1), h.Supports(item.node, protocol.CapabilityPreparedSmartPluginsV1) && h.Supports(item.node, protocol.CapabilitySmartPluginArchiveV2))
 		if err != nil {
 			h.log.Error("advance prepared install queue", "job_id", item.id, "error", err)
 			continue
@@ -354,7 +396,24 @@ func (s *Server) handleQueuePreparedInstalls(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	instanceID := chi.URLParam(r, "instanceID")
-	fingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "prepared-install-queue", instanceID, preparedInstallQueueType, map[string]any{"prepared_ids": request.IDs, "acknowledge_native_risk": request.Risk})
+	if len(request.SmartPackages) > 0 {
+		instance, err := s.store.GetInstance(r.Context(), instanceID)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedSmartPluginsV1) {
+			writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用智能插件持久安装队列")
+			return
+		}
+	}
+	fingerprintPayload := map[string]any{"prepared_ids": request.IDs, "acknowledge_native_risk": request.Risk}
+	if len(request.SmartPackages) > 0 || request.AcknowledgeLiveChanges || request.AcknowledgeRestartRequired {
+		fingerprintPayload["smart_packages"] = request.SmartPackages
+		fingerprintPayload["acknowledge_live_changes"] = request.AcknowledgeLiveChanges
+		fingerprintPayload["acknowledge_restart_required"] = request.AcknowledgeRestartRequired
+	}
+	fingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "prepared-install-queue", instanceID, preparedInstallQueueType, fingerprintPayload)
 	if err != nil {
 		s.fail(w, err)
 		return

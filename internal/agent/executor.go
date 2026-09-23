@@ -248,6 +248,12 @@ func (e *Executor) Execute(ctx context.Context, job domain.Job, progress Progres
 	case "delete", "detach":
 		return e.deleteInstance(ctx, job, action == "detach", progress)
 	case "install_mod", "install_package":
+		if payloadString(job.Payload, "smart_preview_id") != "" {
+			if payloadString(job.Payload, "kind") != "smart" {
+				return nil, errors.New("preview handle requires smart plugin installation")
+			}
+			return e.installMod(ctx, job, progress)
+		}
 		if payloadString(job.Payload, "prepared_package_id") != "" {
 			return e.consumePreparedPackage(ctx, job, false, progress)
 		}

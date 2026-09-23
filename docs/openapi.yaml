@@ -1055,6 +1055,23 @@ paths:
               properties:
                 prepared_ids: { type: array, minItems: 1, maxItems: 16, uniqueItems: true, items: { type: string, format: uuid } }
                 acknowledge_native_risk: { type: boolean, default: false, description: 原生 DLL/SO 和第三方 SourceMod/Metamod 整包安装必须为 true }
+                acknowledge_live_changes: { type: boolean, default: false, description: 智能插件在运行实例上安装时确认实时文件变化 }
+                acknowledge_restart_required: { type: boolean, default: false, description: 智能插件安装完成后确认需要手动重启 }
+                smart_packages:
+                  type: object
+                  additionalProperties:
+                    type: array
+                    minItems: 1
+                    maxItems: 256
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [folder_id]
+                      properties:
+                        folder_id: { type: string }
+                        package_id: { type: string, format: uuid }
+                        overrides: { type: object, additionalProperties: { type: string } }
+                        takeovers: { type: array, maxItems: 5000, items: { type: string } }
       responses:
         "202":
           description: 队列已持久保存或返回原幂等任务
@@ -4062,6 +4079,7 @@ components:
       required: [version, archive_name, archive_sha256, path_encoding, fingerprint, folders, file_count, expanded_bytes, format]
       properties:
         version: { type: integer }
+        preview_id: { type: string, format: uuid, description: Agent 本地一次性预检句柄 }
         archive_name: { type: string }
         archive_sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
         path_encoding: { type: string, enum: [auto, utf8, gbk, big5] }

@@ -17,9 +17,10 @@ func smartPreviewFixture(t *testing.T) (*Executor, string, domain.Job, string) {
 	t.Helper()
 	e, _, instance := uploadedPackageExecutor(t)
 	e.locks = newKeyedLocker()
+	e.config.NodeID = "node"
 	e.config.Credential = "test-smart-preview-credential"
 	encoded := base64.StdEncoding.EncodeToString(smartTestZIP(t, map[string]string{"sample.smx": "smx-content"}))
-	job := domain.Job{ID: "inspection", Type: "inspect_plugin_archive", InstanceID: "instance", Payload: map[string]any{
+	job := domain.Job{ID: "inspection", Type: "inspect_plugin_archive", NodeID: "node", InstanceID: "instance", Payload: map[string]any{
 		"name": "sample.zip", "content_base64": encoded,
 	}}
 	result, err := e.Execute(context.Background(), job, nil)
