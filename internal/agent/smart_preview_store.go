@@ -24,6 +24,8 @@ const smartPreviewMetadataLimit = 24 << 20 // 5000 bounded source paths plus dig
 type smartPreviewRecord struct {
 	Version       int                 `json:"version"`
 	ID            string              `json:"id"`
+	NodeID        string              `json:"node_id,omitempty"`
+	InstanceID    string              `json:"instance_id,omitempty"`
 	RequestKey    string              `json:"request_key"`
 	CreatedAt     time.Time           `json:"created_at"`
 	ExpiresAt     time.Time           `json:"expires_at"`
@@ -128,6 +130,9 @@ func (record smartPreviewRecord) validate(id string) error {
 		len(record.Files) == 0 || len(record.Files) > maxSmartPluginFiles ||
 		record.ExpandedBytes < 0 || record.ExpandedBytes > maxSmartPluginExpanded {
 		return errors.New("invalid smart preview metadata")
+	}
+	if len(record.NodeID) > 256 || len(record.InstanceID) > 256 || strings.ContainsAny(record.NodeID+record.InstanceID, "\x00\r\n") {
+		return errors.New("invalid smart preview binding")
 	}
 	if _, err := validateMapArchivePath(record.ArchiveName); err != nil || strings.Contains(record.ArchiveName, "/") {
 		return errors.New("invalid smart preview archive name")

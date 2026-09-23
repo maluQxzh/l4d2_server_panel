@@ -163,7 +163,7 @@ func (e *Executor) finishSmartPreview(id string) {
 	}
 }
 
-func (e *Executor) saveSmartPreview(ctx context.Context, id, requestKey string, plan smartPluginPlan, extracted string) error {
+func (e *Executor) saveSmartPreview(ctx context.Context, id, requestKey, nodeID, instanceID string, plan smartPluginPlan, extracted string) error {
 	if id == "" {
 		return ctx.Err()
 	}
@@ -215,7 +215,8 @@ func (e *Executor) saveSmartPreview(ctx context.Context, id, requestKey string, 
 	e.smartPreviewMu.Lock()
 	defer e.smartPreviewMu.Unlock()
 	record := preview.record
-	record.RequestKey, record.ArchiveName, record.ArchiveSHA256 = requestKey, plan.ArchiveName, plan.ArchiveSHA256
+	record.RequestKey, record.NodeID, record.InstanceID = requestKey, nodeID, instanceID
+	record.ArchiveName, record.ArchiveSHA256 = plan.ArchiveName, plan.ArchiveSHA256
 	record.PathEncoding, record.Fingerprint, record.Format = plan.PathEncoding, plan.Fingerprint, plan.Format
 	record.ExpandedBytes, record.Files = plan.ExpandedBytes, inputs
 	// Unenrolled test/local executors retain the original in-memory optimization.
@@ -234,8 +235,11 @@ func (e *Executor) saveSmartPreview(ctx context.Context, id, requestKey string, 
 }
 
 func (e *Executor) installSmartPreview(ctx context.Context, job domain.Job, payload operationPayload, instancePath string, progress ProgressFunc) (map[string]any, bool, error) {
-	key := smartPreviewRequestKey(job, payload, instancePath)
-	if key == "" || payload.InspectionFingerprint == "" {
+	key := ""
+	if payload.SmartPreviewID == "" {
+		key = smartPreviewRequestKey(job, payload, instancePath)
+	}
+	if payload.SmartPreviewID == "" && (key == "" || payload.InspectionFingerprint == "") {
 		return nil, false, nil
 	}
 	e.smartPreviewMu.Lock()
@@ -245,26 +249,39 @@ func (e *Executor) installSmartPreview(ctx context.Context, job domain.Job, payl
 	}
 	var id string
 	var preview *smartPreview
-	for candidate, cached := range e.smartPreviews {
-		if cached.ready && !cached.active && cached.requestKey == key && cached.plan.Fingerprint == payload.InspectionFingerprint {
-			id, preview = candidate, cached
-			// Commit the one-attempt claim before hashing or modifying the instance.
-			// A crash after this point must not resurrect the cached preparation.
-			if e.config.Credential != "" {
-				root, err := ensureDataSubdirectory(e.config.DataDir, smartPreviewDirectory)
-				if err == nil {
-					claimed := cached.record
-					claimed.Claimed = true
-					err = saveSmartPreviewRecord(root, claimed, e.config.Credential)
-				}
-				if err != nil {
-					e.smartPreviewMu.Unlock()
-					return nil, true, err
-				}
-			}
-			cached.active, cached.ready = true, false // One attempt, including failure.
-			break
+	if payload.SmartPreviewID != "" {
+		cached := e.smartPreviews[payload.SmartPreviewID]
+		if cached != nil && cached.ready && !cached.active &&
+			(cached.record.NodeID == "" || cached.record.NodeID == job.NodeID) &&
+			(cached.record.InstanceID == "" || cached.record.InstanceID == job.InstanceID) &&
+			(cached.plan.Fingerprint == payload.InspectionFingerprint || payload.InspectionFingerprint == "") {
+			id, preview = payload.SmartPreviewID, cached
 		}
+	} else {
+		for candidate, cached := range e.smartPreviews {
+			if cached.ready && !cached.active && cached.requestKey == key && cached.plan.Fingerprint == payload.InspectionFingerprint {
+				id, preview = candidate, cached
+				break
+			}
+		}
+	}
+	if preview != nil {
+		cached := preview
+		// Commit the one-attempt claim before hashing or modifying the instance.
+		// A crash after this point must not resurrect the cached preparation.
+		if e.config.Credential != "" {
+			root, err := ensureDataSubdirectory(e.config.DataDir, smartPreviewDirectory)
+			if err == nil {
+				claimed := cached.record
+				claimed.Claimed = true
+				err = saveSmartPreviewRecord(root, claimed, e.config.Credential)
+			}
+			if err != nil {
+				e.smartPreviewMu.Unlock()
+				return nil, true, err
+			}
+		}
+		cached.active, cached.ready = true, false // One attempt, including failure.
 	}
 	e.smartPreviewMu.Unlock()
 	if preview == nil {

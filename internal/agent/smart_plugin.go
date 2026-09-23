@@ -172,7 +172,7 @@ func (e *Executor) inspectSmartPluginArchive(ctx context.Context, job domain.Job
 	if err := overlaySmartManagedPaths(&plan, payload.RegisteredPaths); err != nil {
 		return nil, err
 	}
-	if err := e.saveSmartPreview(ctx, previewID, requestKey, plan, extracted); err != nil {
+	if err := e.saveSmartPreview(ctx, previewID, requestKey, job.NodeID, job.InstanceID, plan, extracted); err != nil {
 		return nil, err
 	}
 	progress(100, "plugin archive inspection completed")

@@ -430,6 +430,7 @@ type operationPayload struct {
 	QuarantineID               string                 `json:"quarantine_entry_id,omitempty"`
 	QuarantineEntry            string                 `json:"quarantine_entry,omitempty"`
 	InspectionFingerprint      string                 `json:"inspection_fingerprint,omitempty"`
+	SmartPreviewID             string                 `json:"smart_preview_id,omitempty"`
 	SmartPackages              []smartPluginSelection `json:"smart_packages,omitempty"`
 	RegisteredPaths            map[string]string      `json:"registered_paths,omitempty"`
 	ManagedFiles               []managedPackageFile   `json:"managed_files,omitempty"`

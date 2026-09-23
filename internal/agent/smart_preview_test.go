@@ -58,6 +58,21 @@ func TestSmartPreviewReusesPreparationAndCleansConsumedFiles(t *testing.T) {
 	}
 }
 
+func TestSmartPreviewExplicitHandleInstallsWithoutOriginalSource(t *testing.T) {
+	e, instance, job, id := smartPreviewFixture(t)
+	job.Payload["smart_preview_id"] = id
+	delete(job.Payload, "content_base64")
+	delete(job.Payload, "source")
+	delete(job.Payload, "name")
+	used := false
+	if _, err := e.Execute(context.Background(), job, func(_ int, message string) {
+		used = used || strings.Contains(message, "复用预检")
+	}); err != nil || !used {
+		t.Fatalf("explicit preview handle was not consumed: used=%v err=%v", used, err)
+	}
+	assertFileContent(t, filepath.Join(instance, "left4dead2/addons/sourcemod/plugins/sample.smx"), "smx-content")
+}
+
 func TestSmartPreviewQQSourceBindingAndActiveCleanup(t *testing.T) {
 	e, instance, job, id := smartPreviewFixture(t)
 	payload, err := decodeOperation(job)
