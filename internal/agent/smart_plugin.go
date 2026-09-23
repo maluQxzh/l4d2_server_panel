@@ -176,7 +176,14 @@ func (e *Executor) inspectSmartPluginArchive(ctx context.Context, job domain.Job
 		return nil, err
 	}
 	progress(100, "plugin archive inspection completed")
-	return structToMap(plan)
+	result, err := structToMap(plan)
+	if err != nil {
+		return nil, err
+	}
+	// The ID is an opaque Agent-side handle for a future durable install
+	// queue. It is never accepted as a filesystem path or authorization token.
+	result["preview_id"] = previewID
+	return result, nil
 }
 
 func (e *Executor) stageSmartPluginUpload(jobID, name, encoded string) (string, string, func(), error) {

@@ -26,12 +26,24 @@ func TestSmartPreviewRestoresAuthenticatedInputsAfterRestart(t *testing.T) {
 			t.Fatal("persistent preview leaked credentials, content, host paths or cached target state")
 		}
 	}
+	planRaw, err := os.ReadFile(filepath.Join(root, smartPreviewPlanFile(id)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"existing_sha256", "managed_package_id", "path_states"} {
+		if strings.Contains(string(planRaw), forbidden) {
+			t.Fatalf("persisted plan retained transient authorization state: %s", forbidden)
+		}
+	}
 	e = NewExecutor(e.config, e.paths, e.registry, e.processes, e.logger)
 	if err := e.cleanupSmartPreviews(time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if len(e.smartPreviews) != 1 || e.smartPreviews[id] == nil {
 		t.Fatal("ready preview was not recovered")
+	}
+	if len(e.smartPreviews[id].plan.Folders) == 0 || e.smartPreviews[id].plan.FileCount == 0 {
+		t.Fatal("persisted preview plan was not recovered")
 	}
 	used := false
 	if _, err := e.Execute(context.Background(), job, func(_ int, message string) { used = used || strings.Contains(message, "复用预检") }); err != nil || !used {

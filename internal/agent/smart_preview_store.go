@@ -33,6 +33,7 @@ type smartPreviewRecord struct {
 	Fingerprint   string              `json:"fingerprint"`
 	ExpandedBytes int64               `json:"expanded_bytes"`
 	Format        string              `json:"format"`
+	PlanSHA256    string              `json:"plan_sha256,omitempty"`
 	Files         []smartPreviewInput `json:"files"`
 	Claimed       bool                `json:"claimed"`
 	MAC           string              `json:"mac"`
@@ -46,6 +47,65 @@ type smartPreviewInput struct {
 
 func smartPreviewDataFile(id string, index int) string {
 	return fmt.Sprintf("%s-%04d.bin", id, index+1)
+}
+
+func smartPreviewPlanFile(id string) string { return id + ".plan" }
+
+const smartPreviewPlanLimit = 24 << 20
+
+func saveSmartPreviewPlan(root, id string, plan smartPluginPlan) (string, error) {
+	if !preparedID(id) || plan.Version != smartPluginPlanVersion || len(plan.Folders) == 0 || plan.FileCount <= 0 || plan.ExpandedBytes < 0 || plan.ExpandedBytes > maxSmartPluginExpanded {
+		return "", errors.New("invalid smart preview plan")
+	}
+	// Target existence, hashes and package ownership are observations from the
+	// inspection moment, never installation authorization. Keep only the
+	// stable mapping choices needed to render/rebuild the preview after restart.
+	persisted := plan
+	persisted.Folders = append([]smartPluginFolder(nil), plan.Folders...)
+	for folderIndex := range persisted.Folders {
+		persisted.Folders[folderIndex].Conflicts = 0
+		persisted.Folders[folderIndex].Files = append([]smartPluginFile(nil), plan.Folders[folderIndex].Files...)
+		for fileIndex := range persisted.Folders[folderIndex].Files {
+			file := &persisted.Folders[folderIndex].Files[fileIndex]
+			file.Existing = false
+			file.ExistingSHA256 = ""
+			file.ManagedPackageID = ""
+			file.PathStates = nil
+		}
+	}
+	raw, err := json.Marshal(persisted)
+	if err != nil || len(raw) > smartPreviewPlanLimit {
+		return "", errors.New("smart preview plan exceeds limit")
+	}
+	if _, err := writeFileWithinNoFollow(root, smartPreviewPlanFile(id), bytes.NewReader(raw), managedRawWriteOptions(len(raw), 0600)); err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func readSmartPreviewPlan(root, id, expected string) (smartPluginPlan, error) {
+	var plan smartPluginPlan
+	if !preparedID(id) || !validSmartPreviewDigest(expected) {
+		return plan, errors.New("invalid smart preview plan binding")
+	}
+	raw, err := readRegularFileWithinNoFollow(root, smartPreviewPlanFile(id), smartPreviewPlanLimit)
+	if err != nil {
+		return plan, err
+	}
+	digest := sha256.Sum256(raw)
+	if !strings.EqualFold(hex.EncodeToString(digest[:]), expected) {
+		return plan, errors.New("smart preview plan changed")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&plan); err != nil {
+		return plan, err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF || plan.Version != smartPluginPlanVersion || len(plan.Folders) == 0 || plan.FileCount <= 0 || plan.ExpandedBytes < 0 || plan.ExpandedBytes > maxSmartPluginExpanded {
+		return plan, errors.New("invalid smart preview plan")
+	}
+	return plan, nil
 }
 
 func smartPreviewMAC(record smartPreviewRecord, credential string) string {
@@ -71,6 +131,9 @@ func (record smartPreviewRecord) validate(id string) error {
 	}
 	if _, err := validateMapArchivePath(record.ArchiveName); err != nil || strings.Contains(record.ArchiveName, "/") {
 		return errors.New("invalid smart preview archive name")
+	}
+	if record.PlanSHA256 != "" && !validSmartPreviewDigest(record.PlanSHA256) {
+		return errors.New("invalid smart preview plan digest")
 	}
 	encoding, err := normalizeMapPathEncoding(record.PathEncoding)
 	if err != nil || encoding != record.PathEncoding || (record.Format != "zip" && record.Format != "7z" && record.Format != "rar") {
@@ -161,9 +224,19 @@ func (e *Executor) restoreSmartPreviewsLocked(root string, now time.Time) error 
 		for index, file := range record.Files {
 			sources[file.Source] = smartPreviewDataFile(id, index)
 		}
-		loaded[id] = &smartPreview{requestKey: record.RequestKey, sources: sources, expires: record.ExpiresAt, ready: true, record: record,
-			plan: smartPluginPlan{ArchiveName: record.ArchiveName, ArchiveSHA256: record.ArchiveSHA256, PathEncoding: record.PathEncoding,
-				Format: record.Format, Fingerprint: record.Fingerprint, FileCount: len(record.Files), ExpandedBytes: record.ExpandedBytes}}
+		plan := smartPluginPlan{ArchiveName: record.ArchiveName, ArchiveSHA256: record.ArchiveSHA256, PathEncoding: record.PathEncoding,
+			Format: record.Format, Fingerprint: record.Fingerprint, FileCount: len(record.Files), ExpandedBytes: record.ExpandedBytes}
+		if record.PlanSHA256 != "" {
+			persistedPlan, planErr := readSmartPreviewPlan(root, id, record.PlanSHA256)
+			if planErr != nil || persistedPlan.Fingerprint != record.Fingerprint || persistedPlan.ArchiveSHA256 != record.ArchiveSHA256 {
+				if err := deleteManagedFileNoFollow(root, entry.Name()); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+				continue
+			}
+			plan = persistedPlan
+		}
+		loaded[id] = &smartPreview{requestKey: record.RequestKey, sources: sources, expires: record.ExpiresAt, ready: true, record: record, plan: plan}
 	}
 	e.smartPreviews, e.smartPreviewsLoaded = loaded, true
 	return nil
@@ -171,6 +244,9 @@ func (e *Executor) restoreSmartPreviewsLocked(root string, now time.Time) error 
 
 func smartPreviewStagingName(name string) bool {
 	if strings.HasSuffix(name, ".json") && preparedID(strings.TrimSuffix(name, ".json")) {
+		return true
+	}
+	if strings.HasSuffix(name, ".plan") && preparedID(strings.TrimSuffix(name, ".plan")) {
 		return true
 	}
 	if len(name) != 45 || !preparedID(name[:36]) {

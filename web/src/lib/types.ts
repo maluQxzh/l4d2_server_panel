@@ -451,7 +451,8 @@ export interface SmartPluginFolderPlan {
 }
 
 export interface SmartPluginPlan {
-  version: number;
+	preview_id?: string;
+	version: number;
   archive_name: string;
   archive_sha256: string;
   path_encoding: MapPathEncoding;

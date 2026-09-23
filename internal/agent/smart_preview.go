@@ -62,6 +62,9 @@ func (e *Executor) removeSmartPreviewLocked(root, id string) error {
 			return err
 		}
 	}
+	if err := deleteManagedFileNoFollow(root, smartPreviewPlanFile(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	if err := deleteManagedFileNoFollow(root, id+".json"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -88,6 +91,9 @@ func (e *Executor) cleanupSmartPreviewsLocked(now time.Time) error {
 		}
 		active = active || preview.active
 		keep[id+".json"] = true
+		if preview.record.PlanSHA256 != "" {
+			keep[smartPreviewPlanFile(id)] = true
+		}
 		for _, name := range preview.sources {
 			keep[name] = true
 		}
@@ -214,6 +220,11 @@ func (e *Executor) saveSmartPreview(ctx context.Context, id, requestKey string, 
 	record.ExpandedBytes, record.Files = plan.ExpandedBytes, inputs
 	// Unenrolled test/local executors retain the original in-memory optimization.
 	if e.config.Credential != "" {
+		planDigest, err := saveSmartPreviewPlan(root, id, plan)
+		if err != nil {
+			return err
+		}
+		record.PlanSHA256 = planDigest
 		if err := saveSmartPreviewRecord(root, record, e.config.Credential); err != nil {
 			return err
 		}
