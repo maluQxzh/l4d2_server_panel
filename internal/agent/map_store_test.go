@@ -113,6 +113,64 @@ func TestMapStoreAssignsVerifiedHardLinkAndRequiresUnassignBeforeDelete(t *testi
 	}
 }
 
+func TestMapStoreReusesContentAddressedObjectForDuplicateMaps(t *testing.T) {
+	base := t.TempDir()
+	dataDir := filepath.Join(base, "data")
+	mapRoot := filepath.Join(dataDir, "maps")
+	store, err := newMapStore(&Config{DataDir: dataDir, MapRoots: []string{mapRoot}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(base, "output.vpk")
+	if err := os.WriteFile(output, []byte("same-map-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sha, size, err := hashFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(id string) mapLocalRecord {
+		return mapLocalRecord{
+			ID: id, Name: "same name", AggregateSHA256: sha, TotalSize: size,
+			Artifacts:   []mapLocalArtifact{{Ordinal: 0, SHA256: sha, Size: size}},
+			BSPs:        []mapLocalBSP{{VirtualPath: "maps/same.bsp", StartName: "same"}},
+			Assignments: make(map[string]mapLocalAssignment),
+		}
+	}
+	firstID, secondID := uuid.NewString(), uuid.NewString()
+	first, err := store.publish(record(firstID), []string{output})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.publish(record(secondID), []string{output})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != firstID {
+		t.Fatalf("duplicate publish returned map %q, want canonical map %q", second.ID, firstID)
+	}
+	relative := first.Artifacts[0].Replicas[store.defaultRoot().FilesystemID]
+	if relative == "" || relative != second.Artifacts[0].Replicas[store.defaultRoot().FilesystemID] {
+		t.Fatalf("duplicate maps did not share the object path: %q / %q", relative, second.Artifacts[0].Replicas[store.defaultRoot().FilesystemID])
+	}
+	if existing, ok := store.findByAggregate(sha); !ok || existing.ID != firstID {
+		t.Fatalf("content duplicate lookup returned %+v, ok=%v", existing, ok)
+	}
+	if _, ok := store.registry.get(secondID); ok {
+		t.Fatal("duplicate content created a second logical map record")
+	}
+	objects, err := filepath.Glob(filepath.Join(mapRoot, "objects", "*", "*.vpk"))
+	if err != nil || len(objects) != 1 {
+		t.Fatalf("object store contains %d copies, err=%v", len(objects), err)
+	}
+	if err := store.delete(firstID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(objects[0]); !os.IsNotExist(err) {
+		t.Fatalf("deduplicated object remains after canonical record deletion: %v", err)
+	}
+}
+
 func TestMapTargetValidationOnlyAcceptsWorkshopDirectory(t *testing.T) {
 	mapID := uuid.NewString()
 	if !validMapTargetRelative(mapID, mapTargetRelative(mapID, 0)) {

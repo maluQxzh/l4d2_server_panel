@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, ChevronUp, Database, HardDrive, Link2, Plus, RefreshCw, ShieldCheck, Trash2, UserRound } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp, Database, HardDrive, Link2, Plus, RefreshCw, Search, ShieldCheck, Trash2, UserRound } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, ProgressBar, StatusBadge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
@@ -8,6 +8,7 @@ import { useToast } from "../context/ToastContext";
 import { hasAnyPermission, hasInstancePermission, hasMapNodePermission, hasNodePermission } from "../lib/account-permissions";
 import { api } from "../lib/api";
 import { bytes, dateTime } from "../lib/format";
+import { mapDeduplicatedSize, mapDuplicateCounts, mapMatchesSearch, type MapDuplicateFilter } from "../lib/map-filters";
 import type { InstanceRecord, MapRecord, User } from "../lib/types";
 
 const UNASSIGNED_INSTANCE_FILTER = "__unassigned__";
@@ -20,6 +21,8 @@ export function MapsPage() {
   const [nodeFilter, setNodeFilter] = useState("");
   const [uploaderFilter, setUploaderFilter] = useState("");
   const [instanceFilter, setInstanceFilter] = useState("");
+  const [search, setSearch] = useState("");
+  const [duplicateFilter, setDuplicateFilter] = useState<MapDuplicateFilter>("");
   const realtime = useRealtime();
   const canReadMaps = hasAnyPermission(user, "maps.read");
   const canReadNodes = hasAnyPermission(user, "nodes.read");
@@ -32,7 +35,7 @@ export function MapsPage() {
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, enabled: canReadJobs, refetchInterval: canReadJobs ? 2_000 : false });
   const mapJobs = (jobs.data?.items || []).filter((job) => job.type.startsWith("map.") && !["succeeded", "failed", "canceled"].includes(job.status));
   const mapItems = useMemo(() => maps.data?.items || [], [maps.data]);
-  const totals = useMemo(() => mapItems.reduce((value, item) => ({ size: value.size + item.total_size, assignments: value.assignments + (item.assignments?.length || 0) }), { size: 0, assignments: 0 }), [mapItems]);
+  const totals = useMemo(() => ({ size: mapDeduplicatedSize(mapItems), assignments: mapItems.reduce((value, item) => value + (item.assignments?.length || 0), 0) }), [mapItems]);
   const uploaderOptions = useMemo(() => {
     const uploaders = new Map<string, string>();
     for (const item of mapItems) {
@@ -52,33 +55,43 @@ export function MapsPage() {
       .filter((instance) => nodeFilter ? instance.node_id === nodeFilter : visibleNodeIds.has(instance.node_id))
       .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
   }, [instances.data, mapItems, nodeFilter]);
+  const duplicateCounts = useMemo(() => mapDuplicateCounts(mapItems, duplicateFilter), [mapItems, duplicateFilter]);
   const filteredMaps = useMemo(() => mapItems.filter((item) => {
+    if (!mapMatchesSearch(item, search)) return false;
+    if (duplicateFilter && (duplicateCounts.get(item.id) || 0) < 2) return false;
     if (uploaderFilter && mapUploaderValue(item) !== uploaderFilter) return false;
     if (instanceFilter === UNASSIGNED_INSTANCE_FILTER) return !item.assignments?.length;
     if (instanceFilter && !item.assignments?.some((assignment) => assignment.instance_id === instanceFilter)) return false;
     return true;
-  }), [instanceFilter, mapItems, uploaderFilter]);
-  const hasAdditionalFilters = Boolean(uploaderFilter || instanceFilter);
+  }), [instanceFilter, mapItems, uploaderFilter, search, duplicateFilter, duplicateCounts]);
+  const hasAdditionalFilters = Boolean(uploaderFilter || instanceFilter || search.trim() || duplicateFilter);
+  const clearFilters = () => { setSearch(""); setDuplicateFilter(""); setUploaderFilter(""); setInstanceFilter(""); };
 
   return <div>
     <PageHeader eyebrow="SHARED MAP LIBRARY" title="地图管理" description="每个节点只保存一份地图对象，通过同卷硬链接安全分配给多个游戏实例。" actions={<>{canReadMaps && <Button variant="secondary" onClick={() => { void maps.refetch(); if (canReadJobs) void jobs.refetch(); }}><RefreshCw size={16} />刷新</Button>}{canImport && <Button onClick={() => setImportOpen(true)}><Plus size={17} />QQ 闪传导入</Button>}</>} />
     {canReadMaps && <>
     <div className="map-summary">
       <Card><Database size={19} /><div><span>逻辑地图</span><strong>{maps.data?.items.length || 0}</strong></div></Card>
-      <Card><HardDrive size={19} /><div><span>地图占用空间</span><strong>{bytes(totals.size)}</strong></div></Card>
+      <Card><HardDrive size={19} /><div><span>地图对象占用空间</span><strong>{bytes(totals.size)}</strong></div></Card>
       <Card><Link2 size={19} /><div><span>实例分配</span><strong>{totals.assignments}</strong></div></Card>
     </div>
     <Card className="toolbar-card map-toolbar">
+      <div className="map-toolbar__search-row">
+        <div className="search-box"><Search size={17} aria-hidden /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索地图名称、作者、来源文件或建图代码" aria-label="搜索地图" /></div>
+        {hasAdditionalFilters && <Button variant="ghost" onClick={clearFilters}>清除筛选</Button>}
+        <span className="toolbar-count" role="status">{hasAdditionalFilters ? `${filteredMaps.length} / ${mapItems.length}` : mapItems.length} 张地图</span>
+      </div>
       <div className="map-toolbar__filters">
         {canReadNodes && <Field label="节点筛选"><select value={nodeFilter} onChange={(event) => { setNodeFilter(event.target.value); setUploaderFilter(""); setInstanceFilter(""); }}><option value="">全部可见节点</option>{(nodes.data?.items || []).map((node) => <option value={node.id} key={node.id}>{node.name}</option>)}</select></Field>}
         <Field label="上传者筛选"><select value={uploaderFilter} onChange={(event) => setUploaderFilter(event.target.value)}><option value="">全部上传者</option>{uploaderOptions.map((uploader) => <option value={uploader.value} key={uploader.value}>{uploader.label}</option>)}</select></Field>
         {canReadInstances && <Field label="实例筛选"><select value={instanceFilter} onChange={(event) => setInstanceFilter(event.target.value)}><option value="">全部实例分配</option><option value={UNASSIGNED_INSTANCE_FILTER}>未分配</option>{instanceOptions.map((instance) => <option value={instance.id} key={instance.id}>{instance.name}</option>)}</select></Field>}
+        <Field label="重复地图筛选"><select value={duplicateFilter} onChange={(event) => setDuplicateFilter(event.target.value as MapDuplicateFilter)}><option value="">全部地图（含重复）</option><option value="content">仅显示内容相同</option><option value="name">仅显示名称重复（疑似）</option></select></Field>
       </div>
-      <span className="toolbar-count">{hasAdditionalFilters ? `${filteredMaps.length} / ${mapItems.length}` : mapItems.length} 张地图</span>
+      {duplicateFilter && <p className="map-toolbar__hint">{duplicateFilter === "content" ? "按同一节点内最终地图文件的 SHA-256 内容摘要匹配；上传来源、名称和版本不同也不会影响判断。" : "按同一节点内地图名称匹配，仅用于发现疑似重复；名称相同不代表文件内容相同。"}</p>}
     </Card>
     </>}
     {mapJobs.length > 0 && <Card className="map-processing"><div className="card-heading"><div><span className="eyebrow">PROCESSING</span><h2>正在处理</h2></div></div>{mapJobs.map((job) => <div className="map-job" key={job.id}><div><strong>{mapJobLabel(job.type)}</strong><span>{job.message || "等待节点接收任务"}</span></div><ProgressBar value={job.progress} /><code>{job.id.slice(0, 8)}</code></div>)}</Card>}
-    {!canReadMaps ? <Card><EmptyState title="地图库清单已隐藏" description="当前账号没有查看地图库的权限，但仍可向已授权节点执行单独授予的导入操作。" action={canImport ? <Button onClick={() => setImportOpen(true)}><Plus size={16} />QQ 闪传导入</Button> : undefined} /></Card> : maps.isPending ? <LoadingBlock label="正在读取地图对象库…" /> : maps.error ? <ErrorState error={maps.error} retry={() => void maps.refetch()} /> : !mapItems.length ? <Card><EmptyState title="地图对象库为空" description="提交一个 QQ 闪传链接，节点会安全解压、合并并清理其中的 VPK。" action={canImport ? <Button onClick={() => setImportOpen(true)}><Plus size={16} />导入第一张地图</Button> : undefined} /></Card> : !filteredMaps.length ? <Card><EmptyState title="没有符合筛选条件的地图" description="尝试选择其他上传者或实例，或者清除当前附加筛选。" action={<Button variant="secondary" onClick={() => { setUploaderFilter(""); setInstanceFilter(""); }}>清除筛选</Button>} /></Card> : <div className="map-list">{filteredMaps.map((item) => <MapCard key={item.id} item={item} instances={instances.data?.items || []} user={user} onAssignments={() => setAssignmentMap(item)} />)}</div>}
+    {!canReadMaps ? <Card><EmptyState title="地图库清单已隐藏" description="当前账号没有查看地图库的权限，但仍可向已授权节点执行单独授予的导入操作。" action={canImport ? <Button onClick={() => setImportOpen(true)}><Plus size={16} />QQ 闪传导入</Button> : undefined} /></Card> : maps.isPending ? <LoadingBlock label="正在读取地图对象库…" /> : maps.error ? <ErrorState error={maps.error} retry={() => void maps.refetch()} /> : !mapItems.length ? <Card><EmptyState title="地图对象库为空" description="提交一个 QQ 闪传链接，节点会安全解压、合并并清理其中的 VPK。" action={canImport ? <Button onClick={() => setImportOpen(true)}><Plus size={16} />导入第一张地图</Button> : undefined} /></Card> : !filteredMaps.length ? <Card><EmptyState title="没有符合筛选条件的地图" description="尝试修改搜索关键词、上传者、实例或重复地图条件，也可以使用上方“清除筛选”。" /></Card> : <div className="map-list">{filteredMaps.map((item) => <MapCard key={item.id} item={item} instances={instances.data?.items || []} user={user} duplicateLabel={duplicateFilter ? `${duplicateFilter === "content" ? "内容相同" : "名称重复"} · 共 ${duplicateCounts.get(item.id)} 张` : undefined} onAssignments={() => setAssignmentMap(item)} />)}</div>}
     <ImportMapModal open={canImport && importOpen} nodes={nodes.data?.items || []} instances={instances.data?.items || []} user={user} onClose={() => setImportOpen(false)} />
     <AssignmentModal item={assignmentMap} instances={instances.data?.items || []} user={user} onClose={() => setAssignmentMap(null)} />
   </div>;
@@ -88,7 +101,7 @@ function mapUploaderValue(item: MapRecord) {
   return item.created_by || UNKNOWN_UPLOADER_FILTER;
 }
 
-function MapCard({ item, instances, user, onAssignments }: { item: MapRecord; instances: InstanceRecord[]; user: User | null; onAssignments: () => void }) {
+function MapCard({ item, instances, user, duplicateLabel, onAssignments }: { item: MapRecord; instances: InstanceRecord[]; user: User | null; duplicateLabel?: string; onAssignments: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const toast = useToast();
   const client = useQueryClient();
@@ -118,6 +131,7 @@ function MapCard({ item, instances, user, onAssignments }: { item: MapRecord; in
       <div className="map-card__profile">
         <div className="map-card__identity"><span className="eyebrow">CUSTOM CAMPAIGN</span><h2>{item.name}</h2><small>{item.source_name || "QQ 闪传"} · {dateTime(item.created_at)}</small>
           <div className="map-card__uploader"><UserRound size={12} aria-hidden /><span>上传者</span><strong>{item.created_by_display_name || "未知账号"}</strong></div>
+          {duplicateLabel && <span className="map-card__duplicate">{duplicateLabel}</span>}
           <dl className="map-card__metadata">
             <div><dt>作者：</dt><dd>{item.author || "未提供"}</dd></div>
             <div><dt>版本：</dt><dd>{item.version || "未提供"}</dd></div>

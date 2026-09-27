@@ -252,6 +252,38 @@ func (r *mapRegistry) put(record mapLocalRecord) error {
 	return nil
 }
 
+// putIfAggregateAbsent commits a map record only when no existing record owns
+// the same deterministic content digest. The check and write share the
+// registry lock so concurrent imports cannot leave a second logical map
+// record behind after both have produced the same VPK content.
+func (r *mapRegistry) putIfAggregateAbsent(record mapLocalRecord) (mapLocalRecord, bool, error) {
+	if err := validateLocalMapRecord(record); err != nil {
+		return mapLocalRecord{}, false, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var canonicalID string
+	for id, existing := range r.doc.Maps {
+		if id != record.ID && strings.EqualFold(existing.AggregateSHA256, record.AggregateSHA256) && (canonicalID == "" || id < canonicalID) {
+			canonicalID = id
+		}
+	}
+	if canonicalID != "" {
+		return cloneLocalMapRecord(r.doc.Maps[canonicalID]), true, nil
+	}
+	old, existed := r.doc.Maps[record.ID]
+	r.doc.Maps[record.ID] = cloneLocalMapRecord(record)
+	if err := r.persistLocked(); err != nil {
+		if existed {
+			r.doc.Maps[record.ID] = old
+		} else {
+			delete(r.doc.Maps, record.ID)
+		}
+		return mapLocalRecord{}, false, err
+	}
+	return cloneLocalMapRecord(record), false, nil
+}
+
 func (r *mapRegistry) delete(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

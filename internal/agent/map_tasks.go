@@ -119,6 +119,13 @@ func (e *Executor) importQQFlashMap(ctx context.Context, job domain.Job, payload
 	if err != nil {
 		return nil, wrapMapImportFailure(mapImportStageVPK, sourceName, err)
 	}
+	if existing, ok := e.maps.findByAggregate(result.AggregateSHA256); ok {
+		progress(88, "map content already exists; reusing existing map")
+		// Keep the canonical local map ID in the terminal result. Control checks
+		// that it belongs to the same node and digest before accepting it.
+		progress(100, "map import reused existing map")
+		return e.maps.importResult(existing), nil
+	}
 	result.Warnings = append(mapPathDecodeWarnings(discovery.PathDecodes), result.Warnings...)
 	if discovery.Ignored > 0 {
 		result.Warnings = append(result.Warnings, mapLocalWarning{Code: "ignored_non_vpk_files", Message: fmt.Sprintf("已跳过分享和嵌套归档中的 %d 个非 VPK 文件", discovery.Ignored)})

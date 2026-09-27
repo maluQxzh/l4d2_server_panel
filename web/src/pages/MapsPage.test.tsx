@@ -75,7 +75,7 @@ describe("地图管理卡片", () => {
 
     expect(await screen.findByRole("heading", { name: "Claustrophobia" })).toBeInTheDocument();
     expect(screen.getByText("逻辑地图")).toBeInTheDocument();
-    expect(screen.getByText("地图占用空间")).toBeInTheDocument();
+    expect(screen.getByText("地图对象占用空间")).toBeInTheDocument();
     expect(screen.getByText("实例分配", { selector: ".map-summary span" })).toBeInTheDocument();
     expect(screen.queryByText("处理后容量")).not.toBeInTheDocument();
     expect(screen.queryByText("已清理空间")).not.toBeInTheDocument();
@@ -154,6 +154,31 @@ describe("地图管理卡片", () => {
     fireEvent.change(instance, { target: { value: unassignedOption.value } });
     expect(screen.queryByRole("heading", { name: "Claustrophobia" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "No Mercy Remix" })).toBeInTheDocument();
+  });
+
+  it("可搜索地图信息并筛选内容相同的地图", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const duplicateMap = { ...map, id: "22345678-1234-1234-1234-123456789abc", name: "CLAUSTROPHOBIA", assignments: [] };
+    const uniqueMap = { ...map, id: "32345678-1234-1234-1234-123456789abc", name: "No Mercy Remix", aggregate_sha256: "9".repeat(64), assignments: [], bsps: [], modes: [] };
+    vi.spyOn(api, "maps").mockResolvedValue({ items: [map, duplicateMap, uniqueMap] });
+    vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "instances").mockResolvedValue({ items: [assignedInstance] });
+    vi.spyOn(api, "jobs").mockResolvedValue({ items: [] });
+
+    render(<QueryClientProvider client={client}><ToastProvider><RealtimeProvider enabled={false}><MemoryRouter><MapsPage /></MemoryRouter></RealtimeProvider></ToastProvider></QueryClientProvider>);
+
+    expect(await screen.findByRole("heading", { name: "No Mercy Remix" })).toBeInTheDocument();
+    const search = screen.getByRole("searchbox", { name: "搜索地图" });
+    fireEvent.change(search, { target: { value: "Onyx St. Sewer" } });
+    expect(screen.getByRole("heading", { name: "Claustrophobia" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "No Mercy Remix" })).not.toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: "" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "重复地图筛选" }), { target: { value: "content" } });
+    expect(screen.getAllByText("内容相同 · 共 2 张")).toHaveLength(2);
+    expect(screen.getByText("360.0 MB")).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: /Claustrophobia/i })).toHaveLength(2);
+    expect(screen.queryByRole("heading", { name: "No Mercy Remix" })).not.toBeInTheDocument();
   });
 
   it("运行中实例未配置 RCON 时确认后仍继续分配", async () => {
