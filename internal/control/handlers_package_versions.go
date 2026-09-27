@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -24,8 +25,15 @@ func (s *Server) handleDeletePackage(w http.ResponseWriter, r *http.Request) {
 	packageID := chi.URLParam(r, "packageID")
 	principal := principalFromContext(r.Context())
 	idempotencyKey := r.Header.Get("Idempotency-Key")
+	allowChangedFiles, _ := strconv.ParseBool(r.URL.Query().Get("allow_changed_files"))
+	preserveChangedConfig, _ := strconv.ParseBool(r.URL.Query().Get("preserve_changed_config"))
+	if !allowChangedFiles {
+		preserveChangedConfig = false
+	}
 	requestFingerprint, err := keyedRequestFingerprint(s.config.MasterKey, "package", instanceID, "delete_package", map[string]any{
-		"package_id": packageID,
+		"package_id":              packageID,
+		"allow_changed_files":     allowChangedFiles,
+		"preserve_changed_config": preserveChangedConfig,
 	})
 	if err != nil {
 		s.fail(w, err)
@@ -105,6 +113,15 @@ func (s *Server) handleDeletePackage(w http.ResponseWriter, r *http.Request) {
 	payload := map[string]any{
 		"package_id": packageID, "kind": pkg.Kind, "package_path": path,
 		"expected_sha256": strings.ToLower(pkg.SHA256), "snapshot_paths": snapshots,
+	}
+	// These flags are accepted only as explicit query options so ordinary
+	// deletion remains fail-closed. The UI sets allow_changed_files after the
+	// user confirms that modified files may be removed.
+	if allowChangedFiles {
+		payload["allow_changed_files"] = true
+	}
+	if preserveChangedConfig {
+		payload["preserve_changed_config"] = true
 	}
 	if component {
 		managedFiles := make([]map[string]any, 0, len(componentFiles))

@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -678,5 +680,55 @@ func TestValidateSmartPluginTargetRejectsEscapeAndWrongRoot(t *testing.T) {
 		if err := validateSmartPluginTarget(target, ".smx"); err == nil {
 			t.Fatalf("expected %q to be rejected", target)
 		}
+	}
+}
+
+func TestSmartPluginDeleteAllowsExplicitCleanupAndPreservesChangedConfig(t *testing.T) {
+	executor, _, instancePath := uploadedPackageExecutor(t)
+	const packageID = "22222222-2222-4222-8222-222222222222"
+	configPath := "left4dead2/cfg/sourcemod/hostname.txt"
+	programPath := "left4dead2/addons/sourcemod/plugins/example.smx"
+	configFile := filepath.Join(instancePath, filepath.FromSlash(configPath))
+	programFile := filepath.Join(instancePath, filepath.FromSlash(programPath))
+	if err := os.MkdirAll(filepath.Dir(configFile), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(programFile), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configFile, []byte("changed by operator"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(programFile, []byte("changed program"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	configOriginal := sha256.Sum256([]byte("original config"))
+	configSHA, configSize := hex.EncodeToString(configOriginal[:]), int64(len("original config"))
+	programSHA := sha256.Sum256([]byte("original program"))
+	state := smartPluginState{Version: 1, PackageID: packageID, InstanceID: "instance", Name: "Example", Enabled: true,
+		ArchiveSHA: strings.Repeat("a", 64), UpdatedAt: time.Now().UTC(), Files: []smartPluginStateFile{
+			{ID: "config", TargetPath: configPath, SHA256: configSHA, Size: configSize},
+			{ID: "program", TargetPath: programPath, SHA256: hex.EncodeToString(programSHA[:]), Size: int64(len("original program")), Entrypoint: true},
+		}}
+	state.AggregateSHA = smartPluginAggregateSHA(state.Files)
+	if _, err := executor.writeSmartPluginState(state); err != nil {
+		t.Fatal(err)
+	}
+	result, err := executor.deletePackage(context.Background(), domain.Job{InstanceID: "instance", Payload: map[string]any{
+		"kind": "smart", "package_id": packageID, "expected_sha256": state.AggregateSHA,
+		"allow_changed_files": true, "preserve_changed_config": true,
+	}}, func(int, string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(configFile); err != nil {
+		t.Fatalf("changed config was not preserved: %v", err)
+	}
+	if _, err := os.Stat(programFile); !os.IsNotExist(err) {
+		t.Fatalf("changed program was not deleted: %v", err)
+	}
+	preserved, ok := result["preserved_config_files"].([]string)
+	if !ok || len(preserved) != 1 || preserved[0] != configPath {
+		t.Fatalf("unexpected preserved result: %#v", result)
 	}
 }

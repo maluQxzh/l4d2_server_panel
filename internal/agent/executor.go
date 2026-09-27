@@ -442,6 +442,11 @@ type operationPayload struct {
 	ManagedFiles               []managedPackageFile   `json:"managed_files,omitempty"`
 	AcknowledgeLiveChanges     bool                   `json:"acknowledge_live_changes,omitempty"`
 	AcknowledgeRestartRequired bool                   `json:"acknowledge_restart_required,omitempty"`
+	// AllowChangedFiles is set only after an explicit user confirmation. It lets
+	// uninstall continue when files were changed outside the package manager.
+	AllowChangedFiles bool `json:"allow_changed_files,omitempty"`
+	// PreserveChangedConfig keeps modified non-executable configuration files.
+	PreserveChangedConfig bool `json:"preserve_changed_config,omitempty"`
 }
 
 type managedPackageFile struct {

@@ -1181,20 +1181,35 @@ func (e *Executor) deleteSmartPlugin(job domain.Job, progress ProgressFunc) (map
 	if err != nil {
 		return nil, err
 	}
+	changed := make([]string, 0)
+	missing := make([]string, 0)
 	for _, file := range state.Files {
 		sourceRoot, sourcePath := instancePath, file.TargetPath
 		if !state.Enabled && file.Entrypoint {
 			sourceRoot, sourcePath = stateRoot, filepath.ToSlash(filepath.Join("disabled", file.ID+filepath.Ext(file.TargetPath)))
 		}
 		sha, _, err := hashRegularFileWithinNoFollow(sourceRoot, sourcePath, maxSmartPluginEntry)
-		if err != nil || !strings.EqualFold(sha, file.SHA256) {
-			return nil, fmt.Errorf("smart plugin file %q changed or is missing; deletion was refused", file.TargetPath)
+		if err != nil {
+			missing = append(missing, file.TargetPath)
+			if !payload.AllowChangedFiles {
+				return nil, fmt.Errorf("smart plugin file %q is missing; deletion was refused", file.TargetPath)
+			}
+			continue
+		}
+		if !strings.EqualFold(sha, file.SHA256) {
+			changed = append(changed, file.TargetPath)
+			if !payload.AllowChangedFiles {
+				return nil, fmt.Errorf("smart plugin file %q changed; deletion was refused", file.TargetPath)
+			}
 		}
 	}
 	for _, file := range state.Files {
 		sourceRoot, sourcePath := instancePath, file.TargetPath
 		if !state.Enabled && file.Entrypoint {
 			sourceRoot, sourcePath = stateRoot, filepath.ToSlash(filepath.Join("disabled", file.ID+filepath.Ext(file.TargetPath)))
+		}
+		if containsString(missing, file.TargetPath) || (containsString(changed, file.TargetPath) && payload.PreserveChangedConfig && isSmartPluginConfigPath(file.TargetPath)) {
+			continue
 		}
 		if err := deleteManagedFileNoFollow(sourceRoot, sourcePath); err != nil {
 			return nil, fmt.Errorf("delete smart plugin file %q: %w", file.TargetPath, err)
@@ -1204,7 +1219,43 @@ func (e *Executor) deleteSmartPlugin(job domain.Job, progress ProgressFunc) (map
 		return nil, fmt.Errorf("remove smart plugin state: %w", err)
 	}
 	progress(100, "smart plugin deleted")
-	return map[string]any{"package_id": packageID, "sha256": expectedSHA, "files": len(state.Files)}, nil
+	result := map[string]any{"package_id": packageID, "sha256": expectedSHA, "files": len(state.Files)}
+	if len(changed) > 0 {
+		result["changed_files"] = changed
+	}
+	if len(missing) > 0 {
+		result["missing_files"] = missing
+	}
+	if payload.PreserveChangedConfig {
+		preserved := make([]string, 0)
+		for _, path := range changed {
+			if isSmartPluginConfigPath(path) {
+				preserved = append(preserved, path)
+			}
+		}
+		if len(preserved) > 0 {
+			result["preserved_config_files"] = preserved
+		}
+	}
+	return result, nil
+}
+
+func containsString(items []string, value string) bool {
+	for _, item := range items {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+
+func isSmartPluginConfigPath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".cfg", ".ini", ".txt", ".json", ".kv", ".res":
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *Executor) smartPluginServerRunning(instanceID string) bool {

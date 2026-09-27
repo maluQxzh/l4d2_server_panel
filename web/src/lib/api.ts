@@ -436,8 +436,8 @@ export const api = {
   packageOperationStatus: (instanceId: string, jobId: string) => request<{ status: JobStatus; busy: boolean }>(
     `/instances/${encodeURIComponent(instanceId)}/package-operations/${encodeURIComponent(jobId)}`,
   ),
-  deletePackage: (instanceId: string, packageId: string, idempotencyKey?: string) => request<{ job_id: string }>(
-    `/instances/${encodeURIComponent(instanceId)}/packages/${encodeURIComponent(packageId)}`,
+  deletePackage: (instanceId: string, packageId: string, idempotencyKey?: string, options?: { allowChangedFiles?: boolean; preserveChangedConfig?: boolean }) => request<{ job_id: string }>(
+    `/instances/${encodeURIComponent(instanceId)}/packages/${encodeURIComponent(packageId)}${options ? `?allow_changed_files=${options.allowChangedFiles ? "1" : "0"}&preserve_changed_config=${options.preserveChangedConfig ? "1" : "0"}` : ""}`,
     { method: "DELETE", headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined },
   ),
   backups: (instanceId: string) => list<BackupRecord>(`/instances/${encodeURIComponent(instanceId)}/backups`),

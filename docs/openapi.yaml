@@ -1397,7 +1397,9 @@ paths:
       summary: 删除一个受管模组、智能插件或整套服务端组件
       description: |
         需要 packages.delete。单文件包仅支持面板登记且路径位于标准目录的 VPK 或 SourceMod SMX。
-        智能插件必须先停止实例；Agent 逐文件复核 SHA-256，恢复接管前基线或删除自身文件，再移除整包记录。
+        智能插件必须先停止实例；默认逐文件复核 SHA-256，发现漂移或缺失时拒绝删除。显式确认后可通过
+        allow_changed_files=1 继续删除；preserve_changed_config=1 会保留已修改的 CFG/INI/TXT/JSON/KV/RES 配置，
+        缺失文件按已删除处理，异常的程序/入口文件仍会删除。返回的任务结果会列出 changed_files、missing_files 和 preserved_config_files。
         SourceMod/Metamod 整套组件也必须先停止实例，并要求 component_package_delete_v1 Agent 和安装后生成的非空逐文件清单；
         Agent 复核固定组件目录、大小和 SHA-256，创建检查点后只删除清单文件。SourceMod 的
         left4dead2/addons/sourcemod/configs/admins_simple.ini 始终保留；SourceMod 记录存在时不能删除 Metamod。
@@ -1406,6 +1408,16 @@ paths:
         - { $ref: "#/components/parameters/PackageID" }
         - { $ref: "#/components/parameters/CSRF" }
         - { $ref: "#/components/parameters/IdempotencyKey" }
+        - name: allow_changed_files
+          in: query
+          required: false
+          description: 交互式确认后允许删除已修改或异常的智能插件文件。
+          schema: { type: boolean, default: false }
+        - name: preserve_changed_config
+          in: query
+          required: false
+          description: 保留已修改的智能插件配置文件；仅在 allow_changed_files=true 时生效。
+          schema: { type: boolean, default: false }
       responses:
         "202":
           description: 删除任务已排队

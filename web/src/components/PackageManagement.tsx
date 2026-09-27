@@ -62,6 +62,9 @@ export function PackageBatchControls({ instance, items, selected, setSelected, c
     if (!eligible.length) return;
     const verb = action === "delete" ? "永久删除" : action === "enable" ? "启用" : "停用";
     if (!window.confirm(`确认${verb} ${eligible.length} 项？${chosen.length - eligible.length ? `另有 ${chosen.length - eligible.length} 项不满足条件，将跳过。` : ""}${action === "delete" ? "文件及版本历史会一并移除；SourceMod 的管理员配置保留。" : ""}`)) return;
+    const preserveChangedConfig = action === "delete" && eligible.some((item) => item.kind === "smart")
+      ? window.confirm("如果发现智能插件的修改配置：点击“确定”保留，点击“取消”一并删除。异常程序文件会在确认后删除。")
+      : false;
     const live = action === "enable" && instance.status !== "stopped" && eligible.some((item) => item.kind === "smart");
     if (live && (!window.confirm("实例正在运行。启用只会移动插件入口文件，已加载模块不会立刻变化。仍要继续吗？") || !window.confirm("请再次确认：本次变更需要重启实例才能完整生效。"))) return;
     stopped.current = false;
@@ -82,7 +85,7 @@ export function PackageBatchControls({ instance, items, selected, setSelected, c
           const key = newIdempotencyKey();
           const payload = { package_id: item.id, enabled: action === "enable", acknowledge_live_changes: live, acknowledge_restart_required: live };
           const response = await submitWhenInstanceReady(
-            () => action === "delete" ? api.deletePackage(instance.id, item.id, key) : api.instanceAction(instance.id, "toggle_package", payload, key),
+            () => action === "delete" ? api.deletePackage(instance.id, item.id, key, { allowChangedFiles: true, preserveChangedConfig }) : api.instanceAction(instance.id, "toggle_package", payload, key),
             canceled,
             (message) => setProgress(`${verb} ${index + 1} / ${queue.length}：${item.name} · ${message}`),
           );
