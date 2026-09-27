@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -41,8 +42,9 @@ func (s *Store) applyMapJobResult(ctx context.Context, job domain.Job) error {
 }
 
 func (s *Store) applyMapImportResult(ctx context.Context, job domain.Job) error {
-	mapID := strings.TrimSpace(stringFromAny(job.Payload["map_id"]))
-	if mapID == "" || uuid.Validate(mapID) != nil || mapID != strings.TrimSpace(stringFromAny(job.Result["map_id"])) {
+	requestedMapID := strings.TrimSpace(stringFromAny(job.Payload["map_id"]))
+	mapID := strings.TrimSpace(stringFromAny(job.Result["map_id"]))
+	if requestedMapID == "" || uuid.Validate(requestedMapID) != nil || mapID == "" || uuid.Validate(mapID) != nil {
 		return errors.New("Agent returned an invalid map ID")
 	}
 	name := strings.TrimSpace(stringFromAny(job.Result["name"]))
@@ -103,6 +105,22 @@ func (s *Store) applyMapImportResult(ctx context.Context, job domain.Job) error 
 		return err
 	}
 	defer tx.Rollback()
+	if mapID != requestedMapID {
+		var existingAggregate string
+		err := tx.QueryRowContext(ctx, `SELECT aggregate_sha256 FROM maps WHERE id=?1 AND node_id=?2`, mapID, job.NodeID).Scan(&existingAggregate)
+		if errors.Is(err, sql.ErrNoRows) || !strings.EqualFold(existingAggregate, aggregateSHA) {
+			return errors.New("Agent returned an unknown deduplicated map ID")
+		}
+		return tx.Commit()
+	}
+	var duplicateID string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM maps WHERE node_id=?1 AND aggregate_sha256=?2 AND id<>?3 AND health<>'deleting' ORDER BY created_at,id LIMIT 1`, job.NodeID, aggregateSHA, mapID).Scan(&duplicateID)
+	if err == nil {
+		return tx.Commit()
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	createdAt := jobProjectionTimestamp(job)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO maps(id,node_id,name,author,version,description,poster_mime,poster_data,
 		health,aggregate_sha256,total_size,source_type,source_name,removed_files,removed_bytes,created_by,created_at,updated_at)

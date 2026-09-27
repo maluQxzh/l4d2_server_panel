@@ -265,8 +265,13 @@ h1, h2, h3, p { margin-top: 0; }
 .map-summary div { display: flex; flex-direction: column; gap: 4px; }
 .map-summary span { color: var(--text-faint); font-size: 9px; }
 .map-summary strong { font: 650 16px var(--font-mono); }
-.map-toolbar { margin-bottom: 14px; justify-content: space-between; }
-.map-toolbar__filters { flex: 1; display: grid; grid-template-columns: repeat(3, minmax(150px, 240px)); gap: 10px; }
+.map-toolbar { margin-bottom: 14px; flex-direction: column; align-items: stretch; }
+.map-toolbar__search-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.map-toolbar__search-row .search-box { min-width: 0; flex: 1 1 280px; }
+.map-toolbar__search-row .toolbar-count { margin-left: auto; white-space: nowrap; }
+.map-toolbar__filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.map-toolbar__hint { margin: 0; color: var(--text-dim); font-size: 11px; line-height: 1.6; }
+.map-card__duplicate { display: inline-block; margin-top: 8px; color: var(--green); font-size: 11px; }
 .map-toolbar .field { min-width: 0; margin: 0; }
 .map-toolbar .field > span { display: none; }
 .map-processing { margin-bottom: 14px; }

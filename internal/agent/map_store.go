@@ -69,6 +69,37 @@ func newMapStore(config *Config) (*mapStore, error) {
 
 func (s *mapStore) defaultRoot() mapRoot { return s.roots[0] }
 
+func (s *mapStore) findByAggregate(aggregateSHA256 string) (mapLocalRecord, bool) {
+	for _, record := range s.registry.list() {
+		if !strings.EqualFold(record.AggregateSHA256, aggregateSHA256) {
+			continue
+		}
+		healthy := true
+		for _, artifact := range record.Artifacts {
+			artifactHealthy := false
+			for filesystemID, relative := range artifact.Replicas {
+				root, configured := s.byFS[filesystemID]
+				if !configured {
+					continue
+				}
+				sha, size, err := hashRegularFileWithinNoFollow(root.Path, relative, maxMapObjectSize)
+				if err == nil && strings.EqualFold(sha, artifact.SHA256) && size == artifact.Size {
+					artifactHealthy = true
+					break
+				}
+			}
+			if !artifactHealthy {
+				healthy = false
+				break
+			}
+		}
+		if healthy {
+			return record, true
+		}
+	}
+	return mapLocalRecord{}, false
+}
+
 func (s *mapStore) cleanupStaging() error {
 	staging, err := ResolveWithin(s.defaultRoot().Path, "staging")
 	if err != nil {
@@ -136,9 +167,10 @@ func (s *mapStore) publish(record mapLocalRecord, outputs []string, posterOutput
 		return record, errors.New("map output count does not match artifact metadata")
 	}
 	root := s.defaultRoot()
-	created := make([]string, 0, len(outputs))
+	createdObjects := make([]string, 0, len(outputs))
+	createdPosters := make([]string, 0, 1)
 	rollback := func() {
-		for _, relative := range created {
+		for _, relative := range append(createdObjects, createdPosters...) {
 			if _, links, err := managedHardLinkIdentity(root.Path, relative); err == nil && links == 1 {
 				_ = deleteManagedFileNoFollow(root.Path, relative)
 			}
@@ -155,7 +187,7 @@ func (s *mapStore) publish(record mapLocalRecord, outputs []string, posterOutput
 				rollback()
 				return record, fmt.Errorf("publish map object %d: %w", index, err)
 			}
-			created = append(created, relative)
+			createdObjects = append(createdObjects, relative)
 		} else if err != nil {
 			rollback()
 			return record, fmt.Errorf("inspect existing map object %d: %w", index, err)
@@ -186,7 +218,7 @@ func (s *mapStore) publish(record mapLocalRecord, outputs []string, posterOutput
 				rollback()
 				return record, fmt.Errorf("publish map poster: %w", err)
 			}
-			created = append(created, relative)
+			createdPosters = append(createdPosters, relative)
 		} else if err != nil || existingSHA != record.Poster.SHA256 || existingSize != record.Poster.Size {
 			rollback()
 			return record, errors.New("published map poster is inconsistent")
@@ -196,11 +228,23 @@ func (s *mapStore) publish(record mapLocalRecord, outputs []string, posterOutput
 	if record.Assignments == nil {
 		record.Assignments = make(map[string]mapLocalAssignment)
 	}
-	if err := s.registry.put(record); err != nil {
+	canonical, duplicate, err := s.registry.putIfAggregateAbsent(record)
+	if err != nil {
 		rollback()
 		return record, err
 	}
-	return record, nil
+	if duplicate {
+		// Content-addressed objects may already be referenced by the canonical
+		// record, so keep them. Only the duplicate's map-ID-specific poster is
+		// safe to remove.
+		for _, relative := range createdPosters {
+			if err := deleteManagedFileNoFollow(root.Path, relative); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return record, fmt.Errorf("remove duplicate map poster: %w", err)
+			}
+		}
+		return canonical, nil
+	}
+	return canonical, nil
 }
 
 func (s *mapStore) ensureReplica(record *mapLocalRecord, artifactIndex int, destination mapRoot) error {

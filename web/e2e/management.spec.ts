@@ -1256,7 +1256,7 @@ test("地图管理支持导入、警告、运行中热更新分配与两阶段�
   });
   await page.goto("/maps");
   await expect(page.getByRole("heading", { name: "地图管理" })).toBeVisible();
-  await expect(page.getByText("地图占用空间")).toBeVisible();
+  await expect(page.getByText("地图对象占用空间")).toBeVisible();
   await expect(page.getByText("处理后容量")).toHaveCount(0);
   const assignedCard = page.locator(".map-card").filter({ hasText: "字典警告地图" });
   await expect(assignedCard.getByText("处理后 VPK 大小：")).toBeVisible();

@@ -78,4 +78,27 @@ func TestMapImportProjectsMissionMetadataPosterModesAndChapters(t *testing.T) {
 	if err != nil || posterNode != nodeID || mime != "image/jpeg" || !bytes.Equal(body, poster.Bytes()) {
 		t.Fatalf("unexpected poster projection: node=%q mime=%q bytes=%d err=%v", posterNode, mime, len(body), err)
 	}
+
+	duplicateID := uuid.NewString()
+	duplicateJob := job
+	duplicateJob.ID = uuid.NewString()
+	duplicateJob.Payload = map[string]any{"map_id": duplicateID}
+	duplicateJob.Result = map[string]any{
+		"map_id": mapID, "name": "Back to School (same content)", "aggregate_sha256": strings.Repeat("a", 64),
+		"total_size": float64(10), "source_name": "second-source.vpk", "removed_files": float64(0), "removed_bytes": float64(0),
+		"artifacts": []any{map[string]any{"ordinal": float64(0), "sha256": strings.Repeat("b", 64), "size": float64(10)}},
+		"bsps":      []any{map[string]any{"virtual_path": "maps/bts01.bsp", "start_name": "bts01", "dictionary_present": true}},
+		"modes":     []any{map[string]any{"name": "coop", "chapters": []any{map[string]any{"ordinal": float64(1), "bsp_name": "bts01", "display_name": "学校外围"}}}},
+		"warnings":  []any{}, "replicas": []any{map[string]any{"filesystem_id": "volume-1", "health": "healthy"}},
+	}
+	if err := store.ApplyJobResult(ctx, duplicateJob); err != nil {
+		t.Fatal(err)
+	}
+	var mapCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM maps WHERE node_id=?1`, nodeID).Scan(&mapCount); err != nil {
+		t.Fatal(err)
+	}
+	if mapCount != 1 {
+		t.Fatalf("duplicate map import created %d logical records", mapCount)
+	}
 }
