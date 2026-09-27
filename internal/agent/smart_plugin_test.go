@@ -732,3 +732,37 @@ func TestSmartPluginDeleteAllowsExplicitCleanupAndPreservesChangedConfig(t *test
 		t.Fatalf("unexpected preserved result: %#v", result)
 	}
 }
+
+func TestSmartPluginInstallCanAdoptExistingFileWithoutOverwriting(t *testing.T) {
+	executor, _, instancePath := uploadedPackageExecutor(t)
+	target := filepath.Join(instancePath, "left4dead2", "cfg", "sourcemod", "hostname.txt")
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("operator hostname"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	archive := smartTestZIP(t, map[string]string{"Host/left4dead2/cfg/sourcemod/hostname.txt": "archive hostname"})
+	encoded := base64.StdEncoding.EncodeToString(archive)
+	inspection, err := executor.inspectSmartPluginArchive(context.Background(), domain.Job{ID: "inspect-preserve", InstanceID: "instance", Payload: map[string]any{"name": "host.zip", "content_base64": encoded}}, func(int, string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder := inspection["folders"].([]any)[0].(map[string]any)
+	files := folder["files"].([]any)
+	fileID := files[0].(map[string]any)["id"].(string)
+	result, err := executor.installMod(context.Background(), domain.Job{ID: "install-preserve", InstanceID: "instance", Payload: map[string]any{
+		"kind": "smart", "name": "host.zip", "content_base64": encoded,
+		"inspection_fingerprint": inspection["fingerprint"],
+		"smart_packages":         []any{map[string]any{"folder_id": folder["id"], "preserve_existing": []any{fileID}}},
+	}}, func(int, string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, target, "operator hostname")
+	pkg := result["packages"].([]map[string]any)[0]
+	managed := pkg["files"].([]map[string]any)
+	if len(managed) != 1 || managed[0]["sha256"] != inspection["folders"].([]any)[0].(map[string]any)["files"].([]any)[0].(map[string]any)["existing_sha256"] {
+		t.Fatalf("preserved file was not projected with its existing digest: %#v", result)
+	}
+}

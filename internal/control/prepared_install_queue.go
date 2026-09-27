@@ -26,10 +26,11 @@ type preparedInstallQueueRequest struct {
 }
 
 type preparedSmartSelection struct {
-	FolderID  string            `json:"folder_id"`
-	PackageID string            `json:"package_id,omitempty"`
-	Overrides map[string]string `json:"overrides,omitempty"`
-	Takeovers []string          `json:"takeovers,omitempty"`
+	FolderID         string            `json:"folder_id"`
+	PackageID        string            `json:"package_id,omitempty"`
+	Overrides        map[string]string `json:"overrides,omitempty"`
+	Takeovers        []string          `json:"takeovers,omitempty"`
+	PreserveExisting []string          `json:"preserve_existing,omitempty"`
 }
 
 func smartQueuePayload(request preparedInstallQueueRequest, id string) map[string]any {
@@ -270,6 +271,9 @@ func (s *Store) advancePreparedInstallQueue(ctx context.Context, id string, comp
 	if stringFromAny(payload["kind"]) == "smart" && (len(bundleCompatible) < 5 || !bundleCompatible[4]) {
 		return false, nil
 	}
+	if smartPluginPreserveRequested(payload) && (len(bundleCompatible) < 6 || !bundleCompatible[5]) {
+		return false, nil
+	}
 	if boolFromAny(payload["official"]) && (len(bundleCompatible) < 4 || !bundleCompatible[3]) {
 		return false, nil
 	}
@@ -377,7 +381,7 @@ func (h *AgentHub) advancePreparedInstallQueues(ctx context.Context, nodeID stri
 	}
 	h.mu.Unlock()
 	for _, item := range targets {
-		changed, err := h.store.advancePreparedInstallQueue(ctx, item.id, h.Supports(item.node, protocol.CapabilityPreparedPackagesV1), h.Supports(item.node, protocol.CapabilityPreparedVPKBundlesV1), h.Supports(item.node, protocol.CapabilityPreparedWorkshopV1), h.Supports(item.node, protocol.CapabilityPreparedExtensionsV1), h.Supports(item.node, protocol.CapabilityPreparedOfficialExtensionsV1), h.Supports(item.node, protocol.CapabilityPreparedSmartPluginsV1) && h.Supports(item.node, protocol.CapabilitySmartPluginArchiveV2))
+		changed, err := h.store.advancePreparedInstallQueue(ctx, item.id, h.Supports(item.node, protocol.CapabilityPreparedPackagesV1), h.Supports(item.node, protocol.CapabilityPreparedVPKBundlesV1), h.Supports(item.node, protocol.CapabilityPreparedWorkshopV1), h.Supports(item.node, protocol.CapabilityPreparedExtensionsV1), h.Supports(item.node, protocol.CapabilityPreparedOfficialExtensionsV1), h.Supports(item.node, protocol.CapabilityPreparedSmartPluginsV1) && h.Supports(item.node, protocol.CapabilitySmartPluginArchiveV2), h.Supports(item.node, protocol.CapabilitySmartPluginPreserveV1))
 		if err != nil {
 			h.log.Error("advance prepared install queue", "job_id", item.id, "error", err)
 			continue
@@ -405,6 +409,12 @@ func (s *Server) handleQueuePreparedInstalls(w http.ResponseWriter, r *http.Requ
 		if s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, protocol.CapabilityPreparedSmartPluginsV1) {
 			writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用智能插件持久安装队列")
 			return
+		}
+		for _, selections := range request.SmartPackages {
+			if smartPluginPreserveRequested(map[string]any{"smart_packages": selections}) && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, protocol.CapabilitySmartPluginPreserveV1) {
+				writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用接管但不覆盖")
+				return
+			}
 		}
 	}
 	fingerprintPayload := map[string]any{"prepared_ids": request.IDs, "acknowledge_native_risk": request.Risk}

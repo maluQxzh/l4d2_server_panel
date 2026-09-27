@@ -37,6 +37,7 @@ const (
 const (
 	CapabilitySameSessionTerminalRetryV1   = "same_session_terminal_retry_v1"
 	CapabilitySmartPluginArchiveV2         = "smart_plugin_archive_v2"
+	CapabilitySmartPluginPreserveV1        = "smart_plugin_preserve_v1"
 	CapabilityTerminalConflictV1           = "terminal_conflict_v1"
 	CapabilityPreparedPackagesV1           = "prepared_packages_v1"
 	CapabilityPreparedQQFlashV1            = "prepared_qq_flash_v1"

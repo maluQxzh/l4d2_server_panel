@@ -1,6 +1,7 @@
 package control
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -117,6 +118,25 @@ func validateSmartPluginInstallPayload(instance domain.Instance, payload map[str
 	if !ok || len(packages) == 0 || len(packages) > 256 {
 		return errors.New("smart plugin installation requires 1 to 256 selected folders")
 	}
+	raw, err := json.Marshal(packages)
+	var selections []preparedSmartSelection
+	if err != nil || json.Unmarshal(raw, &selections) != nil {
+		return errors.New("invalid smart plugin selections")
+	}
+	for _, selection := range selections {
+		seen := map[string]bool{}
+		if len(selection.Takeovers)+len(selection.PreserveExisting) > 5000 || (selection.PackageID != "" && len(selection.PreserveExisting) != 0) {
+			return errors.New("invalid preserve-existing selections")
+		}
+		for _, ids := range [][]string{selection.Takeovers, selection.PreserveExisting} {
+			for _, id := range ids {
+				if id == "" || len(id) > 128 || seen[id] {
+					return errors.New("missing, duplicate or conflicting takeover selection")
+				}
+				seen[id] = true
+			}
+		}
+	}
 	if instance.Status == domain.InstanceRunning || instance.Status == domain.InstanceDegraded || instance.Status == domain.InstanceExternal {
 		live, _ := payload["acknowledge_live_changes"].(bool)
 		restart, _ := payload["acknowledge_restart_required"].(bool)
@@ -125,6 +145,20 @@ func validateSmartPluginInstallPayload(instance domain.Instance, payload map[str
 		}
 	}
 	return nil
+}
+
+func smartPluginPreserveRequested(payload map[string]any) bool {
+	raw, err := json.Marshal(payload["smart_packages"])
+	var selections []preparedSmartSelection
+	if err != nil || json.Unmarshal(raw, &selections) != nil {
+		return false
+	}
+	for _, selection := range selections {
+		if len(selection.PreserveExisting) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizePluginArchivePathEncoding(value string) (string, error) {

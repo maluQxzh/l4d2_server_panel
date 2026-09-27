@@ -60,6 +60,7 @@ type smartPluginFile struct {
 type smartPluginPathState struct {
 	Existing         bool   `json:"existing"`
 	ExistingSHA256   string `json:"existing_sha256,omitempty"`
+	ExistingSize     int64  `json:"existing_size"`
 	ManagedPackageID string `json:"managed_package_id,omitempty"`
 }
 
@@ -86,10 +87,11 @@ type smartPluginPlan struct {
 }
 
 type smartPluginSelection struct {
-	FolderID  string            `json:"folder_id"`
-	PackageID string            `json:"package_id,omitempty"`
-	Overrides map[string]string `json:"overrides,omitempty"`
-	Takeovers []string          `json:"takeovers,omitempty"`
+	FolderID         string            `json:"folder_id"`
+	PackageID        string            `json:"package_id,omitempty"`
+	Overrides        map[string]string `json:"overrides,omitempty"`
+	Takeovers        []string          `json:"takeovers,omitempty"`
+	PreserveExisting []string          `json:"preserve_existing,omitempty"`
 }
 
 type smartPluginStateFile struct {
@@ -330,8 +332,9 @@ func buildSmartPluginPlanFromSources(extracted, archiveName, archiveSHA, pathEnc
 					continue
 				}
 				pathState := smartPluginPathState{}
-				if existingSHA, _, hashErr := hashRegularFileWithinNoFollow(instancePath, inspectPath, maxSmartPluginEntry); hashErr == nil {
+				if existingSHA, existingSize, hashErr := hashRegularFileWithinNoFollow(instancePath, inspectPath, maxSmartPluginEntry); hashErr == nil {
 					pathState.Existing, pathState.ExistingSHA256 = true, existingSHA
+					pathState.ExistingSize = existingSize
 				} else if !errors.Is(hashErr, os.ErrNotExist) {
 					return smartPluginPlan{}, fmt.Errorf("inspect existing target %q: %w", inspectPath, hashErr)
 				}
@@ -614,6 +617,7 @@ func (e *Executor) installSmartPluginPlan(job domain.Job, payload operationPaylo
 		file                smartPluginFile
 		target, source      string
 		stateFileID         string
+		preserve            bool
 	}
 	pending := make([]pendingFile, 0)
 	selectedTargets := make(map[string]string)
@@ -643,8 +647,22 @@ func (e *Executor) installSmartPluginPlan(job domain.Job, payload operationPaylo
 		}
 		packageIDs[folder.ID] = packageID
 		takeovers := make(map[string]bool, len(selection.Takeovers))
+		knownFiles := make(map[string]bool, len(folder.Files))
+		for _, file := range folder.Files {
+			knownFiles[file.ID] = true
+		}
 		for _, id := range selection.Takeovers {
+			if !knownFiles[id] || takeovers[id] {
+				return nil, errors.New("unknown or duplicate takeover selection")
+			}
 			takeovers[id] = true
+		}
+		preserved := make(map[string]bool, len(selection.PreserveExisting))
+		for _, id := range selection.PreserveExisting {
+			if !knownFiles[id] || preserved[id] || takeovers[id] || selection.PackageID != "" {
+				return nil, errors.New("invalid, duplicate or conflicting preserve-existing selection")
+			}
+			preserved[id] = true
 		}
 		for _, file := range folder.Files {
 			target := file.TargetPath
@@ -667,9 +685,11 @@ func (e *Executor) installSmartPluginPlan(job domain.Job, payload operationPaylo
 				return nil, fmt.Errorf("target %q is already managed by another package", target)
 			}
 			existingSHA := ""
-			if hash, _, hashErr := hashRegularFileWithinNoFollow(instancePath, target, maxSmartPluginEntry); hashErr == nil {
+			var existingSize int64
+			if hash, size, hashErr := hashRegularFileWithinNoFollow(instancePath, target, maxSmartPluginEntry); hashErr == nil {
 				existingSHA = hash
-				if registeredOwner == "" && selection.PackageID == "" && !takeovers[file.ID] {
+				existingSize = size
+				if registeredOwner == "" && selection.PackageID == "" && !takeovers[file.ID] && !preserved[file.ID] {
 					return nil, fmt.Errorf("existing target %q requires explicit takeover confirmation", target)
 				}
 			} else if !errors.Is(hashErr, os.ErrNotExist) {
@@ -684,6 +704,14 @@ func (e *Executor) installSmartPluginPlan(job domain.Job, payload operationPaylo
 				return nil, err
 			}
 			item := pendingFile{folderID: folder.ID, packageID: packageID, file: file, target: target, source: source, stateFileID: file.ID}
+			if preserved[file.ID] {
+				observed, inspected := file.PathStates[target]
+				if registeredOwner != "" || !inspected || !observed.Existing || existingSHA == "" || existingSHA != observed.ExistingSHA256 || existingSize != observed.ExistingSize {
+					return nil, fmt.Errorf("preserved target %q must be an inspected, unchanged, unowned regular file", target)
+				}
+				item.preserve = true
+				item.file.SHA256, item.file.Size = existingSHA, existingSize
+			}
 			if old, updating := updateStates[packageID]; updating {
 				matched := false
 				for _, oldFile := range old.Files {
@@ -744,6 +772,10 @@ func (e *Executor) installSmartPluginPlan(job domain.Job, payload operationPaylo
 	defer os.RemoveAll(rollbackRoot)
 	rollbacks := make([]smartRollbackFile, 0, len(pending))
 	for _, item := range pending {
+		// Adoption never writes the existing file, including on rollback.
+		if item.preserve {
+			continue
+		}
 		backup := filepath.ToSlash(filepath.Join("files", item.file.ID+filepath.Ext(item.target)))
 		if _, _, hashErr := hashRegularFileWithinNoFollow(instancePath, item.target, maxSmartPluginEntry); hashErr == nil {
 			if err := copyManagedFileBetweenRoots(instancePath, item.target, rollbackRoot, backup); err != nil {
@@ -776,6 +808,9 @@ func (e *Executor) installSmartPluginPlan(job domain.Job, payload operationPaylo
 	}
 	progress(60, "installing recognized plugin files")
 	for _, item := range pending {
+		if item.preserve {
+			continue
+		}
 		if err := copyRegularFileToRootNoFollow(item.source, instancePath, item.target, secureWriteOptions{Mode: 0o640, ExpectedSHA256: item.file.SHA256, Replace: true, RejectExistingLink: true}); err != nil {
 			if rollbackErr := rollback(); rollbackErr != nil {
 				return nil, fmt.Errorf("install smart plugin file: %w; rollback also failed: %v", err, rollbackErr)
@@ -784,6 +819,15 @@ func (e *Executor) installSmartPluginPlan(job domain.Job, payload operationPaylo
 		}
 	}
 	progress(82, "committing managed plugin manifests")
+	for _, item := range pending {
+		if !item.preserve {
+			continue
+		}
+		sha, size, checkErr := hashRegularFileWithinNoFollow(instancePath, item.target, maxSmartPluginEntry)
+		if checkErr != nil || sha != item.file.SHA256 || size != item.file.Size {
+			return nil, errors.Join(fmt.Errorf("preserved target %q changed before manifest commit; inspect again", item.target), checkErr, rollback())
+		}
+	}
 	results := make([]map[string]any, 0, len(packageIDs))
 	type stateCommit struct{ root, old string }
 	stateCommits := make([]stateCommit, 0, len(packageIDs))

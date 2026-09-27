@@ -35,6 +35,12 @@ type smartQueueFolder struct {
 		Size       int64  `json:"size"`
 		Entrypoint bool   `json:"entrypoint"`
 		Native     bool   `json:"native"`
+		PathStates map[string]struct {
+			Existing         bool   `json:"existing"`
+			ExistingSHA256   string `json:"existing_sha256"`
+			ExistingSize     *int64 `json:"existing_size"`
+			ManagedPackageID string `json:"managed_package_id"`
+		} `json:"path_states"`
 	} `json:"files"`
 }
 
@@ -224,6 +230,12 @@ func preparedSmartConsumptionPayload(ctx context.Context, tx *sql.Tx, instanceID
 			}
 			takeovers[id] = true
 		}
+		for _, id := range selection.PreserveExisting {
+			if !files[id] || takeovers[id] || selection.PackageID != "" {
+				return nil, fmt.Errorf("未知、重复或冲突的保留内容接管选择: %w", ErrConflict)
+			}
+			takeovers[id] = true
+		}
 	}
 	var status string
 	if err := tx.QueryRowContext(ctx, `SELECT status FROM instances WHERE id=?1`, instanceID).Scan(&status); err != nil {
@@ -284,6 +296,10 @@ func preparedSmartConsumptionPayload(ctx context.Context, tx *sql.Tx, instanceID
 			}
 		}
 		selectedPaths := map[string]bool{}
+		preserved := map[string]bool{}
+		for _, id := range selection.PreserveExisting {
+			preserved[id] = true
+		}
 		for _, file := range folder.Files {
 			target := file.TargetPath
 			if override := strings.TrimSpace(selection.Overrides[file.ID]); override != "" {
@@ -303,6 +319,13 @@ func preparedSmartConsumptionPayload(ctx context.Context, tx *sql.Tx, instanceID
 				}
 			}
 			item.Files[target] = smartQueueFile{Path: target, SHA256: file.SHA256, Size: file.Size, Entrypoint: file.Entrypoint}
+			if preserved[file.ID] {
+				observed, found := file.PathStates[target]
+				if !found || !observed.Existing || observed.ManagedPackageID != "" || !validPackageSHA(observed.ExistingSHA256) || observed.ExistingSize == nil || *observed.ExistingSize < 0 || *observed.ExistingSize > 512<<20 {
+					return nil, fmt.Errorf("接管但不覆盖需要预检中的未纳管普通文件，请重新识别: %w", ErrConflict)
+				}
+				item.Files[target] = smartQueueFile{Path: target, SHA256: observed.ExistingSHA256, Size: *observed.ExistingSize, Entrypoint: file.Entrypoint}
+			}
 		}
 		for path, file := range item.Files {
 			if selectedPaths[path] {

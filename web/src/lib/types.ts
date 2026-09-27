@@ -435,7 +435,7 @@ export interface SmartPluginFilePlan {
   existing: boolean;
   existing_sha256?: string;
   managed_package_id?: string;
-  path_states?: Record<string, { existing: boolean; existing_sha256?: string; managed_package_id?: string }>;
+  path_states?: Record<string, { existing: boolean; existing_sha256?: string; existing_size?: number; managed_package_id?: string }>;
   size: number;
   sha256: string;
 }
@@ -469,6 +469,7 @@ export interface SmartPluginSelection {
   package_id?: string;
   overrides?: Record<string, string>;
   takeovers?: string[];
+  preserve_existing?: string[];
 }
 
 export interface PackageVersionRecord {

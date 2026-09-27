@@ -812,7 +812,7 @@ function PackageCard({ item, instance, busy, selected: checked, onSelect }: { it
   const componentInventoryMissing = serverComponent && (!item.sha256 || !item.file_count);
   const managedDeleteBlocked = (item.kind === "smart" || serverComponent) && instance.status !== "stopped";
   const remove = useMutation({
-    mutationFn: (options?: { allowChangedFiles?: boolean; preserveChangedConfig?: boolean }) => api.deletePackage(instanceId, item.id, undefined, options),
+    mutationFn: (options?: { allowChangedFiles?: boolean; preserveChangedConfig?: boolean }) => options ? api.deletePackage(instanceId, item.id, undefined, options) : api.deletePackage(instanceId, item.id),
     onSuccess: () => {
       toast.push("组件删除任务已提交");
       void client.invalidateQueries({ queryKey: ["jobs"] });
@@ -907,7 +907,7 @@ function PackageDetailsModal({ open, item, instance, onClose, onEdit }: { open: 
   </Modal>;
 }
 
-type SmartPluginChoice = { selected: boolean; packageId?: string; overrides: Record<string, string>; takeovers: string[] };
+type SmartPluginChoice = { selected: boolean; packageId?: string; overrides: Record<string, string>; takeovers: string[]; preserveExisting: string[] };
 
 function smartPluginFileState(file: SmartPluginFilePlan, choice: SmartPluginChoice) {
   const target = file.ambiguous ? choice.overrides[file.id]?.trim() || "" : file.target_path || file.suggested_path || "";
@@ -918,11 +918,12 @@ function smartPluginFileState(file: SmartPluginFilePlan, choice: SmartPluginChoi
   const otherOwner = Boolean(owner && owner !== choice.packageId);
   const takeoverRequired = existing && !owner;
   const takeoverConfirmed = choice.takeovers.includes(file.id);
+  const preserveConfirmed = choice.preserveExisting.includes(file.id);
   let blocker = "";
   if (file.ambiguous && !target) blocker = "需要确认安装路径";
   else if (otherOwner) blocker = "目标路径已由另一个面板包管理";
-  else if (takeoverRequired && !takeoverConfirmed) blocker = "目标文件已存在，需要确认彻底接管并覆盖";
-  return { target, existing, owner, sameOwner, otherOwner, takeoverRequired, takeoverConfirmed, blocker };
+  else if (takeoverRequired && !takeoverConfirmed && !preserveConfirmed) blocker = "目标文件已存在，请选择接管并覆盖或接管但不覆盖";
+  return { target, existing, owner, sameOwner, otherOwner, takeoverRequired, takeoverConfirmed, preserveConfirmed, blocker };
 }
 
 function InstallPackageModal({ open, instance, section, metamodInstalled, smartPackages, onClose }: { open: boolean; instance: InstanceRecord; section: PackageSection; metamodInstalled?: boolean; smartPackages: PackageRecord[]; onClose: () => void }) {
@@ -996,7 +997,7 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
         const overrides: Record<string, string> = {};
         for (const file of folder.files) if (file.ambiguous && file.suggested_path) overrides[file.id] = file.suggested_path;
         const existing = smartPackages.find((item) => item.name.localeCompare(folder.name, undefined, { sensitivity: "accent" }) === 0);
-        choices[folder.id] = { selected: true, packageId: existing?.id, overrides, takeovers: [] };
+        choices[folder.id] = { selected: true, packageId: existing?.id, overrides, takeovers: [], preserveExisting: [] };
       }
       setSmartPlan(plan);
       setSmartChoices(choices);
@@ -1025,6 +1026,7 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
       smart_packages: { [id]: selectedSmartFolders.map((folder): SmartPluginSelection => ({
         folder_id: folder.id, package_id: smartChoices[folder.id].packageId,
         overrides: smartChoices[folder.id].overrides, takeovers: smartChoices[folder.id].takeovers,
+        preserve_existing: smartChoices[folder.id].preserveExisting,
       })) },
     };
     const signature = JSON.stringify([instance.id, id, risk, options]);
@@ -1048,6 +1050,7 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
           package_id: smartChoices[folder.id].packageId,
           overrides: smartChoices[folder.id].overrides,
           takeovers: smartChoices[folder.id].takeovers,
+          preserve_existing: smartChoices[folder.id].preserveExisting,
         })) : undefined,
         acknowledge_live_changes: liveAcknowledged,
         acknowledge_restart_required: liveAcknowledged,
@@ -1124,8 +1127,8 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
                   const state = smartPluginFileState(file, choice);
                   return <div className={`smart-plugin-file ${file.ambiguous || state.existing ? "smart-plugin-file--attention" : ""}`} key={file.id}>
                     <div><code>{file.source_path}</code><span>{file.reason}{file.entrypoint ? " · 加载入口" : ""}</span></div>
-                    {file.ambiguous ? <Field label="安装路径"><input list={`smart-paths-${file.id}`} value={state.target} disabled={!choice.selected} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], overrides: { ...current[folder.id].overrides, [file.id]: event.target.value } } }))} /><datalist id={`smart-paths-${file.id}`}>{file.choices?.map((path) => <option value={path} key={path} />)}</datalist></Field> : <code className="smart-plugin-target">→ {state.target}</code>}
-                    {state.otherOwner ? <div className="smart-plugin-managed-conflict">该路径已由另一个面板包管理，不能覆盖。请取消选择此插件或调整歧义路径。</div> : state.sameOwner ? <div className="smart-plugin-update-path">已登记为此插件的文件，将作为更新替换。</div> : state.takeoverRequired && <label className="smart-plugin-takeover"><input type="checkbox" disabled={!choice.selected} checked={state.takeoverConfirmed} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], takeovers: event.target.checked ? [...current[folder.id].takeovers, file.id] : current[folder.id].takeovers.filter((id) => id !== file.id) } }))} />彻底接管并覆盖实例中的已有文件（删除插件时会删除该文件，不恢复原文件）</label>}
+                    {file.ambiguous ? <Field label="安装路径"><input list={`smart-paths-${file.id}`} value={state.target} disabled={!choice.selected} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], overrides: { ...current[folder.id].overrides, [file.id]: event.target.value }, takeovers: current[folder.id].takeovers.filter((id) => id !== file.id), preserveExisting: current[folder.id].preserveExisting.filter((id) => id !== file.id) } }))} /><datalist id={`smart-paths-${file.id}`}>{file.choices?.map((path) => <option value={path} key={path} />)}</datalist></Field> : <code className="smart-plugin-target">→ {state.target}</code>}
+                    {state.otherOwner ? <div className="smart-plugin-managed-conflict">该路径已由另一个面板包管理，不能覆盖。请取消选择此插件或调整歧义路径。</div> : state.sameOwner ? <div className="smart-plugin-update-path">已登记为此插件的文件，将作为更新替换。</div> : state.takeoverRequired && <><label className="smart-plugin-takeover"><input type="checkbox" disabled={!choice.selected} checked={state.takeoverConfirmed} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], preserveExisting: current[folder.id].preserveExisting.filter((id) => id !== file.id), takeovers: event.target.checked ? [...current[folder.id].takeovers, file.id] : current[folder.id].takeovers.filter((id) => id !== file.id) } }))} />彻底接管并覆盖实例中的已有文件（删除插件时会删除该文件，不恢复原文件）</label><label className="smart-plugin-takeover"><input type="checkbox" disabled={!choice.selected} checked={state.preserveConfirmed} onChange={(event) => setSmartChoices((current) => ({ ...current, [folder.id]: { ...current[folder.id], takeovers: current[folder.id].takeovers.filter((id) => id !== file.id), preserveExisting: event.target.checked ? [...current[folder.id].preserveExisting, file.id] : current[folder.id].preserveExisting.filter((id) => id !== file.id) } }))} />接管但不覆盖（保留现有内容并纳入插件管理，卸载时按插件删除规则处理）</label></>}
                   </div>;
                 })}
               </div>

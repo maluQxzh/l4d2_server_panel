@@ -498,6 +498,7 @@ describe("服务端组件依赖", () => {
   });
 
   it("把未纳管的已有文件显示为待接管项，并明确列出安装阻塞原因", async () => {
+    const install = vi.spyOn(api, "instanceAction").mockResolvedValue({ job_id: "install-preserve" });
     await inspectSmartPlugin(smartPlan({
       id: "file-1",
       source_path: "Gear/left4dead2/cfg/sourcemod/gear.cfg",
@@ -513,14 +514,20 @@ describe("服务端组件依赖", () => {
 
     expect(screen.queryByText("已登记为此插件的文件，将作为更新替换。")).not.toBeInTheDocument();
     const takeover = screen.getByRole("checkbox", { name: /彻底接管并覆盖实例中的已有文件.*不恢复原文件/ });
+    const preserve = screen.getByRole("checkbox", { name: /接管但不覆盖/ });
     expect(takeover).not.toBeChecked();
+    expect(preserve).not.toBeChecked();
     expect(screen.getByText("还有 1 项需要处理，暂时无法安装")).toBeVisible();
-    expect(screen.getByText("目标文件已存在，需要确认彻底接管并覆盖")).toBeVisible();
+    expect(screen.getByText("目标文件已存在，请选择接管并覆盖或接管但不覆盖")).toBeVisible();
     expect(screen.getByRole("button", { name: "安装 1 个插件" })).toBeDisabled();
 
-    fireEvent.click(takeover);
+    fireEvent.click(preserve);
     expect(screen.queryByText("还有 1 项需要处理，暂时无法安装")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "安装 1 个插件" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "安装 1 个插件" }));
+    await waitFor(() => expect(install).toHaveBeenCalledWith(instance.id, "install_package", expect.objectContaining({
+      smart_packages: [expect.objectContaining({ preserve_existing: ["file-1"], takeovers: [] })],
+    })));
   });
 
   it("仅在两个非空包 ID 相同时把已有文件识别为同插件更新", async () => {

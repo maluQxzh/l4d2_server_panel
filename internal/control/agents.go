@@ -817,6 +817,11 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		if smartPluginArchiveTask && !smartPluginArchiveV2Supported {
 			continue
 		}
+		if smartPluginArchiveTask && smartPluginPreserveRequested(job.Payload) {
+			if _, ok := client.capabilities[protocol.CapabilitySmartPluginPreserveV1]; !ok {
+				continue
+			}
+		}
 		smartPluginTask := (job.Type == "toggle_package" || job.Type == "delete_package") && strings.EqualFold(stringFromAny(job.Payload["kind"]), "smart")
 		if smartPluginTask && !smartPluginArchiveSupported {
 			continue

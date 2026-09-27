@@ -749,6 +749,10 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_smart_plugin_install", smartErr.Error())
 			return
 		}
+		if smartPluginPreserveRequested(request.Payload) && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, protocol.CapabilitySmartPluginPreserveV1) {
+			writeError(w, http.StatusConflict, "agent_upgrade_required", "请升级 Agent 后使用接管但不覆盖")
+			return
+		}
 		if strings.EqualFold(stringFromAny(request.Payload["kind"]), "smart") && s.agents.Connected(instance.NodeID) && !s.agents.Supports(instance.NodeID, protocol.CapabilitySmartPluginArchiveV2) {
 			writeError(w, http.StatusConflict, "agent_upgrade_required", "目标 Agent 不支持插件压缩包路径编码，请先升级 Agent")
 			return
