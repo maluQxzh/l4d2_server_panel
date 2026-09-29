@@ -43,7 +43,7 @@ func TestExecuteRCONOnLocalHostsRetriesDialFailure(t *testing.T) {
 		serverErr <- err
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
 	defer cancel()
 	response, err := executeRCONOnLocalHosts(ctx, []string{"127.0.0.2", "127.0.0.1"}, port, "secret", "status", time.Second)
 	if err != nil {

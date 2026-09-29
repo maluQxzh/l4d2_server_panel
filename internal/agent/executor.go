@@ -540,6 +540,9 @@ func (e *Executor) applyConfiguration(record InstanceRecord, payload operationPa
 	if err := e.registry.Put(record); err != nil {
 		return record, "", err
 	}
+	if e.processes != nil {
+		e.processes.SetAutoRestart(record.ID, record.AutoRestart)
+	}
 	return record, "left4dead2/cfg/server.cfg", nil
 }
 
@@ -1612,7 +1615,8 @@ type RCONPlayer struct {
 	Bot       bool   `json:"bot,omitempty"`
 }
 
-var statusPlayerPattern = regexp.MustCompile(`(?m)^#\s+(?:[0-9]+\s+)?([0-9]+)\s+"((?:\\.|[^"])*)"\s+(\S+)\s+(\S+)\s+([0-9]+)\s+[0-9]+\s+\S+\s+[0-9]+(?:\s+\S+)?\s*$`)
+var statusPlayerPattern = regexp.MustCompile(`(?m)^\s*#\s+(?:[0-9]+\s+)?([0-9]+)\s+"((?:\\.|[^"])*)"\s+(\S+)([^\r\n]*)`)
+var emptyStatusPlayersPattern = regexp.MustCompile(`(?mi)^\s*players\s*:\s*0\s+(?:humans|active)`)
 
 func (e *Executor) rconPlayers(ctx context.Context, job domain.Job, progress ProgressFunc) (map[string]any, error) {
 	payload, err := decodeOperation(job)
@@ -1632,6 +1636,9 @@ func (e *Executor) rconPlayers(ctx context.Context, job domain.Job, progress Pro
 		return nil, err
 	}
 	players := parseRCONStatusPlayers(response)
+	if len(players) == 0 && !emptyStatusPlayersPattern.MatchString(response) {
+		return nil, errors.New("RCON status did not contain a recognized player list or an explicit zero-player count")
+	}
 	progress(100, "player query completed")
 	return map[string]any{"players": players, "count": len(players)}, nil
 }
@@ -1650,8 +1657,12 @@ func parseRCONStatusPlayers(status string) []RCONPlayer {
 		if !bot && !steamIdentityPattern.MatchString(identity) {
 			continue
 		}
-		ping, _ := strconv.Atoi(match[5])
-		player := RCONPlayer{UserID: userID, Name: name, Connected: match[4], Ping: ping, Bot: bot}
+		fields := strings.Fields(match[4])
+		player := RCONPlayer{UserID: userID, Name: name, Bot: bot}
+		if len(fields) >= 2 {
+			player.Connected = fields[0]
+			player.Ping, _ = strconv.Atoi(fields[1])
+		}
 		if !bot {
 			player.SteamID = identity
 		}

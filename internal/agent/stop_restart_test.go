@@ -128,3 +128,28 @@ func TestRequestStopCancelsPendingAutomaticRestart(t *testing.T) {
 		t.Fatalf("pending automatic restart was not canceled: state=%+v launching=%v", p.state, p.launching)
 	}
 }
+
+func TestConfigurationUpdatesLiveAutomaticRestartPolicy(t *testing.T) {
+	executor, dataDir, _ := uploadedPackageExecutor(t)
+	manager, err := NewProcessManager(dataDir, log.New(io.Discard, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &managedProcess{spec: ProcessSpec{InstanceID: "instance"}, state: ProcessState{Status: "stopped"}, done: make(chan struct{})}
+	manager.items["instance"] = p
+	executor.processes = manager
+	record, _ := executor.registry.Get("instance")
+	for _, enabled := range []bool{true, false} {
+		record, _, err = executor.applyConfiguration(record, operationPayload{Instance: domain.Instance{Config: domain.InstanceConfig{AutoRestart: enabled, Mode: "coop", StartMap: "c1m1_hotel", MaxPlayers: 8}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.spec.AutoRestart != enabled {
+			t.Fatalf("live restart policy=%v want %v", p.spec.AutoRestart, enabled)
+		}
+	}
+	manager.restartAfterCrash(p)
+	if p.launching || p.state.Status != "stopped" {
+		t.Fatalf("disabled policy did not cancel pending restart: %+v", p.state)
+	}
+}

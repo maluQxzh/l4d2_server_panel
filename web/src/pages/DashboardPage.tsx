@@ -1,3 +1,4 @@
+import { instanceAddress, instancePlayers } from "../lib/instance-display";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, ArrowRight, Boxes, CircleAlert, Clock3, Cpu, HardDrive, Server, Users } from "lucide-react";
 import { Link } from "react-router";
@@ -40,7 +41,7 @@ export function DashboardPage() {
   const jobList = jobs.data?.items || [];
   const onlineNodes = nodeList.filter((node) => node.status === "online").length;
   const running = instanceList.filter((instance) => instance.status === "running").length;
-  const players = instanceList.reduce((sum, instance) => sum + instance.players, 0);
+  const players = instanceList.reduce((sum, instance) => sum + instancePlayers(instance), 0);
   const activeJobs = jobList.filter((job) => ["queued", "dispatched", "running"].includes(job.status));
   const failedJobs = jobList.filter((job) => job.status === "failed").length;
   const offlineNodes = nodeList.filter((node) => node.status === "offline").length;
@@ -54,7 +55,7 @@ export function DashboardPage() {
   const attentionHref = failedJobs > 0 && canReadJobs ? "/jobs" : offlineNodes > 0 && canReadNodes ? "/nodes" : canReadNotifications ? "/notifications" : canReadInstances ? "/instances" : undefined;
   const chartData: Array<{ label: string; players: number }> = history.data?.items.length
     ? history.data.items.map((point) => ({ label: new Date(point.collected_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }), players: point.players }))
-    : instanceList.slice(0, 12).map((instance, index) => ({ label: String(index + 1), players: instance.players }));
+    : instanceList.slice(0, 12).map((instance, index) => ({ label: String(index + 1), players: instancePlayers(instance) }));
   if (!chartData.length) chartData.push({ label: "0", players: 0 }, { label: "1", players: 0 });
 
   return (
@@ -89,8 +90,8 @@ export function DashboardPage() {
                   <span className={`server-glyph server-glyph--${instance.status}`}><Activity size={18} /></span>
                   <div className="instance-row__name"><strong>{instance.name}</strong><small>{instance.map || "尚未载入地图"} · {instance.mode || instance.config?.mode || "未知模式"}</small>{instance.update_available && <em className="instance-update-available">可更新至 {instance.available_build || "最新公开构建"}</em>}</div>
                   <StatusBadge status={instance.status} pulse={instance.status === "running"} />
-                  <div className="instance-row__players"><Users size={15} /><strong>{instance.players}</strong><span>/{instance.max_players}</span></div>
-                  <span className="instance-row__address">{instance.host}:{instance.port}</span>
+                  <div className="instance-row__players"><Users size={15} /><strong>{instancePlayers(instance)}</strong><span>/{instance.max_players}</span></div>
+                  <span className="instance-row__address">{instanceAddress(instance)}</span>
                   <ArrowRight className="row-arrow" size={16} />
                 </Link>
               ))}

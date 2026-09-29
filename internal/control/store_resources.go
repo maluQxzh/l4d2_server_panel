@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -376,7 +378,10 @@ func (s *Store) Heartbeat(ctx context.Context, nodeID, agentVersion string, stat
 	}
 	sort.Strings(instanceIDs)
 	for _, instanceID := range instanceIDs {
-		result, err := tx.ExecContext(ctx, `UPDATE instances AS instance SET status=?3,updated_at=?4
+		result, err := tx.ExecContext(ctx, `UPDATE instances AS instance SET status=?3,updated_at=?4,
+			players=CASE WHEN ?3='stopped' THEN 0 ELSE players END,
+			pid=CASE WHEN ?3='stopped' THEN 0 ELSE pid END,
+			started_at=CASE WHEN ?3='stopped' THEN NULL ELSE started_at END
 			WHERE instance.id=?2 AND instance.node_id=?1 AND NOT EXISTS (
 				SELECT 1 FROM jobs AS job WHERE job.instance_id=instance.id
 				AND `+activeJobSQLPredicate+` AND `+instanceWriteJobSQLPredicate+`)`, nodeID, instanceID, validStatuses[instanceID], now)
@@ -425,6 +430,9 @@ func scanInstance(row scanner) (domain.Instance, error) {
 		&inst.AvailableBuild, &inst.UpdateCheckedAt)
 	if err == nil {
 		err = json.Unmarshal(raw, &inst.Config)
+	}
+	if inst.Status == domain.InstanceStopped {
+		inst.Players, inst.PID, inst.StartedAt = 0, 0, nil
 	}
 	return inst, err
 }
@@ -822,8 +830,8 @@ func (s *Store) InstanceSecrets(ctx context.Context, instanceID string) (string,
 
 func (s *Store) PublicServers(ctx context.Context) ([]domain.PublicServer, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT instance.id,instance.name,instance.status,
-		CASE WHEN node.public_address<>'' THEN node.public_address || ':' || instance.port
-			WHEN instance.host NOT IN ('','0.0.0.0','::','[::]') THEN instance.host || ':' || instance.port ELSE '' END,
+		CASE WHEN node.public_address<>'' THEN node.public_address
+			WHEN instance.host NOT IN ('','0.0.0.0','::','[::]') THEN instance.host ELSE '' END,instance.port,
 		instance.map,COALESCE(NULLIF(instance.mode,''),NULLIF(json_extract(instance.config,'$.mode'),''),'unknown'),instance.players,instance.max_players,instance.started_at
 		FROM instances instance JOIN nodes node ON node.id=instance.node_id
 		WHERE COALESCE(CAST(json_extract(instance.config,'$.public_status') AS INTEGER),0)=1 ORDER BY instance.name,instance.id`)
@@ -834,8 +842,15 @@ func (s *Store) PublicServers(ctx context.Context) ([]domain.PublicServer, error
 	items := make([]domain.PublicServer, 0)
 	for rows.Next() {
 		var item domain.PublicServer
-		if err := rows.Scan(&item.ID, &item.Name, &item.Status, &item.Address, &item.Map, &item.Mode, &item.Players, &item.MaxPlayers, &item.StartedAt); err != nil {
+		var port int
+		if err := rows.Scan(&item.ID, &item.Name, &item.Status, &item.Address, &port, &item.Map, &item.Mode, &item.Players, &item.MaxPlayers, &item.StartedAt); err != nil {
 			return nil, err
+		}
+		if item.Address != "" {
+			item.Address = net.JoinHostPort(strings.Trim(item.Address, "[]"), strconv.Itoa(port))
+		}
+		if item.Status == domain.InstanceStopped {
+			item.Players, item.StartedAt = 0, nil
 		}
 		items = append(items, item)
 	}

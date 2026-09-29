@@ -859,7 +859,7 @@ paths:
     get:
       tags: [Instances]
       summary: 获取最近 RCON 玩家列表并异步刷新
-      description: 返回最近成功缓存；运行中且已保存 RCON 凭据时，读取同时以 10 秒幂等桶排队后台探测 `rcon.players`。客户端直接根据 `status` 和 `refresh_job_id` 轮询本接口，不需要 `jobs.read` 权限。该任务没有用户发起人并始终归入后台探测；停止状态下 RCON 不可用。
+      description: 返回本次启动后的最近成功缓存；运行中、节点在线且已保存 RCON 凭据时，读取同时以启动时间和 10 秒幂等桶排队后台探测 `rcon.players`，重启不会复用上次启动的结果。客户端直接根据 `status` 和 `refresh_job_id` 轮询本接口，不需要 `jobs.read` 权限。该任务没有用户发起人并始终归入后台探测；停止状态返回空清单，节点离线返回 failed 并说明原因。connected_at 根据采样时间计算，重复读取不会改变它。
       parameters: [{ $ref: "#/components/parameters/InstanceID" }]
       responses:
         "200":

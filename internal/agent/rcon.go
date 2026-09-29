@@ -46,6 +46,19 @@ func (c RCONClient) Execute(ctx context.Context, address, password, command stri
 		return "", fmt.Errorf("connect RCON: %w", err)
 	}
 	defer conn.Close()
+	return c.executeConnected(ctx, conn, password, command)
+}
+
+func (c RCONClient) executeConnected(ctx context.Context, conn net.Conn, password, command string) (string, error) {
+	if password == "" || command == "" || strings.ContainsAny(command, "\x00\r\n") {
+		return "", errors.New("RCON password and a valid command are required")
+	}
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = 8 * time.Second
+	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	setConnDeadline(conn, ctx, timeout)
 	authID := randomPacketID()
 	if err := writeRCONPacket(conn, rconPacket{ID: authID, Type: rconAuth, Body: password}); err != nil {

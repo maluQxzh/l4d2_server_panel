@@ -29,12 +29,23 @@ func (s *Server) handleInstancePlayers(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	if !rconPlayerRefreshAllowed(instance) {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "status": "ready"})
+		return
+	}
+	if instance.NodeStatus != domain.NodeOnline {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "status": "failed", "message": "节点不在线，暂时无法查询在线玩家。"})
+		return
+	}
 	latest, latestErr := s.store.LatestSuccessfulJob(r.Context(), instanceID, "rcon.players", map[string]any{})
 	if latestErr != nil && !errors.Is(latestErr, ErrNotFound) {
 		s.fail(w, latestErr)
 		return
 	}
 	hasLatest := latestErr == nil
+	if hasLatest && instance.StartedAt != nil && latest.CreatedAt.Before(*instance.StartedAt) {
+		hasLatest = false
+	}
 	var refreshJob domain.Job
 	if rconPlayerRefreshAllowed(instance) && (!hasLatest || latest.FinishedAt == nil || time.Since(*latest.FinishedAt) > 10*time.Second) {
 		queued, queueErr := s.queueRefresh(r, instanceID, "rcon.players", map[string]any{})
@@ -47,7 +58,7 @@ func (s *Server) handleInstancePlayers(w http.ResponseWriter, r *http.Request) {
 			refreshJob = queued
 			// The idempotency bucket can return a probe that completed between the
 			// cache lookup above and this queue attempt. Use its result immediately.
-			if queued.Status == domain.JobSucceeded {
+			if queued.Status == domain.JobSucceeded && (instance.StartedAt == nil || !queued.CreatedAt.Before(*instance.StartedAt)) {
 				latest = queued
 				hasLatest = true
 			}
@@ -62,7 +73,11 @@ func (s *Server) handleInstancePlayers(w http.ResponseWriter, r *http.Request) {
 				"score": player["score"], "ping": player["ping"], "bot": player["bot"], "connected": player["connected"]}
 			if connected, ok := player["connected"].(string); ok {
 				if duration, valid := parseConnectedDuration(connected); valid {
-					item["connected_at"] = time.Now().UTC().Add(-duration)
+					at := latest.CreatedAt
+					if latest.FinishedAt != nil {
+						at = *latest.FinishedAt
+					}
+					item["connected_at"] = at.Add(-duration)
 				}
 			}
 			items = append(items, item)
@@ -188,6 +203,15 @@ func (s *Server) queueRefresh(r *http.Request, instanceID, jobType string, paylo
 	principal := principalFromContext(r.Context())
 	bucket := time.Now().Unix() / 10
 	key := fmt.Sprintf("refresh:%s:%s:%v:%d", instanceID, jobType, payload, bucket)
+	if jobType == "rcon.players" {
+		instance, err := s.store.GetInstance(r.Context(), instanceID)
+		if err != nil {
+			return domain.Job{}, err
+		}
+		if instance.StartedAt != nil {
+			key += ":" + instance.StartedAt.UTC().Format(time.RFC3339Nano)
+		}
+	}
 	requestedBy := principal.User.ID
 	if jobType == "rcon.players" || jobType == "list" {
 		requestedBy = ""

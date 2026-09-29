@@ -200,26 +200,53 @@ func executeRCONOnA2SHost(ctx context.Context, hosts []string, port int, passwor
 }
 
 func executeRCONOnLocalHosts(ctx context.Context, hosts []string, port int, password, command string, timeout time.Duration) (string, error) {
-	var lastErr error
+	if len(hosts) == 0 {
+		return "", errors.New("no safe local address is available")
+	}
+	// Race only TCP connections, never commands or authentication. An unreachable
+	// local interface must not exhaust the query budget before a live listener.
+	dialCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type dialResult struct {
+		conn net.Conn
+		err  error
+	}
+	results := make(chan dialResult)
+	dialTimeout := timeout
+	if dialTimeout <= 0 || dialTimeout > 2*time.Second {
+		dialTimeout = 2 * time.Second
+	}
 	for _, host := range hosts {
-		response, err := (RCONClient{Timeout: timeout}).Execute(ctx, net.JoinHostPort(host, strconv.Itoa(port)), password, command)
-		if err == nil {
-			return response, nil
-		}
-		lastErr = err
-		if ctx.Err() != nil || !isRCONDialError(err) {
-			return "", err
+		go func(host string) {
+			conn, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(dialCtx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+			select {
+			case results <- dialResult{conn, err}:
+			case <-dialCtx.Done():
+				if conn != nil {
+					_ = conn.Close()
+				}
+			}
+		}(host)
+	}
+	var lastErr error
+	for range hosts {
+		select {
+		case result := <-results:
+			if result.err != nil {
+				lastErr = result.err
+				continue
+			}
+			cancel()
+			defer result.conn.Close()
+			return (RCONClient{Timeout: timeout}).executeConnected(ctx, result.conn, password, command)
+		case <-ctx.Done():
+			return "", ctx.Err()
 		}
 	}
 	if lastErr == nil {
 		lastErr = errors.New("no safe local address is available")
 	}
 	return "", fmt.Errorf("connect RCON on Agent local addresses %s: %w", strings.Join(hosts, ", "), lastErr)
-}
-
-func isRCONDialError(err error) bool {
-	var netErr *net.OpError
-	return errors.As(err, &netErr) && netErr.Op == "dial"
 }
 
 type a2sInfoResult struct {

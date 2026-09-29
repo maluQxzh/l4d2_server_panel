@@ -146,6 +146,9 @@ func (m *ProcessManager) launch(p *managedProcess) error {
 		}
 	}}
 	cmd := exec.Command(p.spec.Executable, p.spec.Args...)
+	// Descendants may inherit stdout/stderr after the parent crashes. Bound
+	// pipe draining so Wait can reach tree cleanup and the restart policy.
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = p.spec.Dir
 	cmd.Env = sanitizedProcessEnvironment(p.spec.Dir)
 	cmd.Stdin = nil
@@ -200,6 +203,9 @@ func (m *ProcessManager) recordOutputFailure(p *managedProcess, line string) {
 
 func (m *ProcessManager) wait(p *managedProcess, cmd *exec.Cmd, platform *platformProcess, instanceLog io.Closer, sinks ...*lineSink) {
 	err := cmd.Wait()
+	// The parent has exited; no descendant from this generation may survive
+	// into the next launch. This also releases inherited pipe handles.
+	_ = forcePlatformProcess(platform, cmd.Process)
 	for _, sink := range sinks {
 		sink.Flush()
 	}
@@ -243,7 +249,7 @@ func (m *ProcessManager) wait(p *managedProcess, cmd *exec.Cmd, platform *platfo
 
 func (m *ProcessManager) restartAfterCrash(p *managedProcess) {
 	m.mu.Lock()
-	if p.stopRequested || p.cmd != nil || m.items[p.spec.InstanceID] != p {
+	if p.stopRequested || !p.spec.AutoRestart || p.cmd != nil || m.items[p.spec.InstanceID] != p {
 		m.mu.Unlock()
 		return
 	}
@@ -259,6 +265,14 @@ func (m *ProcessManager) restartAfterCrash(p *managedProcess) {
 		p.state.ExitError = launchErr.Error()
 		close(p.done)
 		m.mu.Unlock()
+	}
+}
+
+func (m *ProcessManager) SetAutoRestart(instanceID string, enabled bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if p := m.items[instanceID]; p != nil {
+		p.spec.AutoRestart = enabled
 	}
 }
 

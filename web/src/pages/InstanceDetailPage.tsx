@@ -1,3 +1,4 @@
+import { instanceAddress, instancePlayers } from "../lib/instance-display";
 import { PreparedPackages, usePreparedPackages } from "../components/PreparedPackages";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -198,7 +199,7 @@ function InstanceHero({ instance }: { instance: InstanceRecord }) {
     setTakeoverOpen(false);
   };
   return <><header className="instance-hero">
-    <div className="instance-hero__identity"><div className="instance-hero__glyph"><Gamepad2 /></div><div><div className="instance-hero__title"><h1>{instance.name}</h1><StatusBadge status={instance.status} pulse={instance.status === "running" && !nodeUnavailable} />{nodeUnavailable && <span className={`status status--${instance.node_status} instance-node-status`} title="无法确认节点上实例的实时状态"><span className="status__dot" aria-hidden />{nodeStatusLabel}</span>}{instance.status === "running" && !instance.rcon_configured && <span className="instance-rcon-warning">RCON 密码为空</span>}</div><p><code>{instance.host}:{instance.port}</code><span>·</span><span>{instance.map || instance.config.start_map}</span><span>·</span><span>{instance.players}/{instance.max_players} 玩家</span>{instance.status === "external" && <><span>·</span><strong>受控重启前只读</strong></>}</p></div></div>
+    <div className="instance-hero__identity"><div className="instance-hero__glyph"><Gamepad2 /></div><div><div className="instance-hero__title"><h1>{instance.name}</h1><StatusBadge status={instance.status} pulse={instance.status === "running" && !nodeUnavailable} />{nodeUnavailable && <span className={`status status--${instance.node_status} instance-node-status`} title="无法确认节点上实例的实时状态"><span className="status__dot" aria-hidden />{nodeStatusLabel}</span>}{instance.status === "running" && !instance.rcon_configured && <span className="instance-rcon-warning">RCON 密码为空</span>}</div><p><code>{instanceAddress(instance)}</code><span>·</span><span>{instance.map || instance.config.start_map}</span><span>·</span><span>{instancePlayers(instance)}/{instance.max_players} 玩家</span>{instance.status === "external" && <><span>·</span><strong>受控重启前只读</strong></>}</p></div></div>
     <div className="instance-actions">
       {instance.status === "external" ? <Button onClick={() => setTakeoverOpen(true)} disabled={!canRestart} title={!canRestart ? disabledReason : undefined} loading={takeover.isPending}><RefreshCw size={16} />受控重启并接管</Button> : <>
         {instance.status === "stopped" ? <Button onClick={() => action.mutate("start")} disabled={!canStart} title={!canStart ? disabledReason : undefined} loading={action.isPending}><Play size={16} fill="currentColor" />启动</Button> : <Button variant="secondary" onClick={() => action.mutate("stop")} disabled={!canStop} title={!canStop ? disabledReason : undefined} loading={action.isPending}><Square size={14} fill="currentColor" />停止</Button>}
@@ -223,7 +224,7 @@ function OverviewTab({ instance }: { instance: InstanceRecord }) {
   const recentOperations = summarizeRecentOperations(jobs.data?.items || []);
   return <div className="overview-layout">
     <div className="overview-main">
-      <section className="detail-stat-grid"><Card><span>在线玩家</span><strong>{instance.players}<small> / {instance.max_players}</small></strong><div className="mini-progress"><ProgressBar value={(instance.players / Math.max(instance.max_players, 1)) * 100} /></div></Card><Card><span>当前地图</span><strong className="text-value">{instance.map || "未载入"}</strong><small><Map size={14} />{instance.mode || instance.config.mode}</small></Card><Card><span>连续运行</span><strong className="text-value">{duration(instance.started_at)}</strong><small><Power size={14} />PID {instance.pid || "—"}</small></Card><Card><span>游戏构建</span><strong className="text-value">{instance.build_id || "待检测"}</strong><small><Box size={14} />当前启动配置</small></Card></section>
+      <section className="detail-stat-grid"><Card><span>在线玩家</span><strong>{instancePlayers(instance)}<small> / {instance.max_players}</small></strong><div className="mini-progress"><ProgressBar value={(instancePlayers(instance) / Math.max(instance.max_players, 1)) * 100} /></div></Card><Card><span>当前地图</span><strong className="text-value">{instance.map || "未载入"}</strong><small><Map size={14} />{instance.mode || instance.config.mode}</small></Card><Card><span>连续运行</span><strong className="text-value">{duration(instance.started_at)}</strong><small><Power size={14} />PID {instance.pid || "—"}</small></Card><Card><span>游戏构建</span><strong className="text-value">{instance.build_id || "待检测"}</strong><small><Box size={14} />当前启动配置</small></Card></section>
       <InstanceBindingCard instance={instance} />
       {canReadJobs && <Card><div className="card-heading"><div><span className="eyebrow">RECENT OPERATIONS</span><h2>最近操作</h2></div><Link to="/jobs">全部任务 <ChevronRight size={15} /></Link></div>{jobs.isPending ? <LoadingBlock /> : recentOperations.length ? <div className="detail-job-list">{recentOperations.map(({ job, occurrences }) => <div key={job.id}><div className={`job-icon job-icon--${job.status}`}><Code2 size={15} /></div><div><strong>{jobLabel(job)}</strong><small>{job.message || dateTime(job.created_at)}{occurrences > 1 ? ` · 共 ${occurrences} 次` : ""}</small></div><StatusBadge status={job.status} />{["queued", "dispatched", "running"].includes(job.status) && <div className="job-inline-progress"><ProgressBar value={job.progress} /><span>{job.progress}%</span></div>}</div>)}</div> : <EmptyState title="还没有操作记录" description="启动、备份或其他实例操作的进度会显示在这里。" />}</Card>}
     </div>
@@ -321,9 +322,9 @@ function PlayersTab({ instance }: { instance: InstanceRecord }) {
   const canChangeMap = hasInstancePermission(user, instance, "players.change_map");
   const canBroadcast = hasInstancePermission(user, instance, "players.broadcast");
   const serverActive = instance.status === "running" || instance.status === "degraded";
-  const canQueryRCON = canReadPlayers && serverActive && instance.rcon_configured;
+  const canQueryRCON = canReadPlayers && serverActive && instance.node_status === "online" && instance.rcon_configured;
   const players = useQuery({
-    queryKey: ["instances", instance.id, "players"],
+    queryKey: ["instances", instance.id, "players", instance.started_at, serverActive],
     queryFn: () => api.players(instance.id),
     enabled: canQueryRCON,
     refetchInterval: (query) => {
@@ -336,19 +337,21 @@ function PlayersTab({ instance }: { instance: InstanceRecord }) {
   const client = useQueryClient();
   const [selected, setSelected] = useState<Player | null>(null);
   const action = useMutation({ mutationFn: ({ type, payload }: { type: string; payload: Record<string, unknown> }) => api.instanceAction(instance.id, type, payload), onSuccess: (_data, values) => { toast.push(values.type === "kick_player" ? "已提交踢出操作" : "已提交解封操作"); void client.invalidateQueries({ queryKey: ["instances", instance.id, "bans"] }); }, onError: (error) => toast.push(error.message, "error") });
-  const playerItems = players.data?.items || [];
+  const playerItems = canQueryRCON ? players.data?.items || [] : [];
   const playerStatus = players.data?.status || "ready";
   let playerContent: ReactNode;
   if (!canReadPlayers) {
     playerContent = <EmptyState title="玩家清单已隐藏" description="当前账号没有查看在线玩家和封禁清单的权限。" />;
   } else if (!serverActive) {
     playerContent = <div className="form-warning"><ShieldAlert size={17} />服务器尚未启动，RCON 查询只在运行中生效。</div>;
+  } else if (instance.node_status !== "online") {
+    playerContent = <div className="form-warning"><ShieldAlert size={17} />节点不在线，暂时无法查询在线玩家。</div>;
   } else if (!instance.rcon_configured) {
     playerContent = <div className="form-warning"><ShieldAlert size={17} />中心端尚未保存 RCON 密码。请设置与 server.cfg 完全一致的密码后重试。</div>;
-  } else if (players.isPending || ((playerStatus === "loading" || playerStatus === "refreshing") && !playerItems.length)) {
-    playerContent = <LoadingBlock label={playerStatus === "refreshing" ? "正在查询最新玩家信息…" : "正在发起 RCON 玩家查询…"} />;
   } else if (players.error) {
     playerContent = <ErrorState error={players.error} retry={() => void players.refetch()} />;
+  } else if (players.isPending || ((playerStatus === "loading" || playerStatus === "refreshing") && !playerItems.length)) {
+    playerContent = <LoadingBlock label={playerStatus === "refreshing" ? "正在查询最新玩家信息…" : "正在发起 RCON 玩家查询…"} />;
   } else {
     playerContent = <>
       {playerStatus === "failed" && <div className="form-error" role="alert">{players.data?.message || "RCON 玩家查询失败，请检查 RCON 配置后重试。"}</div>}

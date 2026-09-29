@@ -260,6 +260,70 @@ func TestInstancePlayersReportLoadingUntilRCONProbeCompletes(t *testing.T) {
 	if completed.Status != "ready" || len(completed.Items) != 1 || completed.Items[0]["name"] != "Coach" || completed.Items[0]["score"] != float64(42) || completed.Items[0]["connected_at"] == nil {
 		t.Fatalf("completed player list response=%#v", completed)
 	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='stopped',players=5,pid=123 WHERE id=?1`, instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	stopped := request()
+	if stopped.Code != http.StatusOK || !strings.Contains(stopped.Body.String(), `"items":[]`) {
+		t.Fatalf("stopped players: %s", stopped.Body.String())
+	}
+	projected, err := store.GetInstance(ctx, instance.ID)
+	if err != nil || projected.Players != 0 || projected.PID != 0 {
+		t.Fatalf("legacy stopped snapshot: %+v %v", projected, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET config=json_set(config,'$.public_status',json('true')) WHERE id=?1;
+		UPDATE nodes SET public_address='2001:db8::1' WHERE id='node'`, instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	public, err := store.PublicServers(ctx)
+	if err != nil || len(public) != 1 || public[0].Players != 0 || public[0].Address != "[2001:db8::1]:27015" {
+		t.Fatalf("public stopped snapshot: %+v %v", public, err)
+	}
+	if err := store.ApplyJobResult(ctx, domain.Job{InstanceID: instance.ID, Type: "stop", Status: domain.JobSucceeded}); err != nil {
+		t.Fatal(err)
+	}
+	probe := domain.Job{InstanceID: instance.ID, Type: "a2s.info", Status: domain.JobSucceeded, CreatedAt: time.Now().Add(-time.Hour),
+		Result: map[string]any{"info": map[string]any{"map": "late", "players": 3, "max_players": 8}}}
+	if err := store.ApplyJobResult(ctx, probe); err != nil {
+		t.Fatal(err)
+	}
+	var storedPlayers int
+	if err := store.db.QueryRowContext(ctx, `SELECT players FROM instances WHERE id=?1`, instance.ID).Scan(&storedPlayers); err != nil || storedPlayers != 0 {
+		t.Fatalf("late probe restored stopped players: %d %v", storedPlayers, err)
+	}
+	started := time.Now().UTC()
+	if _, err := store.db.ExecContext(ctx, `UPDATE instances SET status='running',started_at=?2 WHERE id=?1`, instance.ID, started); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ApplyJobResult(ctx, probe); err != nil {
+		t.Fatal(err)
+	}
+	projected, err = store.GetInstance(ctx, instance.ID)
+	if err != nil || projected.Players != 0 {
+		t.Fatalf("previous generation probe accepted: %+v %v", projected, err)
+	}
+	restarted := request()
+	var newPending struct {
+		Status       string `json:"status"`
+		RefreshJobID string `json:"refresh_job_id"`
+	}
+	if err := json.Unmarshal(restarted.Body.Bytes(), &newPending); err != nil || newPending.Status != "loading" || newPending.RefreshJobID == pending.RefreshJobID {
+		t.Fatalf("restart reused old player cache: %s %v", restarted.Body.String(), err)
+	}
+	probe.CreatedAt = time.Now().UTC()
+	if err := store.ApplyJobResult(ctx, probe); err != nil {
+		t.Fatal(err)
+	}
+	projected, err = store.GetInstance(ctx, instance.ID)
+	if err != nil || projected.Players != 3 {
+		t.Fatalf("fresh probe was not applied: %+v %v", projected, err)
+	}
+	if err := store.Heartbeat(ctx, "node", "test", map[string]string{instance.ID: "stopped"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT players FROM instances WHERE id=?1`, instance.ID).Scan(&storedPlayers); err != nil || storedPlayers != 0 {
+		t.Fatalf("heartbeat retained players: %d %v", storedPlayers, err)
+	}
 }
 
 func TestInstanceFilesReportLoadingUntilAgentListingCompletes(t *testing.T) {

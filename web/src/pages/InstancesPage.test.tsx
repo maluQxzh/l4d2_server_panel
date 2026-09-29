@@ -62,7 +62,7 @@ describe("游戏实例卡片", () => {
     expect(screen.getByText("运行中", { selector: ".status" })).toBeInTheDocument();
     expect(screen.getByText("节点离线", { selector: ".status" })).toBeInTheDocument();
     expect(screen.getByText("所属节点：广州游戏节点 A")).toBeInTheDocument();
-    expect(screen.getByText("0.0.0.0:27015")).toBeInTheDocument();
+    expect(screen.getByText("未设置连接地址")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "修改端口" })).not.toBeInTheDocument();
   });
 

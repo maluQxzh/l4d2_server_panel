@@ -34,7 +34,7 @@ const gameInstallation = {
 };
 
 const instance = {
-  id: "instance-1", node_id: node.id, node_public_address: node.public_address, name: "专家战役 #1", status: "running",
+  id: "instance-1", node_id: node.id, node_status: "online", node_public_address: node.public_address, name: "专家战役 #1", status: "running",
   path: "/srv/l4d2panel/instances/expert", host: "game.example.com", port: 27015,
   tv_port: 27020, pid: 4242, map: "c1m1_hotel", mode: "coop", players: 1,
   max_players: 4, build_id: "123456", update_available: false, version: 3,
@@ -883,13 +883,36 @@ test("站内通知可标记已读且失败投递可手动重试", async ({ page 
 
 test("已停止实例卡片保留重启入口但只能启动", async ({ page }) => {
   await authenticated(page);
-  const stopped = { ...instance, status: "stopped", pid: 0, started_at: null };
+  const stopped = { ...instance, status: "stopped", pid: 0, started_at: null, players: 5, host: "0.0.0.0", node_public_address: "game.example.com" };
   await page.route("**/api/v1/instances", (route) => json(route, { items: [stopped] }));
   await page.goto("/instances");
   const card = page.locator(".instance-card").filter({ hasText: stopped.name });
   await expect(card.getByRole("button", { name: "启动" })).toBeVisible();
+  await expect(card.getByText("game.example.com:27015")).toBeVisible();
+  await expect(card.getByText(`0 / ${stopped.max_players}`)).toBeVisible();
   await expect(card.getByRole("button", { name: "重启" })).toBeDisabled();
   await expect(card.getByRole("button", { name: "重启" })).toHaveAttribute("title", "服务器启动后才能重启");
+});
+
+test("实例详情使用公开地址，玩家查询完成后显示人员，停止后清除旧清单", async ({ page }) => {
+  await authenticated(page);
+  let stopped = false;
+  let probes = 0;
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: {
+    ...instance, host: "0.0.0.0", node_public_address: "game.example.com", status: stopped ? "stopped" : "running", players: 3,
+  } }));
+  await page.route("**/api/v1/instances/instance-1/players", (route) => {
+    probes += 1;
+    return json(route, probes === 1 ? { items: [], status: "loading" } : { items: [{ name: "测试玩家", steam_id: "STEAM_1:1:12345", ping: 23 }], status: "ready" });
+  });
+  await page.route("**/api/v1/instances/instance-1/bans", (route) => json(route, { items: [] }));
+  await page.goto("/instances/instance-1?tab=players");
+  await expect(page.locator(".instance-hero").getByText("game.example.com:27015")).toBeVisible();
+  await expect(page.getByText("测试玩家", { exact: true })).toBeVisible();
+  stopped = true;
+  await page.reload();
+  await expect(page.locator(".instance-hero").getByText(`0/${instance.max_players} 玩家`)).toBeVisible();
+  await expect(page.getByText("测试玩家", { exact: true })).toHaveCount(0);
 });
 
 test("空 RCON 的运行实例保持绿色状态并显示独立警告", async ({ page }) => {

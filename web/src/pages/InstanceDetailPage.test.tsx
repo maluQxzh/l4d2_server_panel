@@ -152,6 +152,24 @@ describe("实例在线玩家", () => {
   });
   afterEach(() => { vi.restoreAllMocks(); });
 
+  it("详情使用公开连接地址，停服后不显示旧玩家人数或请求在线清单", async () => {
+    const players = vi.spyOn(api, "players");
+    renderPlayersPage({ ...instance, players: 5 });
+    expect(await screen.findByText("game.example.com:27015")).toBeVisible();
+    expect(screen.queryByText("0.0.0.0:27015")).not.toBeInTheDocument();
+    expect(screen.getByText("0/8 玩家")).toBeVisible();
+    expect(screen.getByText("0 / 8")).toBeVisible();
+    expect(players).not.toHaveBeenCalled();
+  });
+
+  it("轮询失败时显示错误，而不是继续显示旧的加载状态", async () => {
+    vi.spyOn(api, "players").mockResolvedValueOnce({ items: [], status: "loading" }).mockRejectedValue(new Error("玩家连接暂时中断"));
+    renderPlayersPage({ ...instance, status: "running" });
+    expect(await screen.findByText("正在发起 RCON 玩家查询…")).toBeVisible();
+    expect(await screen.findByText("玩家连接暂时中断", {}, { timeout: 2_500 })).toBeVisible();
+    expect(screen.queryByText("正在发起 RCON 玩家查询…")).not.toBeInTheDocument();
+  });
+
   it("空缓存异步刷新完成前保持加载，并且不依赖作业读取权限", async () => {
     const running = { ...instance, status: "running" as const, players: 1 };
     let requests = 0;

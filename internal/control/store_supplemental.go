@@ -623,7 +623,7 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 				return err
 			}
 			defer tx.Rollback()
-			if _, err := tx.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,started_at=NULL,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,players=0,started_at=NULL,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID); err != nil {
 				return err
 			}
 			if err := applySmartPluginGeneratedConfigUpdatesTx(ctx, tx, job); err != nil {
@@ -643,7 +643,7 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 			return err
 		}
 		defer tx.Rollback()
-		if _, err := tx.ExecContext(ctx, `UPDATE instances SET status='running',pid=?2,started_at=?3,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID, pid, startedAt); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE instances SET status='running',pid=?2,players=0,started_at=?3,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID, pid, startedAt); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE map_assignments SET restart_required=0,updated_at=?2 WHERE instance_id=?1`, job.InstanceID, startedAt); err != nil {
@@ -663,7 +663,7 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 			return err
 		}
 		defer tx.Rollback()
-		if _, err := tx.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,started_at=NULL,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,players=0,started_at=NULL,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID); err != nil {
 			return err
 		}
 		if err := applySmartPluginGeneratedConfigUpdatesTx(ctx, tx, job); err != nil {
@@ -681,12 +681,12 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 					startedAt = parsed
 				}
 			}
-			_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='running',pid=?2,started_at=?3,
+			_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='running',pid=?2,players=0,started_at=?3,
 				path=COALESCE(NULLIF(?4,''),path),build_id=COALESCE(NULLIF(?5,''),build_id),updated_at=unixepoch('subsec')*1000000 WHERE id=?1`,
 				job.InstanceID, pid, startedAt, path, buildID)
 			return err
 		}
-		_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='stopped',path=COALESCE(NULLIF(?2,''),path),
+		_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='stopped',players=0,pid=0,started_at=NULL,path=COALESCE(NULLIF(?2,''),path),
 			build_id=COALESCE(NULLIF(?3,''),build_id),updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID, path, buildID)
 		return err
 	case "import":
@@ -714,14 +714,14 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 					startedAt = parsed
 				}
 			}
-			_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='running',pid=?2,started_at=?3,
+			_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='running',pid=?2,players=0,started_at=?3,
 				build_id=COALESCE(NULLIF(?4,''),build_id),updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID, pid, startedAt, buildID)
 			if err != nil || job.Type != "update" {
 				return err
 			}
 			return s.clearAvailableUpdateAfterInstall(ctx, job.InstanceID, buildID)
 		}
-		_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,started_at=NULL,
+		_, err := s.db.ExecContext(ctx, `UPDATE instances SET status='stopped',pid=0,players=0,started_at=NULL,
 			build_id=COALESCE(NULLIF(?2,''),build_id),updated_at=unixepoch('subsec')*1000000 WHERE id=?1`, job.InstanceID, buildID)
 		if err != nil || job.Type != "update" {
 			return err
@@ -729,8 +729,8 @@ func (s *Store) ApplyJobResult(ctx context.Context, job domain.Job) error {
 		return s.clearAvailableUpdateAfterInstall(ctx, job.InstanceID, buildID)
 	case "a2s.info":
 		info, _ := job.Result["info"].(map[string]any)
-		_, err := s.db.ExecContext(ctx, `UPDATE instances SET map=?2,players=?3,max_players=?4,build_id=?5,updated_at=unixepoch('subsec')*1000000 WHERE id=?1`,
-			job.InstanceID, stringFromAny(info["map"]), intFromAny(info["players"]), intFromAny(info["max_players"]), stringFromAny(info["version"]))
+		_, err := s.db.ExecContext(ctx, `UPDATE instances SET map=?2,players=?3,max_players=?4,build_id=?5,updated_at=unixepoch('subsec')*1000000 WHERE id=?1 AND status IN ('running','degraded','external') AND (started_at IS NULL OR started_at<=?6)`,
+			job.InstanceID, stringFromAny(info["map"]), intFromAny(info["players"]), intFromAny(info["max_players"]), stringFromAny(info["version"]), job.CreatedAt)
 		return err
 	case "backup.upload.chunk":
 		return s.applyBackupUploadChunkResult(ctx, job)

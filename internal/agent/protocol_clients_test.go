@@ -65,3 +65,14 @@ func TestParseRCONStatusPlayersOmitsAddresses(t *testing.T) {
 		t.Fatalf("bot = %#v", players[1])
 	}
 }
+
+func TestParseRCONStatusPlayersAcceptsShortL4D2Rows(t *testing.T) {
+	status := "# userid name uniqueid connected ping loss state\r\n" +
+		"# 17 \"中文 玩家\" STEAM_1:1:12345 01:20 42 0 active\r\n" +
+		"# 18 \"Coach\" BOT active\r\n" +
+		"# 3 19 \"Another\" [U:1:789] 00:15 23 0 active 30000\r\n"
+	players := parseRCONStatusPlayers(status)
+	if len(players) != 3 || players[0].UserID != 17 || players[0].Ping != 42 || players[0].Name != "中文 玩家" || !players[1].Bot || players[2].UserID != 19 {
+		t.Fatalf("short status rows = %#v", players)
+	}
+}
