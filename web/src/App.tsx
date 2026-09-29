@@ -1,6 +1,7 @@
 import { Navigate, Outlet, Route, Routes, useLocation } from "react-router";
 import { lazy, Suspense, type ComponentType } from "react";
 import { AppShell } from "./components/AppShell";
+import { MapImportResults } from "./components/MapImportResults";
 import { LoadingBlock } from "./components/ui";
 import { useAuth } from "./context/AuthContext";
 import { RealtimeProvider } from "./context/RealtimeContext";
@@ -30,7 +31,7 @@ function ProtectedLayout() {
   if (auth.bootstrapRequired) return <Navigate to="/setup" replace />;
   if (!auth.authenticated) return <Navigate to="/login" replace state={{ from: location }} />;
   if (auth.activationRequired) return <Navigate to="/activate" replace />;
-  return <RealtimeProvider><AppShell><Outlet /></AppShell></RealtimeProvider>;
+  return <RealtimeProvider><AppShell><Outlet /></AppShell>{auth.user && <MapImportResults key={auth.user.id} userId={auth.user.id} />}</RealtimeProvider>;
 }
 
 function NotFound() {

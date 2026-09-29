@@ -105,18 +105,33 @@ func (s *Store) applyMapImportResult(ctx context.Context, job domain.Job) error 
 		return err
 	}
 	defer tx.Rollback()
+	// Persist the actual deduplication decision with the projection so outcome
+	// reads do not depend on whether the canonical map still exists.
+	commitImport := func(duplicate bool) error {
+		value := "false"
+		if duplicate {
+			value = "true"
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET result=json_set(result,'$.import_duplicate',json(?2)) WHERE id=?1`, job.ID, value); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
 	if mapID != requestedMapID {
 		var existingAggregate string
 		err := tx.QueryRowContext(ctx, `SELECT aggregate_sha256 FROM maps WHERE id=?1 AND node_id=?2`, mapID, job.NodeID).Scan(&existingAggregate)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		if errors.Is(err, sql.ErrNoRows) || !strings.EqualFold(existingAggregate, aggregateSHA) {
 			return errors.New("Agent returned an unknown deduplicated map ID")
 		}
-		return tx.Commit()
+		return commitImport(true)
 	}
 	var duplicateID string
 	err = tx.QueryRowContext(ctx, `SELECT id FROM maps WHERE node_id=?1 AND aggregate_sha256=?2 AND id<>?3 AND health<>'deleting' ORDER BY created_at,id LIMIT 1`, job.NodeID, aggregateSHA, mapID).Scan(&duplicateID)
 	if err == nil {
-		return tx.Commit()
+		return commitImport(true)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -168,7 +183,7 @@ func (s *Store) applyMapImportResult(ctx context.Context, job domain.Job) error 
 			return err
 		}
 	}
-	return tx.Commit()
+	return commitImport(false)
 }
 
 func validProjectedMapText(value string, limit int, emptyOK bool) bool {

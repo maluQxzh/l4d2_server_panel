@@ -9,6 +9,7 @@ import { hasAnyPermission, hasInstancePermission, hasMapNodePermission, hasNodeP
 import { api } from "../lib/api";
 import { bytes, dateTime } from "../lib/format";
 import { mapDeduplicatedSize, mapDuplicateCounts, mapMatchesSearch, type MapDuplicateFilter } from "../lib/map-filters";
+import { trackMapImport } from "../lib/map-import-tracker";
 import type { InstanceRecord, MapRecord, User } from "../lib/types";
 
 const UNASSIGNED_INSTANCE_FILTER = "__unassigned__";
@@ -173,7 +174,7 @@ function ImportMapModal({ open, nodes, instances, user, onClose }: { open: boole
   const [shareUrl, setShareUrl] = useState("");
   const toast = useToast();
   const client = useQueryClient();
-  const submit = useMutation({ mutationFn: () => api.importMap(nodeId, shareUrl.trim()), onSuccess: () => { toast.push("地图导入任务已提交"); setShareUrl(""); onClose(); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
+  const submit = useMutation({ mutationFn: () => api.importMap(nodeId, shareUrl.trim()), onSuccess: (result) => { if (user?.id) trackMapImport(user.id, result.job_id); toast.push("地图导入任务已提交，检测完成后会提示结果"); setShareUrl(""); onClose(); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
   const handleSubmit = (event: FormEvent) => { event.preventDefault(); submit.mutate(); };
   const eligibleNodes = useMemo(() => {
     const result = new Map<string, { id: string; name: string; status: string }>();
@@ -187,7 +188,7 @@ function ImportMapModal({ open, nodes, instances, user, onClose }: { open: boole
     }
     return [...result.values()];
   }, [instances, nodes, user]);
-  return <Modal open={open} onClose={onClose} title="从 QQ 闪传导入地图" description="一个分享链接会生成一张独立逻辑地图；下载源和中间文件不会保留。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button type="submit" form="import-map" loading={submit.isPending} disabled={!nodeId}>开始导入</Button></>}><form id="import-map" className="form-stack" onSubmit={handleSubmit}><Field label="目标节点"><select value={nodeId} onChange={(event) => setNodeId(event.target.value)} required><option value="">选择在线节点</option>{eligibleNodes.map((node) => <option value={node.id} key={node.id}>{node.name}</option>)}</select></Field>{!eligibleNodes.length && <div className="form-warning"><AlertTriangle size={16} />没有在线且允许导入地图的节点。</div>}<Field label="QQ 闪传链接" hint="仅接受 https://qfile.qq.com/q/...；链接不会写入数据库或任务回显。"><input value={shareUrl} onChange={(event) => setShareUrl(event.target.value)} placeholder="https://qfile.qq.com/q/..." required /></Field><div className="form-note"><strong>处理规则</strong><span>最多递归 3 层 ZIP/7Z/RAR；归档只落盘 VPK 与嵌套归档；同名虚拟路径后者覆盖。</span></div></form></Modal>;
+  return <Modal open={open} onClose={onClose} title="从 QQ 闪传导入地图" description="一个链接只能包含一张完整地图，不能在同一链接中包含多个地图。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button type="submit" form="import-map" loading={submit.isPending} disabled={!nodeId}>开始导入</Button></>}><form id="import-map" className="form-stack" onSubmit={handleSubmit}><Field label="目标节点"><select value={nodeId} onChange={(event) => setNodeId(event.target.value)} required><option value="">选择在线节点</option>{eligibleNodes.map((node) => <option value={node.id} key={node.id}>{node.name}</option>)}</select></Field>{!eligibleNodes.length && <div className="form-warning"><AlertTriangle size={16} />没有在线且允许导入地图的节点。</div>}<Field label="QQ 闪传链接" hint="仅接受 https://qfile.qq.com/q/...；链接不会写入数据库或任务回显。"><input value={shareUrl} onChange={(event) => setShareUrl(event.target.value)} placeholder="https://qfile.qq.com/q/..." required /></Field><div className="form-note"><strong>处理规则</strong><span>最多递归 3 层 ZIP/7Z/RAR；归档只落盘 VPK 与嵌套归档；同名虚拟路径后者覆盖。</span></div></form></Modal>;
 }
 
 function AssignmentModal({ item, instances, user, onClose }: { item: MapRecord | null; instances: InstanceRecord[]; user: User | null; onClose: () => void }) {

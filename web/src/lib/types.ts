@@ -276,6 +276,16 @@ export interface MapWarningRecord {
   virtual_path?: string;
 }
 
+export interface MapImportResult {
+  job_id: string;
+  status: JobStatus;
+  ready: boolean;
+  name?: string;
+  duplicate?: boolean;
+  warnings?: MapWarningRecord[];
+  missing_dictionaries?: string[];
+}
+
 export interface MapReplicaRecord {
   filesystem_id: string;
   health: "healthy" | "missing" | "corrupt";

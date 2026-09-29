@@ -1250,9 +1250,16 @@ test("地图管理支持导入、警告、运行中热更新分配与两阶段�
     if (path.endsWith("/delete-confirmations")) return json(route, { confirmation_token: "mdc_once", expires_at: "2026-08-05T00:05:00Z" }, 201);
     return json(route, { job_id: `job-${writes.length}` }, 202);
   });
+  let mapImportCount = 0;
+  await page.route("**/api/v1/map-imports/*", (route) => json(route, {
+    job_id: `job-import-map-${mapImportCount}`, status: "succeeded", ready: true,
+    name: assignedMap.name, duplicate: mapImportCount > 1,
+    missing_dictionaries: ["maps/custom_map.bsp"], warnings: assignedMap.warnings,
+  }));
   await page.route("**/api/v1/nodes/node-1/maps/imports", async (route) => {
     writes.push({ method: route.request().method(), path: new URL(route.request().url()).pathname, body: route.request().postDataJSON() });
-    return json(route, { job_id: "job-import-map" }, 202);
+    mapImportCount += 1;
+    return json(route, { job_id: `job-import-map-${mapImportCount}` }, 202);
   });
   await page.goto("/maps");
   await expect(page.getByRole("heading", { name: "地图管理" })).toBeVisible();
@@ -1273,10 +1280,24 @@ test("地图管理支持导入、警告、运行中热更新分配与两阶段�
   await expect.poll(() => writes.some((item) => item.path.endsWith(`/${assignedMap.id}/verify`))).toBeTruthy();
 
   await page.getByRole("button", { name: "QQ 闪传导入" }).click();
+  await expect(page.getByText("一个链接只能包含一张完整地图，不能在同一链接中包含多个地图。")).toBeVisible();
   await page.getByLabel("目标节点").selectOption(node.id);
   await page.getByLabel("QQ 闪传链接").fill("https://qfile.qq.com/q/Example123");
   await page.getByRole("button", { name: "开始导入" }).click();
   await expect.poll(() => writes.some((item) => item.path.endsWith("/nodes/node-1/maps/imports") && (item.body as { share_url?: string })?.share_url?.includes("Example123"))).toBeTruthy();
+
+  const resultDialog = page.getByRole("dialog", { name: "地图导入完成，但有检测警告" });
+  await expect(resultDialog.getByText(/BSP 不包含 stringtable_dictionary.dct/)).toBeVisible();
+  await page.reload();
+  await expect(resultDialog).toBeVisible();
+  await resultDialog.getByRole("button", { name: "知道了" }).click();
+  await page.getByRole("button", { name: "QQ 闪传导入" }).click();
+  await page.getByLabel("目标节点").selectOption(node.id);
+  await page.getByLabel("QQ 闪传链接").fill("https://qfile.qq.com/q/Example123");
+  await page.getByRole("button", { name: "开始导入" }).click();
+  const duplicateDialog = page.getByRole("dialog", { name: "地图已存在" });
+  await expect(duplicateDialog.getByText(/本次没有新增地图记录/)).toBeVisible();
+  await duplicateDialog.getByRole("button", { name: "知道了" }).click();
 
   page.once("dialog", (dialog) => dialog.accept());
   const deletableCard = page.locator(".map-card").filter({ hasText: "可删除地图" });

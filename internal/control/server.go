@@ -292,6 +292,7 @@ func (s *Server) routes() http.Handler {
 			r.With(s.requirePermission(PermissionMapsRead)).Get("/maps/{mapID}", s.handleGetMap)
 			r.With(s.requirePermission(PermissionMapsRead)).Get("/maps/{mapID}/poster", s.handleGetMapPoster)
 			r.With(s.requirePermission(PermissionMapsImport)).Post("/nodes/{nodeID}/maps/imports", s.handleImportMap)
+			r.With(s.requirePermission(PermissionMapsImport)).Get("/map-imports/{importID}", s.handleGetMapImport)
 			r.With(s.requirePermission(PermissionMapsAssign)).Put("/maps/{mapID}/assignments/{instanceID}", s.handleAssignMap)
 			r.With(s.requirePermission(PermissionMapsAssign)).Delete("/maps/{mapID}/assignments/{instanceID}", s.handleUnassignMap)
 			r.With(s.requirePermission(PermissionMapsVerify)).Post("/maps/{mapID}/verify", s.handleVerifyMap)

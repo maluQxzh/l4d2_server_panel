@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -63,9 +64,25 @@ func TestMapImportProjectsMissionMetadataPosterModesAndChapters(t *testing.T) {
 			"warnings": []any{}, "replicas": []any{map[string]any{"filesystem_id": "volume-1", "health": "healthy"}},
 		},
 	}
-	if err := store.ApplyJobResult(ctx, job); err != nil {
-		t.Fatal(err)
+	project := func(importJob domain.Job, duplicate bool) {
+		t.Helper()
+		payload, _ := json.Marshal(importJob.Payload)
+		result, _ := json.Marshal(importJob.Result)
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO jobs(id,node_id,type,status,payload,result,requested_by)
+			VALUES(?1,?2,'map.import.qq_flash','succeeded',?3,?4,?5)`, importJob.ID, nodeID, string(payload), string(result), userID); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 { // Replaying a projection must not turn a new map into a duplicate.
+			if err := store.ApplyJobResult(ctx, importJob); err != nil {
+				t.Fatal(err)
+			}
+			persisted, err := store.GetJob(ctx, importJob.ID)
+			if err != nil || persisted.Result["import_duplicate"] != duplicate {
+				t.Fatalf("import outcome=%#v err=%v, want duplicate=%v", persisted.Result, err, duplicate)
+			}
+		}
 	}
+	project(job, false)
 	item, err := store.GetMap(ctx, mapID)
 	if err != nil {
 		t.Fatal(err)
@@ -91,9 +108,12 @@ func TestMapImportProjectsMissionMetadataPosterModesAndChapters(t *testing.T) {
 		"modes":     []any{map[string]any{"name": "coop", "chapters": []any{map[string]any{"ordinal": float64(1), "bsp_name": "bts01", "display_name": "学校外围"}}}},
 		"warnings":  []any{}, "replicas": []any{map[string]any{"filesystem_id": "volume-1", "health": "healthy"}},
 	}
-	if err := store.ApplyJobResult(ctx, duplicateJob); err != nil {
-		t.Fatal(err)
-	}
+	project(duplicateJob, true)
+	// Also cover Control-side digest deduplication when an older Agent returns
+	// the requested ID instead of the canonical ID.
+	duplicateJob.ID = uuid.NewString()
+	duplicateJob.Result["map_id"] = duplicateID
+	project(duplicateJob, true)
 	var mapCount int
 	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM maps WHERE node_id=?1`, nodeID).Scan(&mapCount); err != nil {
 		t.Fatal(err)

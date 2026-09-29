@@ -35,6 +35,7 @@ import type {
   RuntimeEnvironmentRecord,
   GameInstallationRecord,
   MapRecord,
+  MapImportResult,
   MapPathEncoding,
   SmartPluginPlan,
   SmartPluginSelection,
@@ -366,6 +367,7 @@ export const api = {
 
   maps: (nodeId?: string) => list<MapRecord>(`/maps${nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : ""}`),
   map: (id: string) => request<{ map: MapRecord }>(`/maps/${encodeURIComponent(id)}`).then((result) => result.map),
+  mapImportResult: (id: string) => request<MapImportResult>(`/map-imports/${encodeURIComponent(id)}`),
   importMap: (nodeId: string, shareUrl: string, pathEncoding: MapPathEncoding = "auto") => request<{ job_id: string; idempotent_replay?: boolean }>(
     `/nodes/${encodeURIComponent(nodeId)}/maps/imports`, { method: "POST", body: JSON.stringify({ share_url: shareUrl, path_encoding: pathEncoding }) },
   ),

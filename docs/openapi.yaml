@@ -2090,7 +2090,7 @@ paths:
     post:
       tags: [Maps]
       summary: 从 QQ 闪传导入一张逻辑地图
-      description: 需要节点/全局 `maps.import`，或该节点内已绑定实例的 `maps.import`，以及 map_library_v1 Agent。分享链接加密进入任务且不回显；节点完整枚举后下载，递归处理最多三层 ZIP/7Z/RAR，只展开 VPK、外部分卷和嵌套归档，最终保留确定性服务端 VPK。显式路径编码需要 map_import_v2；失败任务在有 jobs.details 权限时返回阶段、稳定错误码和修复建议。
+      description: 一个链接只能包含一张完整地图，不能混放多个地图。需要节点/全局 `maps.import`，或该节点内已绑定实例的 `maps.import`，以及 map_library_v1 Agent。分享链接加密进入任务且不回显；节点完整枚举后下载，递归处理最多三层 ZIP/7Z/RAR，只展开 VPK、外部分卷和嵌套归档，最终保留确定性服务端 VPK。显式路径编码需要 map_import_v2；失败任务在有 jobs.details 权限时返回阶段、稳定错误码和修复建议。上传者可通过 /map-imports/{importId} 单独查询检测结果。
       parameters:
         - { $ref: "#/components/parameters/NodeID" }
         - { $ref: "#/components/parameters/CSRF" }
@@ -2113,6 +2113,35 @@ paths:
         "202": { description: 导入任务已排队, content: { application/json: { schema: { $ref: "#/components/schemas/JobReference" } } } }
         "400": { $ref: "#/components/responses/BadRequest" }
         "409": { $ref: "#/components/responses/Conflict" }
+
+  /map-imports/{importId}:
+    get:
+      tags: [Maps]
+      summary: 上传者查询自己的地图导入检测结果
+      description: 必须为任务提交者，并仍拥有该节点的 maps.import（支持同节点实例绑定及 Token 范围检查）；无需 jobs.read、jobs.details 或 maps.read。仅在终态且投影完成后 ready 为 true；成功时返回是否复用已有地图、名称、检测警告及缺失字典的 BSP。不会返回分享链接、任务正文、海报、其他上传者资料或原始失败诊断。失败和取消通过 status 提示。
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 导入状态及已完成的检测结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job_id, status, ready]
+                properties:
+                  job_id: { type: string, format: uuid }
+                  status: { type: string, enum: [queued, dispatched, running, succeeded, failed, canceled] }
+                  ready: { type: boolean }
+                  name: { type: string }
+                  duplicate: { type: boolean, description: 相同内容地图已存在，本次没有新增地图记录 }
+                  warnings: { type: array, items: { $ref: "#/components/schemas/MapWarning" } }
+                  missing_dictionaries: { type: array, items: { type: string } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /maps/{mapId}/assignments/{instanceId}:
     put:

@@ -172,4 +172,65 @@ func TestInstanceScopedSharedMapPermissionsEnforceDeleteOwnership(t *testing.T) 
 		!strings.Contains(jobsResponse.Body.String(), `"scope_instance_id":"`+instanceID+`"`) {
 		t.Fatalf("instance-scoped task center=%d %s", jobsResponse.Code, jobsResponse.Body.String())
 	}
+
+	// Import-only users can read their own compact outcome without gaining
+	// job details or another uploader's results.
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM role_binding_permissions WHERE binding_id=?1 AND permission IN ('jobs.read','jobs.details','maps.read');
+		UPDATE jobs SET status='succeeded',result=?3 WHERE id=?2`, bindingID, importJobID,
+		`{"_projection_pending":true,"import_duplicate":true,"name":"Already present","warnings":[{"code":"test_warning","message":"检查地图"}],"bsps":[{"virtual_path":"maps/test.bsp","start_name":"test","dictionary_present":false}],"poster_base64":"secret-poster","source":"secret-source"}`); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/map-imports/" + importJobID
+	response := request(http.MethodGet, path, "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ready":false`) || strings.Contains(response.Body.String(), "Already present") {
+		t.Fatalf("unprojected result leaked: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET result=json_remove(result,'$._projection_pending') WHERE id=?1`, importJobID); err != nil {
+		t.Fatal(err)
+	}
+	response = request(http.MethodGet, path, "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"duplicate":true`) || !strings.Contains(response.Body.String(), `"missing_dictionaries":["maps/test.bsp"]`) || !strings.Contains(response.Body.String(), "检查地图") || strings.Contains(response.Body.String(), "secret-") {
+		t.Fatalf("import-only outcome=%d %s", response.Code, response.Body.String())
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('outside-node','Outside','online')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []struct {
+		name, node, instance, scope string
+		want                        int
+	}{
+		{"instance", "", instanceID, "manage", http.StatusOK},
+		{"read-only", "", instanceID, "read", http.StatusForbidden},
+		{"outside-node", "outside-node", "", "manage", http.StatusForbidden},
+	} {
+		secret, err := newAPITokenSecret()
+		if err != nil {
+			t.Fatal(err)
+		}
+		expires := time.Now().Add(time.Hour)
+		if _, err := store.CreateAPIToken(ctx, APIToken{UserID: userID, Name: scenario.name, NodeID: scenario.node,
+			InstanceID: scenario.instance, Scopes: []string{scenario.scope}, ExpiresAt: &expires}, tokenHash(secret)); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+secret)
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != scenario.want {
+			t.Fatalf("%s token outcome=%d %s", scenario.name, recorder.Code, recorder.Body.String())
+		}
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET requested_by=?2 WHERE id=?1`, importJobID, otherUserID); err != nil {
+		t.Fatal(err)
+	}
+	if response = request(http.MethodGet, path, ""); response.Code != http.StatusNotFound {
+		t.Fatalf("other uploader outcome=%d %s", response.Code, response.Body.String())
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET requested_by=?2 WHERE id=?1;
+		DELETE FROM role_binding_permissions WHERE binding_id=?3 AND permission='maps.import'`, importJobID, userID, bindingID); err != nil {
+		t.Fatal(err)
+	}
+	if response = request(http.MethodGet, path, ""); response.Code != http.StatusForbidden {
+		t.Fatalf("revoked import permission=%d %s", response.Code, response.Body.String())
+	}
 }
