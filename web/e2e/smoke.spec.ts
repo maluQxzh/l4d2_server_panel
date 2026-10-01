@@ -152,4 +152,35 @@ test("管理员登录后进入真实数据仪表盘", async ({ page }) => {
   await expect(page.getByText("2.0 GB", { exact: true })).toBeVisible();
   await expect(page.getByText("可更新至 654321")).toBeVisible();
   await expect(page.getByText(/1 个实例可更新/)).toBeVisible();
+  await expect(page.getByLabel("集群当前在线玩家")).toContainText("2 人");
+  await expect(page.getByText("暂无历史玩家数据")).toBeVisible();
+});
+
+test("集群当前玩家汇总全部实例，与单实例历史曲线明确区分", async ({ page }, testInfo) => {
+  await json(page, "**/api/v1/auth/me", { user: owner, csrf_token: "csrf-test" });
+  await json(page, "**/api/v1/nodes", { items: [] });
+  await json(page, "**/api/v1/jobs", { items: [] });
+  await json(page, "**/api/v1/notifications", { items: [] });
+  await json(page, "**/api/v1/instances", { items: [
+    { id: "empty", name: "空服", status: "running", players: 0 },
+    { id: "occupied", name: "多人绝境01", status: "running", players: 3 },
+    { id: "stopped", name: "已停止服", status: "stopped", players: 8 },
+  ].map((item) => ({ ...item, node_id: "node-1", host: "127.0.0.1", port: 27015, max_players: 10 })) });
+  await page.route("**/api/v1/metrics**", (route) => {
+    expect(new URL(route.request().url()).searchParams.get("instance_id")).toBe("empty");
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ resolution: "1m", items: [
+      { collected_at: "2026-10-01T00:00:00Z", players: 0 },
+      { collected_at: "2026-10-01T00:01:00Z", players: 0 },
+    ] }) });
+  });
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: /多人绝境01/ })).toContainText("3/10");
+  await expect(page.getByLabel("集群当前在线玩家")).toContainText("3 人");
+  await expect(page.getByText("空服 · 近 24 小时玩家趋势（单实例）")).toBeVisible();
+  await page.locator(".capacity-chart .recharts-wrapper").hover({ position: { x: 50, y: 40 } });
+  const tooltip = page.locator(".recharts-tooltip-wrapper");
+  await expect(tooltip).toContainText("空服 · 10/01");
+  await expect(tooltip).toContainText("历史玩家数");
+  await expect(tooltip).toContainText("0");
+  await page.locator(".capacity-card").screenshot({ path: testInfo.outputPath("fleet-players.png") });
 });

@@ -23,11 +23,12 @@ export function DashboardPage() {
   const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.nodes, enabled: canReadNodes, refetchInterval: polling });
   const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: canReadInstances, refetchInterval: polling });
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, enabled: canReadJobs, refetchInterval: polling });
-  const metricInstanceID = instances.data?.items.find((item) => item.status === "running")?.id || instances.data?.items[0]?.id;
+  const metricInstance = instances.data?.items.find((item) => item.status === "running") || instances.data?.items[0];
+  const metricInstanceID = metricInstance?.id;
   const history = useQuery({
     queryKey: ["metrics", "dashboard", metricInstanceID],
     queryFn: () => api.metrics({ instanceId: metricInstanceID, resolution: "1m", from: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() }),
-    enabled: canReadMetrics && Boolean(metricInstanceID),
+    enabled: canReadInstances && canReadMetrics && Boolean(metricInstanceID),
     refetchInterval: 60_000,
   });
 
@@ -53,10 +54,7 @@ export function DashboardPage() {
   const diskTotal = nodeList.reduce((sum, node) => sum + node.disk_total, 0);
   const network = fleetNetworkTotals(nodeList);
   const attentionHref = failedJobs > 0 && canReadJobs ? "/jobs" : offlineNodes > 0 && canReadNodes ? "/nodes" : canReadNotifications ? "/notifications" : canReadInstances ? "/instances" : undefined;
-  const chartData: Array<{ label: string; players: number }> = history.data?.items.length
-    ? history.data.items.map((point) => ({ label: new Date(point.collected_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }), players: point.players }))
-    : instanceList.slice(0, 12).map((instance, index) => ({ label: String(index + 1), players: instancePlayers(instance) }));
-  if (!chartData.length) chartData.push({ label: "0", players: 0 }, { label: "1", players: 0 });
+  const chartData = history.data?.items.map((point) => ({ label: dateTime(point.collected_at), players: point.players })) || [];
 
   return (
     <div className="dashboard-page">
@@ -100,20 +98,24 @@ export function DashboardPage() {
         </Card>
         )}
 
-        {(canReadNodes || canReadMetrics) && (
+        {(canReadNodes || canReadInstances) && (
         <Card className="capacity-card">
           <div className="card-heading"><div><span className="eyebrow">FLEET CAPACITY</span><h2>集群容量</h2></div><HardDrive size={20} /></div>
-          <div className="capacity-chart">
+          {canReadInstances && <div className="capacity-players" aria-label="集群当前在线玩家"><span>当前在线玩家<strong>{players}<small> 人</small></strong></span><small>全部 {instanceList.length} 个可见实例合计 · 与实例列表同步</small></div>}
+          {canReadInstances && canReadMetrics && metricInstance && <div className="capacity-chart">
+            <p className="capacity-chart__caption">{metricInstance.name} · 近 24 小时玩家趋势（单实例）</p>
+            {history.isPending ? <p className="capacity-chart__caption" role="status">正在读取历史数据…</p> : history.error ? <p className="capacity-chart__caption" role="status">历史数据暂时无法读取</p> : !chartData.length ? <p className="capacity-chart__caption">暂无历史玩家数据</p> :
             <ResponsiveContainer width="100%" height={100}>
-              <AreaChart data={chartData}><defs><linearGradient id="player-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#9bd235" stopOpacity={0.4} /><stop offset="1" stopColor="#9bd235" stopOpacity={0} /></linearGradient></defs><Tooltip contentStyle={{ background: "#111816", border: "1px solid #2a3531", borderRadius: 8 }} labelFormatter={() => "实例玩家"} /><Area type="monotone" dataKey="players" stroke="#9bd235" fill="url(#player-fill)" strokeWidth={2} /></AreaChart>
+              <AreaChart data={chartData}><defs><linearGradient id="player-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#9bd235" stopOpacity={0.4} /><stop offset="1" stopColor="#9bd235" stopOpacity={0} /></linearGradient></defs><Tooltip contentStyle={{ background: "#111816", border: "1px solid #2a3531", borderRadius: 8 }} labelFormatter={(_, payload) => `${metricInstance.name} · ${payload[0]?.payload?.label || ""}`} /><Area type="monotone" name="历史玩家数" dataKey="players" stroke="#9bd235" fill="url(#player-fill)" strokeWidth={2} /></AreaChart>
             </ResponsiveContainer>
-          </div>
-          <div className="capacity-metrics">
+            }
+          </div>}
+          {canReadNodes && <div className="capacity-metrics">
             <MetricBar label="内存" value={percent(memoryUsed, memoryTotal)} detail={`${bytes(memoryUsed)} / ${bytes(memoryTotal)}`} />
             <MetricBar label="磁盘" value={percent(diskUsed, diskTotal)} detail={`${bytes(diskUsed)} / ${bytes(diskTotal)}`} />
             <MetricBar label="CPU" value={cpu} detail={`${cpu}% 平均使用率`} />
             <div className="network-totals" aria-label="节点网络累计流量"><span>网络接收<strong>{bytes(network.rx)}</strong></span><span>网络发送<strong>{bytes(network.tx)}</strong></span></div>
-          </div>
+          </div>}
         </Card>
         )}
       </section>}

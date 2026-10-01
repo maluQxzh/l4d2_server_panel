@@ -215,6 +215,12 @@ h1, h2, h3, p { margin-top: 0; }
 .instance-row__players strong { color: var(--text); font-size: 12px; }
 .row-arrow { color: var(--text-faint); }
 .capacity-chart { padding: 8px 10px 0; }
+.capacity-players { padding: 16px 22px 8px; display: grid; gap: 6px; }
+.capacity-players > span { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--text-dim); }
+.capacity-players strong { color: var(--green); font-size: 26px; }
+.capacity-players strong small { font-size: 12px; font-weight: normal; }
+.capacity-players > small, .capacity-chart__caption { color: var(--text-faint); font-size: 11px; line-height: 1.6; }
+.capacity-chart__caption { margin: 0 12px 8px; overflow-wrap: anywhere; }
 .capacity-metrics { padding: 10px 20px 20px; display: flex; flex-direction: column; gap: 18px; }
 .network-totals { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .network-totals span { padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-faint); background: rgba(255,255,255,.018); border: 1px solid var(--line-soft); border-radius: 7px; font-size: 9px; }
