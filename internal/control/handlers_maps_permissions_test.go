@@ -185,14 +185,64 @@ func TestInstanceScopedSharedMapPermissionsEnforceDeleteOwnership(t *testing.T) 
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ready":false`) || strings.Contains(response.Body.String(), "Already present") {
 		t.Fatalf("unprojected result leaked: %d %s", response.Code, response.Body.String())
 	}
-	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET result=json_remove(result,'$._projection_pending') WHERE id=?1`, importJobID); err != nil {
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET result=json_set(json_remove(result,'$._projection_pending'),'$.import_map_id',?2) WHERE id=?1`, importJobID, otherMapID); err != nil {
 		t.Fatal(err)
 	}
 	response = request(http.MethodGet, path, "")
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"duplicate":true`) || !strings.Contains(response.Body.String(), `"missing_dictionaries":["maps/test.bsp"]`) || !strings.Contains(response.Body.String(), "检查地图") || strings.Contains(response.Body.String(), "secret-") {
 		t.Fatalf("import-only outcome=%d %s", response.Code, response.Body.String())
 	}
+	if strings.Contains(response.Body.String(), "existing_map") || strings.Contains(response.Body.String(), "Other user") {
+		t.Fatalf("import-only outcome leaked map metadata: %s", response.Body.String())
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO role_binding_permissions(binding_id,permission) VALUES(?1,'maps.read')`, bindingID); err != nil {
+		t.Fatal(err)
+	}
+	response = request(http.MethodGet, path, "")
+	var outcome struct {
+		ExistingMap struct {
+			ID        string    `json:"id"`
+			Name      string    `json:"name"`
+			Uploader  string    `json:"created_by_display_name"`
+			CreatedAt time.Time `json:"created_at"`
+		} `json:"existing_map"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &outcome); err != nil || response.Code != http.StatusOK || outcome.ExistingMap.ID != otherMapID || outcome.ExistingMap.Name != "Other map" || outcome.ExistingMap.Uploader != "Other user" || outcome.ExistingMap.CreatedAt.IsZero() {
+		t.Fatalf("readable existing map=%d %s err=%v", response.Code, response.Body.String(), err)
+	}
+	// Old Control-side deduplication results can resolve the canonical map by digest.
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET result=json_set(json_remove(result,'$.import_map_id'),'$.map_id','legacy-missing-map','$.aggregate_sha256',?2) WHERE id=?1`, importJobID, strings.Repeat("b", 64)); err != nil {
+		t.Fatal(err)
+	}
+	response = request(http.MethodGet, path, "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"id":"`+otherMapID+`"`) {
+		t.Fatalf("legacy existing map=%d %s", response.Code, response.Body.String())
+	}
+	// A known canonical map that no longer exists must not redirect to another record.
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET result=json_set(result,'$.import_map_id','deleted-map') WHERE id=?1`, importJobID); err != nil {
+		t.Fatal(err)
+	}
+	response = request(http.MethodGet, path, "")
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "existing_map") || !strings.Contains(response.Body.String(), `"duplicate":true`) {
+		t.Fatalf("deleted canonical map=%d %s", response.Code, response.Body.String())
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET result=json_set(result,'$.import_map_id',?2) WHERE id=?1;
+		DELETE FROM role_binding_permissions WHERE binding_id=?3 AND permission='maps.read'`, importJobID, otherMapID, bindingID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes(id,name,status) VALUES('outside-node','Outside','online')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO role_binding_permissions(binding_id,permission) VALUES(?1,'maps.read');
+		INSERT INTO maps(id,node_id,name,aggregate_sha256,total_size,created_by) VALUES('outside-map','outside-node','Outside map',?3,1,?4);
+		UPDATE jobs SET result=json_set(result,'$.import_map_id','outside-map') WHERE id=?2`, bindingID, importJobID, strings.Repeat("b", 64), otherUserID); err != nil {
+		t.Fatal(err)
+	}
+	response = request(http.MethodGet, path, "")
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "existing_map") {
+		t.Fatalf("cross-node canonical map leaked: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET result=json_set(result,'$.import_map_id',?2) WHERE id=?1`, importJobID, otherMapID); err != nil {
 		t.Fatal(err)
 	}
 	for _, scenario := range []struct {
@@ -218,6 +268,9 @@ func TestInstanceScopedSharedMapPermissionsEnforceDeleteOwnership(t *testing.T) 
 		server.Handler().ServeHTTP(recorder, req)
 		if recorder.Code != scenario.want {
 			t.Fatalf("%s token outcome=%d %s", scenario.name, recorder.Code, recorder.Body.String())
+		}
+		if scenario.want == http.StatusOK && !strings.Contains(recorder.Body.String(), `"id":"`+otherMapID+`"`) {
+			t.Fatalf("scoped token missing readable map: %s", recorder.Body.String())
 		}
 	}
 	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET requested_by=?2 WHERE id=?1`, importJobID, otherUserID); err != nil {

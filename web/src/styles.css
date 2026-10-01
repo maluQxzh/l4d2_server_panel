@@ -293,6 +293,10 @@ h1, h2, h3, p { margin-top: 0; }
 .map-card__identity > small { display: block; overflow: hidden; color: var(--text-faint); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .map-card__uploader { width: fit-content; max-width: 100%; margin-top: 9px; padding: 4px 7px; display: inline-flex; align-items: center; gap: 5px; color: var(--text-faint); background: rgba(255,255,255,.025); border: 1px solid var(--line-soft); border-radius: 999px; font-size: 8px; }
 .map-card__uploader svg { flex: 0 0 auto; color: var(--green); }
+.map-import-metadata { margin: 0; display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line-soft); border-radius: 8px; }
+.map-import-metadata > div { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.map-import-metadata dt { flex: 0 0 130px; color: var(--text-dim); }
+.map-import-metadata dd { flex: 1 1 180px; min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .map-card__uploader strong { min-width: 0; overflow: hidden; color: var(--text-dim); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .map-card__metadata { margin: 11px 0 0; display: grid; gap: 7px; }
 .map-card__metadata > div { min-width: 0; display: grid; grid-template-columns: 104px minmax(0, 1fr); align-items: baseline; gap: 8px; }

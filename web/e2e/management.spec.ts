@@ -1247,7 +1247,7 @@ test("安装模组可选择 QQ闪传批量导入", async ({ page }) => {
   await expect(fileDialog.getByText("QQ闪传", { exact: true })).toHaveCount(0);
 });
 
-test("地图管理支持导入、警告、运行中热更新分配与两阶段删除", async ({ page }) => {
+test("地图管理支持导入、警告、运行中热更新分配与两阶段删除", async ({ page }, testInfo) => {
   await authenticated(page);
   const stopped = { ...instance, id: "instance-2", name: "停止实例", status: "stopped", port: 27016, pid: 0, started_at: null };
   const assignedMap = {
@@ -1258,6 +1258,7 @@ test("地图管理支持导入、警告、运行中热更新分配与两阶段�
     warnings: [{ code: "missing_stringtable_dictionary", message: "BSP 不包含 stringtable_dictionary.dct", virtual_path: "maps/custom_map.bsp" }],
     replicas: [{ filesystem_id: "linux:1", health: "healthy" }],
     assignments: [{ map_id: "11111111-1111-1111-1111-111111111111", instance_id: instance.id, restart_required: false, created_at: "2026-08-05T00:00:00Z", updated_at: "2026-08-05T00:00:00Z" }],
+    created_by_display_name: "最初上传者",
     created_at: "2026-08-05T00:00:00Z", updated_at: "2026-08-05T00:00:00Z",
   };
   const deletableMap = { ...assignedMap, id: "22222222-2222-2222-2222-222222222222", name: "可删除地图", aggregate_sha256: "c".repeat(64), assignments: [], warnings: [] };
@@ -1269,6 +1270,7 @@ test("地图管理支持导入、警告、运行中热更新分配与两阶段�
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (request.method() === "GET" && path === "/api/v1/maps") return json(route, { items: [assignedMap, deletableMap] });
+    if (request.method() === "GET" && path === `/api/v1/maps/${assignedMap.id}`) return json(route, { map: assignedMap });
     writes.push({ method: request.method(), path, body: request.postDataJSON() });
     if (path.endsWith("/delete-confirmations")) return json(route, { confirmation_token: "mdc_once", expires_at: "2026-08-05T00:05:00Z" }, 201);
     return json(route, { job_id: `job-${writes.length}` }, 202);
@@ -1277,6 +1279,7 @@ test("地图管理支持导入、警告、运行中热更新分配与两阶段�
   await page.route("**/api/v1/map-imports/*", (route) => json(route, {
     job_id: `job-import-map-${mapImportCount}`, status: "succeeded", ready: true,
     name: assignedMap.name, duplicate: mapImportCount > 1,
+    existing_map: mapImportCount > 1 ? assignedMap : undefined,
     missing_dictionaries: ["maps/custom_map.bsp"], warnings: assignedMap.warnings,
   }));
   await page.route("**/api/v1/nodes/node-1/maps/imports", async (route) => {
@@ -1320,7 +1323,20 @@ test("地图管理支持导入、警告、运行中热更新分配与两阶段�
   await page.getByRole("button", { name: "开始导入" }).click();
   const duplicateDialog = page.getByRole("dialog", { name: "地图已存在" });
   await expect(duplicateDialog.getByText(/本次没有新增地图记录/)).toBeVisible();
-  await duplicateDialog.getByRole("button", { name: "知道了" }).click();
+  await expect(duplicateDialog.getByText("最初上传者")).toBeVisible();
+  await expect(duplicateDialog.getByText("首次上传时间")).toBeVisible();
+  await expect(duplicateDialog.getByText("campaign.zip")).toBeVisible();
+  await expect(page.locator(".toast")).toHaveCount(0, { timeout: 6_000 });
+  await duplicateDialog.screenshot({ path: testInfo.outputPath("duplicate-map.png") });
+  await duplicateDialog.getByRole("button", { name: "查看已有地图" }).click();
+  await expect(page).toHaveURL(new RegExp(`/maps\\?map=${assignedMap.id}$`));
+  await expect(page.getByRole("heading", { name: "地图详情" })).toBeVisible();
+  await expect(page.locator(".map-card")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "收起详情" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("dialog", { name: "地图已存在" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: assignedMap.name })).toBeVisible();
+  await page.getByRole("button", { name: "返回地图库" }).click();
 
   page.once("dialog", (dialog) => dialog.accept());
   const deletableCard = page.locator(".map-card").filter({ hasText: "可删除地图" });

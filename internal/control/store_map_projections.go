@@ -112,7 +112,7 @@ func (s *Store) applyMapImportResult(ctx context.Context, job domain.Job) error 
 		if duplicate {
 			value = "true"
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET result=json_set(result,'$.import_duplicate',json(?2)) WHERE id=?1`, job.ID, value); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET result=json_set(result,'$.import_duplicate',json(?2),'$.import_map_id',?3) WHERE id=?1`, job.ID, value, mapID); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -131,6 +131,7 @@ func (s *Store) applyMapImportResult(ctx context.Context, job domain.Job) error 
 	var duplicateID string
 	err = tx.QueryRowContext(ctx, `SELECT id FROM maps WHERE node_id=?1 AND aggregate_sha256=?2 AND id<>?3 AND health<>'deleting' ORDER BY created_at,id LIMIT 1`, job.NodeID, aggregateSHA, mapID).Scan(&duplicateID)
 	if err == nil {
+		mapID = duplicateID
 		return commitImport(true)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {

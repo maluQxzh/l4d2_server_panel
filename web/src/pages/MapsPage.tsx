@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ChevronDown, ChevronUp, Database, HardDrive, Link2, Plus, RefreshCw, Search, ShieldCheck, Trash2, UserRound } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router";
 import { Button, Card, EmptyState, ErrorState, Field, LoadingBlock, Modal, PageHeader, ProgressBar, StatusBadge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
@@ -16,6 +17,26 @@ const UNASSIGNED_INSTANCE_FILTER = "__unassigned__";
 const UNKNOWN_UPLOADER_FILTER = "__unknown__";
 
 export function MapsPage() {
+  const [params, setParams] = useSearchParams();
+  const mapId = params.get("map");
+  return mapId ? <FocusedMapPage key={mapId} mapId={mapId} onBack={() => { const next = new URLSearchParams(params); next.delete("map"); setParams(next); }} /> : <MapLibraryPage />;
+}
+
+function FocusedMapPage({ mapId, onBack }: { mapId: string; onBack: () => void }) {
+  const { user } = useAuth();
+  const [assignmentOpen, setAssignmentOpen] = useState(false);
+  const map = useQuery({ queryKey: ["maps", "detail", user?.id, mapId], queryFn: () => api.map(mapId) });
+  const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: hasAnyPermission(user, "instances.read") });
+  return <div>
+    <PageHeader eyebrow="SHARED MAP LIBRARY" title="地图详情" description="查看已有地图的上传信息、章节与实例分配。" actions={<Button variant="secondary" onClick={onBack}>返回地图库</Button>} />
+    {map.isPending ? <LoadingBlock label="正在读取地图详情…" /> : map.error ? <ErrorState error={map.error} retry={() => void map.refetch()} /> : map.data && <>
+      <MapCard item={map.data} instances={instances.data?.items || []} user={user} initiallyExpanded onAssignments={() => setAssignmentOpen(true)} />
+      <AssignmentModal item={assignmentOpen ? map.data : null} instances={instances.data?.items || []} user={user} onClose={() => setAssignmentOpen(false)} />
+    </>}
+  </div>;
+}
+
+function MapLibraryPage() {
   const { user } = useAuth();
   const [importOpen, setImportOpen] = useState(false);
   const [assignmentMap, setAssignmentMap] = useState<MapRecord | null>(null);
@@ -102,8 +123,8 @@ function mapUploaderValue(item: MapRecord) {
   return item.created_by || UNKNOWN_UPLOADER_FILTER;
 }
 
-function MapCard({ item, instances, user, duplicateLabel, onAssignments }: { item: MapRecord; instances: InstanceRecord[]; user: User | null; duplicateLabel?: string; onAssignments: () => void }) {
-  const [expanded, setExpanded] = useState(false);
+function MapCard({ item, instances, user, duplicateLabel, initiallyExpanded = false, onAssignments }: { item: MapRecord; instances: InstanceRecord[]; user: User | null; duplicateLabel?: string; initiallyExpanded?: boolean; onAssignments: () => void }) {
+  const [expanded, setExpanded] = useState(initiallyExpanded);
   const toast = useToast();
   const client = useQueryClient();
   const verify = useMutation({ mutationFn: () => api.verifyMap(item.id), onSuccess: () => { toast.push("地图校验任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });

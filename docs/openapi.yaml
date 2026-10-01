@@ -2118,7 +2118,7 @@ paths:
     get:
       tags: [Maps]
       summary: 上传者查询自己的地图导入检测结果
-      description: 必须为任务提交者，并仍拥有该节点的 maps.import（支持同节点实例绑定及 Token 范围检查）；无需 jobs.read、jobs.details 或 maps.read。仅在终态且投影完成后 ready 为 true；成功时返回是否复用已有地图、名称、检测警告及缺失字典的 BSP。不会返回分享链接、任务正文、海报、其他上传者资料或原始失败诊断。失败和取消通过 status 提示。
+      description: 必须为任务提交者，并仍拥有该节点的 maps.import（支持同节点实例绑定及 Token 范围检查）；基本结果无需 jobs.read、jobs.details 或 maps.read。仅在终态且投影完成后 ready 为 true；成功时返回是否复用已有地图、名称、检测警告及缺失字典的 BSP。重复导入且额外拥有同节点 maps.read 时，附带仍存在的原地图摘要 existing_map，包含原上传者当前显示名称和首次上传时间；无查看权限或原记录已删除时省略。不会返回分享链接、任务正文、海报、用户名或原始失败诊断。失败和取消通过 status 提示。
       parameters:
         - name: importId
           in: path
@@ -2138,6 +2138,19 @@ paths:
                   ready: { type: boolean }
                   name: { type: string }
                   duplicate: { type: boolean, description: 相同内容地图已存在，本次没有新增地图记录 }
+                  existing_map:
+                    type: object
+                    description: 仅在重复导入、原地图仍存在且具有所属节点 maps.read 权限时返回，供展示原记录及按 ID 跳转。
+                    required: [id, name, created_at, total_size]
+                    properties:
+                      id: { type: string, format: uuid }
+                      name: { type: string }
+                      created_by_display_name: { type: string, description: 原上传者当前显示名称；账号已删除或未知时为空 }
+                      created_at: { type: string, format: date-time, description: 原地图首次上传时间，不是本次重复导入的时间 }
+                      source_name: { type: string }
+                      author: { type: string }
+                      version: { type: string }
+                      total_size: { type: integer, format: int64 }
                   warnings: { type: array, items: { $ref: "#/components/schemas/MapWarning" } }
                   missing_dictionaries: { type: array, items: { type: string } }
         "403": { $ref: "#/components/responses/Forbidden" }

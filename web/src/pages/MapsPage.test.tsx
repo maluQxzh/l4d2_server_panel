@@ -54,6 +54,28 @@ describe("地图管理卡片", () => {
   beforeEach(() => { authState.user = { role: "owner" }; });
   afterEach(() => vi.restoreAllMocks());
 
+  it("按 ID 直接读取并展开地图详情，不依赖列表和名称筛选", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const detail = vi.spyOn(api, "map").mockResolvedValue(map);
+    const list = vi.spyOn(api, "maps").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "instances").mockResolvedValue({ items: [] });
+    render(<QueryClientProvider client={client}><ToastProvider><MemoryRouter initialEntries={[`/maps?map=${map.id}`]}><MapsPage /></MemoryRouter></ToastProvider></QueryClientProvider>);
+    expect(await screen.findByRole("heading", { name: map.name })).toBeInTheDocument();
+    expect(detail).toHaveBeenCalledWith(map.id);
+    expect(list).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "收起详情" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("地图已删除或失去查看权限时显示错误，不展示旧地图卡片", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.spyOn(api, "map").mockRejectedValue(new Error("地图不存在或无权查看"));
+    vi.spyOn(api, "instances").mockResolvedValue({ items: [] });
+    render(<QueryClientProvider client={client}><ToastProvider><MemoryRouter initialEntries={[`/maps?map=${map.id}`]}><MapsPage /></MemoryRouter></ToastProvider></QueryClientProvider>);
+    expect(await screen.findByRole("alert")).toHaveTextContent("地图不存在或无权查看");
+    expect(screen.queryByRole("heading", { name: map.name })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "返回地图库" })).toBeInTheDocument();
+  });
+
   it("使用三项总览并默认折叠次要地图信息", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     vi.spyOn(api, "maps").mockResolvedValue({ items: [map] });

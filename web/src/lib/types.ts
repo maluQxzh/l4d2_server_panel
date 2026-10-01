@@ -282,6 +282,7 @@ export interface MapImportResult {
   ready: boolean;
   name?: string;
   duplicate?: boolean;
+  existing_map?: Pick<MapRecord, "id" | "name" | "created_by_display_name" | "created_at" | "source_name" | "author" | "version" | "total_size">;
   warnings?: MapWarningRecord[];
   missing_dictionaries?: string[];
 }

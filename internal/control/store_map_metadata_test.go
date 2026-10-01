@@ -77,7 +77,7 @@ func TestMapImportProjectsMissionMetadataPosterModesAndChapters(t *testing.T) {
 				t.Fatal(err)
 			}
 			persisted, err := store.GetJob(ctx, importJob.ID)
-			if err != nil || persisted.Result["import_duplicate"] != duplicate {
+			if err != nil || persisted.Result["import_duplicate"] != duplicate || persisted.Result["import_map_id"] != mapID {
 				t.Fatalf("import outcome=%#v err=%v, want duplicate=%v", persisted.Result, err, duplicate)
 			}
 		}

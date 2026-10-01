@@ -1,13 +1,19 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "../lib/api";
 import { pendingMapImports, trackMapImport } from "../lib/map-import-tracker";
 import { MapImportResults } from "./MapImportResults";
 
+function Location() {
+  const location = useLocation();
+  return <output aria-label="当前位置">{location.pathname}{location.search}</output>;
+}
+
 function mount(userId = "uploader") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MapImportResults userId={userId} /></QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><MemoryRouter><MapImportResults userId={userId} /><Location /></MemoryRouter></QueryClientProvider>);
 }
 
 describe("地图导入完成提示", () => {
@@ -22,6 +28,7 @@ describe("地图导入完成提示", () => {
     expect(screen.getByText(/本次没有新增地图记录/)).toBeInTheDocument();
     expect(screen.getByText("maps/test.bsp")).toBeInTheDocument();
     expect(screen.getByText(/BSP 不包含字典/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "查看已有地图" })).not.toBeInTheDocument();
     view.unmount();
     const restored = mount();
     expect(await screen.findByRole("dialog", { name: "地图已存在" })).toBeInTheDocument();
@@ -31,6 +38,37 @@ describe("地图导入完成提示", () => {
     restored.unmount();
     mount();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("展示原地图上传信息并按 ID 跳转，跳转后确认提示", async () => {
+    trackMapImport("uploader", "duplicate");
+    const createdAt = "2025-08-07T13:46:00Z";
+    vi.spyOn(api, "mapImportResult").mockResolvedValue({ job_id: "duplicate", status: "succeeded", ready: true, duplicate: true, name: "本次导入名称", existing_map: {
+      id: "original-map", name: "原地图名称", created_by_display_name: "原上传者", created_at: createdAt,
+      source_name: "original.zip", author: "地图作者甲", version: "1.2", total_size: 1024,
+    } });
+    mount();
+    expect(await screen.findByText("原上传者")).toBeInTheDocument();
+    expect(screen.getByText(new Date(createdAt).toLocaleString("zh-CN", { hour12: false }))).toBeInTheDocument();
+    expect(screen.getByText("原地图名称")).toBeInTheDocument();
+    expect(screen.queryByText("本次导入名称")).not.toBeInTheDocument();
+    expect(screen.getByText("original.zip")).toBeInTheDocument();
+    expect(screen.getByText("地图作者甲")).toBeInTheDocument();
+    expect(screen.getByText("1.2")).toBeInTheDocument();
+    expect(screen.getByText("1 KB")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看已有地图" }));
+    expect(screen.getByLabelText("当前位置")).toHaveTextContent("/maps?map=original-map");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(pendingMapImports("uploader")).toEqual([]);
+  });
+
+  it("原上传账号已删除时显示未知账号", async () => {
+    trackMapImport("uploader", "duplicate");
+    vi.spyOn(api, "mapImportResult").mockResolvedValue({ job_id: "duplicate", status: "succeeded", ready: true, duplicate: true, existing_map: {
+      id: "original-map", name: "地图", created_at: "2026-08-07T13:46:00Z", total_size: 1024,
+    } });
+    mount();
+    expect(await screen.findByText("未知账号")).toBeInTheDocument();
   });
 
   it("全局监听新提交任务，待服务端投影完成后显示警告", async () => {

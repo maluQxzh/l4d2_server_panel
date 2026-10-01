@@ -1,6 +1,8 @@
 package control
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -59,6 +61,37 @@ func (s *Server) handleGetMapImport(w http.ResponseWriter, r *http.Request) {
 		result["duplicate"] = duplicate
 		result["warnings"] = warnings
 		result["missing_dictionaries"] = missing
+		if duplicate {
+			allowed, err := s.allowsMapNodePermission(r.Context(), principal, job.NodeID, PermissionMapsRead)
+			if err != nil {
+				s.fail(w, err)
+				return
+			}
+			if allowed {
+				// Canonical IDs are recorded by Control after either deduplication path.
+				// Legacy results may only have the Agent ID and aggregate digest.
+				mapID := stringFromAny(job.Result["import_map_id"])
+				legacy := mapID == ""
+				if legacy {
+					mapID = stringFromAny(job.Result["map_id"])
+				}
+				item, err := scanMap(s.store.db.QueryRowContext(r.Context(), `SELECT `+mapColumns+` FROM maps
+					WHERE node_id=?1 AND (id=?2 OR (?3 AND aggregate_sha256=?4 AND health<>'deleting'))
+					ORDER BY CASE WHEN id=?2 THEN 0 ELSE 1 END,created_at,id LIMIT 1`,
+					job.NodeID, mapID, legacy, stringFromAny(job.Result["aggregate_sha256"])))
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					s.fail(w, err)
+					return
+				}
+				if err == nil {
+					result["existing_map"] = map[string]any{
+						"id": item.ID, "name": item.Name, "created_by_display_name": item.CreatedByName,
+						"created_at": item.CreatedAt, "source_name": item.SourceName,
+						"author": item.Author, "version": item.Version, "total_size": item.TotalSize,
+					}
+				}
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, result)
 }
