@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -49,8 +50,20 @@ func (e *Executor) executeMapTask(ctx context.Context, action string, job domain
 		if err != nil {
 			return nil, err
 		}
+		result := map[string]any{"map_id": mapID, "health": health, "replicas": replicas}
+		// Execute holds the map-library lock across verification and this snapshot.
+		// Missing registries deliberately omit the snapshot; absence is not proof
+		// that instance links have been removed.
+		if record, ok := e.maps.registry.get(mapID); ok {
+			ids := make([]string, 0, len(record.Assignments))
+			for id := range record.Assignments {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			result["assignment_instance_ids"] = ids
+		}
 		progress(100, "map verification completed")
-		return map[string]any{"map_id": mapID, "health": health, "replicas": replicas}, nil
+		return result, nil
 	case "map.delete":
 		progress(20, "checking map references")
 		if err := e.maps.delete(mapID); err != nil {
@@ -168,6 +181,7 @@ func (e *Executor) assignMap(ctx context.Context, job domain.Job, mapID string, 
 	}
 	if payload.RCONPassword == "" {
 		result["hot_reload_skipped"] = "rcon_not_configured"
+		result["restart_required"] = true
 		progress(100, "map assigned; in-game !update_vpk is required")
 		return result, nil
 	}
@@ -177,7 +191,14 @@ func (e *Executor) assignMap(ctx context.Context, job domain.Job, mapID string, 
 		executeRCON = executeLocalRCON
 	}
 	if _, err := executeRCON(ctx, record, payload, payload.RCONPassword, mapHotReloadRCONCommand, 8*time.Second); err != nil {
-		return nil, fmt.Errorf("refresh running server VPK list: %w", err)
+		// Assignment has already committed. Even cancellation during RCON must
+		// return success so Control projects and acknowledges the durable links.
+		// Do not return the raw RCON error, which may contain credentials.
+		result["hot_reload_skipped"] = "rcon_refresh_failed"
+		result["restart_required"] = true
+		result["warnings"] = []map[string]any{{"code": "map_hot_reload_failed", "message": "地图已分配，但自动刷新 VPK 失败；请在游戏内执行 !update_vpk 或重启实例。"}}
+		progress(100, "地图已分配，但自动刷新 VPK 失败；请手动刷新或重启实例")
+		return result, nil
 	}
 	result["hot_reloaded"] = true
 	progress(100, "map assigned and running server VPK list refreshed")

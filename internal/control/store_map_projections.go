@@ -273,9 +273,10 @@ func (s *Store) applyMapAssignmentResult(ctx context.Context, job domain.Job) er
 		return err
 	}
 	projectedAt := jobProjectionTimestamp(job)
+	restartRequired, _ := job.Result["restart_required"].(bool)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO map_assignments(map_id,instance_id,restart_required,created_at,updated_at)
 		VALUES(?1,?2,?3,?4,?4) ON CONFLICT(map_id,instance_id) DO UPDATE SET
-		restart_required=excluded.restart_required,updated_at=excluded.updated_at`, mapID, job.InstanceID, false, projectedAt)
+		restart_required=excluded.restart_required,updated_at=excluded.updated_at`, mapID, job.InstanceID, restartRequired, projectedAt)
 	return err
 }
 
@@ -298,6 +299,19 @@ func (s *Store) applyMapVerificationResult(ctx context.Context, job domain.Job) 
 	}
 	defer tx.Rollback()
 	verifiedAt := jobProjectionTimestamp(job)
+	var mapNode string
+	if err := tx.QueryRowContext(ctx, `SELECT node_id FROM maps WHERE id=?1`, mapID).Scan(&mapNode); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return tx.Commit() // Ignore late verification of a deleted map.
+		}
+		return err
+	}
+	if mapNode != job.NodeID {
+		return errors.New("Agent returned cross-node map verification metadata")
+	}
+	if err := reconcileMapAssignmentsTx(ctx, tx, job, mapID, &health); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE maps SET health=?2,updated_at=?3 WHERE id=?1 AND node_id=?4`, mapID, health, verifiedAt, job.NodeID); err != nil {
 		return err
 	}

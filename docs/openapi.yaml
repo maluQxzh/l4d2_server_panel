@@ -2160,7 +2160,7 @@ paths:
     put:
       tags: [Maps]
       summary: 分配地图给同节点实例
-      description: 需要通过节点绑定或同节点实例绑定获得地图所属节点的 `maps.read`，并具备目标实例的 `maps.assign`。运行中也可分配；已配置 RCON 时 Agent 会在硬链接提交后执行固定的 sm_update_vpk，无需重启。未配置 RCON 时仍完成分配，但管理员需要在游戏内手动输入 !update_vpk。使用节点地图锁和实例写锁，不占用 SteamCMD 槽。
+      description: 需要通过节点绑定或同节点实例绑定获得地图所属节点的 `maps.read`，并具备目标实例的 `maps.assign`。运行中也可分配；已配置 RCON 时 Agent 会在硬链接提交后执行固定的 sm_update_vpk。分配已持久化后，即使热更新失败、超时或被取消，任务仍成功并保留分配；未配置 RCON 或刷新失败时 restart_required=true，提示在游戏内手动输入 !update_vpk 或重启实例。任务只返回固定警告，不回显原始 RCON 错误。使用节点地图锁和实例写锁，不占用 SteamCMD 槽。
       parameters:
         - { $ref: "#/components/parameters/MapID" }
         - { $ref: "#/components/parameters/InstanceID" }
@@ -2172,7 +2172,7 @@ paths:
     delete:
       tags: [Maps]
       summary: 取消地图分配
-      description: 需要通过节点绑定或同节点实例绑定获得地图所属节点的 `maps.read`，并具备目标实例的 `maps.assign`。Control 与 Agent 都要求实例真实停止；重复取消按幂等成功处理。
+      description: 需要通过节点绑定或同节点实例绑定获得地图所属节点的 `maps.read`，并具备目标实例的 `maps.assign`。Control 与 Agent 都要求实例真实停止；重复取消按幂等成功处理。broken 地图也允许取消分配，但 deleting 状态仍拒绝操作；继续执行 no-follow 和已登记硬链接身份检查。
       parameters:
         - { $ref: "#/components/parameters/MapID" }
         - { $ref: "#/components/parameters/InstanceID" }
@@ -2186,7 +2186,7 @@ paths:
     post:
       tags: [Maps]
       summary: 校验并尽可能修复地图副本
-      description: 需要节点/全局 `maps.verify`，或该节点内已绑定实例的 `maps.verify`。
+      description: 需要节点/全局 `maps.verify`，或该节点内已绑定实例的 `maps.verify`。支持分配快照的 Agent 会返回 assignment_instance_ids；中心端验证节点归属后同步已知实例的分配，恢复记录标记为等待刷新。任务结果 assignment_sync 为 complete 或 skipped_concurrent_write，后者表示存在并发写入，需等待相关任务结束后重新校验。unresolved_assignment_count 表示节点仍登记但中心端已不存在的实例数量，这些记录不会被强行清除。旧 Agent 或节点登记丢失时省略快照，不更改分配关系。
       parameters:
         - { $ref: "#/components/parameters/MapID" }
         - { $ref: "#/components/parameters/CSRF" }
@@ -3643,7 +3643,7 @@ components:
       properties:
         map_id: { type: string, format: uuid }
         instance_id: { type: string, format: uuid }
-        restart_required: { type: boolean, deprecated: true, description: 新分配固定为 false；保留字段用于兼容旧数据。 }
+        restart_required: { type: boolean, description: 等待 VPK 刷新。运行中未配置 RCON、自动刷新失败或校验恢复的未知加载状态为 true；可在游戏内执行 !update_vpk 或重启实例。确认启动后清零。 }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 

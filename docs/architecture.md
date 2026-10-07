@@ -117,6 +117,10 @@ SourceMod 安装具有强制的 Metamod:Source 前置依赖。Control 只在该�
 
 相关格式和上游说明：[Valve VPK](https://developer.valvesoftware.com/wiki/VPK)、[AlliedModders SourceMod 安装](https://wiki.alliedmods.net/Installing_SourceMod)、[SteamDB App 222860](https://steamdb.info/app/222860/config/)。
 
+地图分配以硬链接及节点登记持久化为提交点；之后的 RCON 超时、失败或取消不会把已提交分配改成失败任务。任务仍为 `succeeded`，但会返回固定的 `hot_reload_skipped` 原因和 `restart_required=true`，表示等待 VPK 刷新，可通过游戏内 `!update_vpk` 或重启加载；不返回原始 RCON 错误。中心端保存该状态，实例启动投影会清除等待标记。
+
+地图校验与重连盘点可附带有界、排序的 `assignment_instance_ids` 节点登记快照。中心端在同一立即事务中校验地图和实例的节点归属，同步仍存在的同节点实例分配；新增恢复记录标记为等待刷新，已有记录的刷新状态保持不变。快照排队后若存在分配、取消分配、恢复或实例删除/解除管理等并发任务（包括未完成的取消和终态投影），本次只更新健康信息，跳过关系同步，并提示重新校验，防止旧快照覆盖新变更。旧 Agent 没有该字段、节点地图登记丢失时不会清空中心端分配。未知或已删除实例不会被重建，保留异常及未解决数量供管理员核查；删除仍要求节点无分配且链接计数匹配。`broken` 地图禁止新增分配，但允许对已停止实例取消分配；目标链接已不存在时可清除对应登记，目标仍存在时继续核对对象身份。
+
 ## 备份、日志和传输
 
 完整数据不经过中心长期存储：

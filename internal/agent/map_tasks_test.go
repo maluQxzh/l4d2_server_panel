@@ -2,10 +2,14 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,5 +93,54 @@ func TestAssignMapRefreshesRunningInstanceWithFixedRCONCommand(t *testing.T) {
 	}
 	if result["hot_reload_skipped"] != "rcon_not_configured" {
 		t.Fatalf("missing RCON result = %#v", result)
+	}
+	if result["restart_required"] != true {
+		t.Fatal("unrefreshed assignment must remain visible as pending")
+	}
+	for _, reloadErr := range []error{errors.New("secret RCON transport failure"), context.Canceled, context.DeadlineExceeded} {
+		executor.mapReloadRCON = func(context.Context, InstanceRecord, operationPayload, string, string, time.Duration) (string, error) {
+			return "", reloadErr
+		}
+		job.Payload["rcon_password"] = "secret"
+		result, err = executor.executeMapTask(context.Background(), job.Type, job, func(int, string) {})
+		if err != nil || result["hot_reload_skipped"] != "rcon_refresh_failed" || result["restart_required"] != true {
+			t.Fatalf("committed assignment lost on %v: result=%#v err=%v", reloadErr, result, err)
+		}
+		raw, _ := json.Marshal(result)
+		if strings.Contains(string(raw), "secret") {
+			t.Fatal("RCON error leaked into result")
+		}
+		if status, _ := executionCompletion(err); status != domain.JobSucceeded {
+			t.Fatal("committed assignment was classified as failure")
+		}
+	}
+	verifyJob := domain.Job{Type: "map.verify", Payload: map[string]any{"map_id": mapID}}
+	result, err = executor.executeMapTask(context.Background(), verifyJob.Type, verifyJob, func(int, string) {})
+	if err != nil || !reflect.DeepEqual(result["assignment_instance_ids"], []string{instanceID}) {
+		t.Fatalf("verification lost local assignment: %#v %v", result, err)
+	}
+	// Reopen the registry: recovery must use durable state, not only memory.
+	executor.maps.registry, err = openMapRegistry(executor.maps.defaultRoot().Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Put(InstanceRecord{ID: instanceID, RelativePath: instanceRoot}); err != nil {
+		t.Fatal(err)
+	}
+	job.Type = "map.unassign"
+	if _, err := executor.executeMapTask(context.Background(), job.Type, job, func(int, string) {}); err != nil {
+		t.Fatal(err)
+	}
+	result, err = executor.executeMapTask(context.Background(), verifyJob.Type, verifyJob, func(int, string) {})
+	if err != nil || !reflect.DeepEqual(result["assignment_instance_ids"], []string{}) {
+		t.Fatalf("empty snapshot must be explicit: %#v %v", result, err)
+	}
+	if err := executor.maps.delete(mapID); err != nil {
+		t.Fatal(err)
+	}
+	verifyJob.Type = "map.inventory"
+	result, err = executor.executeMapTask(context.Background(), verifyJob.Type, verifyJob, func(int, string) {})
+	if _, present := result["assignment_instance_ids"]; err != nil || present {
+		t.Fatalf("missing registry must not clear assignments: %#v %v", result, err)
 	}
 }

@@ -8,6 +8,74 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestMapUnassignMissingFilesStillRejectsUnknownTargets(t *testing.T) {
+	for _, scenario := range []string{"both-missing", "source-missing", "unknown-target"} {
+		t.Run(scenario, func(t *testing.T) {
+			base := t.TempDir()
+			store, err := newMapStore(&Config{DataDir: filepath.Join(base, "data")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := filepath.Join(base, "input.vpk")
+			if err := os.WriteFile(input, []byte("map-object"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			sha, size, err := hashFile(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := uuid.NewString()
+			record, err := store.publish(mapLocalRecord{ID: id, Name: "Map", AggregateSHA256: sha, TotalSize: size,
+				Artifacts: []mapLocalArtifact{{Ordinal: 0, SHA256: sha, Size: size}}, BSPs: []mapLocalBSP{{VirtualPath: "maps/test.bsp"}}}, []string{input})
+			if err != nil {
+				t.Fatal(err)
+			}
+			instanceRoot := filepath.Join(base, "instance")
+			if err := os.MkdirAll(filepath.Join(instanceRoot, "left4dead2", "addons"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			instance := InstanceRecord{ID: uuid.NewString()}
+			if err := store.assign(id, instance, instanceRoot); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(instanceRoot, filepath.FromSlash(mapTargetRelative(id, 0)))
+			source := filepath.Join(store.defaultRoot().Path, filepath.FromSlash(record.Artifacts[0].Replicas[store.defaultRoot().FilesystemID]))
+			if scenario != "source-missing" {
+				if err := os.Remove(target); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "unknown-target" {
+				if err := os.WriteFile(target, []byte("unrelated-file"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Remove(source); err != nil {
+				t.Fatal(err)
+			}
+			err = store.unassign(id, instance, instanceRoot)
+			if scenario == "both-missing" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.delete(id); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("unsafe target was unassigned")
+				}
+				if _, err := os.Stat(target); err != nil {
+					t.Fatalf("target removed: %v", err)
+				}
+				remaining, _ := store.registry.get(id)
+				if len(remaining.Assignments) != 1 {
+					t.Fatal("failed cleanup lost registration")
+				}
+			}
+		})
+	}
+}
+
 func TestMapStoreAssignsVerifiedHardLinkAndRequiresUnassignBeforeDelete(t *testing.T) {
 	base := t.TempDir()
 	dataDir := filepath.Join(base, "data")

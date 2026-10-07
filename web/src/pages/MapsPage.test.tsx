@@ -54,6 +54,26 @@ describe("地图管理卡片", () => {
   beforeEach(() => { authState.user = { role: "owner" }; });
   afterEach(() => vi.restoreAllMocks());
 
+  it("校验恢复的异常地图分配显示等待刷新，并允许已停止实例取消", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const recovered = { ...map, health: "broken" as const, assignments: map.assignments!.map((assignment) => ({ ...assignment, restart_required: true })) };
+    vi.spyOn(api, "maps").mockResolvedValue({ items: [recovered] });
+    vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "instances").mockResolvedValue({ items: [{ ...assignedInstance, status: "stopped" }] });
+    vi.spyOn(api, "jobs").mockResolvedValue({ items: [] });
+    const unassign = vi.spyOn(api, "unassignMap").mockResolvedValue({ job_id: "unassign-job" });
+    render(<QueryClientProvider client={client}><ToastProvider><RealtimeProvider enabled={false}><MemoryRouter><MapsPage /></MemoryRouter></RealtimeProvider></ToastProvider></QueryClientProvider>);
+    expect(await screen.findByText("等待 VPK 刷新")).toHaveAttribute("title", expect.stringContaining("!update_vpk"));
+    expect(screen.getByRole("button", { name: "永久删除" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "分配实例" }));
+    const checkbox = screen.getByRole("checkbox");
+    expect(checkbox).toBeChecked();
+    expect(checkbox).toBeEnabled();
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole("button", { name: "提交变更" }));
+    await waitFor(() => expect(unassign).toHaveBeenCalledWith(map.id, assignedInstance.id));
+  });
+
   it("按 ID 直接读取并展开地图详情，不依赖列表和名称筛选", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const detail = vi.spyOn(api, "map").mockResolvedValue(map);

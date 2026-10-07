@@ -428,16 +428,19 @@ func (s *mapStore) unassign(mapID string, instance InstanceRecord, instancePath 
 		return errors.New("map assignment references an unconfigured filesystem")
 	}
 	for index, target := range assignment.Targets {
+		targetID, _, err := managedHardLinkIdentity(instancePath, target)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
 		sourceRelative := record.Artifacts[index].Replicas[assignment.FilesystemID]
 		sourceID, _, err := managedHardLinkIdentity(root.Path, sourceRelative)
 		if err != nil {
 			return err
 		}
-		targetID, _, err := managedHardLinkIdentity(instancePath, target)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil || sourceID != targetID {
+		if sourceID != targetID {
 			return errors.New("refusing to remove an unknown map assignment file")
 		}
 		if err := deleteManagedFileNoFollow(instancePath, target); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -558,7 +561,12 @@ func (s *mapStore) delete(mapID string) error {
 		return nil
 	}
 	if len(record.Assignments) != 0 {
-		return errors.New("map is still assigned to one or more instances")
+		ids := make([]string, 0, len(record.Assignments))
+		for id := range record.Assignments {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		return fmt.Errorf("map is still assigned to %d instance(s): %s; verify the map to synchronize assignments before unassigning", len(ids), strings.Join(ids[:min(5, len(ids))], ", "))
 	}
 	allRecords := s.registry.list()
 	posterPresent := false

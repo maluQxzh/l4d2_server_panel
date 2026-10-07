@@ -1345,6 +1345,42 @@ test("地图管理支持导入、警告、运行中热更新分配与两阶段�
   await expect.poll(() => writes.some((item) => item.method === "DELETE" && item.path.endsWith(`/maps/${deletableMap.id}`) && (item.body as { confirmation_token?: string })?.confirmation_token === "mdc_once")).toBeTruthy();
 });
 
+test("地图校验恢复隐藏分配后可停服取消并删除异常地图", async ({ page }) => {
+  await authenticated(page);
+  const mapId = "15613fb0-3400-4807-b8a3-9cb60bd53234";
+  let assigned = false;
+  let deleted = false;
+  let unassigned = false;
+  await page.route("**/api/v1/nodes", (route) => json(route, { items: [node] }));
+  await page.route("**/api/v1/instances", (route) => json(route, { items: [{ ...instance, status: "stopped" }] }));
+  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/maps**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (route.request().method() === "GET") return json(route, { items: deleted ? [] : [{ id: mapId, node_id: node.id, name: "恢复分配地图", health: "broken", aggregate_sha256: "a".repeat(64), total_size: 1024, created_at: "2026-10-01T00:00:00Z", assignments: assigned ? [{ map_id: mapId, instance_id: instance.id, restart_required: true }] : [] }] });
+    if (path.endsWith("/verify")) { assigned = true; return json(route, { job_id: "verify-map" }, 202); }
+    if (path.endsWith(`/assignments/${instance.id}`) && route.request().method() === "DELETE") { assigned = false; unassigned = true; return json(route, { job_id: "unassign-map" }, 202); }
+    if (path.endsWith("/delete-confirmations")) return json(route, { confirmation_token: "confirmation" }, 201);
+    if (path === `/api/v1/maps/${mapId}` && route.request().method() === "DELETE") { expect(unassigned).toBe(true); deleted = true; return json(route, { job_id: "delete-map" }, 202); }
+    return json(route, { error: { message: "unexpected request" } }, 400);
+  });
+  await page.goto("/maps");
+  await expect(page.getByText(/若删除提示仍有分配/)).toBeVisible();
+  await page.getByRole("button", { name: "校验", exact: true }).click();
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await expect(page.getByText("等待 VPK 刷新")).toBeVisible();
+  await expect(page.getByRole("button", { name: "永久删除" })).toBeDisabled();
+  await page.getByRole("button", { name: "分配实例" }).click();
+  await page.getByRole("checkbox").uncheck();
+  await page.getByRole("button", { name: "提交变更" }).click();
+  await expect.poll(() => unassigned).toBe(true);
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "永久删除" }).click();
+  await expect.poll(() => deleted).toBe(true);
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await expect(page.getByText("地图对象库为空")).toBeVisible();
+});
+
 test("缺少节点公开地址时阻止公开实例", async ({ page }) => {
   await authenticated(page);
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: { ...instance, node_public_address: "" } }));

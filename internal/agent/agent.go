@@ -583,6 +583,9 @@ func (a *Agent) handleClaimedJob(job domain.Job, execute executeJobFunc) {
 	result, executeErr := execute(jobCtx, job, progress.Update)
 	status, message := executionCompletion(executeErr)
 	if status == domain.JobSucceeded {
+		if job.Type == "map.assign" && result["restart_required"] == true {
+			message = "地图已分配，但尚未确认 VPK 刷新；请在游戏内执行 !update_vpk 或重启实例"
+		}
 		if a.persistTerminalJournal(job.ID, status, 100, message, result) {
 			a.sendJobUpdate(job.ID, status, 100, message, result)
 		}

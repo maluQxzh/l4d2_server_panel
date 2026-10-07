@@ -220,7 +220,7 @@ func (s *Store) QueueMapInstanceJob(ctx context.Context, mapID, instanceID, acti
 		}
 		return domain.Job{}, false, err
 	}
-	if health == domain.MapBroken || health == domain.MapDeleting {
+	if health == domain.MapDeleting || action == "map.assign" && health == domain.MapBroken {
 		return domain.Job{}, false, fmt.Errorf("map is not assignable: %w", ErrConflict)
 	}
 	var instanceNodeID, installationID string

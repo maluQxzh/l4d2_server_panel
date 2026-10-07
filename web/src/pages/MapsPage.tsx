@@ -163,7 +163,7 @@ function MapCard({ item, instances, user, duplicateLabel, initiallyExpanded = fa
         </div>
         <section className="map-card__assigned-summary">
           <div className="map-card__assigned-heading"><span><Link2 size={15} aria-hidden />已分配实例</span><strong>{assigned.length ? `${assigned.length} 个实例` : "尚未分配"}</strong></div>
-          {assigned.length ? <div className="map-assignment-list map-assignment-list--summary">{assigned.map((assignment) => <div key={assignment.instance_id}><Link2 size={13} aria-hidden /><span><strong>{assignment.instance?.name || assignment.instance_id.slice(0, 8)}</strong><small>{assignment.restart_required ? "等待 VPK 刷新" : "已生效"}</small></span></div>)}</div> : <p className="map-muted">点击“分配实例”添加同一节点上的游戏实例。</p>}
+          {assigned.length ? <div className="map-assignment-list map-assignment-list--summary">{assigned.map((assignment) => <div key={assignment.instance_id}><Link2 size={13} aria-hidden /><span><strong>{assignment.instance?.name || assignment.instance_id.slice(0, 8)}</strong><small title={assignment.restart_required ? "分配已保存，但尚未确认加载；请在游戏内执行 !update_vpk 或重启实例" : undefined}>{assignment.restart_required ? "等待 VPK 刷新" : "已生效"}</small></span></div>)}</div> : <p className="map-muted">点击“分配实例”添加同一节点上的游戏实例。若删除提示仍有分配，请先点击“校验”同步节点登记。</p>}
         </section>
         <StatusBadge status={item.health} />
       </div>
@@ -223,6 +223,7 @@ function AssignmentModal({ item, instances, user, onClose }: { item: MapRecord |
     mutationFn: async () => {
       if (!item) return { manualReload: false };
       const add = eligible.filter((instance) => selected.has(instance.id) && !current.has(instance.id));
+      if (add.length && ["broken", "deleting"].includes(item.health)) throw new Error("地图当前不可新增分配，请先校验修复；已停止实例仍可取消分配");
       const remove = eligible.filter((instance) => !selected.has(instance.id) && current.has(instance.id));
       const runningRemoval = remove.find((instance) => instance.status !== "stopped");
       if (runningRemoval) throw new Error(`实例“${runningRemoval.name}”运行中，无法取消分配`);
