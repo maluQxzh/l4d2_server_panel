@@ -1,3 +1,4 @@
+import { refreshQueries } from "../lib/query-refresh";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bell, Braces, Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, DownloadCloud, KeyRound, LockKeyhole, Mail, Plus, RefreshCw,
@@ -124,7 +125,7 @@ function CenterUpdateCard() {
   useEffect(() => {
     if (!state || !["succeeded", "failed", "canceled"].includes(state.status) || handledTerminalJobID.current === state.job_id) return;
     handledTerminalJobID.current = state.job_id;
-    void client.invalidateQueries({ queryKey: ["system-updates"] });
+    void refreshQueries(client, { queryKey: ["system-updates"] });
     if (state.status === "succeeded") {
       toast.push(`中心端已升级到 ${state.target_version || "新版本"}，页面即将刷新`);
       window.setTimeout(() => window.location.reload(), successfulUpdateReloadDelayMs);
@@ -207,14 +208,14 @@ function UserModal({ target, actor, onClose }: { target: User | "new" | null; ac
       return api.updateUser(existing.id, payload);
     },
     onSuccess: (result) => {
-      void client.invalidateQueries({ queryKey: ["users"] });
+      void refreshQueries(client, { queryKey: ["users"] });
       if (creating && "one_time_password" in result) {
         setIssuedCredential({ username: username.trim(), oneTimePassword: result.one_time_password, expiresAt: result.expires_at });
         toast.push("团队账号已创建，请立即复制一次性密码");
         return;
       }
       toast.push(existing?.id === actor?.id && (password || bindingsChanged) ? "账号已更新，请重新登录" : "团队账号已更新");
-      if (existing?.id === actor?.id && (password || bindingsChanged)) void client.invalidateQueries({ queryKey: ["session"] });
+      if (existing?.id === actor?.id && (password || bindingsChanged)) void refreshQueries(client, { queryKey: ["session"] });
       onClose();
     },
     onError: (error) => toast.push(error.message, "error"),
@@ -233,8 +234,8 @@ function UserModal({ target, actor, onClose }: { target: User | "new" | null; ac
   const remove = useMutation({
     mutationFn: () => existing ? api.deleteUser(existing.id) : Promise.reject(new Error("用户无效")),
     onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ["users"] });
-      void client.invalidateQueries({ queryKey: ["audit"] });
+      void refreshQueries(client, { queryKey: ["users"] });
+      void refreshQueries(client, { queryKey: ["audit"] });
       toast.push("账号已永久删除");
       onClose();
     },
@@ -324,12 +325,12 @@ function NotificationChannelModal({ kind, onClose }: { kind: "smtp" | "webhook" 
       const config: Record<string, unknown> = kind === "webhook" ? { url } : { host, port, username, from, to: to.split(",").map((item) => item.trim()).filter(Boolean) };
       return api.createNotificationChannel({ name: name.trim(), kind, enabled: true, config, secret });
     },
-    onSuccess: () => { toast.push("通知渠道已创建"); void client.invalidateQueries({ queryKey: ["notification-channels"] }); setName(""); setSecret(""); },
+    onSuccess: () => { toast.push("通知渠道已创建"); void refreshQueries(client, { queryKey: ["notification-channels"] }); setName(""); setSecret(""); },
     onError: (error) => toast.push(error.message, "error"),
   });
   const remove = useMutation({
     mutationFn: api.deleteNotificationChannel,
-    onSuccess: () => { toast.push("通知渠道已删除，待发送记录已跳过"); void client.invalidateQueries({ queryKey: ["notification-channels"] }); },
+    onSuccess: () => { toast.push("通知渠道已删除，待发送记录已跳过"); void refreshQueries(client, { queryKey: ["notification-channels"] }); },
     onError: (error) => toast.push(error.message, "error"),
   });
   useEffect(() => {
@@ -356,7 +357,7 @@ function TotpModal({ open, enabled, onClose }: { open: boolean; enabled: boolean
     mutationFn: () => api.confirmTotp(code),
     onSuccess: (result) => {
       setRecoveryCodes(result.recovery_codes || []);
-      void client.invalidateQueries({ queryKey: ["session"] });
+      void refreshQueries(client, { queryKey: ["session"] });
       toast.push("双重验证已启用，请立即保存恢复码");
     },
     onError: (error) => toast.push(error.message, "error"),
@@ -411,10 +412,10 @@ function APITokenModal({ open, user, onClose }: { open: boolean; user: User | nu
         expires_at: new Date(Date.now() + days * 86_400_000).toISOString(),
       });
     },
-    onSuccess: (result) => { setSecret(result.token); void client.invalidateQueries({ queryKey: ["api-tokens"] }); toast.push("API Token 已创建，只会显示一次"); },
+    onSuccess: (result) => { setSecret(result.token); void refreshQueries(client, { queryKey: ["api-tokens"] }); toast.push("API Token 已创建，只会显示一次"); },
     onError: (error) => toast.push(error.message, "error"),
   });
-  const revoke = useMutation({ mutationFn: api.revokeApiToken, onSuccess: () => { void client.invalidateQueries({ queryKey: ["api-tokens"] }); toast.push("API Token 已撤销"); }, onError: (error) => toast.push(error.message, "error") });
+  const revoke = useMutation({ mutationFn: api.revokeApiToken, onSuccess: () => { void refreshQueries(client, { queryKey: ["api-tokens"] }); toast.push("API Token 已撤销"); }, onError: (error) => toast.push(error.message, "error") });
   useEffect(() => { if (!open) { setCreating(false); setName(""); setResource("global"); setResourceID(""); setSecret(""); } }, [open]);
   useEffect(() => {
     if (!open || resource !== "global" || globalScopes.length) return;

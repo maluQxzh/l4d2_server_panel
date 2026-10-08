@@ -1,3 +1,4 @@
+import { refreshQueries } from "../lib/query-refresh";
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, newIdempotencyKey } from "../lib/api";
@@ -102,7 +103,7 @@ export function PackageBatchControls({ instance, items, selected, setSelected, c
           if (jobID || !(error instanceof ApiError) || error.status >= 500) stopped.current = true;
         }
         setResults([...report]);
-        await client.invalidateQueries({ queryKey: ["instances", instance.id, "packages"] });
+        await refreshQueries(client, { queryKey: ["instances", instance.id, "packages"] });
       }
     } finally {
       // The same route component can be reused when navigating to another
@@ -111,7 +112,7 @@ export function PackageBatchControls({ instance, items, selected, setSelected, c
       setSelected(selected.filter((id) => !report.some((item) => item.id === id && item.success)));
       setProgress(stopped.current ? "已停止后续操作；已提交的任务请到任务中心查看" : `批量操作结束：成功 ${report.filter((item) => item.success).length} 项，失败或跳过 ${report.filter((item) => !item.success).length} 项`);
       setBusy(false);
-      void client.invalidateQueries({ queryKey: ["jobs"] });
+      void refreshQueries(client, { queryKey: ["jobs"] });
     }
   };
   if (!canToggle && !canDelete) return null;
@@ -146,7 +147,7 @@ export function RenamePackageModal({ instance, item, onClose }: { instance: Inst
         const result = await api.renamePackage(instance.id, item.id, { name: name.trim(), ...(fileRenameable && instance.status === "stopped" ? { filename } : {}) });
         const status = await waitPackageOperation(instance.id, result.job_id, () => stopped.current);
         if (status !== "succeeded") throw new Error(`重命名${status === "failed" ? "失败" : "已取消"}，请在任务中心查看 ${result.job_id}`);
-        await client.invalidateQueries({ queryKey: ["instances", instance.id, "packages"] });
+        await refreshQueries(client, { queryKey: ["instances", instance.id, "packages"] });
         toast.push("重命名成功"); onClose();
       } catch (error) { setError(error instanceof Error ? error.message : "重命名失败"); }
       finally { setBusy(false); }

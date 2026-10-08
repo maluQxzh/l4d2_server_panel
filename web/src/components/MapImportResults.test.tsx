@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,14 +11,37 @@ function Location() {
   return <output aria-label="当前位置">{location.pathname}{location.search}</output>;
 }
 
-function mount(userId = "uploader") {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function mount(userId = "uploader", client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(<QueryClientProvider client={client}><MemoryRouter><MapImportResults userId={userId} /><Location /></MemoryRouter></QueryClientProvider>);
 }
 
 describe("地图导入完成提示", () => {
   beforeEach(() => localStorage.clear());
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  it("前一个完成弹窗未关闭时，后续导入完成仍刷新列表，关闭弹窗不重复刷新", async () => {
+    trackMapImport("uploader", "first");
+    trackMapImport("uploader", "second");
+    let secondReady = false;
+    vi.spyOn(api, "mapImportResult").mockImplementation(async (id) => ({ job_id: id, name: id, status: "succeeded", ready: id === "first" || secondReady }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+    const fetchMaps = vi.fn(async () => secondReady ? ["first", "second"] : ["first"]);
+    client.setQueryData(["maps"], []);
+    const observer = new QueryObserver(client, { queryKey: ["maps"], queryFn: fetchMaps });
+    const unsubscribe = observer.subscribe(() => {});
+    mount("uploader", client);
+    expect(await screen.findByText("first")).toBeInTheDocument();
+    await waitFor(() => expect(client.getQueryData(["maps"])).toEqual(["first"]));
+    secondReady = true;
+    await act(async () => { await client.refetchQueries({ queryKey: ["map-import-result", "uploader", "second"] }); });
+    await waitFor(() => expect(client.getQueryData(["maps"])).toEqual(["first", "second"]));
+    expect(screen.getByText("first")).toBeInTheDocument();
+    const requests = fetchMaps.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "知道了" }));
+    expect(await screen.findByText("second")).toBeInTheDocument();
+    expect(fetchMaps).toHaveBeenCalledTimes(requests);
+    unsubscribe();
+  });
 
   it("从持久任务恢复并直接显示重复地图、缺失字典和警告，确认后不重复提示", async () => {
     trackMapImport("uploader", "import-1");

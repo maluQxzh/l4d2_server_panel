@@ -1,3 +1,4 @@
+import { liveRefreshInterval, refreshQueries } from "../lib/query-refresh";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ChevronDown, ChevronUp, Database, HardDrive, Link2, Plus, RefreshCw, Search, ShieldCheck, Trash2, UserRound } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
@@ -25,7 +26,7 @@ export function MapsPage() {
 function FocusedMapPage({ mapId, onBack }: { mapId: string; onBack: () => void }) {
   const { user } = useAuth();
   const [assignmentOpen, setAssignmentOpen] = useState(false);
-  const map = useQuery({ queryKey: ["maps", "detail", user?.id, mapId], queryFn: () => api.map(mapId) });
+  const map = useQuery({ queryKey: ["maps", "detail", user?.id, mapId], queryFn: () => api.map(mapId), refetchInterval: liveRefreshInterval });
   const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: hasAnyPermission(user, "instances.read") });
   return <div>
     <PageHeader eyebrow="SHARED MAP LIBRARY" title="地图详情" description="查看已有地图的上传信息、章节与实例分配。" actions={<Button variant="secondary" onClick={onBack}>返回地图库</Button>} />
@@ -51,7 +52,7 @@ function MapLibraryPage() {
   const canReadInstances = hasAnyPermission(user, "instances.read");
   const canReadJobs = hasAnyPermission(user, "jobs.read");
   const canImport = hasAnyPermission(user, "maps.import");
-  const maps = useQuery({ queryKey: ["maps", nodeFilter], queryFn: () => api.maps(nodeFilter || undefined), enabled: canReadMaps, refetchInterval: realtime.state === "live" ? false : 10_000 });
+  const maps = useQuery({ queryKey: ["maps", nodeFilter], queryFn: () => api.maps(nodeFilter || undefined), enabled: canReadMaps, refetchInterval: realtime.state === "live" ? liveRefreshInterval : 10_000 });
   const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.nodes, enabled: canReadNodes });
   const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: canReadInstances });
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, enabled: canReadJobs, refetchInterval: canReadJobs ? 2_000 : false });
@@ -127,7 +128,7 @@ function MapCard({ item, instances, user, duplicateLabel, initiallyExpanded = fa
   const [expanded, setExpanded] = useState(initiallyExpanded);
   const toast = useToast();
   const client = useQueryClient();
-  const verify = useMutation({ mutationFn: () => api.verifyMap(item.id), onSuccess: () => { toast.push("地图校验任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
+  const verify = useMutation({ mutationFn: () => api.verifyMap(item.id), onSuccess: () => { toast.push("地图校验任务已提交"); void refreshQueries(client, { queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
   const remove = useMutation({
     mutationFn: async () => {
       if (item.assignments?.length) throw new Error("请先取消全部实例分配");
@@ -135,7 +136,7 @@ function MapCard({ item, instances, user, duplicateLabel, initiallyExpanded = fa
       const confirmation = await api.createMapDeleteConfirmation(item.id);
       return api.deleteMap(item.id, confirmation.confirmation_token);
     },
-    onSuccess: () => { toast.push("永久删除任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); },
+    onSuccess: () => { toast.push("永久删除任务已提交"); void refreshQueries(client, { queryKey: ["jobs"] }); },
     onError: (error) => { if (error.message !== "已取消删除") toast.push(error.message, "error"); },
   });
   const assigned = (item.assignments || []).map((assignment) => ({ ...assignment, instance: instances.find((value) => value.id === assignment.instance_id) }));
@@ -195,7 +196,7 @@ function ImportMapModal({ open, nodes, instances, user, onClose }: { open: boole
   const [shareUrl, setShareUrl] = useState("");
   const toast = useToast();
   const client = useQueryClient();
-  const submit = useMutation({ mutationFn: () => api.importMap(nodeId, shareUrl.trim()), onSuccess: (result) => { if (user?.id) trackMapImport(user.id, result.job_id); toast.push("地图导入任务已提交，检测完成后会提示结果"); setShareUrl(""); onClose(); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
+  const submit = useMutation({ mutationFn: () => api.importMap(nodeId, shareUrl.trim()), onSuccess: (result) => { if (user?.id) trackMapImport(user.id, result.job_id); toast.push("地图导入任务已提交，检测完成后会提示结果"); setShareUrl(""); onClose(); void refreshQueries(client, { queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
   const handleSubmit = (event: FormEvent) => { event.preventDefault(); submit.mutate(); };
   const eligibleNodes = useMemo(() => {
     const result = new Map<string, { id: string; name: string; status: string }>();
@@ -234,7 +235,7 @@ function AssignmentModal({ item, instances, user, onClose }: { item: MapRecord |
       await Promise.all([...add.map((instance) => api.assignMap(item.id, instance.id)), ...remove.map((instance) => api.unassignMap(item.id, instance.id))]);
       return { manualReload: manualReload.length > 0 };
     },
-    onSuccess: ({ manualReload }) => { toast.push(manualReload ? "地图分配任务已提交；请在未配置 RCON 的实例内输入 !update_vpk" : "地图分配任务已提交；运行中的实例会自动刷新 VPK"); onClose(); void client.invalidateQueries({ queryKey: ["jobs"] }); },
+    onSuccess: ({ manualReload }) => { toast.push(manualReload ? "地图分配任务已提交；请在未配置 RCON 的实例内输入 !update_vpk" : "地图分配任务已提交；运行中的实例会自动刷新 VPK"); onClose(); void refreshQueries(client, { queryKey: ["jobs"] }); },
     onError: (error) => { if (error.message !== "已取消分配") toast.push(error.message, "error"); },
   });
   return <Modal open={Boolean(item)} onClose={onClose} title={`分配地图${item ? ` · ${item.name}` : ""}`} description="分配不要求停服；运行中会自动执行 VPK 热更新，取消分配仍只允许已停止实例。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button loading={save.isPending} onClick={() => save.mutate()}>提交变更</Button></>}><div className="map-instance-picker">{eligible.length ? eligible.map((instance) => { const assigned = current.has(instance.id); const cannotRemove = assigned && instance.status !== "stopped"; return <label key={instance.id}><input type="checkbox" checked={selected.has(instance.id)} disabled={cannotRemove} onChange={(event) => setSelected((value) => { const next = new Set(value); if (event.target.checked) next.add(instance.id); else next.delete(instance.id); return next; })} /><span><strong>{instance.name}</strong><small>{instance.status === "stopped" ? "已停止 · 下次启动时加载" : assigned ? "运行中 · 必须停服后才能取消" : instance.rcon_configured ? "运行中 · 分配后自动刷新 VPK" : "运行中 · 需手动输入 !update_vpk"}</small></span></label>; }) : <EmptyState title="没有可分配实例" description="该节点上暂无你可以管理的游戏实例。" />}</div></Modal>;

@@ -1,3 +1,4 @@
+import { liveRefreshInterval, refreshQueries } from "../lib/query-refresh";
 import { instanceAddress, instancePlayers } from "../lib/instance-display";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Box, Filter, Gamepad2, Map, MoreHorizontal, Play, Plus, RefreshCw, Search, Server, Square, Users } from "lucide-react";
@@ -22,7 +23,7 @@ export function InstancesPage() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const realtime = useRealtime();
-  const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: canRead, refetchInterval: realtime.state === "live" ? false : 15_000 });
+  const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: canRead, refetchInterval: realtime.state === "live" ? liveRefreshInterval : 15_000 });
   const filtered = useMemo(() => (instances.data?.items || []).filter((item) => {
     const matchesSearch = `${item.name} ${item.node_name} ${item.node_public_address || ""} ${item.host} ${item.map}`.toLowerCase().includes(search.trim().toLowerCase());
     const matchesStatus = status === "all" || (status === "node_offline" ? item.node_status === "offline" : item.status === status);
@@ -50,11 +51,11 @@ function InstanceCard({ instance }: { instance: InstanceRecord }) {
     },
     onSuccess: (_result, { type }) => {
       toast.push(type === "start" ? "启动任务已提交" : type === "restart" ? "重启任务已提交" : "停止任务已提交");
-      void client.invalidateQueries({ queryKey: ["jobs"] });
+      void refreshQueries(client, { queryKey: ["jobs"] });
     },
     onError: (error) => {
       toast.push(error.message, "error");
-      void client.invalidateQueries({ queryKey: ["instances"] });
+      void refreshQueries(client, { queryKey: ["instances"] });
     },
   });
   const restartCheck = useMutation({

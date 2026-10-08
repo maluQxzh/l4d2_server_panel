@@ -410,7 +410,7 @@ test("模组多选批量开关、搜索选择、重命名与批量删除", async
   });
   await page.route("**/api/v1/instances/instance-1/packages/*", (route) => {
     if (route.request().method() !== "DELETE") return route.fallback();
-    packages = packages.filter((item) => !route.request().url().endsWith(`/${item.id}`));
+    packages = packages.filter((item) => !new URL(route.request().url()).pathname.endsWith(`/${item.id}`));
     return json(route, { job_id: "delete-job" }, 202);
   });
   page.on("dialog", (dialog) => dialog.accept());
@@ -1379,6 +1379,59 @@ test("地图校验恢复隐藏分配后可停服取消并删除异常地图", as
   await expect.poll(() => deleted).toBe(true);
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await expect(page.getByText("地图对象库为空")).toBeVisible();
+});
+
+test("地图导入完成后立即更新列表，迟到的首次请求不能覆盖新地图", async ({ page }) => {
+  await authenticated(page);
+  await page.addInitScript(() => localStorage.setItem("l4d2-map-imports:user-1", JSON.stringify(["new-map-import"])));
+  await page.route("**/api/v1/nodes", (route) => json(route, { items: [node] }));
+  await page.route("**/api/v1/instances", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  let releaseFirst!: () => void;
+  let firstStarted!: () => void;
+  const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+  let requests = 0;
+  const newMap = { id: "new-map", node_id: node.id, name: "新上传地图", health: "healthy", total_size: 1024, aggregate_sha256: "a".repeat(64), created_at: "2026-10-07T00:00:00Z" };
+  await page.route("**/api/v1/maps", async (route) => {
+    requests++;
+    if (requests === 1) {
+      firstStarted();
+      await holdFirst;
+      return route.fulfill({ contentType: "application/json", headers: { "x-test-stale": "1" }, body: JSON.stringify({ items: [] }) });
+    }
+    return json(route, { items: [newMap] });
+  });
+  await page.route("**/api/v1/map-imports/new-map-import", async (route) => {
+    await started;
+    return json(route, { job_id: "new-map-import", name: newMap.name, status: "succeeded", ready: true });
+  });
+  await page.goto("/maps");
+  const result = page.getByRole("dialog", { name: "地图导入完成", exact: true });
+  await expect(result).toBeVisible();
+  await result.getByRole("button", { name: "知道了" }).click();
+  await expect(page.getByRole("heading", { name: newMap.name, exact: true })).toBeVisible();
+  const lateResponse = page.waitForResponse((response) => response.headers()["x-test-stale"] === "1");
+  releaseFirst();
+  await (await lateResponse).finished();
+  await expect(page.getByRole("heading", { name: newMap.name, exact: true })).toBeVisible();
+  expect(requests).toBeGreaterThanOrEqual(2);
+});
+
+test("只有地图查看权限且实时连接正常时，其他人新增的地图仍会自动出现", async ({ page }) => {
+  await page.clock.install();
+  await authenticated(page, { ...owner, role: "viewer", role_bindings: [{ role: "viewer", scope_type: "global", permissions: ["maps.read"] }] } as typeof owner);
+  let imported = false;
+  let jobRequests = 0;
+  await page.route("**/api/v1/jobs**", (route) => { jobRequests++; return json(route, { items: [] }); });
+  await page.route("**/api/v1/maps", (route) => json(route, { items: imported ? [{ id: "other-map", node_id: node.id, name: "其他用户上传地图", health: "healthy", total_size: 1024, aggregate_sha256: "b".repeat(64), created_at: "2026-10-07T00:00:00Z" }] : [] }));
+  await page.goto("/maps");
+  await expect(page.getByText("地图对象库为空")).toBeVisible();
+  await expect(page.getByTitle("实时事件连接正常")).toHaveCount(1);
+  imported = true;
+  await page.clock.fastForward(30_000);
+  await expect(page.getByRole("heading", { name: "其他用户上传地图" })).toBeVisible();
+  expect(jobRequests).toBe(0);
 });
 
 test("缺少节点公开地址时阻止公开实例", async ({ page }) => {

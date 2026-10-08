@@ -1,5 +1,5 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render } from "@testing-library/react";
+import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
+import { act, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RealtimeProvider } from "./RealtimeContext";
 import type { InstanceRecord, ListResponse } from "../lib/types";
@@ -27,6 +27,41 @@ afterEach(() => {
 });
 
 describe("实时节点事件", () => {
+  it("实例投影不会取消仍在加载的包清单，首次实例列表会重新获取", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let oldList!: (value: ListResponse<InstanceRecord>) => void;
+    let finishPackages!: (value: string[]) => void;
+    const instance = { id: "instance-a", node_id: "node-a", status: "stopped" } as InstanceRecord;
+    const list = vi.fn().mockImplementationOnce(() => new Promise((resolve) => { oldList = resolve; })).mockResolvedValue({ items: [instance] });
+    const listObserver = new QueryObserver(client, { queryKey: ["instances"], queryFn: list });
+    const packageObserver = new QueryObserver(client, { queryKey: ["instances", instance.id, "packages"], queryFn: () => new Promise<string[]>((resolve) => { finishPackages = resolve; }) });
+    const unsubscribeList = listObserver.subscribe(() => {});
+    const unsubscribePackages = packageObserver.subscribe(() => {});
+    render(<QueryClientProvider client={client}><RealtimeProvider><span>ready</span></RealtimeProvider></QueryClientProvider>);
+    await act(async () => FakeWebSocket.instances[0].onmessage?.({ data: JSON.stringify({ id: 1, type: "instance.updated", resource_type: "instance", resource_id: instance.id, data: { instance } }) } as MessageEvent));
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    finishPackages(["installed"]);
+    oldList({ items: [] });
+    await waitFor(() => expect(client.getQueryData(["instances", instance.id, "packages"])).toEqual(["installed"]));
+    expect(client.getQueryData(["instances"])).toEqual({ items: [instance] });
+    unsubscribeList(); unsubscribePackages();
+  });
+
+  it("重新连通后刷新已挂载资源，重命名和恢复任务也更新包清单", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    render(<QueryClientProvider client={client}><RealtimeProvider><span>ready</span></RealtimeProvider></QueryClientProvider>);
+    act(() => FakeWebSocket.instances[0].onopen?.(new Event("open")));
+    for (const key of ["maps", "nodes", "instances", "jobs", "environments", "notifications"]) expect(invalidate).toHaveBeenCalledWith({ queryKey: [key] });
+    invalidate.mockClear();
+    for (const type of ["rename_package", "restore"]) {
+      act(() => FakeWebSocket.instances[0].onmessage?.({ data: JSON.stringify({ type: "job.updated", resource_type: "job", data: { job: { type, instance_id: "instance-a", status: "succeeded" } } }) } as MessageEvent));
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["instances", "instance-a", "packages"] });
+      invalidate.mockClear();
+    }
+  });
   it("节点状态变化时同步刷新实例节点投影", () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     const client = new QueryClient();

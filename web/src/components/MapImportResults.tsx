@@ -1,5 +1,6 @@
+import { refreshQueries } from "../lib/query-refresh";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { api, ApiError } from "../lib/api";
 import { bytes } from "../lib/format";
@@ -23,9 +24,20 @@ export function MapImportResults({ userId }: { userId: string }) {
   const query = queries[index];
   const result = query?.data?.ready && !unavailable(query.error) ? query.data : undefined;
   const jobId = ids[index];
+  const refreshed = useRef(new Set<string>());
+  // Every completed import refreshes the library, even while an earlier notice
+  // is still open. The modal queue only controls presentation.
   useEffect(() => {
-    if (result?.ready) void client.invalidateQueries({ queryKey: ["maps"] });
-  }, [client, result?.ready, jobId]);
+    let changed = false;
+    queries.forEach((entry, entryIndex) => {
+      const key = `${userId}:${ids[entryIndex]}`;
+      if (entry.data?.ready && !unavailable(entry.error) && !refreshed.current.has(key)) {
+        refreshed.current.add(key);
+        changed = true;
+      }
+    });
+    if (changed) void refreshQueries(client, { queryKey: ["maps"] });
+  }, [client, ids, queries, userId]);
   if (!jobId) return null;
   const close = () => acknowledgeMapImport(userId, jobId);
   const missing = result?.missing_dictionaries || [];

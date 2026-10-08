@@ -1,3 +1,4 @@
+import { liveRefreshInterval } from "../lib/query-refresh";
 import { instanceAddress, instancePlayers } from "../lib/instance-display";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, ArrowRight, Boxes, CircleAlert, Clock3, Cpu, HardDrive, Server, Users } from "lucide-react";
@@ -14,7 +15,7 @@ import { bytes, dateTime, jobLabel, percent } from "../lib/format";
 export function DashboardPage() {
   const { user } = useAuth();
   const realtime = useRealtime();
-  const polling = realtime.state === "live" ? false : 15_000;
+  const polling = realtime.state === "live" ? liveRefreshInterval : 15_000;
   const canReadNodes = hasAnyPermission(user, "nodes.read");
   const canReadInstances = hasAnyPermission(user, "instances.read");
   const canReadJobs = hasAnyPermission(user, "jobs.read");

@@ -1,3 +1,4 @@
+import { liveRefreshInterval, refreshQueries } from "../lib/query-refresh";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, Copy, FolderSearch, KeyRound, Laptop, MoreHorizontal, Plus, RefreshCw, RotateCw, Server, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
@@ -18,7 +19,7 @@ export function NodesPage() {
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [selected, setSelected] = useState<NodeRecord | null>(null);
   const realtime = useRealtime();
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.nodes, enabled: canReadNodes, refetchInterval: realtime.state === "live" ? false : 15_000 });
+  const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.nodes, enabled: canReadNodes, refetchInterval: realtime.state === "live" ? liveRefreshInterval : 15_000 });
 
   return (
     <div>
@@ -94,7 +95,7 @@ function NodeManageModal({ node, onClose }: { node: NodeRecord | null; onClose: 
     mutationFn: () => api.rotateNodeCredential(node!.id),
     onSuccess: (result) => {
       setNewCredential(result.credential);
-      void client.invalidateQueries({ queryKey: ["nodes"] });
+      void refreshQueries(client, { queryKey: ["nodes"] });
       toast.push("节点凭据已轮换；Agent 已断开连接");
     },
     onError: (error) => toast.push(error.message, "error"),
@@ -103,8 +104,8 @@ function NodeManageModal({ node, onClose }: { node: NodeRecord | null; onClose: 
     mutationFn: () => api.updateNode(node!.id, { name: node!.name, public_address: publicAddress.trim() }),
     onSuccess: (updated) => {
       setPublicAddress(updated.public_address || "");
-      void client.invalidateQueries({ queryKey: ["nodes"] });
-      void client.invalidateQueries({ queryKey: ["nodes", updated.id] });
+      void refreshQueries(client, { queryKey: ["nodes"] });
+      void refreshQueries(client, { queryKey: ["nodes", updated.id] });
       toast.push(updated.public_address ? "公开连接地址已保存" : "公开连接地址已清除");
     },
     onError: (error) => toast.push(error.message, "error"),
@@ -114,7 +115,7 @@ function NodeManageModal({ node, onClose }: { node: NodeRecord | null; onClose: 
     onSuccess: () => {
       toast.push("节点及中心端关联数据已删除");
       for (const key of [["nodes"], ["instances"], ["environments"], ["maps"], ["jobs"], ["notifications"]]) {
-        void client.invalidateQueries({ queryKey: key });
+        void refreshQueries(client, { queryKey: key });
       }
       close();
     },
@@ -191,8 +192,8 @@ function NodeQuarantineSection({ node, canView, canPurge }: { node: NodeRecord; 
     },
     onSuccess: () => {
       toast.push("隔离文件彻底清理任务已提交");
-      void client.invalidateQueries({ queryKey: ["nodes", node.id, "quarantine"] });
-      void client.invalidateQueries({ queryKey: ["jobs"] });
+      void refreshQueries(client, { queryKey: ["nodes", node.id, "quarantine"] });
+      void refreshQueries(client, { queryKey: ["jobs"] });
       resetConfirmation();
     },
     onError: (error) => toast.push(error.message, "error"),

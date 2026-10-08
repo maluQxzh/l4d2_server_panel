@@ -1,3 +1,4 @@
+import { liveRefreshInterval, refreshQueries } from "../lib/query-refresh";
 import { instanceAddress, instancePlayers } from "../lib/instance-display";
 import { PreparedPackages, usePreparedPackages } from "../components/PreparedPackages";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -96,7 +97,7 @@ export function InstanceDetailPage() {
     queryKey: ["instances", instanceId],
     queryFn: () => api.instance(instanceId),
     enabled: Boolean(instanceId),
-    refetchInterval: realtime.state === "live" ? false : 5_000,
+    refetchInterval: realtime.state === "live" ? liveRefreshInterval : 5_000,
   });
 
   if (instance.isPending) return <LoadingBlock label="正在读取实例状态…" />;
@@ -150,11 +151,11 @@ function InstanceHero({ instance }: { instance: InstanceRecord }) {
     onSuccess: (_result, type) => {
       setRestartOpen(false);
       toast.push(`${actionLabel(type)}任务已提交`);
-      void client.invalidateQueries({ queryKey: ["jobs"] });
+      void refreshQueries(client, { queryKey: ["jobs"] });
     },
     onError: (error) => {
       toast.push(error.message, "error");
-      void client.invalidateQueries({ queryKey: ["instances"] });
+      void refreshQueries(client, { queryKey: ["instances"] });
     },
   });
   const restartCheck = useMutation({
@@ -187,11 +188,11 @@ function InstanceHero({ instance }: { instance: InstanceRecord }) {
     onSuccess: () => {
       setTakeoverOpen(false);
       toast.push("受控重启与接管任务已提交");
-      void client.invalidateQueries({ queryKey: ["jobs"] });
+      void refreshQueries(client, { queryKey: ["jobs"] });
     },
     onError: (error) => {
       toast.push(error.message, "error");
-      void client.invalidateQueries({ queryKey: ["instances"] });
+      void refreshQueries(client, { queryKey: ["instances"] });
     },
   });
   const closeTakeover = () => {
@@ -336,7 +337,7 @@ function PlayersTab({ instance }: { instance: InstanceRecord }) {
   const toast = useToast();
   const client = useQueryClient();
   const [selected, setSelected] = useState<Player | null>(null);
-  const action = useMutation({ mutationFn: ({ type, payload }: { type: string; payload: Record<string, unknown> }) => api.instanceAction(instance.id, type, payload), onSuccess: (_data, values) => { toast.push(values.type === "kick_player" ? "已提交踢出操作" : "已提交解封操作"); void client.invalidateQueries({ queryKey: ["instances", instance.id, "bans"] }); }, onError: (error) => toast.push(error.message, "error") });
+  const action = useMutation({ mutationFn: ({ type, payload }: { type: string; payload: Record<string, unknown> }) => api.instanceAction(instance.id, type, payload), onSuccess: (_data, values) => { toast.push(values.type === "kick_player" ? "已提交踢出操作" : "已提交解封操作"); void refreshQueries(client, { queryKey: ["instances", instance.id, "bans"] }); }, onError: (error) => toast.push(error.message, "error") });
   const playerItems = canQueryRCON ? players.data?.items || [] : [];
   const playerStatus = players.data?.status || "ready";
   let playerContent: ReactNode;
@@ -391,7 +392,7 @@ function BanPlayerModal({ instance, player, onClose }: { instance: InstanceRecor
   const [durationMinutes, setDurationMinutes] = useState(0);
   const [reason, setReason] = useState("违反服务器规则");
   useEffect(() => { if (player) { setDurationMinutes(0); setReason("违反服务器规则"); } }, [player]);
-  const ban = useMutation({ mutationFn: () => api.instanceAction(instance.id, "ban_player", { steam_id: player?.steam_id, name: player?.name, duration_minutes: durationMinutes, reason: reason.trim() }), onSuccess: () => { toast.push(durationMinutes ? "限时封禁任务已提交" : "永久封禁任务已提交"); void client.invalidateQueries({ queryKey: ["instances", instance.id, "bans"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
+  const ban = useMutation({ mutationFn: () => api.instanceAction(instance.id, "ban_player", { steam_id: player?.steam_id, name: player?.name, duration_minutes: durationMinutes, reason: reason.trim() }), onSuccess: () => { toast.push(durationMinutes ? "限时封禁任务已提交" : "永久封禁任务已提交"); void refreshQueries(client, { queryKey: ["instances", instance.id, "bans"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
   return <Modal open={Boolean(player)} onClose={onClose} title={`封禁 ${player?.name || "玩家"}`} description={`${player?.steam_id || "缺少 Steam ID"}；0 分钟表示永久封禁。`} footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button variant="danger" onClick={() => ban.mutate()} loading={ban.isPending} disabled={!player?.steam_id || durationMinutes < 0 || durationMinutes > 525600 || !reason.trim()}><Ban size={15} />确认封禁</Button></>}><div className="form-stack"><Field label="时长"><select value={durationMinutes} onChange={(event) => setDurationMinutes(Number(event.target.value))}><option value={0}>永久</option><option value={60}>1 小时</option><option value={1440}>1 天</option><option value={10080}>7 天</option><option value={43200}>30 天</option></select></Field><Field label="原因"><input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={200} /></Field><div className="form-warning"><ShieldAlert size={17} />封禁通过 RCON 写入服务器 ban 列表，并在任务成功后记录到不可越权查看的实例范围清单。</div></div></Modal>;
 }
 
@@ -399,7 +400,7 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
   const { user } = useAuth();
   const canConfigure = hasInstancePermission(user, instance, "instances.configure");
   const canReadMaps = hasNodePermission(user, instance.node_id, "maps.read");
-	const maps = useQuery({ queryKey: ["maps", instance.node_id], queryFn: () => api.maps(instance.node_id), enabled: canReadMaps });
+	const maps = useQuery({ queryKey: ["maps", instance.node_id], queryFn: () => api.maps(instance.node_id), enabled: canReadMaps, refetchInterval: liveRefreshInterval });
 	const assignedMapOptions = (maps.data?.items || []).filter((item) => item.assignments?.some((assignment) => assignment.instance_id === instance.id)).flatMap((item) => (item.bsps || []).filter((bsp) => Boolean(bsp.start_name)).map((bsp) => ({ value: bsp.start_name!, label: item.name })));
   const [config, setConfig] = useState<InstanceConfig>(() => ({
     ...instance.config,
@@ -459,7 +460,7 @@ function ConfigTab({ instance }: { instance: InstanceRecord }) {
       setPasswordChange({ kind: "unchanged" });
       client.setQueryData(["instances", instance.id], result.instance);
       toast.push("配置已保存");
-      void client.invalidateQueries({ queryKey: ["instances", instance.id] });
+      void refreshQueries(client, { queryKey: ["instances", instance.id] });
     },
     onError: (error) => toast.push(error.message, "error"),
   });
@@ -764,7 +765,7 @@ function PackagesTab({ instance, section }: { instance: InstanceRecord; section:
   const scanState = useQuery({ queryKey: ["instances", instance.id, "package-scan"], queryFn: () => api.installedPackageScan(instance.id), enabled: canInstall && !pluginSection, retry: false, refetchInterval: 3000 });
   const scanStatus = scanState.data?.scan;
   useEffect(() => {
-    if (scanStatus?.outcome === "applied") void client.invalidateQueries({ queryKey: ["instances", instance.id, "packages"] });
+    if (scanStatus?.outcome === "applied") void refreshQueries(client, { queryKey: ["instances", instance.id, "packages"] });
   }, [client, instance.id, scanStatus?.job_id, scanStatus?.outcome]);
   const scanMessage = !scanStatus ? "" : scanStatus.busy
     ? `扫描处理中 ${scanStatus.progress}%，其他操作可以继续`
@@ -781,9 +782,9 @@ function PackagesTab({ instance, section }: { instance: InstanceRecord; section:
     mutationFn: () => api.scanInstalledPackages(instance.id),
     onSuccess: () => {
       toast.push("扫描任务已提交；期间可以继续操作实例，发生变更时会丢弃旧结果");
-      void client.invalidateQueries({ queryKey: ["instances", instance.id, "package-scan"] });
-      void client.invalidateQueries({ queryKey: ["jobs"] });
-      void client.invalidateQueries({ queryKey: ["instances", instance.id, "packages"] });
+      void refreshQueries(client, { queryKey: ["instances", instance.id, "package-scan"] });
+      void refreshQueries(client, { queryKey: ["jobs"] });
+      void refreshQueries(client, { queryKey: ["instances", instance.id, "packages"] });
     },
     onError: (error) => toast.push(error.message, "error"),
   });
@@ -806,7 +807,7 @@ function PackageCard({ item, instance, busy, selected: checked, onSelect }: { it
   const [renameOpen, setRenameOpen] = useState(false);
   const canRename = hasInstancePermission(user, instance, "packages.install");
   const [editor, setEditor] = useState<FileEditorTarget | null>(null);
-  const toggle = useMutation({ mutationFn: (liveAcknowledged: boolean) => api.instanceAction(instanceId, "toggle_package", { package_id: item.id, enabled: !item.enabled, acknowledge_live_changes: liveAcknowledged, acknowledge_restart_required: liveAcknowledged }), onSuccess: () => { toast.push(item.enabled ? "组件停用任务已提交" : "组件启用任务已提交"); void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages"] }); }, onError: (error) => toast.push(error.message, "error") });
+  const toggle = useMutation({ mutationFn: (liveAcknowledged: boolean) => api.instanceAction(instanceId, "toggle_package", { package_id: item.id, enabled: !item.enabled, acknowledge_live_changes: liveAcknowledged, acknowledge_restart_required: liveAcknowledged }), onSuccess: () => { toast.push(item.enabled ? "组件停用任务已提交" : "组件启用任务已提交"); void refreshQueries(client, { queryKey: ["instances", instanceId, "packages"] }); }, onError: (error) => toast.push(error.message, "error") });
   const toggleable = item.kind === "smart" || /\.(?:vpk|smx)$/i.test(item.path || "");
   const serverComponent = item.kind === "sourcemod" || item.kind === "metamod";
   const rollbackable = item.kind !== "smart" && toggleable;
@@ -818,8 +819,8 @@ function PackageCard({ item, instance, busy, selected: checked, onSelect }: { it
     mutationFn: (options?: { allowChangedFiles?: boolean; preserveChangedConfig?: boolean }) => options ? api.deletePackage(instanceId, item.id, undefined, options) : api.deletePackage(instanceId, item.id),
     onSuccess: () => {
       toast.push("组件删除任务已提交");
-      void client.invalidateQueries({ queryKey: ["jobs"] });
-      void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages"] });
+      void refreshQueries(client, { queryKey: ["jobs"] });
+      void refreshQueries(client, { queryKey: ["instances", instanceId, "packages"] });
     },
     onError: (error) => toast.push(error.message, "error"),
   });
@@ -840,7 +841,7 @@ function PackageCard({ item, instance, busy, selected: checked, onSelect }: { it
     mutationFn: () => api.rollbackPackageVersion(instanceId, item.id, selectedVersion),
     onSuccess: () => {
       toast.push("版本回退任务已提交；Agent 会停服、校验并恢复原运行状态");
-      void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages"] });
+      void refreshQueries(client, { queryKey: ["instances", instanceId, "packages"] });
     },
     onError: (error) => toast.push(error.message, "error"),
   });
@@ -885,8 +886,8 @@ function PackageCard({ item, instance, busy, selected: checked, onSelect }: { it
     setEditor({ path: file.path, isNew: false, packageId: item.id, packageName: item.name });
   }} /><FileEditorModal instance={instance} editor={editor} onClose={() => {
     setEditor(null);
-    void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages"] });
-    void client.invalidateQueries({ queryKey: ["instances", instanceId, "packages", item.id, "details"] });
+    void refreshQueries(client, { queryKey: ["instances", instanceId, "packages"] });
+    void refreshQueries(client, { queryKey: ["instances", instanceId, "packages", item.id, "details"] });
   }} /></>;
 }
 
@@ -1060,9 +1061,9 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
       }),
     onSuccess: () => {
       toast.push(durableSmart ? "智能插件安装队列已保存，关闭页面后仍会继续" : qqFlashVPK ? "QQ闪传 VPK 导入任务已提交" : `${pluginSection ? "插件" : "模组"}安装任务已提交`);
-      void client.invalidateQueries({ queryKey: ["jobs"] });
-      void client.invalidateQueries({ queryKey: ["instances", instance.id, "packages"] });
-      void client.invalidateQueries({ queryKey: ["instances", instance.id, "prepared-packages"] });
+      void refreshQueries(client, { queryKey: ["jobs"] });
+      void refreshQueries(client, { queryKey: ["instances", instance.id, "packages"] });
+      void refreshQueries(client, { queryKey: ["instances", instance.id, "prepared-packages"] });
       resetAndClose();
     },
     onError: (error) => toast.push(error.message, "error"),
@@ -1088,8 +1089,8 @@ function InstallPackageModal({ open, instance, section, metamodInstalled, smartP
     mutationFn: () => api.preparePackage(instance.id, officialPrepare ? { kind, official: true } : { kind: qqBundlePrepare ? "qq_vpk_bundle" : kind === "vpk_url" || qqFlashVPK ? "vpk" : extensionPrepare ? kind.replace(/_url$/, "") : kind, name: qqPrepare ? undefined : upload?.name, source: source.trim() || undefined, content_base64: qqPrepare ? undefined : upload?.contentBase64, source_transport: qqPrepare ? "qq_flash" : undefined }),
     onSuccess: () => {
       toast.push("预下载任务已提交，可继续准备其他包；完成后在预下载列表安装");
-      void client.invalidateQueries({ queryKey: ["instances", instance.id, "prepared-packages"] });
-      void client.invalidateQueries({ queryKey: ["jobs"] });
+      void refreshQueries(client, { queryKey: ["instances", instance.id, "prepared-packages"] });
+      void refreshQueries(client, { queryKey: ["jobs"] });
       resetAndClose();
     },
     onError: (error: Error) => toast.push(error.message, "error"),
@@ -1245,7 +1246,7 @@ function FileEditorModal({ instance, editor, onClose }: { instance: InstanceReco
       : api.writeFile(instance.id, relative, content, editor?.isNew ? undefined : file.data?.sha256, binary || undefined),
     onSuccess: (result) => {
       toast.push(editor?.packageId ? "插件文件更新任务已提交" : "文件写入任务已提交");
-      void client.invalidateQueries({ queryKey: ["jobs"] });
+      void refreshQueries(client, { queryKey: ["jobs"] });
       onClose();
       return result;
     },
@@ -1253,7 +1254,7 @@ function FileEditorModal({ instance, editor, onClose }: { instance: InstanceReco
   });
   const remove = useMutation({
     mutationFn: () => api.deleteFile(instance.id, relative, file.data?.sha256),
-    onSuccess: () => { toast.push("文件删除任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); onClose(); },
+    onSuccess: () => { toast.push("文件删除任务已提交"); void refreshQueries(client, { queryKey: ["jobs"] }); onClose(); },
     onError: (error) => toast.push(error.message, "error"),
   });
   const loadUpload = async (selected: File) => {
@@ -1334,7 +1335,7 @@ function BackupsTab({ instance }: { instance: InstanceRecord }) {
     queryKey: ["instances", instance.id, "backups"],
     queryFn: () => api.backups(instance.id),
     enabled: canRead,
-    refetchInterval: realtime.state === "live" ? false : 10_000,
+    refetchInterval: realtime.state === "live" ? liveRefreshInterval : 10_000,
   });
   const toast = useToast();
   const client = useQueryClient();
@@ -1345,13 +1346,13 @@ function BackupsTab({ instance }: { instance: InstanceRecord }) {
   const canDelete = canAccessInstance(user, instance, "backups.delete");
   const restoreReady = instance.status === "stopped" || instance.status === "degraded";
   const canRestore = canRestorePermission && restoreReady;
-  const action = useMutation({ mutationFn: ({ type, backup }: { type: string; backup?: BackupRecord }) => api.instanceAction(instance.id, type, backup ? { backup_id: backup.id } : undefined), onSuccess: (_data, values) => { toast.push(values.type === "backup" ? "备份任务已提交" : "恢复任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
+  const action = useMutation({ mutationFn: ({ type, backup }: { type: string; backup?: BackupRecord }) => api.instanceAction(instance.id, type, backup ? { backup_id: backup.id } : undefined), onSuccess: (_data, values) => { toast.push(values.type === "backup" ? "备份任务已提交" : "恢复任务已提交"); void refreshQueries(client, { queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
   const remove = useMutation({
     mutationFn: (backup: BackupRecord) => api.deleteBackup(instance.id, backup.id, crypto.randomUUID()),
     onSuccess: () => {
       toast.push("备份删除任务已提交");
-      void client.invalidateQueries({ queryKey: ["jobs"] });
-      void client.invalidateQueries({ queryKey: ["instances", instance.id, "backups"] });
+      void refreshQueries(client, { queryKey: ["jobs"] });
+      void refreshQueries(client, { queryKey: ["instances", instance.id, "backups"] });
     },
     onError: (error) => toast.push(error.message, "error"),
   });
@@ -1401,7 +1402,7 @@ function PluginBackupModal({ open, instance, onClose }: { open: boolean; instanc
     mutationFn: () => api.createPluginBackup(instance.id, layout),
     onSuccess: () => {
       toast.push("插件备份任务已提交");
-      void client.invalidateQueries({ queryKey: ["jobs"] });
+      void refreshQueries(client, { queryKey: ["jobs"] });
       onClose();
     },
     onError: (error) => toast.push(error.message, "error"),
@@ -1720,8 +1721,8 @@ function BackupUploadRestoreModal({ open, instance, onClose }: { open: boolean; 
     },
     onSuccess: () => {
       toast.push("跨节点备份已上传，恢复任务已提交");
-      void client.invalidateQueries({ queryKey: ["jobs"] });
-      void client.invalidateQueries({ queryKey: ["instances", instance.id, "backups"] });
+      void refreshQueries(client, { queryKey: ["jobs"] });
+      void refreshQueries(client, { queryKey: ["instances", instance.id, "backups"] });
       file.current = null;
       onClose();
       if (canReadJobs) navigate("/jobs");
@@ -1751,7 +1752,7 @@ function BackupUploadRestoreModal({ open, instance, onClose }: { open: boolean; 
       upload.reset();
       if (!result.localOnly) {
         toast.push("上传会话已放弃，节点暂存清理任务已排队");
-        void client.invalidateQueries({ queryKey: ["jobs"] });
+        void refreshQueries(client, { queryKey: ["jobs"] });
       } else {
         toast.push("本地上传记录已清除");
       }
@@ -1824,7 +1825,7 @@ function SchedulesTab({ instance }: { instance: InstanceRecord }) {
   const canRead = hasInstancePermission(user, instance, "schedules.read");
   const canManage = hasInstancePermission(user, instance, "schedules.manage");
   const hasSchedulableAction = (["instances.start", "instances.stop", "instances.restart", "backups.create", "players.broadcast"] as const).some((permission) => hasInstancePermission(user, instance, permission));
-  const schedules = useQuery({ queryKey: ["instances", instance.id, "schedules"], queryFn: () => api.schedules(instance.id), enabled: canRead });
+  const schedules = useQuery({ queryKey: ["instances", instance.id, "schedules"], queryFn: () => api.schedules(instance.id), enabled: canRead, refetchInterval: liveRefreshInterval });
   const createButton = canManage && hasSchedulableAction ? <Button onClick={() => setOpen(true)}><Plus size={16} />新增计划</Button> : undefined;
   return <Card><div className="card-heading"><div><span className="eyebrow">AUTOMATION</span><h2>计划任务</h2></div>{createButton}</div>{canManage && !hasSchedulableAction && <div className="form-warning"><ShieldAlert size={17} />创建计划还需要所选动作的权限：启动、停止、重启、备份或聊天广播。</div>}{!canRead ? <EmptyState title="计划清单已隐藏" description="当前账号没有查看计划任务清单的权限，但仍可执行单独授予的创建操作。" action={createButton} /> : schedules.isPending ? <LoadingBlock /> : schedules.error ? <OptionalUnavailable error={schedules.error} title="计划清单尚不可用" description="当前控制端未开放计划任务列表；仍可提交新的 Agent 计划。" action={createButton} /> : schedules.data.items.length ? <div className="schedule-list">{schedules.data.items.map((schedule) => <ScheduleRow key={schedule.id} instanceId={instance.id} schedule={schedule} canManage={canManage} />)}</div> : <EmptyState title="还没有自定义计划" description="默认备份策略仍会运行。你可以安排启动、停止、重启、备份或广播。" action={createButton} />}<ScheduleModal open={canManage && open} instance={instance} onClose={() => setOpen(false)} /></Card>;
 }
@@ -1832,7 +1833,7 @@ function SchedulesTab({ instance }: { instance: InstanceRecord }) {
 function ScheduleRow({ instanceId, schedule, canManage }: { instanceId: string; schedule: ScheduleRecord; canManage: boolean }) {
   const client = useQueryClient();
   const toast = useToast();
-  const refresh = () => void client.invalidateQueries({ queryKey: ["instances", instanceId, "schedules"] });
+  const refresh = () => void refreshQueries(client, { queryKey: ["instances", instanceId, "schedules"] });
   const toggle = useMutation({ mutationFn: () => api.setScheduleEnabled(instanceId, schedule.id, !schedule.enabled), onSuccess: () => { refresh(); toast.push(schedule.enabled ? "计划已停用" : "计划已启用"); }, onError: (error) => toast.push(error.message, "error") });
   const remove = useMutation({ mutationFn: () => api.deleteSchedule(instanceId, schedule.id), onSuccess: () => { refresh(); toast.push("计划已删除"); }, onError: (error) => toast.push(error.message, "error") });
   const supported = ["start", "stop", "restart", "backup", "broadcast"].includes(schedule.action);
@@ -1851,7 +1852,7 @@ function ScheduleModal({ open, instance, onClose }: { open: boolean; instance: I
   const [name, setName] = useState(""); const [cron, setCron] = useState("0 4 * * *"); const [action, setAction] = useState("backup"); const [message, setMessage] = useState(""); const toast = useToast();
   const client = useQueryClient();
   useEffect(() => { if (!availableActions.some((item) => item.value === action)) setAction(availableActions[0]?.value || ""); }, [action, availableActions]);
-  const create = useMutation({ mutationFn: () => api.instanceAction(instance.id, "create_schedule", { name, cron, action, enabled: true, message: action === "broadcast" ? message.trim() : undefined, payload: {} }), onSuccess: () => { toast.push("计划任务已提交"); setMessage(""); void client.invalidateQueries({ queryKey: ["instances", instance.id, "schedules"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
+  const create = useMutation({ mutationFn: () => api.instanceAction(instance.id, "create_schedule", { name, cron, action, enabled: true, message: action === "broadcast" ? message.trim() : undefined, payload: {} }), onSuccess: () => { toast.push("计划任务已提交"); setMessage(""); void refreshQueries(client, { queryKey: ["instances", instance.id, "schedules"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
   const validMessage = action !== "broadcast" || Boolean(message.trim()) && [...message.trim()].length <= 200 && !/[\0\r\n;"\\]/.test(message);
   return <Modal open={open} onClose={onClose} title="新增计划任务" description="计划按中心端时区执行，长操作仍遵循实例写锁。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button onClick={() => create.mutate()} loading={create.isPending} disabled={!name || !cron || !action || !validMessage}>创建计划</Button></>}><div className="form-stack"><Field label="计划名称"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="每日备份" /></Field><div className="form-grid"><Field label="执行动作"><select value={action} onChange={(event) => setAction(event.target.value)}>{availableActions.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></Field><Field label="Cron 表达式" hint="分 时 日 月 周"><input value={cron} onChange={(event) => setCron(event.target.value)} /></Field></div>{action === "broadcast" && <Field label="广播内容" hint="1–200 个字符，不允许换行、分号、引号或反斜杠"><input value={message} maxLength={200} onChange={(event) => setMessage(event.target.value)} /></Field>}<div className="form-note"><strong>不会自动广播</strong><span>计划重启到时会直接执行；如需提前通知玩家，请单独创建聊天广播计划。</span></div></div></Modal>;
 }

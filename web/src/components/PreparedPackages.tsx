@@ -1,3 +1,4 @@
+import { refreshQueries } from "../lib/query-refresh";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, newIdempotencyKey, type PreparedPackage } from "../lib/api";
@@ -21,7 +22,7 @@ export function PreparedPackages({ instanceId, plugins }: { instanceId: string; 
   const queues = query.data?.queues || [];
   const active = queues.find((queue) => ["queued", "running"].includes(queue.status));
   if (!query.data?.supported && !items.length && !queues.length) return null;
-  const refresh = async () => { await client.invalidateQueries({ queryKey: ["instances", instanceId] }); void client.invalidateQueries({ queryKey: ["jobs"] }); };
+  const refresh = async () => { await refreshQueries(client, { queryKey: ["instances", instanceId] }); void refreshQueries(client, { queryKey: ["jobs"] }); };
   const install = async (queue: PreparedPackage[]) => {
     if (busy || active || !queue.length) return;
     if (!window.confirm(`确认依次安装 ${queue.length} 个预下载包？关闭页面后仍会继续；安装期间可能重启实例。`)) return;

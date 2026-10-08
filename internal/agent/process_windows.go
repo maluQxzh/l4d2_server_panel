@@ -12,14 +12,15 @@ import (
 )
 
 const (
-	createSuspended                   = 0x00000004
-	createNewConsole                  = 0x00000010
-	createNewProcessGroup             = 0x00000200
-	processTerminate                  = 0x0001
-	processSetQuota                   = 0x0100
-	processSuspendResume              = 0x0800
-	jobObjectExtendedLimitInformation = 9
-	jobObjectLimitKillOnJobClose      = 0x00002000
+	createSuspended                       = 0x00000004
+	createNewConsole                      = 0x00000010
+	createNewProcessGroup                 = 0x00000200
+	processTerminate                      = 0x0001
+	processSetQuota                       = 0x0100
+	processSuspendResume                  = 0x0800
+	jobObjectExtendedLimitInformation     = 9
+	jobObjectLimitKillOnJobClose          = 0x00002000
+	jobObjectLimitDieOnUnhandledException = 0x00000400
 )
 
 var (
@@ -115,7 +116,10 @@ func attachPlatformProcess(cmd *exec.Cmd) (attached *platformProcess, resultErr 
 		return nil, fmt.Errorf("CreateJobObjectW: %w", createErr)
 	}
 	limits := jobObjectExtendedLimit{}
-	limits.BasicLimitInformation.LimitFlags = jobObjectLimitKillOnJobClose
+	// Without this flag an unhandled native exception may wait for a Windows
+	// error dialog instead of terminating, so Wait never reaches crash recovery.
+	// Apply it while suspended, and only to this managed process tree.
+	limits.BasicLimitInformation.LimitFlags = jobObjectLimitKillOnJobClose | jobObjectLimitDieOnUnhandledException
 	configured, _, configErr := procSetInformationJob.Call(job, jobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), unsafe.Sizeof(limits))
 	if configured == 0 {
 		return nil, fmt.Errorf("SetInformationJobObject: %w", configErr)

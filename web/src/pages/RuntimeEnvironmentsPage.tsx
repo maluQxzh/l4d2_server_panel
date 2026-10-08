@@ -1,3 +1,4 @@
+import { liveRefreshInterval, refreshQueries } from "../lib/query-refresh";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FolderInput, HardDrive, Plus, RefreshCw, Settings2, ShieldAlert, Trash2, Wrench } from "lucide-react";
 import { useState, type FormEvent } from "react";
@@ -14,7 +15,7 @@ export function RuntimeEnvironmentsPage() {
   const { user } = useAuth();
   const canRead = hasAnyPermission(user, "environments.read");
   const canManage = hasAnyPermission(user, "environments.manage");
-  const query = useQuery({ queryKey: ["environments"], queryFn: api.environments, enabled: canRead });
+  const query = useQuery({ queryKey: ["environments"], queryFn: api.environments, enabled: canRead, refetchInterval: liveRefreshInterval });
   const [steamTarget, setSteamTarget] = useState<RuntimeEnvironmentRecord | null>(null);
   const [gameTarget, setGameTarget] = useState<RuntimeEnvironmentRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ environment: RuntimeEnvironmentRecord; installation: GameInstallationRecord } | null>(null);
@@ -31,9 +32,9 @@ function EnvironmentCard({ environment, configureSteam, addGame, deleteGame }: {
   const { user } = useAuth();
   const toast = useToast();
   const client = useQueryClient();
-  const installations = useQuery({ queryKey: ["environments", environment.id, "game-installations"], queryFn: () => api.gameInstallations(environment.id) });
-  const inspect = useMutation({ mutationFn: () => api.inspectEnvironment(environment.id), onSuccess: () => { toast.push("运行环境检测任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
-  const action = useMutation({ mutationFn: ({ item, type, location }: { item: GameInstallationRecord; type: "import" | "validate" | "update"; location?: { path: string } }) => api.gameInstallationAction(environment.id, item.id, type, location), onSuccess: () => { toast.push("游戏安装检测或维护任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
+  const installations = useQuery({ queryKey: ["environments", environment.id, "game-installations"], queryFn: () => api.gameInstallations(environment.id), refetchInterval: liveRefreshInterval });
+  const inspect = useMutation({ mutationFn: () => api.inspectEnvironment(environment.id), onSuccess: () => { toast.push("运行环境检测任务已提交"); void refreshQueries(client, { queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
+  const action = useMutation({ mutationFn: ({ item, type, location }: { item: GameInstallationRecord; type: "import" | "validate" | "update"; location?: { path: string } }) => api.gameInstallationAction(environment.id, item.id, type, location), onSuccess: () => { toast.push("游戏安装检测或维护任务已提交"); void refreshQueries(client, { queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
   const items = installations.data?.items || [];
   const canManage = canAccessNode(user, environment.node_id, "environments.manage");
   const canRunTasks = canManage && environment.agent_supported && environment.node_status === "online";
@@ -51,7 +52,7 @@ function EnvironmentCard({ environment, configureSteam, addGame, deleteGame }: {
 function DeleteGameInstallationModal({ target, onClose }: { target: { environment: RuntimeEnvironmentRecord; installation: GameInstallationRecord } | null; onClose: () => void }) {
   const toast = useToast();
   const client = useQueryClient();
-  const remove = useMutation({ mutationFn: ({ environmentId, installationId, mode }: { environmentId: string; installationId: string; mode: "record" | "files" }) => api.deleteGameInstallation(environmentId, installationId, mode), onSuccess: (_result, values) => { toast.push(values.mode === "files" ? "游戏安装和全部文件删除任务已提交" : "游戏安装记录删除任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); void client.invalidateQueries({ queryKey: ["environments", values.environmentId, "game-installations"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
+  const remove = useMutation({ mutationFn: ({ environmentId, installationId, mode }: { environmentId: string; installationId: string; mode: "record" | "files" }) => api.deleteGameInstallation(environmentId, installationId, mode), onSuccess: (_result, values) => { toast.push(values.mode === "files" ? "游戏安装和全部文件删除任务已提交" : "游戏安装记录删除任务已提交"); void refreshQueries(client, { queryKey: ["jobs"] }); void refreshQueries(client, { queryKey: ["environments", values.environmentId, "game-installations"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
   const deleteWithMode = (mode: "record" | "files") => {
     if (target) remove.mutate({ environmentId: target.environment.id, installationId: target.installation.id, mode });
   };
@@ -64,7 +65,7 @@ function SteamCMDModal({ environment, onClose }: { environment: RuntimeEnvironme
   const [path, setPath] = useState("");
   const toast = useToast();
   const client = useQueryClient();
-  const action = useMutation({ mutationFn: ({ type, value }: { type: "configure" | "clear" | "install" | "repair"; value?: string }) => api.steamCMDAction(environment!.id, type, value), onSuccess: (_result, values) => { toast.push(values.type === "configure" ? "自定义 SteamCMD 校验任务已提交" : "SteamCMD 操作已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
+  const action = useMutation({ mutationFn: ({ type, value }: { type: "configure" | "clear" | "install" | "repair"; value?: string }) => api.steamCMDAction(environment!.id, type, value), onSuccess: (_result, values) => { toast.push(values.type === "configure" ? "自定义 SteamCMD 校验任务已提交" : "SteamCMD 操作已提交"); void refreshQueries(client, { queryKey: ["jobs"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
   return <Modal open={Boolean(environment)} onClose={onClose} title="配置 SteamCMD" description="每个节点只有一套活动 SteamCMD；切换成功后，所有游戏安装维护都使用它。" footer={<Button variant="secondary" onClick={onClose}>关闭</Button>}>
     <div className="form-stack"><Field label="自定义绝对路径" hint="Windows 必须指向 steamcmd.exe；Linux 指向 steamcmd.sh 或 steamcmd。路径不能位于游戏根目录内。"><div className="inline-field"><input value={path} onChange={(event) => setPath(event.target.value)} placeholder={environment?.node_status === "online" ? "输入节点主机上的绝对路径" : "节点离线"} /><Button disabled={!path.trim() || environment?.node_status !== "online"} loading={action.isPending} onClick={() => action.mutate({ type: "configure", value: path.trim() })}>校验并启用</Button></div></Field><div className="form-note"><strong>中心端托管</strong><span>由 Agent 下载官方 SteamCMD 到自身数据目录，校验成功后切换为活动路径。</span></div><div className="modal-action-row"><Button onClick={() => action.mutate({ type: "install" })} loading={action.isPending}><Download size={15} />安装托管 SteamCMD</Button><Button variant="secondary" onClick={() => action.mutate({ type: "repair" })} loading={action.isPending}>修复托管版本</Button><Button variant="danger" onClick={() => action.mutate({ type: "clear" })} loading={action.isPending}>清除活动路径</Button></div></div>
   </Modal>;
@@ -75,7 +76,7 @@ function GameInstallationModal({ environment, onClose }: { environment: RuntimeE
   const [path, setPath] = useState("");
   const toast = useToast();
   const client = useQueryClient();
-  const create = useMutation({ mutationFn: () => api.createGameInstallation(environment!.id, { path: path.trim(), operation }), onSuccess: () => { toast.push(operation === "install" ? "游戏安装任务已提交" : "现有游戏目录校验任务已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); void client.invalidateQueries({ queryKey: ["environments", environment!.id, "game-installations"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
+  const create = useMutation({ mutationFn: () => api.createGameInstallation(environment!.id, { path: path.trim(), operation }), onSuccess: () => { toast.push(operation === "install" ? "游戏安装任务已提交" : "现有游戏目录校验任务已提交"); void refreshQueries(client, { queryKey: ["jobs"] }); void refreshQueries(client, { queryKey: ["environments", environment!.id, "game-installations"] }); onClose(); }, onError: (error) => toast.push(error.message, "error") });
   const submit = (event: FormEvent) => { event.preventDefault(); create.mutate(); };
   return <Modal open={Boolean(environment)} onClose={onClose} title="添加游戏安装" description="填写节点主机上的绝对路径；Agent 不会扫描磁盘或读取其他目录。" footer={<><Button variant="secondary" onClick={onClose}>取消</Button><Button type="submit" form="game-installation-form" loading={create.isPending}>提交任务</Button></>}><form id="game-installation-form" className="form-stack" onSubmit={submit}><div className="segmented"><button type="button" className={operation === "import" ? "active" : ""} onClick={() => setOperation("import")}><FolderInput size={15} />登记现有目录</button><button type="button" className={operation === "install" ? "active" : ""} onClick={() => setOperation("install")}><Download size={15} />全新安装</button></div><Field label="节点绝对路径" hint="Windows 示例：D:\\GameServers\\l4d2-01；Linux 示例：/srv/l4d2/l4d2-01。"><input className="code-input" value={path} onChange={(event) => setPath(event.target.value)} placeholder="D:\\GameServers\\l4d2-01 或 /srv/l4d2/l4d2-01" required /></Field><div className="form-note"><strong>独占绑定与权限</strong><span>Agent 将该目录本身作为实例文件边界；服务账号不可写时，首次检测会登记路径并提示在节点重新执行原 install --config 命令批量接管。</span></div></form></Modal>;
 }

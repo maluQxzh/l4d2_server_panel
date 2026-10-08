@@ -1,3 +1,4 @@
+import { liveRefreshInterval, refreshQueries } from "../lib/query-refresh";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ban, CheckCircle2, ChevronDown, CircleAlert, Clock3, Filter, LoaderCircle, RadioTower, RefreshCw, Search, XCircle } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -23,7 +24,7 @@ export function JobsPage() {
     queryKey: ["jobs", view],
     queryFn: () => api.jobList({ background: view === "operations" ? "exclude" : "only", backgroundSummary: true }),
     enabled: canReadJobs,
-    refetchInterval: realtime.state === "live" ? false : 10_000,
+    refetchInterval: realtime.state === "live" ? liveRefreshInterval : 10_000,
   });
   const terminalConflicts = useQuery({
     queryKey: ["job-terminal-conflicts"],
@@ -59,7 +60,7 @@ function TerminalConflictRow({ conflict }: { conflict: TerminalOutcomeConflict }
     mutationFn: () => api.resolveTerminalOutcomeConflict(conflict.job_id, conflict.reported_fingerprint),
     onSuccess: (result) => {
       toast.push(result.acknowledgement_delivered ? "冲突已确认，节点已收到清理通知" : "冲突已确认，节点重连后会自动清理");
-      void client.invalidateQueries({ queryKey: ["job-terminal-conflicts"] });
+      void refreshQueries(client, { queryKey: ["job-terminal-conflicts"] });
     },
     onError: (error) => toast.push(error.message, "error"),
   });
@@ -75,7 +76,7 @@ function terminalStatusLabel(status: TerminalOutcomeConflict["stored_status"]) {
 
 function JobRow({ job, expanded, canCancel, canViewDetails, onToggle }: { job: Job; expanded: boolean; canCancel: boolean; canViewDetails: boolean; onToggle: () => void }) {
   const toast = useToast(); const client = useQueryClient();
-  const cancel = useMutation({ mutationFn: () => api.cancelJob(job.id), onSuccess: () => { toast.push("取消请求已提交"); void client.invalidateQueries({ queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
+  const cancel = useMutation({ mutationFn: () => api.cancelJob(job.id), onSuccess: () => { toast.push("取消请求已提交"); void refreshQueries(client, { queryKey: ["jobs"] }); }, onError: (error) => toast.push(error.message, "error") });
   const active = ["queued", "dispatched", "running"].includes(job.status);
   const failure = jobFailureDetails(job);
   const Icon = job.status === "succeeded" ? CheckCircle2 : job.status === "failed" ? XCircle : active ? LoaderCircle : Ban;

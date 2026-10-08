@@ -227,29 +227,45 @@ func (m *ProcessManager) wait(p *managedProcess, cmd *exec.Cmd, platform *platfo
 	close(p.done)
 	restart := p.spec.AutoRestart && !p.stopRequested
 	if restart {
-		cutoff := now.Add(-10 * time.Minute)
-		kept := p.crashes[:0]
-		for _, at := range p.crashes {
-			if at.After(cutoff) {
-				kept = append(kept, at)
-			}
-		}
-		p.crashes = append(kept, now)
-		if len(p.crashes) > 5 {
-			restart = false
-			p.state.Status = "crash_loop"
-		}
+		restart = m.allowCrashRestartLocked(p, now)
 	}
 	m.mu.Unlock()
 	if restart {
-		m.logger.Printf("instance %s exited unexpectedly (%v); restarting", p.spec.InstanceID, err)
-		time.AfterFunc(5*time.Second, func() { m.restartAfterCrash(p) })
+		m.scheduleCrashRestart(p, err)
 	}
+}
+
+// Exits and failed automatic launches share one bounded retry budget. A single
+// transient launch failure must not permanently disable crash recovery.
+func (m *ProcessManager) allowCrashRestartLocked(p *managedProcess, now time.Time) bool {
+	cutoff := now.Add(-10 * time.Minute)
+	kept := p.crashes[:0]
+	for _, at := range p.crashes {
+		if at.After(cutoff) {
+			kept = append(kept, at)
+		}
+	}
+	p.crashes = append(kept, now)
+	if len(p.crashes) <= 5 {
+		return true
+	}
+	p.state.Status = "crash_loop"
+	if m.logger != nil {
+		m.logger.Printf("instance %s automatic restart limit reached: %d failures in 10 minutes; last error: %s", p.spec.InstanceID, len(p.crashes), p.state.ExitError)
+	}
+	return false
+}
+
+func (m *ProcessManager) scheduleCrashRestart(p *managedProcess, cause error) {
+	if m.logger != nil {
+		m.logger.Printf("instance %s exited or automatic launch failed (%v); restarting in 5 seconds", p.spec.InstanceID, cause)
+	}
+	time.AfterFunc(5*time.Second, func() { m.restartAfterCrash(p) })
 }
 
 func (m *ProcessManager) restartAfterCrash(p *managedProcess) {
 	m.mu.Lock()
-	if p.stopRequested || !p.spec.AutoRestart || p.cmd != nil || m.items[p.spec.InstanceID] != p {
+	if p.stopRequested || !p.spec.AutoRestart || p.cmd != nil || p.launching || p.state.Status == "crash_loop" || m.items[p.spec.InstanceID] != p {
 		m.mu.Unlock()
 		return
 	}
@@ -261,10 +277,17 @@ func (m *ProcessManager) restartAfterCrash(p *managedProcess) {
 	if launchErr := m.launch(p); launchErr != nil {
 		m.mu.Lock()
 		p.launching = false
-		p.state.Status = "crash_loop"
+		p.state.Status = "stopped"
 		p.state.ExitError = launchErr.Error()
 		close(p.done)
+		retry := !p.stopRequested && p.spec.AutoRestart && m.items[p.spec.InstanceID] == p
+		if retry {
+			retry = m.allowCrashRestartLocked(p, time.Now().UTC())
+		}
 		m.mu.Unlock()
+		if retry {
+			m.scheduleCrashRestart(p, launchErr)
+		}
 	}
 }
 
