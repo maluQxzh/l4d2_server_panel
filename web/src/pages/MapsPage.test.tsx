@@ -60,7 +60,7 @@ describe("地图管理卡片", () => {
     vi.spyOn(api, "maps").mockResolvedValue({ items: [recovered] });
     vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
     vi.spyOn(api, "instances").mockResolvedValue({ items: [{ ...assignedInstance, status: "stopped" }] });
-    vi.spyOn(api, "jobs").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "jobList").mockResolvedValue({ items: [] });
     const unassign = vi.spyOn(api, "unassignMap").mockResolvedValue({ job_id: "unassign-job" });
     render(<QueryClientProvider client={client}><ToastProvider><RealtimeProvider enabled={false}><MemoryRouter><MapsPage /></MemoryRouter></RealtimeProvider></ToastProvider></QueryClientProvider>);
     expect(await screen.findByText("等待 VPK 刷新")).toHaveAttribute("title", expect.stringContaining("!update_vpk"));
@@ -101,7 +101,7 @@ describe("地图管理卡片", () => {
     vi.spyOn(api, "maps").mockResolvedValue({ items: [map] });
     vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
     vi.spyOn(api, "instances").mockResolvedValue({ items: [assignedInstance] });
-    vi.spyOn(api, "jobs").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "jobList").mockResolvedValue({ items: [] });
 
     render(
       <QueryClientProvider client={client}>
@@ -160,7 +160,7 @@ describe("地图管理卡片", () => {
     vi.spyOn(api, "maps").mockResolvedValue({ items: [map, unassignedMap] });
     vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
     vi.spyOn(api, "instances").mockResolvedValue({ items: [assignedInstance] });
-    vi.spyOn(api, "jobs").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "jobList").mockResolvedValue({ items: [] });
 
     render(
       <QueryClientProvider client={client}>
@@ -205,7 +205,7 @@ describe("地图管理卡片", () => {
     vi.spyOn(api, "maps").mockResolvedValue({ items: [map, duplicateMap, uniqueMap] });
     vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
     vi.spyOn(api, "instances").mockResolvedValue({ items: [assignedInstance] });
-    vi.spyOn(api, "jobs").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "jobList").mockResolvedValue({ items: [] });
 
     render(<QueryClientProvider client={client}><ToastProvider><RealtimeProvider enabled={false}><MemoryRouter><MapsPage /></MemoryRouter></RealtimeProvider></ToastProvider></QueryClientProvider>);
 
@@ -228,7 +228,7 @@ describe("地图管理卡片", () => {
     vi.spyOn(api, "maps").mockResolvedValue({ items: [{ ...map, assignments: [] }] });
     vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
     vi.spyOn(api, "instances").mockResolvedValue({ items: [{ ...assignedInstance, rcon_configured: false }] });
-    vi.spyOn(api, "jobs").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "jobList").mockResolvedValue({ items: [] });
     const assign = vi.spyOn(api, "assignMap").mockResolvedValue({ job_id: "map-assign" });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
 

@@ -265,15 +265,28 @@ func (s *Server) handleInstanceSchedules(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleListNotifications(w http.ResponseWriter, r *http.Request) {
+	filter, err := parseJobListFilter(r.URL.Query())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_cursor", err.Error())
+		return
+	}
 	limit := parseLimit(r, 100)
-	queryLimit := min(500, limit*5)
-	items, err := s.store.ListNotifications(r.Context(), queryLimit)
+	principal := principalFromContext(r.Context())
+	var scope *jobVisibilityScope
+	if !principal.GlobalAllows(PermissionNotificationsRead) {
+		visible, err := s.jobVisibilityScope(r.Context(), principal, PermissionNotificationsRead)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		scope = &visible
+	}
+	items, next, err := s.store.ListVisibleNotificationPage(r.Context(), scope, filter.Cursor, limit)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 	result := make([]map[string]any, 0, len(items))
-	principal := principalFromContext(r.Context())
 	for _, item := range items {
 		if !s.principalAllowsNotification(r, principal, item) {
 			continue
@@ -284,7 +297,7 @@ func (s *Server) handleListNotifications(w http.ResponseWriter, r *http.Request)
 			break
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": result})
+	writeJSON(w, http.StatusOK, map[string]any{"items": result, "next_cursor": next})
 }
 
 func (s *Server) handleReadNotification(w http.ResponseWriter, r *http.Request) {

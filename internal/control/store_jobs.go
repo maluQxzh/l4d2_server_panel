@@ -639,6 +639,10 @@ func (s *Store) UpdateJob(ctx context.Context, id string, status domain.JobStatu
 }
 
 func (s *Store) JobsForDispatch(ctx context.Context, nodeID string, limit int) ([]domain.Job, error) {
+	return s.jobsForDispatchAfter(ctx, nodeID, limit, jobListCursor{})
+}
+
+func (s *Store) jobsForDispatchAfter(ctx context.Context, nodeID string, limit int, after jobListCursor) ([]domain.Job, error) {
 	if limit < 1 || limit > 100 {
 		limit = 20
 	}
@@ -673,6 +677,7 @@ func (s *Store) JobsForDispatch(ctx context.Context, nodeID string, limit int) (
 	), ordinary_candidates AS (
 		SELECT job.id,job.created_at FROM node_jobs job
 		WHERE NOT job.automatic_maintenance AND job.status IN ('queued','dispatched')
+			AND (?3='' OR (job.created_at,job.id)>(?4,?3))
 			AND NOT (job.type='check_update' AND job.instance_id IN (SELECT instance_id FROM active_write_instances))
 		ORDER BY job.created_at,job.id LIMIT ?2
 	), cancellation_candidates AS (
@@ -689,7 +694,7 @@ func (s *Store) JobsForDispatch(ctx context.Context, nodeID string, limit int) (
 	), dispatch_jobs AS (
 		SELECT jobs.*,candidate_ids.dispatch_priority FROM jobs JOIN candidate_ids USING(id)
 	)
-	SELECT `+jobColumns+` FROM dispatch_jobs ORDER BY dispatch_priority,created_at,id`, nodeID, limit)
+	SELECT `+jobColumns+` FROM dispatch_jobs ORDER BY dispatch_priority,created_at,id`, nodeID, limit, after.ID, after.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -732,6 +737,16 @@ func (s *Store) MarkDispatched(ctx context.Context, id string) (bool, error) {
 		return false, err
 	}
 	if current.Status != domain.JobQueued {
+		return false, tx.Commit()
+	}
+	// Keep excess intents durable in Control instead of creating unbounded
+	// Agent goroutines. Cancellation and terminal replay use separate paths.
+	var inFlight int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE node_id=?1 AND type<>'prepared_install_queue' AND
+		(status IN ('dispatched','running') OR (status='canceled' AND json_extract(result,'$.cancel_pending')=1))`, current.NodeID).Scan(&inFlight); err != nil {
+		return false, err
+	}
+	if inFlight >= 32 {
 		return false, tx.Commit()
 	}
 	if isAutomaticMaintenanceUpdate(current) != isAutomaticMaintenanceUpdate(preflight) || current.InstanceID != preflight.InstanceID || current.Type != preflight.Type {

@@ -45,6 +45,31 @@ import type {
 const baseURL = (import.meta.env.VITE_API_BASE || "/api/v1").replace(/\/$/, "");
 let csrfToken = "";
 let bootstrapCsrfToken = "";
+let sessionGeneration = 0;
+const sessionExpiredListeners = new Set<() => void>();
+
+function assertCurrentSession(generation: number) {
+  if (generation !== sessionGeneration) throw new ApiError("会话已切换，请重新读取", 409, "stale_session");
+}
+
+export function onSessionExpired(listener: () => void) {
+  sessionExpiredListeners.add(listener);
+  return () => { sessionExpiredListeners.delete(listener); };
+}
+
+export function expireSession(generation = sessionGeneration) {
+  if (generation !== sessionGeneration) return;
+  sessionGeneration++;
+  csrfToken = "";
+  sessionExpiredListeners.forEach((listener) => listener());
+}
+
+async function sessionFetch(path: string, init: RequestInit) {
+  const generation = sessionGeneration;
+  const response = await fetch(`${baseURL}${path}`, init);
+  if (response.status === 401 && !["/auth/login", "/auth/bootstrap"].includes(path)) expireSession(generation);
+  return response;
+}
 
 export interface AuthSession {
   user: User;
@@ -93,6 +118,7 @@ export class ApiError extends Error {
 }
 
 export function setCsrfToken(token?: string) {
+  if (csrfToken !== (token || "")) sessionGeneration++;
   csrfToken = token || "";
 }
 
@@ -103,6 +129,7 @@ export function newIdempotencyKey() {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const generation = sessionGeneration;
   const method = (init.method || "GET").toUpperCase();
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
@@ -112,12 +139,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     if (!headers.has("Idempotency-Key")) headers.set("Idempotency-Key", newIdempotencyKey());
   }
 
-  const response = await fetch(`${baseURL}${path}`, {
+  const response = await sessionFetch(path, {
     ...init,
     headers,
     credentials: "include",
   });
-  if (response.status === 204) return undefined as T;
+  if (response.status === 204) { assertCurrentSession(generation); return undefined as T; }
 
   const text = await response.text();
   let body: Record<string, unknown> = {};
@@ -137,6 +164,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       typeof error === "object" ? error?.reason : undefined,
       typeof error === "object" ? error?.blocking_job_id : undefined);
   }
+  if (path !== "/auth/bootstrap") assertCurrentSession(generation);
   return body as T;
 }
 
@@ -159,7 +187,8 @@ async function responseError(response: Response) {
 }
 
 async function pollTransferChunk(path: string): Promise<TransferChunk | null> {
-  const response = await fetch(`${baseURL}${path}`, { credentials: "include", headers: { Accept: "application/octet-stream, application/json" } });
+  const generation = sessionGeneration;
+  const response = await sessionFetch(path, { credentials: "include", headers: { Accept: "application/octet-stream, application/json" } });
   if (response.status === 202) return null;
   if (response.status !== 206) throw await responseError(response);
   const blob = await response.blob();
@@ -177,6 +206,7 @@ async function pollTransferChunk(path: string): Promise<TransferChunk | null> {
     const digest = Array.from(new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", await blob.arrayBuffer())), (value) => value.toString(16).padStart(2, "0")).join("");
     if (digest !== chunkSha256.toLowerCase()) throw new ApiError("下载分块校验失败", 502, "transfer_checksum_mismatch");
   }
+  assertCurrentSession(generation);
   return { blob, offset, nextOffset, totalSize, eof, fileSha256, chunkSha256 };
 }
 
@@ -214,16 +244,19 @@ export const api = {
     return result;
   },
   bootstrapOwner: async (payload: { setup_key: string }) => {
+    const generation = ++sessionGeneration;
     const result = await request<{ user: User; csrf_token: string }>("/auth/bootstrap", {
       method: "POST",
       headers: { "X-Bootstrap-CSRF-Token": bootstrapCsrfToken },
       body: JSON.stringify(payload),
     });
+    assertCurrentSession(generation);
     bootstrapCsrfToken = "";
     setCsrfToken(result.csrf_token);
     return result;
   },
   login: async (credentials: { username: string; password: string; totp_code?: string; recovery_code?: string }) => {
+    sessionGeneration++;
     const result = await request<AuthSession>("/auth/login", {
       method: "POST",
       body: JSON.stringify(credentials),
@@ -232,12 +265,18 @@ export const api = {
     return result;
   },
   me: async () => {
-    const result = await request<AuthSession>("/auth/me");
+    const generation = sessionGeneration;
+    const result = await request<AuthSession>("/auth/me", { signal: AbortSignal.timeout(10_000) });
+    assertCurrentSession(generation);
     setCsrfToken(result.csrf_token);
     return result;
   },
-  logout: () => request<void>("/auth/logout", { method: "POST" }).finally(() => setCsrfToken()),
+  logout: () => {
+    const generation = ++sessionGeneration;
+    return request<void>("/auth/logout", { method: "POST" }).finally(() => { if (generation === sessionGeneration) setCsrfToken(); });
+  },
   completeActivation: async (newPassword: string) => {
+    sessionGeneration++;
     const result = await request<AuthSession>("/auth/activate", { method: "POST", body: JSON.stringify({ new_password: newPassword }) });
     setCsrfToken(result.csrf_token);
     return result;
@@ -257,14 +296,26 @@ export const api = {
   deleteNotificationChannel: (id: string) => request<void>(`/notification-channels/${encodeURIComponent(id)}`, { method: "DELETE" }),
   notificationDeliveries: () => list<NotificationDeliveryRecord>("/notification-deliveries"),
   retryNotificationDelivery: (id: string) => request<void>(`/notification-deliveries/${encodeURIComponent(id)}/retry`, { method: "POST" }),
-  metrics: (scope: { nodeId?: string; instanceId?: string; resolution?: "raw" | "1m" | "1h"; from?: string; to?: string }) => {
+  metrics: async (scope: { nodeId?: string; instanceId?: string; resolution?: "raw" | "1m" | "1h"; from?: string; to?: string }) => {
     const params = new URLSearchParams();
     if (scope.nodeId) params.set("node_id", scope.nodeId);
     if (scope.instanceId) params.set("instance_id", scope.instanceId);
     if (scope.resolution) params.set("resolution", scope.resolution);
     if (scope.from) params.set("from", scope.from);
     if (scope.to) params.set("to", scope.to);
-    return request<{ items: MetricPoint[]; resolution: string; from: string; to: string }>(`/metrics?${params}`);
+    const items: MetricPoint[] = [];
+    const cursors = new Set<string>();
+    for (let page = 0; page < 10; page++) {
+      const result = await request<{ items: MetricPoint[]; resolution: string; from: string; to: string; next_cursor?: string }>(`/metrics?${params}`);
+      items.push(...result.items);
+      if (!result.next_cursor) return { ...result, items };
+      if (cursors.has(result.next_cursor)) throw new ApiError("指标分页游标重复，请重试", 502, "invalid_metrics_cursor");
+      cursors.add(result.next_cursor);
+      params.set("from", result.from);
+      params.set("to", result.to);
+      params.set("cursor", result.next_cursor);
+    }
+    throw new ApiError("指标数据过多，请缩短时间范围或使用更粗的采样粒度", 413, "metrics_point_limit");
   },
 
   nodes: () => list<NodeRecord>("/nodes"),
@@ -365,7 +416,23 @@ export const api = {
     throw new ApiError("插件压缩包识别等待超时", 408, "plugin_inspection_timeout");
   },
 
-  maps: (nodeId?: string) => list<MapRecord>(`/maps${nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : ""}`),
+  maps: async (nodeId?: string) => {
+    const items: MapRecord[] = [];
+    const seen = new Set<string>();
+    const cursors = new Set<string>();
+    let cursor = "";
+    for (let page = 0; page < 50; page++) {
+      const params = new URLSearchParams();
+      if (nodeId) params.set("node_id", nodeId);
+      if (cursor) params.set("cursor", cursor);
+      const result = await request<ListResponse<MapRecord> & { next_cursor?: string }>(`/maps${params.size ? `?${params}` : ""}`);
+      for (const item of result.items || []) if (!seen.has(item.id)) { seen.add(item.id); items.push(item); }
+      if (!result.next_cursor) return { items };
+      if (cursors.has(result.next_cursor)) throw new ApiError("地图分页游标重复，请重试", 502, "invalid_map_cursor");
+      cursor = result.next_cursor; cursors.add(cursor);
+    }
+    throw new ApiError("地图数量过多，请选择具体节点后重试", 413, "map_list_limit");
+  },
   map: (id: string) => request<{ map: MapRecord }>(`/maps/${encodeURIComponent(id)}`).then((result) => result.map),
   mapImportResult: (id: string) => request<MapImportResult>(`/map-imports/${encodeURIComponent(id)}`),
   importMap: (nodeId: string, shareUrl: string, pathEncoding: MapPathEncoding = "auto") => request<{ job_id: string; idempotent_replay?: boolean }>(
@@ -388,13 +455,19 @@ export const api = {
   ),
 
   jobs: () => list<Job>("/jobs"),
-  jobList: ({ background = "include", backgroundSummary = false, limit = 100 }: {
+  jobList: ({ background = "include", backgroundSummary = false, limit = 100, status, search, cursor }: {
     background?: "include" | "exclude" | "only";
     backgroundSummary?: boolean;
     limit?: number;
+    status?: string;
+    search?: string;
+    cursor?: string;
   } = {}) => {
     const query = new URLSearchParams({ background, limit: String(limit) });
     if (backgroundSummary) query.set("background_summary", "true");
+    if (status && status !== "all") query.set("status", status);
+    if (search) query.set("q", search);
+    if (cursor) query.set("cursor", cursor);
     return request<JobListResponse>(`/jobs?${query.toString()}`);
   },
   instanceJobs: (instanceId: string, background: "include" | "exclude" | "only" = "include") => list<Job>(
@@ -408,7 +481,12 @@ export const api = {
       `/jobs/${encodeURIComponent(jobId)}/terminal-conflict/resolve`,
       { method: "POST", body: JSON.stringify({ action: "keep_control", reported_fingerprint: reportedFingerprint }) },
     ),
-  audit: (resourceId?: string) => list<AuditEvent>(`/audit${resourceId ? `?resource_id=${encodeURIComponent(resourceId)}` : ""}`),
+  audit: (resourceId?: string, cursor?: string) => {
+    const params = new URLSearchParams();
+    if (resourceId) params.set("resource_id", resourceId);
+    if (cursor) params.set("cursor", cursor);
+    return request<ListResponse<AuditEvent> & { next_cursor?: string }>(`/audit${params.size ? `?${params}` : ""}`);
+  },
   publicServers: () => list<PublicServer>("/public/servers"),
 
   players: (instanceId: string) => request<PlayerListResponse>(`/instances/${encodeURIComponent(instanceId)}/players`),
@@ -539,6 +617,7 @@ export const api = {
     { method: "DELETE", headers: expectedSha256 ? { "If-Match": `"${expectedSha256}"` } : undefined },
   ),
   notifications: () => list<NotificationRecord>("/notifications"),
+  notificationPage: (cursor = "") => request<ListResponse<NotificationRecord> & { next_cursor?: string }>(`/notifications${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
   markNotificationRead: (id: string) => request<void>(`/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
   users: () => list<User>("/users"),
   createUser: (payload: { username: string; display_name?: string; role_bindings: Array<Pick<RoleBinding, "role" | "permissions" | "scope_type" | "node_id" | "instance_id">> }) =>
@@ -551,6 +630,7 @@ export const api = {
   systemUpdates: () => request<SystemUpdateOverview>("/system/updates"),
   systemUpdate: (id: string) => request<SystemUpdateRecord>(`/system/updates/${encodeURIComponent(id)}`),
   uploadSystemUpdate: (file: File, onProgress?: (percent: number) => void) => new Promise<{ job_id: string; status: string; phase: string; target_version?: string }>((resolve, reject) => {
+    const generation = sessionGeneration;
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${baseURL}/system/updates`);
     xhr.withCredentials = true;
@@ -562,6 +642,7 @@ export const api = {
     };
     xhr.onerror = () => reject(new ApiError("升级包上传中断，请确认中心端网络连接", 0, "network_error"));
     xhr.onload = () => {
+      if (xhr.status === 401) expireSession(generation);
       let body: Record<string, unknown> = {};
       try { body = xhr.responseText ? JSON.parse(xhr.responseText) as Record<string, unknown> : {}; } catch { /* handled below */ }
       if (xhr.status < 200 || xhr.status >= 300) {
@@ -569,6 +650,7 @@ export const api = {
         reject(new ApiError(error?.message || `请求失败（${xhr.status}）`, xhr.status, error?.code));
         return;
       }
+      try { assertCurrentSession(generation); } catch (error) { reject(error); return; }
       resolve(body as { job_id: string; status: string; phase: string; target_version?: string });
     };
     const form = new FormData();

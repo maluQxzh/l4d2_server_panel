@@ -25,11 +25,18 @@ function mount() {
 }
 
 describe("仪表盘玩家统计", () => {
+  it("任务统计使用全范围摘要，不使用最近五条估算", async () => {
+    vi.mocked(api.jobList).mockResolvedValue({ items: [], summary: { active: 23, succeeded: 1000, failed: 17 } });
+    mount();
+    expect(await screen.findByText("23 个任务进行中")).toBeInTheDocument();
+    expect(screen.getByText(/17 个任务执行失败/)).toBeInTheDocument();
+    expect(api.jobList).toHaveBeenCalledWith({ background: "exclude", limit: 5 });
+  });
   beforeEach(() => {
     authState.user = { role: "owner" };
     vi.spyOn(api, "nodes").mockResolvedValue({ items: [] });
     vi.spyOn(api, "instances").mockResolvedValue({ items: instances });
-    vi.spyOn(api, "jobs").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "jobList").mockResolvedValue({ items: [] });
     vi.spyOn(api, "metrics").mockResolvedValue({ items: [], resolution: "1m", from: "2026-09-30T00:00:00Z", to: "2026-10-01T00:00:00Z" });
   });
   afterEach(() => vi.restoreAllMocks());

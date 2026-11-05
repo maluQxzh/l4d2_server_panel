@@ -55,7 +55,7 @@ function MapLibraryPage() {
   const maps = useQuery({ queryKey: ["maps", nodeFilter], queryFn: () => api.maps(nodeFilter || undefined), enabled: canReadMaps, refetchInterval: realtime.state === "live" ? liveRefreshInterval : 10_000 });
   const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.nodes, enabled: canReadNodes });
   const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: canReadInstances });
-  const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, enabled: canReadJobs, refetchInterval: canReadJobs ? 2_000 : false });
+  const jobs = useQuery({ queryKey: ["jobs", "maps"], queryFn: () => api.jobList({ status: "active", search: "map.", limit: 100 }), enabled: canReadJobs, refetchInterval: (query) => query.state.data?.items.length ? 2000 : liveRefreshInterval });
   const mapJobs = (jobs.data?.items || []).filter((job) => job.type.startsWith("map.") && !["succeeded", "failed", "canceled"].includes(job.status));
   const mapItems = useMemo(() => maps.data?.items || [], [maps.data]);
   const totals = useMemo(() => ({ size: mapDeduplicatedSize(mapItems), assignments: mapItems.reduce((value, item) => value + (item.assignments?.length || 0), 0) }), [mapItems]);

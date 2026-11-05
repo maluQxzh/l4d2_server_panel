@@ -6,13 +6,14 @@ import { App } from "./App";
 import { AuthProvider } from "./context/AuthContext";
 import { ToastProvider } from "./context/ToastContext";
 import "./styles.css";
+import { ApiError } from "./lib/api";
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 10_000,
       refetchOnWindowFocus: false,
-      retry: 1,
+      retry: (count, error) => !(error instanceof ApiError && error.status === 401) && count < 1,
     },
   },
 });

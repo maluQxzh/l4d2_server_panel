@@ -32,27 +32,8 @@ func scanMap(row scanner) (domain.Map, error) {
 }
 
 func (s *Store) ListMaps(ctx context.Context, nodeID string, limit int) ([]domain.Map, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 200
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+mapColumns+` FROM maps
-		WHERE (?1='' OR node_id=?1) ORDER BY created_at DESC,id DESC LIMIT ?2`, nodeID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]domain.Map, 0)
-	for rows.Next() {
-		item, err := scanMap(rows)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.hydrateMap(ctx, &item); err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
+	items, _, err := s.ListMapPage(ctx, nodeID, nil, nil, limit)
+	return items, err
 }
 
 func (s *Store) GetMap(ctx context.Context, id string) (domain.Map, error) {
@@ -70,111 +51,12 @@ func (s *Store) GetMap(ctx context.Context, id string) (domain.Map, error) {
 }
 
 func (s *Store) hydrateMap(ctx context.Context, item *domain.Map) error {
-	artifacts, err := s.db.QueryContext(ctx, `SELECT id,map_id,ordinal,sha256,size FROM map_artifacts WHERE map_id=?1 ORDER BY ordinal`, item.ID)
-	if err != nil {
+	items := []domain.Map{*item}
+	if err := s.hydrateMaps(ctx, items); err != nil {
 		return err
 	}
-	for artifacts.Next() {
-		var artifact domain.MapArtifact
-		if err := artifacts.Scan(&artifact.ID, &artifact.MapID, &artifact.Ordinal, &artifact.SHA256, &artifact.Size); err != nil {
-			artifacts.Close()
-			return err
-		}
-		item.Artifacts = append(item.Artifacts, artifact)
-	}
-	if err := artifacts.Close(); err != nil {
-		return err
-	}
-
-	bsps, err := s.db.QueryContext(ctx, `SELECT virtual_path,start_name,dictionary_present FROM map_bsps WHERE map_id=?1 ORDER BY virtual_path`, item.ID)
-	if err != nil {
-		return err
-	}
-	for bsps.Next() {
-		var bsp domain.MapBSP
-		if err := bsps.Scan(&bsp.VirtualPath, &bsp.StartName, &bsp.DictionaryPresent); err != nil {
-			bsps.Close()
-			return err
-		}
-		item.BSPs = append(item.BSPs, bsp)
-	}
-	if err := bsps.Close(); err != nil {
-		return err
-	}
-
-	modes, err := s.db.QueryContext(ctx, `SELECT mode.name,chapter.ordinal,chapter.bsp_name,chapter.display_name,chapter.image
-		FROM map_modes mode JOIN map_chapters chapter ON chapter.map_id=mode.map_id AND chapter.mode=mode.name
-		WHERE mode.map_id=?1 ORDER BY mode.ordinal,chapter.ordinal`, item.ID)
-	if err != nil {
-		return err
-	}
-	modeIndex := make(map[string]int)
-	for modes.Next() {
-		var modeName string
-		var chapter domain.MapChapter
-		if err := modes.Scan(&modeName, &chapter.Ordinal, &chapter.BSPName, &chapter.DisplayName, &chapter.Image); err != nil {
-			modes.Close()
-			return err
-		}
-		index, exists := modeIndex[modeName]
-		if !exists {
-			index = len(item.Modes)
-			modeIndex[modeName] = index
-			item.Modes = append(item.Modes, domain.MapMode{Name: modeName})
-		}
-		item.Modes[index].Chapters = append(item.Modes[index].Chapters, chapter)
-	}
-	if err := modes.Close(); err != nil {
-		return err
-	}
-
-	warnings, err := s.db.QueryContext(ctx, `SELECT code,message,virtual_path FROM map_warnings WHERE map_id=?1 ORDER BY id`, item.ID)
-	if err != nil {
-		return err
-	}
-	for warnings.Next() {
-		var warning domain.MapWarning
-		if err := warnings.Scan(&warning.Code, &warning.Message, &warning.VirtualPath); err != nil {
-			warnings.Close()
-			return err
-		}
-		item.Warnings = append(item.Warnings, warning)
-	}
-	if err := warnings.Close(); err != nil {
-		return err
-	}
-
-	replicas, err := s.db.QueryContext(ctx, `SELECT filesystem_id,health,verified_at FROM map_replicas WHERE map_id=?1 ORDER BY filesystem_id`, item.ID)
-	if err != nil {
-		return err
-	}
-	for replicas.Next() {
-		var replica domain.MapReplica
-		if err := replicas.Scan(&replica.FilesystemID, &replica.Health, &replica.VerifiedAt); err != nil {
-			replicas.Close()
-			return err
-		}
-		item.Replicas = append(item.Replicas, replica)
-	}
-	if err := replicas.Close(); err != nil {
-		return err
-	}
-
-	assignments, err := s.db.QueryContext(ctx, `SELECT map_id,instance_id,restart_required,created_at,updated_at
-		FROM map_assignments WHERE map_id=?1 ORDER BY instance_id`, item.ID)
-	if err != nil {
-		return err
-	}
-	for assignments.Next() {
-		var assignment domain.MapAssignment
-		if err := assignments.Scan(&assignment.MapID, &assignment.InstanceID, &assignment.RestartRequired,
-			&assignment.CreatedAt, &assignment.UpdatedAt); err != nil {
-			assignments.Close()
-			return err
-		}
-		item.Assignments = append(item.Assignments, assignment)
-	}
-	return assignments.Close()
+	*item = items[0]
+	return nil
 }
 
 func (s *Store) GetMapPoster(ctx context.Context, id string) (string, string, []byte, error) {

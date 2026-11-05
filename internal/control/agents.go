@@ -28,6 +28,9 @@ type agentConnection struct {
 	// terminalConflicts binds an operator resolution to the exact outcome
 	// fingerprint observed on this connection before a direct job_ack is sent.
 	terminalConflicts map[string]string
+	deferredUntil     map[string]time.Time
+	dispatchMu        sync.Mutex
+	dispatchAfter     jobListCursor
 }
 
 var serverConfigNativeJobTypes = map[string]bool{
@@ -62,6 +65,7 @@ type AgentHub struct {
 	conns                map[string]*agentConnection
 	preparedQueueCursors map[string]string
 	upgrader             websocket.Upgrader
+	lifecycle            map[string]*nodeLifecycleLock
 }
 
 func NewAgentHub(store *Store, events *EventBroker, logger *slog.Logger, masterKey []byte) *AgentHub {
@@ -106,6 +110,8 @@ func (h *AgentHub) Supports(nodeID, capability string) bool {
 }
 
 func (h *AgentHub) Disconnect(nodeID string) {
+	unlock := h.lockNodeLifecycle(nodeID)
+	defer unlock()
 	h.mu.Lock()
 	client := h.conns[nodeID]
 	delete(h.conns, nodeID)
@@ -160,27 +166,18 @@ func (h *AgentHub) Serve(node domain.Node, remoteAddress string, w http.Response
 		return
 	}
 	client := &agentConnection{conn: conn, ownership: make(map[string]time.Time), sent: make(map[string]struct{}), canceled: make(map[string]struct{}), capabilities: make(map[string]struct{}), jobUpdates: make(map[string]acceptedJobUpdate), terminalConflicts: make(map[string]string)}
+	unlock := h.lockNodeLifecycle(node.ID)
 	h.mu.Lock()
-	if old := h.conns[node.ID]; old != nil {
-		_ = old.conn.Close()
-	}
+	old := h.conns[node.ID]
 	h.conns[node.ID] = client
 	h.mu.Unlock()
-	defer func() {
-		_ = conn.Close()
-		h.mu.Lock()
-		if h.conns[node.ID] == client {
-			delete(h.conns, node.ID)
-			delete(h.preparedQueueCursors, node.ID)
-			_ = h.store.SetNodeOffline(context.Background(), node.ID)
-			_ = h.store.CreateNotification(context.Background(), "critical", "node.offline", "Node offline",
-				node.Name+" disconnected from the control plane", node.ID, nil)
-			_, _ = h.events.Publish(context.Background(), Event{Type: "node.offline", ResourceType: "node", ResourceID: node.ID, Data: map[string]any{"node_id": node.ID}}, true)
-		}
-		h.mu.Unlock()
-	}()
+	if old != nil {
+		_ = old.conn.Close()
+	}
 	_ = h.store.SetNodeConnected(r.Context(), node.ID, remoteAddress, node.AgentVersion)
 	_, _ = h.events.Publish(r.Context(), Event{Type: "node.online", ResourceType: "node", ResourceID: node.ID, Data: map[string]any{"node_id": node.ID}}, true)
+	unlock()
+	defer h.disconnectSession(node, client)
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -277,6 +274,36 @@ func agentSessionFatal(err error) error {
 
 func (h *AgentHub) handleEnvelope(ctx context.Context, node domain.Node, envelope protocol.Envelope) error {
 	switch envelope.Type {
+	case protocol.TypeJobDeferred:
+		if len(envelope.Payload) > 1024 || envelope.JobID == "" || len(envelope.JobID) > 200 || !h.Supports(node.ID, protocol.CapabilityBoundedJobAdmissionV1) {
+			return ErrUnauthorized
+		}
+		job, err := h.store.GetJob(ctx, envelope.JobID)
+		if err != nil {
+			return err
+		}
+		if job.NodeID != node.ID {
+			return ErrUnauthorized
+		}
+		if job.Status != domain.JobDispatched {
+			return nil
+		}
+		h.mu.RLock()
+		client := h.conns[node.ID]
+		h.mu.RUnlock()
+		if client != nil {
+			client.mu.Lock()
+			defer client.mu.Unlock()
+			if client.deferredUntil == nil {
+				client.deferredUntil = make(map[string]time.Time)
+			}
+			if _, exists := client.deferredUntil[job.ID]; !exists && len(client.deferredUntil) >= 32 {
+				return ErrConflict
+			}
+			delete(client.sent, job.ID)
+			client.deferredUntil[job.ID] = time.Now().Add(2 * time.Second)
+		}
+		return nil
 	case protocol.TypeHello:
 		var hello protocol.Hello
 		if err := json.Unmarshal(envelope.Payload, &hello); err != nil {
@@ -691,6 +718,7 @@ func (h *AgentHub) forgetCompleted(nodeID, jobID string) {
 		delete(client.sent, jobID)
 		delete(client.canceled, jobID)
 		delete(client.jobUpdates, jobID)
+		delete(client.deferredUntil, jobID)
 		client.mu.Unlock()
 	}
 }
@@ -703,10 +731,24 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 	if client == nil {
 		return
 	}
-	jobs, err := h.store.JobsForDispatch(ctx, nodeID, 20)
+	if !client.dispatchMu.TryLock() {
+		return
+	}
+	defer client.dispatchMu.Unlock()
+	jobs, err := h.store.jobsForDispatchAfter(ctx, nodeID, 20, client.dispatchAfter)
 	if err != nil {
 		h.log.Error("load dispatch jobs", "node_id", nodeID, "error", err)
 		return
+	}
+	ordinary := 0
+	for _, job := range jobs {
+		if job.Status != domain.JobCanceled && !isAutomaticMaintenanceUpdate(job) {
+			ordinary++
+			client.dispatchAfter = jobListCursor{CreatedAt: job.CreatedAt, ID: job.ID}
+		}
+	}
+	if ordinary < 20 {
+		client.dispatchAfter = jobListCursor{}
 	}
 	for _, job := range jobs {
 		if job.Status == domain.JobCanceled {
@@ -719,6 +761,14 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		}
 		client.mu.Lock()
 		_, sent := client.sent[job.ID]
+		deferred := time.Now().Before(client.deferredUntil[job.ID])
+		_, admissionRetry := client.capabilities[protocol.CapabilityBoundedJobAdmissionV1]
+		// Hello may replace capabilities on the reader goroutine. Capture the
+		// less common gates under the same lock as the ordinary gate booleans.
+		capabilities := make(map[string]struct{}, len(client.capabilities))
+		for capability := range client.capabilities {
+			capabilities[capability] = struct{}{}
+		}
 		_, canceled := client.canceled[job.ID]
 		_, runtimeEnvironmentSupported := client.capabilities["runtime_environment_v1"]
 		_, absoluteGamePathsSupported := client.capabilities["absolute_game_paths"]
@@ -744,7 +794,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 		_, mapImportV2Supported := client.capabilities["map_import_v2"]
 		_, mapHotReloadSupported := client.capabilities["map_hot_reload_v1"]
 		client.mu.Unlock()
-		if sent || canceled {
+		if sent || canceled || deferred {
 			continue
 		}
 		if environmentJobTypes[job.Type] && !runtimeEnvironmentSupported {
@@ -778,22 +828,22 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 			continue
 		}
 		if (job.Type == "prepare_package" || job.Type == "discard_prepared_package" || stringFromAny(job.Payload["prepared_package_id"]) != "") && stringFromAny(job.Payload["kind"]) == domain.PreparedWorkshopKind {
-			if _, ok := client.capabilities[protocol.CapabilityPreparedWorkshopV1]; !ok {
+			if _, ok := capabilities[protocol.CapabilityPreparedWorkshopV1]; !ok {
 				continue
 			}
 		}
 		if (job.Type == "prepare_package" || job.Type == "discard_prepared_package" || stringFromAny(job.Payload["prepared_package_id"]) != "") && domain.PreparedExtensionKind(stringFromAny(job.Payload["kind"])) {
-			if _, ok := client.capabilities[protocol.CapabilityPreparedExtensionsV1]; !ok {
+			if _, ok := capabilities[protocol.CapabilityPreparedExtensionsV1]; !ok {
 				continue
 			}
 		}
 		if (job.Type == "prepare_package" || job.Type == "discard_prepared_package" || stringFromAny(job.Payload["prepared_package_id"]) != "") && boolFromAny(job.Payload["official"]) {
-			if _, ok := client.capabilities[protocol.CapabilityPreparedOfficialExtensionsV1]; !ok {
+			if _, ok := capabilities[protocol.CapabilityPreparedOfficialExtensionsV1]; !ok {
 				continue
 			}
 		}
 		if stringFromAny(job.Payload["smart_preview_id"]) != "" {
-			if _, ok := client.capabilities[protocol.CapabilityPreparedSmartPluginsV1]; !ok {
+			if _, ok := capabilities[protocol.CapabilityPreparedSmartPluginsV1]; !ok {
 				continue
 			}
 		}
@@ -818,7 +868,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 			continue
 		}
 		if smartPluginArchiveTask && smartPluginPreserveRequested(job.Payload) {
-			if _, ok := client.capabilities[protocol.CapabilitySmartPluginPreserveV1]; !ok {
+			if _, ok := capabilities[protocol.CapabilitySmartPluginPreserveV1]; !ok {
 				continue
 			}
 		}
@@ -880,7 +930,7 @@ func (h *AgentHub) Dispatch(ctx context.Context, nodeID string) {
 				}
 			}
 		}
-		envelope, err := protocol.NewEnvelope(protocol.TypeJob, nodeID, job.ID, protocol.JobCommand{Job: outbound})
+		envelope, err := protocol.NewEnvelope(protocol.TypeJob, nodeID, job.ID, protocol.JobCommand{Job: outbound, AdmissionRetry: admissionRetry})
 		if err != nil {
 			return
 		}

@@ -357,6 +357,8 @@ export interface JobBackgroundSummary {
 
 export interface JobListResponse extends ListResponse<Job> {
   background_summary?: JobBackgroundSummary;
+  next_cursor?: string;
+  summary?: { active: number; succeeded: number; failed: number };
 }
 
 export interface AuditEvent {

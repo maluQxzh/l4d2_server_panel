@@ -1,26 +1,98 @@
-# Go
+# Go build outputs and local workspaces
 /bin/
-/coverage/
+/dist/
+/control
+/control.exe
+/agent
+/agent.exe
+/l4d2panel-control
+/l4d2panel-control.exe
+/l4d2panel-agent
+/l4d2panel-agent.exe
+/l4d2panel-agent-linux-*
+/l4d2panel-agent-windows-*
+/l4d2panel-control-*.tar.gz*
+/l4d2panel-center-*.zip*
 *.test
+*.test.exe
+go.work
+go.work.sum
 
-# Web
-/web/node_modules/
+# Web dependencies, build output and caches
+node_modules/
 /web/dist/
+.vite/
+.vite-temp/
+*.tsbuildinfo
+
+# Web assets copied by the build; retain the source fallback page
+/internal/control/static/*
+!/internal/control/static/index.html
+
+# Test reports and coverage
+/coverage/
+/web/coverage/
+coverage.out
+*.coverprofile
 /web/playwright-report/
 /web/test-results/
+/web/blob-report/
+/web/playwright/.cache/
+/web/playwright/.auth/
+/web/.nyc_output/
 
-# Runtime
-/.env
+# Local environment files; keep sanitized examples at any depth
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Agent configurations can contain enrollment tokens and node credentials
+agent.json
+agent.*.json
+agent.yaml
+agent.*.yaml
+agent.yml
+agent.*.yml
+!agent.example.json
+!agent.*.example.json
+!agent.example.yaml
+!agent.*.example.yaml
+!agent.example.yml
+!agent.*.example.yml
+
+# Local Control configuration, encryption keys and signing credentials
+control.json
+control-master.key
+/secrets/
+*.key
+*.pem
+*.pfx
+*.p12
+
+# Runtime data, uploads, updates, backups and temporary files
 /data/
+/spool/
+/updates/
+/backups/
+/logs/
 /tmp/
-/dist/
+/temp/
 *.log
+*.log.*
+*.pid
+*.pid.lock
+
+# SQLite databases, sidecars, locks and backups (SQL migrations stay tracked)
+*.db
+*.db-*
+*.db.lock
+*.db.bak
+*.db.backup
 *.sqlite
 *.sqlite3
-*.sqlite-wal
-*.sqlite-shm
-*.sqlite3-wal
-*.sqlite3-shm
+*.sqlite-*
+*.sqlite3-*
 *.sqlite.lock
 *.sqlite3.lock
 *.sqlite.bak
@@ -31,11 +103,17 @@
 # Editors / OS
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
 .DS_Store
+._*
 Thumbs.db
+Desktop.ini
 
-# Local map tools
-/l4d2_Map_Tools/
+# Local map tools; retain the tracked production notice
+/l4d2_Map_Tools/*
+!/l4d2_Map_Tools/PRODUCTION-NOTICE.md
 
 # Local plugin recognition corpus
 /pluginshow/

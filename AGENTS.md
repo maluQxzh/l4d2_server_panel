@@ -24,7 +24,7 @@ Read `README.md` before substantial work. For protocol, persistence, authorizati
 
 ## Required toolchain
 
-- Go 1.25.12 or a later security patch in the 1.25 line.
+- Go 1.26.10 or a later security patch in the 1.26 line.
 - Node.js 24 with `npm ci` based on `web/package-lock.json`.
 - No external database is required. SQLite integration and fleet-acceptance tests use isolated local files.
 - Docker Engine 24+ on Linux or Docker Desktop on macOS, with Docker Compose v2, for production-style validation.

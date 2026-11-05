@@ -48,6 +48,7 @@ type Agent struct {
 	activeJobs     map[string]context.CancelFunc
 	pendingCancels map[string]bool
 	recoveryOnce   sync.Once
+	jobs           *jobScheduler
 }
 
 func New(configPath string, config *Config, logger *log.Logger) (*Agent, error) {
@@ -106,7 +107,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	defer a.Close()
 	a.logger.Printf("starting agent version=%s os=%s arch=%s", version.Version, runtime.GOOS, runtime.GOARCH)
 	defer a.logger.Printf("agent stopped")
+	ctx, stopJobs := context.WithCancel(ctx)
 	a.ctx = ctx
+	a.jobs = newJobScheduler(ctx, nodeJobWorkers, nodeJobQueueSize, a.handleJob, a.acknowledgeJob)
+	defer func() { stopJobs(); a.jobs.wg.Wait() }()
 	a.recoveryOnce.Do(a.recoverInstances)
 	cleanupCtx, stopCleanup := context.WithCancel(ctx)
 	cleanupDone := make(chan struct{})
@@ -263,7 +267,7 @@ func (a *Agent) runSession(ctx context.Context) error {
 	// Large browser-uploaded packages are Base64 job payloads, so the Agent's
 	// inbound ceiling must include their JSON envelope overhead.
 	conn.SetReadLimit(protocol.MaxPackageUploadEnvelopeBytes)
-	hello, err := protocol.NewEnvelope(protocol.TypeHello, a.config.NodeID, "", protocol.Hello{Name: a.config.NodeName, OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.Version, InstanceRoot: a.config.InstanceRoots[0], Capabilities: []string{"absolute_game_paths", "backup_delete_v1", "backup_upload", "check_update", "component_package_delete_v1", "discover_instances", "game_installation_delete_v1", "map_hot_reload_v1", "map_import_v2", "map_library_v1", "package_delete_v1", "package_rename_v1", "package_scan_v1", "plugin_backup_7z_v1", "purge_quarantine", "qq_flash_file_v1", "qq_flash_package_v1", "qq_flash_plugin_packages_v1", "qq_flash_vpk_packages_v2", "runtime_environment_v1", "server_cfg_native", "smart_plugin_archive_v1", protocol.CapabilitySmartPluginArchiveV2, protocol.CapabilitySmartPluginPreserveV1, "smart_plugin_file_edit_v1", protocol.CapabilitySameSessionTerminalRetryV1, protocol.CapabilityTerminalConflictV1, protocol.CapabilityPreparedPackagesV1, protocol.CapabilityPreparedQQFlashV1, protocol.CapabilityPreparedVPKBundlesV1, protocol.CapabilityPreparedWorkshopV1, protocol.CapabilityPreparedExtensionsV1, protocol.CapabilityPreparedOfficialExtensionsV1, protocol.CapabilityPreparedSmartPluginsV1}})
+	hello, err := protocol.NewEnvelope(protocol.TypeHello, a.config.NodeID, "", protocol.Hello{Name: a.config.NodeName, OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: version.Version, InstanceRoot: a.config.InstanceRoots[0], Capabilities: []string{protocol.CapabilityBoundedJobAdmissionV1, "absolute_game_paths", "backup_delete_v1", "backup_upload", "check_update", "component_package_delete_v1", "discover_instances", "game_installation_delete_v1", "map_hot_reload_v1", "map_import_v2", "map_library_v1", "package_delete_v1", "package_rename_v1", "package_scan_v1", "plugin_backup_7z_v1", "purge_quarantine", "qq_flash_file_v1", "qq_flash_package_v1", "qq_flash_plugin_packages_v1", "qq_flash_vpk_packages_v2", "runtime_environment_v1", "server_cfg_native", "smart_plugin_archive_v1", protocol.CapabilitySmartPluginArchiveV2, protocol.CapabilitySmartPluginPreserveV1, "smart_plugin_file_edit_v1", protocol.CapabilitySameSessionTerminalRetryV1, protocol.CapabilityTerminalConflictV1, protocol.CapabilityPreparedPackagesV1, protocol.CapabilityPreparedQQFlashV1, protocol.CapabilityPreparedVPKBundlesV1, protocol.CapabilityPreparedWorkshopV1, protocol.CapabilityPreparedExtensionsV1, protocol.CapabilityPreparedOfficialExtensionsV1, protocol.CapabilityPreparedSmartPluginsV1}})
 	if err != nil {
 		return err
 	}
@@ -313,7 +317,17 @@ func (a *Agent) runSession(ctx context.Context) error {
 			if command.Job.ID == "" {
 				command.Job.ID = envelope.JobID
 			}
-			go a.handleJob(command.Job)
+			if err := a.jobs.submit(command.Job, len(envelope.Payload)); err != nil {
+				active, queued, bytes := a.jobs.stats()
+				a.logger.Printf("job admission deferred: active=%d queued=%d payload_bytes=%d: %v", active, queued, bytes, err)
+				if errors.Is(err, errJobQueueFull) && command.AdmissionRetry {
+					deferred, encodeErr := protocol.NewEnvelope(protocol.TypeJobDeferred, a.config.NodeID, command.Job.ID, nil)
+					if encodeErr == nil && a.send(deferred) {
+						continue
+					}
+				}
+				return err
+			}
 		case protocol.TypeJobCancel:
 			if envelope.JobID == "" {
 				a.logger.Printf("ignoring job cancellation without job_id")
@@ -325,24 +339,10 @@ func (a *Agent) runSession(ctx context.Context) error {
 				a.logger.Printf("ignoring job acknowledgement without job_id")
 				continue
 			}
-			if err := a.journal.Acknowledge(envelope.JobID); err != nil {
-				a.logger.Printf("persist job acknowledgement for %s: %v", envelope.JobID, err)
-				a.allowTerminalReplay(envelope.JobID)
-				a.wakeTerminalReplay()
-			} else {
-				a.allowTerminalReplay(envelope.JobID)
-				// Refill the bounded replay window on this same connection. Without
-				// this signal, entries beyond the first page could remain terminal
-				// locally while Control keeps their jobs in running forever.
-				a.wakeTerminalReplay()
-				// Unknown-job cancellations use the same acknowledgement path but
-				// have no journal row. Once Control durably accepts that terminal
-				// outcome it will never dispatch the job, so the in-memory late-send
-				// guard can be released instead of growing for the Agent lifetime.
-				a.activeMu.Lock()
-				delete(a.pendingCancels, envelope.JobID)
-				a.activeMu.Unlock()
+			if a.jobs != nil && a.jobs.deferAcknowledgement(envelope.JobID) {
+				continue
 			}
+			a.acknowledgeJob(envelope.JobID)
 		case protocol.TypeJobConflict:
 			if envelope.JobID == "" || len(envelope.JobID) > 200 {
 				a.logger.Printf("ignoring terminal conflict advisory with invalid job_id")
@@ -854,4 +854,25 @@ func (p *journalProgress) Value() int { p.mu.Lock(); defer p.mu.Unlock(); return
 
 func sanitizeJobError(err error) string {
 	return protocol.TruncateJobUpdateMessage(redactEmbeddedURLSecrets(err.Error()))
+}
+
+func (a *Agent) acknowledgeJob(jobID string) {
+	if err := a.journal.Acknowledge(jobID); err != nil {
+		a.logger.Printf("persist job acknowledgement for %s: %v", jobID, err)
+		a.allowTerminalReplay(jobID)
+		a.wakeTerminalReplay()
+	} else {
+		a.allowTerminalReplay(jobID)
+		// Refill the bounded replay window on this same connection. Without
+		// this signal, entries beyond the first page could remain terminal
+		// locally while Control keeps their jobs in running forever.
+		a.wakeTerminalReplay()
+		// Unknown-job cancellations use the same acknowledgement path but
+		// have no journal row. Once Control durably accepts that terminal
+		// outcome it will never dispatch the job, so the in-memory late-send
+		// guard can be released instead of growing for the Agent lifetime.
+		a.activeMu.Lock()
+		delete(a.pendingCancels, jobID)
+		a.activeMu.Unlock()
+	}
 }

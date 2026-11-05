@@ -40,6 +40,23 @@ func TestNewEnvelope(t *testing.T) {
 	}
 }
 
+func TestAdmissionRetryIsOmittedUnlessNegotiated(t *testing.T) {
+	legacy, err := json.Marshal(JobCommand{Job: domain.Job{ID: "job"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(legacy), "admission_retry") {
+		t.Fatal("old command received new field")
+	}
+	current, err := json.Marshal(JobCommand{Job: domain.Job{ID: "job"}, AdmissionRetry: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(current), `"admission_retry":true`) {
+		t.Fatal("negotiated command lost retry flag")
+	}
+}
+
 func TestCompatibleVersionWindow(t *testing.T) {
 	for _, value := range []string{Version, PreviousVersion} {
 		if !CompatibleVersion(value) {

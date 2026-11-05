@@ -19,10 +19,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.10'
           cache: true
       - name: Test
-        run: go test -race ./...
+        run: go test -race -timeout=20m ./...
       - name: Vet
         run: go vet ./...
       - name: Reachable vulnerability scan
@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.10'
       - name: Test agent on Debian
         run: go test ./internal/agent/...
 
@@ -48,7 +48,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.10'
           cache: true
       - name: Test migrations, credentials, and job locking
         run: go test ./internal/control -run TestSQLiteMigrationsAndCredentialLifecycle -count=1
@@ -70,7 +70,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.10'
           cache: true
       - name: Cross-build supported Control and Agent
         env:
@@ -87,7 +87,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.10'
           cache: true
       - uses: actions/setup-node@v4
         with:
@@ -174,13 +174,13 @@ jobs:
           printf '%s' "$setup_key" | grep -Eq '^l4d2p_setup_[A-Za-z0-9_-]{43}$'
           docker compose exec -T app wget -qO- http://127.0.0.1:19090/api/v1/auth/bootstrap | grep -q '"key_configured":true'
           unset setup_key
-          docker compose exec -T app test -s /app/data/l4d2panel.sqlite3
+          docker compose exec -T --user panel app test -s /app/data/l4d2panel.sqlite3
           docker compose exec -T app test -S /var/run/docker.sock
           docker compose exec -T app sh -c 'test "$(stat -c "%u:%g" /app/updates)" = "100:101"'
           docker compose exec -T app sh -c "grep -Eq '^Uid:[[:space:]]+100[[:space:]]+100[[:space:]]+100[[:space:]]+100$' /proc/1/status"
           docker compose exec -T app sh -c "grep -Eq '^CapEff:[[:space:]]+0+$' /proc/1/status"
-          test "$(docker compose exec -T app stat -c '%a' /app/data/control-master.key)" = 600
-          master_key_hash_before="$(docker compose exec -T app sha256sum /app/data/control-master.key | awk '{print $1}')"
+          test "$(docker compose exec -T --user panel app stat -c '%a' /app/data/control-master.key)" = 600
+          master_key_hash_before="$(docker compose exec -T --user panel app sha256sum /app/data/control-master.key | awk '{print $1}')"
           docker compose stop app
           doctor=$(docker compose run --rm --no-deps app doctor)
           echo "$doctor" | grep -q '"database_engine":"sqlite"'
@@ -191,7 +191,7 @@ jobs:
             if [ "$attempt" = 30 ]; then docker compose logs app; exit 1; fi
             sleep 2
           done
-          master_key_hash_after="$(docker compose exec -T app sha256sum /app/data/control-master.key | awk '{print $1}')"
+          master_key_hash_after="$(docker compose exec -T --user panel app sha256sum /app/data/control-master.key | awk '{print $1}')"
           test "$master_key_hash_before" = "$master_key_hash_after"
           docker compose exec -T app wget -qO- http://127.0.0.1:19090/api/v1/auth/bootstrap | grep -q '"key_configured":true'
           docker compose down

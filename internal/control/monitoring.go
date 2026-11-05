@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +45,19 @@ type metricQuery struct {
 	Resolution string
 	From       time.Time
 	To         time.Time
+	Cursor     *metricCursor
+}
+
+type metricCursor struct {
+	At            time.Time `json:"at"`
+	Node          string    `json:"node"`
+	Instance      string    `json:"instance"`
+	ID            int64     `json:"id"`
+	From          time.Time `json:"from"`
+	To            time.Time `json:"to"`
+	Resolution    string    `json:"resolution"`
+	ScopeNode     string    `json:"scope_node"`
+	ScopeInstance string    `json:"scope_instance"`
 }
 
 func parseMetricQuery(values url.Values, now time.Time) (metricQuery, error) {
@@ -94,6 +108,27 @@ func parseMetricQuery(values url.Values, now time.Time) (metricQuery, error) {
 		}
 		query.From = query.From.UTC()
 	}
+	if raw := values.Get("cursor"); raw != "" {
+		if len(raw) > 2048 {
+			return metricQuery{}, errors.New("invalid metrics cursor")
+		}
+		data, err := base64.RawURLEncoding.DecodeString(raw)
+		var cursor metricCursor
+		if err != nil || json.Unmarshal(data, &cursor) != nil || cursor.At.IsZero() || len(cursor.Node) > 128 || len(cursor.Instance) > 128 || cursor.ID < 0 ||
+			cursor.ScopeNode != query.NodeID || cursor.ScopeInstance != query.InstanceID || cursor.Resolution != query.Resolution {
+			return metricQuery{}, errors.New("invalid metrics cursor")
+		}
+		if values.Get("from") == "" {
+			query.From = cursor.From
+		}
+		if values.Get("to") == "" {
+			query.To = cursor.To
+		}
+		if !query.From.Equal(cursor.From) || !query.To.Equal(cursor.To) || cursor.At.Before(query.From) || cursor.At.After(query.To) {
+			return metricQuery{}, errors.New("metrics cursor does not match range")
+		}
+		query.Cursor = &cursor
+	}
 	if !query.From.Before(query.To) {
 		return metricQuery{}, errors.New("from must be before to")
 	}
@@ -124,48 +159,71 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		writeTokenScopeDenied(w)
 		return
 	}
-	items, err := s.store.Metrics(r.Context(), query)
+	items, next, err := s.store.Metrics(r.Context(), query)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items":      items,
-		"resolution": query.Resolution,
-		"from":       query.From,
-		"to":         query.To,
+		"items":       items,
+		"resolution":  query.Resolution,
+		"from":        query.From,
+		"to":          query.To,
+		"next_cursor": next,
+		"has_more":    next != "",
 	})
 }
 
-func (s *Store) Metrics(ctx context.Context, query metricQuery) ([]MetricPoint, error) {
-	table, timestamp, sampleCount := "metrics", "collected_at", "1"
+func metricStatement(query metricQuery) (string, []any) {
+	table, timestamp, sampleCount, rowID := "metrics", "collected_at", "1", "id"
 	if query.Resolution == metricResolutionMinute {
-		table, timestamp, sampleCount = "metrics_1m", "bucket", "sample_count"
+		table, timestamp, sampleCount, rowID = "metrics_1m", "bucket", "sample_count", "0"
 	} else if query.Resolution == metricResolutionHour {
-		table, timestamp, sampleCount = "metrics_1h", "bucket", "sample_count"
+		table, timestamp, sampleCount, rowID = "metrics_1h", "bucket", "sample_count", "0"
 	}
 	// table/timestamp/sampleCount are selected only from the closed enum above;
 	// all caller-provided values remain parameters.
-	statement := `SELECT node_id,COALESCE(instance_id,''),` + timestamp + `,
-		cpu_percent,memory_used,memory_total,disk_used,disk_total,network_rx,network_tx,players,` + sampleCount + `
-		FROM ` + table + ` WHERE (?1 IS NULL OR node_id=?1)
-		AND (?2 IS NULL OR instance_id=?2) AND ` + timestamp + ` >= ?3 AND ` + timestamp + ` <= ?4
-		ORDER BY ` + timestamp + `,node_id,instance_id NULLS FIRST LIMIT 10000`
-	rows, err := s.db.QueryContext(ctx, statement, nullableUUID(query.NodeID), nullableUUID(query.InstanceID), query.From, query.To)
+	args := []any{query.From, query.To}
+	where := ` WHERE ` + timestamp + `>=?1 AND ` + timestamp + `<=?2`
+	if query.NodeID != "" {
+		args = append(args, query.NodeID)
+		where += fmt.Sprintf(` AND node_id=?%d`, len(args))
+	}
+	if query.InstanceID != "" {
+		args = append(args, query.InstanceID)
+		where += fmt.Sprintf(` AND instance_id=?%d`, len(args))
+	}
+	if c := query.Cursor; c != nil {
+		args = append(args, c.At, c.Node, c.Instance, c.ID)
+		where += fmt.Sprintf(` AND (%s,node_id,COALESCE(instance_id,''),%s)>(?%d,?%d,?%d,?%d)`, timestamp, rowID, len(args)-3, len(args)-2, len(args)-1, len(args))
+	}
+	statement := `SELECT node_id,COALESCE(instance_id,''),` + timestamp + `,cpu_percent,memory_used,memory_total,disk_used,disk_total,network_rx,network_tx,players,` + sampleCount + `,` + rowID + ` AS sample_id FROM ` + table + where + ` ORDER BY ` + timestamp + `,node_id,COALESCE(instance_id,''),sample_id LIMIT 10001`
+	return statement, args
+}
+
+func (s *Store) Metrics(ctx context.Context, query metricQuery) ([]MetricPoint, string, error) {
+	statement, args := metricStatement(query)
+	rows, err := s.db.QueryContext(ctx, statement, args...)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 	items := make([]MetricPoint, 0)
+	var lastID int64
 	for rows.Next() {
+		if len(items) == 10000 {
+			last := items[len(items)-1]
+			raw, _ := json.Marshal(metricCursor{At: last.CollectedAt, Node: last.NodeID, Instance: last.InstanceID, ID: lastID, From: query.From, To: query.To, Resolution: query.Resolution, ScopeNode: query.NodeID, ScopeInstance: query.InstanceID})
+			return items, base64.RawURLEncoding.EncodeToString(raw), nil
+		}
 		var item MetricPoint
 		if err := rows.Scan(&item.NodeID, &item.InstanceID, &item.CollectedAt, &item.CPUPercent, &item.MemoryUsed,
-			&item.MemoryTotal, &item.DiskUsed, &item.DiskTotal, &item.NetworkRx, &item.NetworkTx, &item.Players, &item.SampleCount); err != nil {
-			return nil, err
+			&item.MemoryTotal, &item.DiskUsed, &item.DiskTotal, &item.NetworkRx, &item.NetworkTx, &item.Players, &item.SampleCount, &lastID); err != nil {
+			return nil, "", err
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	return items, "", rows.Err()
 }
 
 // AggregateMetrics incrementally revisits only the newest rollup window. The
@@ -179,13 +237,13 @@ func (s *Store) AggregateMetrics(ctx context.Context) error {
 	}
 	defer tx.Rollback()
 	if _, err = tx.ExecContext(ctx, `WITH boundary AS (
-		SELECT COALESCE(max(bucket)-120000000,?1) AS from_time FROM metrics_1m
+		SELECT COALESCE(max(bucket)-?2,?1) AS from_time FROM metrics_1m
 	), source AS (
 		SELECT node_id,instance_id,(CAST(collected_at AS INTEGER)/60000000)*60000000 AS bucket,
 			avg(cpu_percent) AS cpu_percent,avg(memory_used) AS memory_used,max(memory_total) AS memory_total,
 			avg(disk_used) AS disk_used,max(disk_total) AS disk_total,max(network_rx) AS network_rx,
 			max(network_tx) AS network_tx,avg(players) AS players,count(*) AS sample_count
-		FROM metrics,boundary WHERE collected_at>=boundary.from_time
+		FROM metrics INDEXED BY metrics_time_idx,boundary WHERE collected_at>=boundary.from_time
 		GROUP BY node_id,instance_id,(CAST(collected_at AS INTEGER)/60000000)*60000000
 	)
 	INSERT INTO metrics_1m(node_id,instance_id,bucket,cpu_percent,memory_used,memory_total,disk_used,disk_total,
@@ -195,7 +253,7 @@ func (s *Store) AggregateMetrics(ctx context.Context) error {
 	ON CONFLICT DO UPDATE SET
 		cpu_percent=EXCLUDED.cpu_percent,memory_used=EXCLUDED.memory_used,memory_total=EXCLUDED.memory_total,
 		disk_used=EXCLUDED.disk_used,disk_total=EXCLUDED.disk_total,network_rx=EXCLUDED.network_rx,
-		network_tx=EXCLUDED.network_tx,players=EXCLUDED.players,sample_count=EXCLUDED.sample_count`, now.Add(-30*24*time.Hour)); err != nil {
+		network_tx=EXCLUDED.network_tx,players=EXCLUDED.players,sample_count=EXCLUDED.sample_count`, now.Add(-30*24*time.Hour), (agentObservationPastWindow + agentObservationFutureWindow + time.Minute).Microseconds()); err != nil {
 		return fmt.Errorf("aggregate one-minute metrics: %w", err)
 	}
 	if _, err = tx.ExecContext(ctx, `WITH boundary AS (
@@ -207,7 +265,7 @@ func (s *Store) AggregateMetrics(ctx context.Context) error {
 			(sum(disk_used*sample_count)/NULLIF(sum(sample_count),0)) AS disk_used,max(disk_total) AS disk_total,
 			max(network_rx) AS network_rx,max(network_tx) AS network_tx,
 			(sum(players*sample_count)/NULLIF(sum(sample_count),0)) AS players,sum(sample_count) AS sample_count
-		FROM metrics_1m,boundary WHERE bucket>=boundary.from_time
+		FROM metrics_1m INDEXED BY metrics_1m_time_idx,boundary WHERE bucket>=boundary.from_time
 		GROUP BY node_id,instance_id,(CAST(bucket AS INTEGER)/3600000000)*3600000000
 	)
 	INSERT INTO metrics_1h(node_id,instance_id,bucket,cpu_percent,memory_used,memory_total,disk_used,disk_total,

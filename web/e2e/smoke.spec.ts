@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
+  await json(page, "**/api/v1/**", { error: { code: "not_implemented", message: "测试未配置此接口" } }, 501);
+  await json(page, "**/api/v1/auth/me", { error: { code: "unauthorized" } }, 401);
   await page.routeWebSocket("**/api/v1/events**", () => undefined);
   await page.route("**/api/v1/auth/bootstrap", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify({ required: false, key_configured: false }),
@@ -16,7 +18,7 @@ const owner = {
   created_at: "2026-07-31T00:00:00Z",
 };
 
-async function json(page: Page, pattern: string, body: unknown, status = 200) {
+async function json(page: Page, pattern: string | RegExp, body: unknown, status = 200) {
   await page.route(pattern, (route) => route.fulfill({
     status,
     contentType: "application/json",
@@ -48,7 +50,7 @@ test("首次启动通过初始化密钥创建首个所有者", async ({ page }) 
   await json(page, "**/api/v1/nodes", { items: [] });
   await json(page, "**/api/v1/instances", { items: [] });
   await json(page, "**/api/v1/metrics**", { items: [], resolution: "1m" });
-  await json(page, "**/api/v1/jobs", { items: [] });
+  await json(page, /\/api\/v1\/jobs(?:\?.*)?$/, { items: [] });
   await json(page, "**/api/v1/audit**", { items: [] });
   await json(page, "**/api/v1/notifications", { items: [] });
   await json(page, "**/api/v1/users", { items: [{ ...owner, totp_enabled: false, bootstrap_owner: true, role_bindings: [{ id: "binding-owner", user_id: owner.id, role: "owner", scope_type: "global" }] }] });
@@ -137,7 +139,7 @@ test("管理员登录后进入真实数据仪表盘", async ({ page }) => {
     started_at: "2026-07-31T00:00:00Z", created_at: "2026-07-30T00:00:00Z", updated_at: "2026-07-31T00:00:00Z",
   }] });
   await json(page, "**/api/v1/metrics**", { items: [], resolution: "1m" });
-  await json(page, "**/api/v1/jobs", { items: [] });
+  await json(page, /\/api\/v1\/jobs(?:\?.*)?$/, { items: [] });
   await json(page, "**/api/v1/audit**", { items: [] });
   await json(page, "**/api/v1/notifications", { items: [] });
 
@@ -159,7 +161,7 @@ test("管理员登录后进入真实数据仪表盘", async ({ page }) => {
 test("集群当前玩家汇总全部实例，与单实例历史曲线明确区分", async ({ page }, testInfo) => {
   await json(page, "**/api/v1/auth/me", { user: owner, csrf_token: "csrf-test" });
   await json(page, "**/api/v1/nodes", { items: [] });
-  await json(page, "**/api/v1/jobs", { items: [] });
+  await json(page, /\/api\/v1\/jobs(?:\?.*)?$/, { items: [] });
   await json(page, "**/api/v1/notifications", { items: [] });
   await json(page, "**/api/v1/instances", { items: [
     { id: "empty", name: "空服", status: "running", players: 0 },

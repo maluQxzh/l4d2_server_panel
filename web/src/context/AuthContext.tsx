@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createContext, useContext, useMemo, type ReactNode } from "react";
-import { api, ApiError } from "../lib/api";
+import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
+import { api, ApiError, onSessionExpired } from "../lib/api";
 import type { User } from "../lib/types";
 
 interface AuthValue {
@@ -21,11 +21,22 @@ const AuthContext = createContext<AuthValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
+  useEffect(() => onSessionExpired(() => {
+    // Cancel pending responses before removing cached resources so an old
+    // request cannot repopulate the next account's view.
+    void queryClient.cancelQueries({ predicate: (query) => query.queryKey[0] !== "bootstrap-status" });
+    queryClient.setQueryData(["session"], null);
+    queryClient.removeQueries({ predicate: (query) => !["session", "bootstrap-status"].includes(String(query.queryKey[0])) });
+    queryClient.getMutationCache().clear();
+    sessionStorage.removeItem("l4d2-event-cursor");
+  }), [queryClient]);
   const session = useQuery({
     queryKey: ["session"],
     queryFn: api.me,
     retry: (count, error) => !(error instanceof ApiError && error.status === 401) && count < 1,
     staleTime: 60_000,
+    refetchInterval: (query) => query.state.data?.user ? 60_000 : false,
+    refetchOnWindowFocus: true,
   });
   const bootstrapStatus = useQuery({
     queryKey: ["bootstrap-status"],
@@ -49,27 +60,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     refreshBootstrap: async () => Boolean((await bootstrapStatus.refetch()).data?.required),
     login: async (credentials) => {
+      await queryClient.cancelQueries({ queryKey: ["session"] });
       const result = await api.login(credentials);
       queryClient.setQueryData(["session"], result);
       return result;
     },
     completeActivation: async (newPassword) => {
-      try {
-        const result = await api.completeActivation(newPassword);
-        queryClient.setQueryData(["session"], result);
-        return result;
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 401) queryClient.setQueryData(["session"], null);
-        throw error;
-      }
+      const result = await api.completeActivation(newPassword);
+      queryClient.setQueryData(["session"], result);
+      return result;
     },
     logout: async () => {
-      try {
-        await api.logout();
-      } finally {
-        queryClient.setQueryData(["session"], null);
-        queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "session" });
-      }
+      const pending = api.logout();
+      void queryClient.cancelQueries({ predicate: (query) => query.queryKey[0] !== "bootstrap-status" });
+      queryClient.setQueryData(["session"], null);
+      queryClient.removeQueries({ predicate: (query) => !["session", "bootstrap-status"].includes(String(query.queryKey[0])) });
+      await pending;
     },
   }), [bootstrapStatus, queryClient, session.data, session.isPending]);
 

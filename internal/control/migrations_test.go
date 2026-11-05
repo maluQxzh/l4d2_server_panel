@@ -16,6 +16,9 @@ import (
 func TestSQLiteMigrationChecksums(t *testing.T) {
 	t.Parallel()
 	expected := map[string]string{
+		"025_history_pagination_indexes.sql":         "aa31d6307cd9515dbe07df160149503312f88c9bebbb6a611441abeeb53cf85b",
+		"024_bounded_housekeeping_and_maps.sql":      "237634c564b8e2d82945433d678a9d2fab91ea3ee7d64c1e1e9f3aef64ada2b5",
+		"023_query_time_indexes.sql":                 "6561ae3612da1dfdbc7c0b0f4d57eacf888e93c2ccc9bf8875b158dde43166ed",
 		"001_control_plane.sql":                      "5a95514ce69e52e64613fbd1313eeed81eae422dc917c3e6f7acaae53e2f508f",
 		"002_bootstrap_setup_key.sql":                "403054323dc5d62600b26aebdcdcadbabea46cbde0f6b83f136c37c2e4ff3fa1",
 		"003_system_update_jobs.sql":                 "508c18088158cc8f1be897e30f510e207d8e2999c1762569216a9bf2d36ddea3",

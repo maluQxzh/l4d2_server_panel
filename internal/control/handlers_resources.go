@@ -915,6 +915,11 @@ func canonicalLifecyclePayload(action string, supplied map[string]any, instance 
 }
 
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
+	filter, err := parseJobListFilter(r.URL.Query())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_job_filter", err.Error())
+		return
+	}
 	principal := principalFromContext(r.Context())
 	nodeID, instanceID := r.URL.Query().Get("node_id"), r.URL.Query().Get("instance_id")
 	background := jobBackgroundFilter(r.URL.Query().Get("background"))
@@ -943,20 +948,16 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r, 100)
 	globalRead := principal.GlobalAllows(PermissionJobsRead)
 	visibility := jobVisibilityScope{}
-	var err error
+	var scope *jobVisibilityScope
 	if !globalRead {
 		visibility, err = s.jobVisibilityScope(r.Context(), principal, PermissionJobsRead)
 		if err != nil {
 			s.fail(w, err)
 			return
 		}
+		scope = &visibility
 	}
-	var items []domain.Job
-	if globalRead {
-		items, err = s.store.ListJobs(r.Context(), nodeID, instanceID, background, limit)
-	} else {
-		items, err = s.store.ListVisibleJobs(r.Context(), nodeID, instanceID, background, limit, visibility)
-	}
+	items, nextCursor, summary, err := s.store.ListJobPage(r.Context(), nodeID, instanceID, background, scope, filter, limit)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -975,7 +976,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 			filtered = append(filtered, redactJobForPrincipal(item, principal))
 		}
 	}
-	response := map[string]any{"items": filtered}
+	response := map[string]any{"items": filtered, "next_cursor": nextCursor, "summary": summary}
 	if r.URL.Query().Get("background_summary") == "true" {
 		var backgroundItems []domain.Job
 		var summaryErr error
@@ -1161,15 +1162,22 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	limit := parseLimit(r, 100)
-	queryLimit := limit
-	if resourceID == "" && !globalReadAll {
-		queryLimit = limit * 5
-		if queryLimit > 500 {
-			queryLimit = 500
-		}
+	filter, err := parseJobListFilter(r.URL.Query())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_cursor", err.Error())
+		return
 	}
-	items, err := s.store.ListAudit(r.Context(), resourceID, queryLimit)
+	limit := parseLimit(r, 100)
+	var scope *jobVisibilityScope
+	if !globalReadAll && !globalRead {
+		visible, err := s.jobVisibilityScope(r.Context(), principal, PermissionAuditRead)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		scope = &visible
+	}
+	items, next, err := s.store.ListVisibleAuditPage(r.Context(), resourceID, scope, filter.Cursor, limit)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -1191,7 +1199,7 @@ func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
 			items[i].RemoteIP = ""
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": next})
 }
 
 func (s *Server) handlePublicServers(w http.ResponseWriter, r *http.Request) {

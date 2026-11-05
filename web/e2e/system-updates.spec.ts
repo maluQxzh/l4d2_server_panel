@@ -15,6 +15,7 @@ function json(route: Route, body: unknown, status = 200) {
 }
 
 async function authenticate(page: Page, user = owner) {
+  await page.route("**/api/v1/**", (route) => json(route, { error: { code: "not_implemented", message: "测试未配置此接口" } }, 501));
   await page.routeWebSocket("**/api/v1/events**", () => undefined);
   await page.route("**/api/v1/auth/bootstrap", (route) => json(route, { required: false }));
   await page.route("**/api/v1/auth/me", (route) => json(route, { user, csrf_token: "csrf-update" }));

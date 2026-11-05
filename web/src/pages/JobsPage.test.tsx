@@ -175,6 +175,29 @@ describe("任务中心", () => {
     expect(jobList).not.toHaveBeenCalled();
   });
 
+  it("按服务端游标翻页，状态或搜索改变后回到首页，统计来自全范围汇总", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const jobList = vi.spyOn(api, "jobList").mockImplementation(async (options = {}) => ({
+      items: [{ ...operation, id: options.cursor ? "old" : "new", message: options.cursor ? "较早任务" : "最新任务" }],
+      next_cursor: options.cursor ? "" : "next-page",
+      summary: { active: 123, succeeded: 456, failed: 789 },
+    }));
+    render(<QueryClientProvider client={client}><ToastProvider><RealtimeProvider enabled={false}><MemoryRouter><JobsPage /></MemoryRouter></RealtimeProvider></ToastProvider></QueryClientProvider>);
+    expect(await screen.findByText("123")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await waitFor(() => expect(jobList).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "next-page" })));
+    expect(await screen.findByText(/较早任务/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("任务状态"), { target: { value: "active" } });
+    await waitFor(() => expect(jobList).toHaveBeenLastCalledWith({ background: "exclude", backgroundSummary: true, status: "active" }));
+    expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
+    const beforeSearch = jobList.mock.calls.length;
+    fireEvent.change(screen.getByLabelText("搜索任务"), { target: { value: "r" } });
+    fireEvent.change(screen.getByLabelText("搜索任务"), { target: { value: "re" } });
+    fireEvent.change(screen.getByLabelText("搜索任务"), { target: { value: "restart" } });
+    await waitFor(() => expect(jobList).toHaveBeenLastCalledWith(expect.objectContaining({ search: "restart", status: "active" })));
+    expect(jobList).toHaveBeenCalledTimes(beforeSearch + 1);
+  });
+
   it("全局所有者可确认冲突并保留中心端结果", async () => {
     const conflict: TerminalOutcomeConflict = {
       job_id: "de13ef3b-84e0-455a-8d08-f7722e665903",

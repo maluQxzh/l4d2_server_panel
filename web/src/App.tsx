@@ -5,6 +5,7 @@ import { MapImportResults } from "./components/MapImportResults";
 import { LoadingBlock } from "./components/ui";
 import { useAuth } from "./context/AuthContext";
 import { RealtimeProvider } from "./context/RealtimeContext";
+import { PageErrorBoundary } from "./components/PageErrorBoundary";
 
 function lazyNamed<T extends ComponentType<object>>(loader: () => Promise<Record<string, T>>, name: string) {
   return lazy(async () => ({ default: (await loader())[name] }));
@@ -39,7 +40,9 @@ function NotFound() {
 }
 
 export function App() {
+  const location = useLocation();
   return (
+    <PageErrorBoundary resetKey={location.pathname}>
     <Suspense fallback={<div className="app-loading"><LoadingBlock label="正在装载界面…" /></div>}>
       <Routes>
         <Route path="/setup" element={<SetupPage />} />
@@ -60,5 +63,6 @@ export function App() {
         <Route path="*" element={<NotFound />} />
       </Routes>
     </Suspense>
+    </PageErrorBoundary>
   );
 }

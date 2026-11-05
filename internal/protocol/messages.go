@@ -30,6 +30,7 @@ const (
 	TypeJobAck      = "job_ack"
 	TypeJobConflict = "job_conflict"
 	TypeJobUpdate   = "job_update"
+	TypeJobDeferred = "job_deferred"
 	TypeLog         = "log"
 	TypeInventory   = "inventory"
 )
@@ -46,6 +47,7 @@ const (
 	CapabilityPreparedExtensionsV1         = "prepared_extensions_v1"
 	CapabilityPreparedOfficialExtensionsV1 = "prepared_official_extensions_v1"
 	CapabilityPreparedSmartPluginsV1       = "prepared_smart_plugins_v1"
+	CapabilityBoundedJobAdmissionV1        = "bounded_job_admission_v1"
 )
 
 const MaxJobUpdateMessageBytes = 2 << 10
@@ -112,7 +114,8 @@ type Heartbeat struct {
 }
 
 type JobCommand struct {
-	Job domain.Job `json:"job"`
+	AdmissionRetry bool       `json:"admission_retry,omitempty"`
+	Job            domain.Job `json:"job"`
 }
 
 type JobUpdate struct {

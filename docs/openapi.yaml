@@ -96,6 +96,7 @@ paths:
   /auth/login:
     post:
       tags: [Auth]
+      description: 在密码查询及 Argon2 校验前原子预留并发槽，全局最多 4 个在途登录请求；同时保留 IP 与规范化用户名组合失败预算，饱和时返回 429。
       security: []
       summary: 创建普通或首次激活浏览器会话
       description: 待激活账号在 password 中提交仅显示一次的密码；成功后该密码立即失效，并只签发最长 10 分钟的受限激活会话。
@@ -281,7 +282,9 @@ paths:
         30 天，以每页 500 条、单连接最多 5000 条补齐遗漏。持久事件 ID 出现缺口时立即补齐，另每 2 秒
         检查遗漏尾部；瞬时控制台和指标帧不持久化并允许在慢客户端上丢弃。服务端按资源绑定过滤，权限
         代际变化时立即重验主体，并每 1 秒从数据库兜底重验；实时日志热路径不执行逐事件身份或资源查询。
-        每 25 秒发送 Ping。
+        每 25 秒发送 Ping。客户端只发送 WebSocket Ping/Pong/Close 控制帧；不接受文本或二进制业务消息，
+        识别数据帧后直接以 1008 关闭，不读取正文或等待分片结束。入站消息另设 1 KiB 读取上限，
+        帧头已声明超限时以 1009 关闭；该上限不限制服务端下发的事件大小。
       parameters:
         - name: cursor
           in: query
@@ -2021,20 +2024,23 @@ paths:
     get:
       tags: [Maps]
       summary: 列出可见地图
-      description: 需要地图所属节点或该节点内已绑定实例的 `maps.read`；可用 node_id 查询参数筛选。响应包含 BSP、持久警告、卷副本健康和实例分配，不包含节点绝对路径或 QQ 链接。
+      description: 需要地图所属节点或该节点内已绑定实例的 `maps.read`；可用 node_id 查询参数筛选。先按权限过滤，再按 created_at/id 倒序分页，每页最多 500 张（默认 200）。响应包含 BSP、持久警告、卷副本健康和实例分配，不包含节点绝对路径或 QQ 链接。更换筛选范围时应清空 cursor。
       parameters:
+        - { name: cursor, in: query, description: 上一页的 next_cursor, schema: { type: string, maxLength: 512 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 200 } }
         - name: node_id
           in: query
           schema: { type: string, format: uuid }
       responses:
         "200":
-          description: 地图列表
+          description: 地图列表；next_cursor 为空字符串表示末页
           content:
             application/json:
               schema:
                 type: object
                 required: [items]
                 properties:
+                  next_cursor: { type: string }
                   items: { type: array, items: { $ref: "#/components/schemas/Map" } }
 
   /maps/{mapId}:
@@ -2218,7 +2224,11 @@ paths:
     get:
       tags: [Jobs]
       summary: 列出有权读取的任务
+      description: 先按权限和资源范围过滤，再按状态、任务类型代码或 ID 搜索与游标分页。summary 统计当前资源范围、background 和 q 下的全部任务，不受 status 或 cursor 限制；不是当前页计数。更换筛选条件应清空 cursor。
       parameters:
+        - { name: status, in: query, schema: { type: string, enum: [all, active, queued, dispatched, running, succeeded, failed, canceled], default: all } }
+        - { name: q, in: query, description: 任务类型代码或 ID 的不区分大小写子串，最多 200 UTF-8 字节，不搜索正文或结果, schema: { type: string } }
+        - { name: cursor, in: query, description: 上一页返回的 next_cursor，按 created_at 与 id 倒序继续，不授予额外资源权限, schema: { type: string, maxLength: 512 } }
         - { name: node_id, in: query, schema: { type: string, format: uuid } }
         - {
             name: instance_id,
@@ -2262,6 +2272,14 @@ paths:
                       active: { type: integer, minimum: 0 }
                       failed: { type: integer, minimum: 0 }
                       latest_at: { type: string, format: date-time }
+                  next_cursor: { type: string, description: 下一页游标；空字符串表示末页 }
+                  summary:
+                    type: object
+                    required: [active, succeeded, failed]
+                    properties:
+                      active: { type: integer, minimum: 0 }
+                      succeeded: { type: integer, minimum: 0 }
+                      failed: { type: integer, minimum: 0 }
 
   /jobs/{jobId}:
     get:
@@ -2380,8 +2398,9 @@ paths:
     get:
       tags: [Monitoring]
       summary: 查询节点或实例指标
-      description: 必须提供 node_id 或 instance_id。默认/最大窗口分别为 raw 1h/24h、1m 24h/31d、1h 30d/366d。
+      description: 必须提供 node_id 或 instance_id。默认/最大窗口分别为 raw 1h/24h、1m 24h/31d、1h 30d/366d。每页最多 10000 点，has_more=true 时使用 next_cursor 继续；按时间、节点、实例及原始样本 ID 升序，时间戳相同的样本不会被跳过。游标绑定原资源范围、分辨率及时间窗口，每页独立鉴权。后续页可省略 from/to 复用游标内窗口；显式改变范围必须重新开始查询。
       parameters:
+        - { name: cursor, in: query, schema: { type: string, maxLength: 2048 } }
         - { name: node_id, in: query, schema: { type: string, format: uuid } }
         - {
             name: instance_id,
@@ -2407,7 +2426,9 @@ paths:
     get:
       tags: [Notifications]
       summary: 列出有权读取的站内通知
+      description: 按调用者当前资源权限过滤后再分页；cursor 不授予额外权限。默认每页 100，最大 500。
       parameters:
+        - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
         - {
             name: limit,
             in: query,
@@ -2422,6 +2443,7 @@ paths:
                 type: object
                 required: [items]
                 properties:
+                  next_cursor: { type: string, description: 下一页游标，空字符串表示末页 }
                   items:
                     {
                       type: array,
@@ -2700,9 +2722,10 @@ paths:
       description: |
         `audit.read_global` 可独立读取全部审计事件、来源地址，也可按任意 `resource_id` 过滤；不隐含
         `audit.read`。普通 `audit.read` 只返回调用者获准资源的事件且隐藏 `remote_ip`；全局绑定中的
-        `audit.read` 不能替代 `audit.read_global` 读取全局聚合。
+        `audit.read` 不能替代 `audit.read_global` 读取全局聚合。权限过滤发生在 cursor 和 LIMIT 之前。
       parameters:
         - { name: resource_id, in: query, schema: { type: string } }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
         - {
             name: limit,
             in: query,
@@ -2717,6 +2740,7 @@ paths:
                 type: object
                 required: [items]
                 properties:
+                  next_cursor: { type: string, description: 下一页游标，空字符串表示末页 }
                   items:
                     {
                       type: array,
@@ -4531,7 +4555,7 @@ components:
 
     MetricsResponse:
       type: object
-      required: [items, resolution, from, to]
+      required: [items, resolution, from, to, has_more, next_cursor]
       properties:
         items:
           {
@@ -4542,6 +4566,8 @@ components:
         resolution: { type: string, enum: [raw, 1m, 1h] }
         from: { type: string, format: date-time }
         to: { type: string, format: date-time }
+        has_more: { type: boolean }
+        next_cursor: { type: string, description: 下一页游标；空字符串表示末页 }
 
     NotificationView:
       type: object

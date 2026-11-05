@@ -26,37 +26,27 @@ func (s *Server) handleListMaps(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	limit := parseLimit(r, 200)
-	queryLimit := limit
-	if nodeID == "" && !principal.GlobalAllows(PermissionMapsRead) {
-		queryLimit = min(500, limit*5)
+	cursor, err := parseMapCursor(r.URL.Query().Get("cursor"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_map_cursor", err.Error())
+		return
 	}
-	items, err := s.store.ListMaps(r.Context(), nodeID, queryLimit)
+	var allowedNodes []string
+	if !principal.GlobalAllows(PermissionMapsRead) {
+		scope, err := s.jobVisibilityScope(r.Context(), principal, PermissionMapsRead)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		allowedNodes = append([]string{}, scope.NodeIDs...)
+		allowedNodes = append(allowedNodes, scope.LegacyOwnNodeIDs...)
+	}
+	items, next, err := s.store.ListMapPage(r.Context(), nodeID, allowedNodes, cursor, parseLimit(r, 200))
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	filtered := make([]domain.Map, 0, min(limit, len(items)))
-	allowedNodes := make(map[string]bool)
-	checkedNodes := make(map[string]bool)
-	for _, item := range items {
-		if !checkedNodes[item.NodeID] {
-			allowed, permissionErr := s.allowsMapNodePermission(r.Context(), principal, item.NodeID, PermissionMapsRead)
-			if permissionErr != nil {
-				s.fail(w, permissionErr)
-				return
-			}
-			checkedNodes[item.NodeID] = true
-			allowedNodes[item.NodeID] = allowed
-		}
-		if allowedNodes[item.NodeID] {
-			filtered = append(filtered, item)
-			if len(filtered) == limit {
-				break
-			}
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": filtered})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": next})
 }
 
 func (s *Server) handleGetMap(w http.ResponseWriter, r *http.Request) {

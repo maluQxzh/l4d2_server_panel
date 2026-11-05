@@ -4,9 +4,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, newIdempotencyKey, type PreparedPackage } from "../lib/api";
 import { Button } from "./ui";
 import { useToast } from "../context/ToastContext";
+import { preparedPollInterval } from "../lib/task-polling";
 
 export function usePreparedPackages(instanceId: string, enabled = true) {
-  return useQuery({ queryKey: ["instances", instanceId, "prepared-packages"], queryFn: () => api.preparedPackages(instanceId), enabled, retry: false, refetchInterval: 3000 });
+  return useQuery({ queryKey: ["instances", instanceId, "prepared-packages"], queryFn: () => api.preparedPackages(instanceId), enabled, retry: false, refetchInterval: (query) => preparedPollInterval(query.state.data) });
 }
 
 export function PreparedPackages({ instanceId, plugins }: { instanceId: string; plugins: boolean }) {

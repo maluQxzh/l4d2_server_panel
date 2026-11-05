@@ -18,8 +18,10 @@ export function LoginPage() {
   const [showTotp, setShowTotp] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const from = (location.state as { from?: { pathname?: string; search?: string; hash?: string } } | null)?.from;
+  const returnTo = from?.pathname?.startsWith("/") && !from.pathname.startsWith("//") ? `${from.pathname}${from.search || ""}${from.hash || ""}` : "/";
 
-  if (!auth.loading && auth.authenticated) return <Navigate to={auth.activationRequired ? "/activate" : "/"} replace />;
+  if (!auth.loading && auth.authenticated) return <Navigate to={auth.activationRequired ? "/activate" : returnTo} replace />;
   if (!auth.loading && auth.bootstrapRequired) return <Navigate to="/setup" replace />;
 
   const submit = async (event: FormEvent) => {
@@ -32,8 +34,7 @@ export function LoginPage() {
         navigate("/activate", { replace: true });
         return;
       }
-      const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname || "/";
-      navigate(from, { replace: true });
+      navigate(returnTo, { replace: true });
     } catch (cause) {
       if (cause instanceof ApiError && ["totp_required", "invalid_totp"].includes(cause.code)) setShowTotp(true);
       setError(cause instanceof Error ? cause.message : "登录失败，请稍后重试");

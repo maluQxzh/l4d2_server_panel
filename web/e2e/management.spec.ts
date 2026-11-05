@@ -1,8 +1,10 @@
 import { dropFile } from "./file-drop";
-import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Page, type Route, type WebSocketRoute } from "@playwright/test";
 import { createHash } from "node:crypto";
 
 test.beforeEach(async ({ page }) => {
+  // Unmocked optional APIs must not reach a developer's running Control.
+  await page.route("**/api/v1/**", (route) => json(route, { error: { code: "not_implemented", message: "测试未配置此接口" } }, 501));
   await page.routeWebSocket("**/api/v1/events**", () => undefined);
   await page.route("**/api/v1/auth/bootstrap", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify({ required: false }),
@@ -58,6 +60,156 @@ async function authenticated(page: Page, user = owner) {
 function json(route: Route, body: unknown, status = 200) {
   return route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
+
+test("通知和实例审计可翻页读取旧记录", async ({ page }) => {
+  await authenticated(page);
+  await page.route(/\/api\/v1\/notifications(?:\?.*)?$/, (route) => {
+    const older = new URL(route.request().url()).searchParams.has("cursor");
+    return json(route, { items: [{ id: older ? "old-notice" : "new-notice", level: "warning", title: older ? "历史节点告警" : "最近节点告警", message: "测试告警", read: true, created_at: "2026-11-01T00:00:00Z" }], next_cursor: older ? "" : "notice-next" });
+  });
+  await page.route("**/api/v1/notification-deliveries", (route) => json(route, { items: [] }));
+  await page.goto("/notifications");
+  await expect(page.getByText("最近节点告警", { exact: true }).first()).toBeVisible();
+  await page.getByLabel("历史记录分页").getByRole("button", { name: "下一页" }).click();
+  await expect(page.getByText("历史节点告警", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("历史记录分页").getByRole("button", { name: "下一页" })).toBeDisabled();
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance }));
+  await page.route("**/api/v1/audit?**", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    expect(params.get("resource_id")).toBe("instance-1");
+    const older = params.has("cursor");
+    return json(route, { items: [{ id: older ? "old-audit" : "new-audit", actor_name: "管理员", action: older ? "历史变更" : "最近变更", resource_type: "instance", resource_id: instance.id, created_at: "2026-11-01T00:00:00Z" }], next_cursor: older ? "" : "audit-next" });
+  });
+  await page.goto("/instances/instance-1?tab=audit");
+  await expect(page.getByText("管理员 · 最近变更")).toBeVisible();
+  await page.getByRole("button", { name: "下一页" }).click();
+  await expect(page.getByText("管理员 · 历史变更")).toBeVisible();
+});
+
+test("地图库读齐后续页，空闲地图任务不再每两秒轮询", async ({ page }) => {
+  await authenticated(page);
+  await page.clock.install();
+  let jobReads = 0;
+  let mapReads = 0;
+  await page.route("**/api/v1/nodes", (route) => json(route, { items: [node] }));
+  await page.route("**/api/v1/instances", (route) => json(route, { items: [instance] }));
+  await page.route(/\/api\/v1\/jobs(?:\?.*)?$/, (route) => { jobReads++; return json(route, { items: [] }); });
+  await page.route(/\/api\/v1\/maps(?:\?.*)?$/, (route) => {
+    mapReads++;
+    const later = new URL(route.request().url()).searchParams.has("cursor");
+    return json(route, { items: [{ id: later ? "older" : "newer", node_id: node.id, name: later ? "历史页地图" : "首页地图", health: "healthy", aggregate_sha256: "a".repeat(64), total_size: 1, created_at: "2026-08-01T00:00:00Z", assignments: [] }], next_cursor: later ? "" : "next" });
+  });
+  await page.goto("/maps");
+  await expect(page.getByRole("heading", { name: "历史页地图", exact: true })).toBeVisible();
+  await page.clock.runFor(500);
+  const before = { jobReads, mapReads };
+  await page.clock.runFor(10_000);
+  expect({ jobReads, mapReads }).toEqual(before);
+  expect(mapReads).toBeGreaterThanOrEqual(2);
+});
+
+test("任务中心可翻到历史页并按服务端状态找到较早运行任务", async ({ page }) => {
+  await authenticated(page);
+  const queries: string[] = [];
+  await page.route("**/api/v1/jobs?**", (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    queries.push(query.toString());
+    const active = query.get("status") === "active";
+    const older = Boolean(query.get("cursor"));
+    return json(route, { items: [{ id: active ? "old-running" : older ? "old-done" : "new-done", node_id: node.id, instance_id: instance.id, type: "restart", status: active ? "running" : "succeeded", progress: active ? 50 : 100, message: active ? "较早运行任务" : older ? "历史已完成" : "最近已完成", created_at: "2026-08-01T00:00:00Z" }], next_cursor: active || older ? "" : "older-page", summary: { active: 1, succeeded: 120, failed: 0 } });
+  });
+  await page.route("**/api/v1/jobs/terminal-conflicts", (route) => json(route, { items: [] }));
+  await page.goto("/jobs");
+  await expect(page.getByText("120", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "下一页" }).click();
+  await expect(page.getByText(/历史已完成/)).toBeVisible();
+  await page.getByLabel("任务状态").selectOption("active");
+  await expect(page.getByText(/较早运行任务/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "上一页" })).toBeDisabled();
+  expect(queries.some((query) => query.includes("cursor=older-page"))).toBe(true);
+  expect(queries.at(-1)).toContain("status=active");
+  expect(queries.at(-1)).not.toContain("cursor");
+});
+
+test("会话撤销跳转登录并在重新登录后恢复原实例页签", async ({ page }) => {
+  await authenticated(page);
+  let expired = false;
+  let socket: WebSocketRoute | undefined;
+  let connections = 0;
+  await page.routeWebSocket("**/api/v1/events**", (connection) => { socket = connection; connections++; });
+  await page.route("**/api/v1/auth/me", (route) => json(route, expired ? { error: { code: "unauthorized" } } : { user: owner, csrf_token: "initial" }, expired ? 401 : 200));
+  await page.route("**/api/v1/auth/login", (route) => { expired = false; return json(route, { user: owner, csrf_token: "new-session" }); });
+  await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance }));
+  await page.route("**/api/v1/instances/instance-1/packages", (route) => json(route, { items: [] }));
+  await page.route("**/api/v1/instances/instance-1/packages/scan", (route) => json(route, { scan: null }));
+  await page.route("**/api/v1/instances/instance-1/prepared-packages", (route) => json(route, { supported: false, items: [] }));
+  await page.goto("/instances/instance-1?tab=mods");
+  await expect(page.getByRole("button", { name: "安装模组", exact: true })).toBeVisible();
+  const initialConnections = connections;
+  expired = true;
+  socket!.close({ code: 1008, reason: "session revoked" });
+  await expect(page).toHaveURL(/\/login$/);
+  await page.getByLabel("账号", { exact: true }).fill("admin");
+  await page.getByLabel("密码", { exact: true }).fill("correct-password");
+  await page.getByRole("button", { name: /登录/ }).click();
+  await expect(page).toHaveURL(/\/instances\/instance-1\?tab=mods$/);
+  await expect(page.getByRole("button", { name: "安装模组", exact: true })).toBeVisible();
+  expect(connections).toBe(initialConnections * 2); // StrictMode mounts effects twice in development.
+});
+
+test("高频日志和实例指标不刷新模组列表，控制台仍即时显示日志", async ({ page }) => {
+  await authenticated(page);
+  await page.clock.install();
+  let socket: WebSocketRoute | undefined;
+  await page.routeWebSocket("**/api/v1/events**", (connection) => { socket = connection; });
+  let detailRequests = 0;
+  let packageRequests = 0;
+  await page.route("**/api/v1/instances/instance-1", (route) => { detailRequests++; return json(route, { instance }); });
+  await page.route("**/api/v1/instances/instance-1/packages", (route) => {
+    packageRequests++;
+    return json(route, { items: [{ id: "package-one", name: "测试模组", kind: "vpk", enabled: true, path: "left4dead2/addons/test.vpk", installed_at: "2026-08-01T00:00:00Z" }] });
+  });
+  await page.route("**/api/v1/instances/instance-1/packages/scan", (route) => json(route, { scan: null }));
+  await page.route("**/api/v1/instances/instance-1/prepared-packages", (route) => json(route, { supported: false, items: [] }));
+  await page.goto("/instances/instance-1?tab=mods");
+  await expect(page.getByText("测试模组", { exact: true })).toBeVisible();
+  await page.clock.runFor(500);
+  const before = { detailRequests, packageRequests };
+  for (let i = 0; i < 20; i++) {
+    socket!.send(JSON.stringify({ id: 0, type: "instance.log", resource_type: "instance", resource_id: "instance-other", data: { line: `other-${i}` } }));
+    socket!.send(JSON.stringify({ id: 0, type: "metric", resource_type: "node", resource_id: node.id, data: { sample: { node_id: node.id, instance_id: instance.id, players: 2 } } }));
+  }
+  socket!.send(JSON.stringify({ id: 123, type: "stream.cursor" }));
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("l4d2-event-cursor"))).toBe("123");
+  await page.clock.runFor(1000);
+  expect({ detailRequests, packageRequests }).toEqual(before);
+  await page.getByRole("button", { name: "控制台", exact: true }).click();
+  await expect(page.getByRole("log")).toBeVisible();
+  socket!.send(JSON.stringify({ id: 0, type: "instance.log", resource_type: "instance", resource_id: instance.id, data: { line: "实时日志仍然送达", at: "2026-08-01T00:00:00Z" } }));
+  await expect(page.getByRole("log").getByText("实时日志仍然送达", { exact: true })).toBeVisible();
+  expect(detailRequests).toBe(before.detailRequests);
+});
+
+test("一批节点指标合并刷新一次并更新可见 CPU 数值", async ({ page }) => {
+  await authenticated(page);
+  await page.clock.install();
+  let socket: WebSocketRoute | undefined;
+  await page.routeWebSocket("**/api/v1/events**", (connection) => { socket = connection; });
+  let requests = 0;
+  let cpu = 12;
+  await page.route("**/api/v1/nodes", (route) => { requests++; return json(route, { items: [{ ...node, cpu_percent: cpu }] }); });
+  await page.goto("/nodes");
+  await expect(page.getByText("12%", { exact: true })).toBeVisible();
+  await page.clock.runFor(500);
+  const before = requests;
+  cpu = 73;
+  for (let i = 0; i < 20; i++) socket!.send(JSON.stringify({ id: 0, type: "metric", resource_type: "node", resource_id: node.id, data: { sample: { node_id: node.id, cpu_percent: cpu } } }));
+  socket!.send(JSON.stringify({ id: 124, type: "stream.cursor" }));
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("l4d2-event-cursor"))).toBe("124");
+  await page.clock.runFor(1000);
+  await expect(page.getByText("73%", { exact: true })).toBeVisible();
+  expect(requests - before).toBe(1);
+});
 
 test("扫描结果作废后刷新仍提示重新扫描，扫描中仍可安装", async ({ page }) => {
   await authenticated(page);
@@ -664,7 +816,7 @@ test("创建实例从运行节点绑定可用安装并提交难度、RCON 和 Ti
     return json(route, { instance, job_id: "job-import" }, 202);
   });
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance }));
-  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  await page.route(/\/api\/v1\/jobs(?:\?.*)?$/, (route) => json(route, { items: [] }));
 
   await page.goto("/instances");
   await page.getByRole("button", { name: "创建第一个实例" }).click();
@@ -699,7 +851,7 @@ test("TOTP 挑战可切换为一次性恢复码登录", async ({ page }) => {
   });
   await page.route("**/api/v1/nodes", (route) => json(route, { items: [] }));
   await page.route("**/api/v1/instances", (route) => json(route, { items: [] }));
-  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  await page.route(/\/api\/v1\/jobs(?:\?.*)?$/, (route) => json(route, { items: [] }));
   await page.route("**/api/v1/audit**", (route) => json(route, { items: [] }));
   await page.route("**/api/v1/notifications", (route) => json(route, { items: [] }));
 
@@ -919,7 +1071,7 @@ test("空 RCON 的运行实例保持绿色状态并显示独立警告", async ({
   await authenticated(page);
   const runningWithoutRCON = { ...instance, status: "running", rcon_configured: false };
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: runningWithoutRCON }));
-  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  await page.route(/\/api\/v1\/jobs(?:\?.*)?$/, (route) => json(route, { items: [] }));
 
   await page.goto("/instances/instance-1");
   await expect(page.locator(".instance-hero .status--running")).toContainText("运行中");
@@ -953,7 +1105,7 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
     }
     return json(route, { instance: currentInstance });
   });
-  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  await page.route(/\/api\/v1\/jobs(?:\?.*)?$/, (route) => json(route, { items: [] }));
   await page.route("**/api/v1/audit**", (route) => json(route, { items: [] }));
   await page.route("**/api/v1/instances/instance-1/players", (route) => json(route, { items: [{
     name: "Zoey", steam_id: "STEAM_1:1:12345", ping: 42, connected_at: "2026-07-31T00:10:00Z",
@@ -1161,8 +1313,8 @@ test("实例控制台、玩家、配置、模组、插件、备份与计划任�
   await expect.poll(() => actions.some((item) => item.type === "install_package" && item.payload?.kind === "metamod_url" && item.payload?.source_transport === "qq_flash")).toBeTruthy();
 
   await page.getByRole("button", { name: "文件", exact: true }).click();
-  await expect(page.getByRole("button", { name: "cfg", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "addons", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "cfg", exact: true })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "addons", exact: true })).toHaveCount(1);
   await expect(page.getByRole("button", { name: "logs", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "server.cfg", exact: true }).first().click();
   await page.getByLabel("文件内容").fill("hostname after\n");
@@ -1264,7 +1416,7 @@ test("地图管理支持导入、警告、运行中热更新分配与两阶段�
   const deletableMap = { ...assignedMap, id: "22222222-2222-2222-2222-222222222222", name: "可删除地图", aggregate_sha256: "c".repeat(64), assignments: [], warnings: [] };
   await page.route("**/api/v1/nodes", (route) => json(route, { items: [node] }));
   await page.route("**/api/v1/instances", (route) => json(route, { items: [instance, stopped] }));
-  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  await page.route(/\/api\/v1\/jobs(?:\?.*)?$/, (route) => json(route, { items: [] }));
   const writes: Array<{ method: string; path: string; body?: unknown }> = [];
   await page.route("**/api/v1/maps**", async (route) => {
     const request = route.request();
@@ -1353,7 +1505,7 @@ test("地图校验恢复隐藏分配后可停服取消并删除异常地图", as
   let unassigned = false;
   await page.route("**/api/v1/nodes", (route) => json(route, { items: [node] }));
   await page.route("**/api/v1/instances", (route) => json(route, { items: [{ ...instance, status: "stopped" }] }));
-  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  await page.route(/\/api\/v1\/jobs(?:\?.*)?$/, (route) => json(route, { items: [] }));
   await page.route("**/api/v1/maps**", (route) => {
     const path = new URL(route.request().url()).pathname;
     if (route.request().method() === "GET") return json(route, { items: deleted ? [] : [{ id: mapId, node_id: node.id, name: "恢复分配地图", health: "broken", aggregate_sha256: "a".repeat(64), total_size: 1024, created_at: "2026-10-01T00:00:00Z", assignments: assigned ? [{ map_id: mapId, instance_id: instance.id, restart_required: true }] : [] }] });
@@ -1386,7 +1538,7 @@ test("地图导入完成后立即更新列表，迟到的首次请求不能覆�
   await page.addInitScript(() => localStorage.setItem("l4d2-map-imports:user-1", JSON.stringify(["new-map-import"])));
   await page.route("**/api/v1/nodes", (route) => json(route, { items: [node] }));
   await page.route("**/api/v1/instances", (route) => json(route, { items: [] }));
-  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  await page.route(/\/api\/v1\/jobs(?:\?.*)?$/, (route) => json(route, { items: [] }));
   let releaseFirst!: () => void;
   let firstStarted!: () => void;
   const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
@@ -1878,7 +2030,7 @@ test("恢复响应丢失后先重放原键确认终态再用新键重试", async
   });
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: degraded }));
   await page.route("**/api/v1/instances/instance-1/backups", (route) => json(route, { items: [] }));
-  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  await page.route(/\/api\/v1\/jobs(?:\?.*)?$/, (route) => json(route, { items: [] }));
   await page.route("**/api/v1/instances/instance-1/backup-uploads**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const method = route.request().method();
@@ -1915,7 +2067,7 @@ test("实例详情展示安装绑定并仅解除实例绑定", async ({ page }) 
   await authenticated(page);
   const stopped = { ...instance, game_installation_id: gameInstallation.id, status: "stopped", pid: undefined, started_at: undefined };
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: stopped }));
-  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  await page.route(/\/api\/v1\/jobs(?:\?.*)?$/, (route) => json(route, { items: [] }));
   let deleteMode = "";
   await page.route("**/api/v1/instances/instance-1?mode=*", async (route) => {
     deleteMode = new URL(route.request().url()).searchParams.get("mode") || "";
@@ -1946,7 +2098,7 @@ test("操作员可启停实例但不能删除实例", async ({ page }) => {
   await authenticated(page, operator);
   const stopped = { ...instance, status: "stopped", pid: undefined, started_at: undefined };
   await page.route("**/api/v1/instances/instance-1", (route) => json(route, { instance: stopped }));
-  await page.route("**/api/v1/jobs", (route) => json(route, { items: [] }));
+  await page.route(/\/api\/v1\/jobs(?:\?.*)?$/, (route) => json(route, { items: [] }));
 
   await page.goto("/instances/instance-1");
   await expect(page.getByRole("button", { name: "启动", exact: true })).toBeEnabled();

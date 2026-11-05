@@ -126,7 +126,7 @@ describe("设置页全局审计权限", () => {
     expect(await screen.findByText("审计员 1 · action.1")).toBeInTheDocument();
     expect(screen.getByText("审计员 5 · action.5")).toBeInTheDocument();
     expect(screen.queryByText("审计员 6 · action.6")).not.toBeInTheDocument();
-    expect(screen.getByText("共 7 条审计记录")).toBeInTheDocument();
+    expect(screen.getByText("本页 7 条审计记录")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "展开其余 2 条" }));
     expect(screen.getByText("审计员 7 · action.7")).toBeInTheDocument();

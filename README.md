@@ -2,9 +2,28 @@
 
 面向《求生之路 2》专用服务器的自托管多节点管理面板。中心控制台可通过 Linux/macOS Docker 或 Windows x64 便携 ZIP 部署，并通过节点主动建立的 WSS 连接管理 Windows 与 Linux Agent；节点不需要开放面板管理端口，游戏端口仍由管理员按实例开放。
 
+项目仍在持续开发。当前支持单 Control、单本机 SQLite；真实游戏服、各操作系统和升级回滚的验证范围见[测试与发布验证](#测试与发布验证)。
+
+| 使用场景 | 入口 |
+| --- | --- |
+| Linux/macOS 部署中心端 | [Docker 部署](#快速部署中心端) · [离线镜像安装说明](docs/container-center-installation.md) |
+| Windows 部署中心端 | [便携 ZIP 部署](#windows-原生部署中心端) |
+| 接入 Windows/Linux 游戏节点 | [注册节点](#注册节点) · [便携 Agent 部署说明](docs/agent-portable.md) |
+| 修改源码或构建发布包 | [本地开发](#本地开发) · [测试与发布验证](#测试与发布验证) |
+
 ## 当前实现
 
 地图导入检测完成后会自动刷新地图库，多个完成弹窗排队时也会逐项更新列表。实时连接正常时，地图及主要资源列表仍保留低频刷新兜底；没有任务查看权限的账号也能看到其他用户新增的可见地图。节点、任务、模组/插件、备份等列表的写入后刷新会丢弃尚未完成的首次旧请求，防止旧响应覆盖新结果。
+
+实时日志只更新日志订阅者，不触发资源列表请求；节点指标在 250 毫秒窗口内合并刷新节点概览，实例指标不触发包、文件或备份列表刷新。节点状态变化只刷新实例列表及相关节点的实例详情；任务事件的重复刷新同样合并，启动和停止等实例状态投影仍即时更新。
+
+任务中心支持服务端状态筛选、任务类型代码/ID 搜索和游标翻页，统计覆盖当前可见范围的全部任务，较早的运行中任务可通过“进行中”查到。指标 API 返回后续页游标，前端会固定时间窗口继续读取，不再静默丢失超过 10000 点的尾部数据。会话过期会清理资源缓存并回到登录页，重新登录后返回原路径和页签；页面加载或渲染失败时提供重新加载入口。
+
+仪表盘任务数量使用服务端全范围摘要，任务搜索延迟 300 毫秒合并输入。预下载、扫描和地图任务只在活动时快速轮询，空闲时保留 30 秒兜底，未支持预下载的节点停止该查询。地图清单按权限先过滤后分页，详情按每页批量加载，浏览器自动读齐最多 50 页后才搜索和统计；超过范围明确提示选择具体节点。地图导入完成提示每账号最多追踪 64 条、保留 7 天，终态停止快速轮询，过期仅清理浏览器追踪，不删除服务端任务或地图。
+
+Agent 最多同时执行 8 个任务，执行与等待合计最多 32 个，驻留任务载荷合计最多 256 MiB；Control 把额外任务保留在持久队列。新版通过 `bounded_job_admission_v1` 协商暂缓接收与两秒重派，取消/ACK 不进入执行队列；旧 Control 通过重连继续重放。实例写锁、SteamCMD 和准备任务的既有并发限制继续生效。后台清理使用专用部分索引，每类任务每轮最多处理 500 条，不清除取消待确认或终态待投影记录。
+
+登录在密码校验前计入并发预算，最多同时处理 4 个校验。节点断线持久化不占用全局连接表锁，当前 Agent 不支持的队首任务也不会持续阻塞后续兼容任务。通知与审计支持按权限过滤后的游标翻页；分钟指标补算覆盖允许的 15 分钟延迟和 2 分钟时钟偏差。切换账号时，旧成功响应与旧注销清理不能覆盖新会话令牌。
 
 所有本机文件上传入口均支持拖拽或点击选择：模组/插件安装、实例文件、ZIP 备份恢复，以及 Windows ZIP / Docker tar.gz 中心升级包。拖入文件只完成选择，仍需点击原操作按钮提交；每次接受一个文件，保留原有类型、大小及权限限制，处理中禁止替换文件。
 
@@ -60,7 +79,13 @@ Workshop 项目和合集支持“预下载，稍后安装”（需要 Agent `pre
 - Linux：Docker Engine 24+ 与 Docker Compose v2。
 - macOS：带 Docker Compose v2 的 Docker Desktop，支持 Apple Silicon 和 Intel Mac。中心端仍运行在 Linux 容器中；macOS 只作为中心端宿主机，不属于游戏节点 Agent 的支持平台。
 
-如果使用已经构建好的 `linux/amd64` 或 `linux/arm64` 离线镜像，不需要源码和本地镜像构建工具链。把镜像包附带的 `docker-compose.yml` 放入永久部署目录后，`docker load` 导入镜像，`docker compose up -d` 即会自动生成并持久保存部署主密钥、创建 SQLite、执行迁移和启动检查并启动 Control；最后单独运行本地 `setup-key issue` 命令安全领取初始化密钥。固定 Compose 会把宿主机 `/var/run/docker.sock` 挂载给 Control，使全局所有者可以在设置页上传同平台 `.tar.gz` 镜像并由独立 Worker 自动重建 Control 和失败回滚。Docker Socket 权限实际等同宿主机 root，部署前必须接受这一信任边界。架构选择、校验、首次部署、在线升级与回滚见 [Linux/macOS 容器中心端安装说明](docs/container-center-installation.md)。下面继续说明从当前源码构建镜像的部署流程。
+固定 Compose 会把宿主机 `/var/run/docker.sock` 挂载给 Control，使全局所有者可以在设置页上传同平台 `.tar.gz` 镜像并由独立 Worker 自动重建 Control 和失败回滚。Docker Socket 权限实际等同宿主机 root，部署前必须接受这一信任边界。中心端首次启动会自动生成并持久保存部署主密钥、创建 SQLite、执行迁移和启动检查；最后单独运行本地 `setup-key issue` 命令领取初始化密钥。以下两种部署方式选择其一。
+
+### 使用离线镜像
+
+使用已经构建好的 `linux/amd64` 或 `linux/arm64` 离线镜像时，不需要源码和本地 Go/Node.js 工具链。把镜像包、`.sha256` 和配套的 `docker-compose.yml` 放入永久部署目录；该 Compose 文件来自 [`deploy/docker-compose.image.yml`](deploy/docker-compose.image.yml)，使用固定标签 `l4d2panel/control:offline`，不要与仓库根目录的源码构建模板混用。
+
+先校验镜像摘要，并将配套的 `l4d2panel-center.env.example` 复制为 `.env`，填写 HTTPS 地址和可信代理，再导入与宿主架构匹配的镜像。下列文件名中的 `<version>`、`<arch>` 需替换为实际值：
 
 ```bash
 docker load --input l4d2panel-control-<version>-linux-<arch>.tar.gz
@@ -68,7 +93,11 @@ docker compose up -d
 docker compose exec -T app /usr/local/bin/l4d2panel setup-key issue
 ```
 
-默认配置可直接启动，Control 明文端口只发布到宿主机 `127.0.0.1:19090`，部署主密钥首次启动时在 `app_data` 卷内生成为权限 `0600` 的 `control-master.key`。生产部署应在 `.env` 中配置最终 HTTPS 地址和精确可信代理：
+完整的摘要校验、架构选择、首次部署和在线升级步骤见 [Linux/macOS 容器中心端安装说明](docs/container-center-installation.md)。离线包由[发布构建脚本](#测试与发布验证)生成；当前 GitHub Release 工作流尚未自动上传容器离线包。
+
+### 从源码构建
+
+在仓库根目录使用根目录的 `docker-compose.yml`。默认配置可直接启动，Control 明文端口只发布到宿主机 `127.0.0.1:19090`，部署主密钥首次启动时在 `app_data` 卷内生成为权限 `0600` 的 `control-master.key`。生产部署应在 `.env` 中配置最终 HTTPS 地址和精确可信代理：
 
 ```bash
 cp .env.example .env
@@ -90,6 +119,8 @@ docker compose build app
 docker compose up -d
 docker compose exec -T app /usr/local/bin/l4d2panel setup-key issue
 ```
+
+### 首次初始化与 HTTPS
 
 最后一条命令只在当前终端输出一次 `l4d2p_setup_...` 初始化密钥。配置 HTTPS 后打开 `PUBLIC_URL/setup` 并输入密钥；系统会原子创建 `admin`／`系统管理员` 根所有者并登录，密钥同时是初始密码。进入设置后应立即修改密码。初始化接口继续使用 15 分钟有效的 HttpOnly/SameSite 引导 Cookie、独立 CSRF 令牌、速率限制和数据库立即事务；丢失密钥时可在尚无用户前重新运行命令，新密钥会使旧密钥失效。
 
@@ -155,9 +186,11 @@ Control 固定监听 `0.0.0.0:19090`，SQLite 不监听网络端口。管理员�
 Agent 保持二进制、`agent.yaml` 和 `data` 旁置部署，不需要额外安装脚本；同一二进制同时提供便携前台模式和 systemd/Windows Service 常驻模式。先从发布页下载对应平台二进制、`.sha256` 和 `agent.yaml.example`，验证 SHA-256，再把示例复制到二进制同目录并命名为 `agent.yaml`。在中心端“节点”页面创建短期一次性注册令牌，首次启动前只需修改：
 
 ```yaml
-central_url: "http://localhost:19090"
+central_url: "https://panel.example.com"
 enrollment_token: "一次性令牌"
 ```
+
+将 `central_url` 替换为实际中心端 HTTPS 地址。同机开发可使用 `http://localhost:19090`，局域网明文连接的限制见本节后文。
 
 Linux 限制配置权限后，可以直接以前台便携模式启动：
 
@@ -205,7 +238,7 @@ Copy-Item .\agent.yaml.example .\agent.yaml
 升级不需要新的注册令牌：先等待节点任务结束并从中心端正常停止运行中的实例，再停止 Agent；验证新二进制的 SHA-256 和版本，保留 `agent.yaml` 与 `data/`，原子替换二进制后重新启动即可。失败时用保留的前一版本二进制回滚。完整的 Windows/Linux 首次部署、升级和回滚命令见 [便携 Agent 部署说明](docs/agent-portable.md)。
 
 - 正式支持 amd64 Windows 10/11、Windows Server 2019+、Ubuntu 22.04/24.04、Debian 12。
-- Agent 不扫描或安装 SteamCMD，也不下载游戏本体。节点上线后在中心端“运行环境”中登记现有路径或安装托管 SteamCMD；运行 L4D2 仍需节点具备对应的 32 位运行库。
+- Agent 启动或注册时不会自动扫描磁盘、安装 SteamCMD 或下载游戏。节点上线后，管理员可在中心端“运行环境”中登记已有 SteamCMD/游戏绝对路径，也可明确发起托管 SteamCMD 安装及 App 222860 游戏安装、校验和更新任务。Linux 游戏节点仍需预先具备对应的 32 位运行库。
 
 ## 数据保留与恢复
 
@@ -224,32 +257,83 @@ Copy-Item .\agent.yaml.example .\agent.yaml
 
 ## 本地开发
 
-需要 Go 1.25.13 或更高补丁版本、Node.js 24；SQLite 通过无 CGO 的 Go 驱动嵌入：
+需要 Go 1.26.10 或同一 1.26 系列的更高安全补丁、Node.js 24；SQLite 通过无 CGO 的 Go 驱动嵌入，无需安装外部数据库。
+
+当前安全工具链升级使用 Vite 7.3.7、Vitest 4.1.12 和锁定依赖；扫描结果、两平台构建及尚未执行的真实发布门禁见 [安全工具链升级验证](docs/security-toolchain-upgrade-20261101.md)。
+
+### 启动 Control
+
+在仓库根目录配置当前终端的环境变量。直接运行 Go 程序不会自动加载 `.env`；必须提供 `MASTER_KEY` 或绝对路径的 `MASTER_KEY_FILE`。以下示例会首次生成并持续复用 `data/control-master.key`，且只向本机开放开发端口。
+
+Linux/macOS Bash：
+
+```bash
+export LISTEN_ADDR=127.0.0.1:19090
+export MASTER_KEY_FILE="$(pwd)/data/control-master.key"
+export COOKIE_SECURE=false
+export PUBLIC_URL=http://127.0.0.1:5173
+```
+
+Windows PowerShell：
+
+```powershell
+$env:LISTEN_ADDR = '127.0.0.1:19090'
+$env:MASTER_KEY_FILE = Join-Path (Get-Location).Path 'data/control-master.key'
+$env:COOKIE_SECURE = 'false'
+$env:PUBLIC_URL = 'http://127.0.0.1:5173'
+```
+
+首次开发初始化时，在同一终端下载依赖、执行迁移并领取初始化密钥；已有账号的开发数据库无需再次领取：
 
 ```bash
 go mod download
-go run ./cmd/control
+go run ./cmd/control migrate
+go run ./cmd/control setup-key issue
 ```
 
-另一个终端运行：
+随后在该终端启动 Control；以后启动时会自动检查和应用新迁移：
+
+```bash
+go run ./cmd/control serve
+```
+
+Windows 开发时必须显式使用 `serve`。无参数运行会进入便携版服务安装流程并请求 UAC。开发数据库和主密钥需要一起保留；`COOKIE_SECURE=false` 仅用于上述本机 HTTP 开发，生产仍使用 HTTPS 和安全 Cookie。
+
+### 启动前端
+
+另开终端，从仓库根目录运行：
 
 ```bash
 cd web
 npm ci
-npm run dev
+npm run dev -- --host 127.0.0.1
 ```
 
-前端开发服务器代理 `/api`、`/agent` 和 WebSocket 请求。Agent 可以前台方式运行：
+首次访问 `http://127.0.0.1:5173/setup`，输入刚领取的初始化密钥创建所有者；已有账号时直接登录。前端开发服务器将 `/api`、`/agent` 请求代理到 `http://127.0.0.1:19090`。源码中的 Control 静态页是构建前占位页，开发界面应访问 5173；发布构建会把 React 产物嵌入 Control。
+
+后续仅修改前端源码时可复用已安装的依赖；`package-lock.json` 变化或 `node_modules` 缺失时再运行 `npm ci`。
+
+### 启动开发 Agent
+
+在中心端创建节点注册令牌，然后在仓库根目录创建本地 `agent.dev.yaml`，例如：
+
+```yaml
+central_url: "http://localhost:19090"
+enrollment_token: "一次性令牌"
+data_dir: "./data/agent"
+```
+
+在另一个终端、仓库根目录以前台方式运行：
 
 ```bash
-go run ./cmd/agent run --config ./agent.dev.json
+go run ./cmd/agent run --config ./agent.dev.yaml
 ```
 
-配置格式参考 [`configs/agent.example.json`](configs/agent.example.json)。
+注册成功后 Agent 会把节点凭据写回该配置，后续启动继续使用它。最小配置参考 [`configs/agent.portable.example.yaml`](configs/agent.portable.example.yaml)，更多字段参考 [`configs/agent.example.json`](configs/agent.example.json)；JSON 示例中的 Linux 绝对路径需按本机环境调整。本地 `.env`、`agent.dev.yaml`、`data/` 和构建产物已由 [`.gitignore`](.gitignore) 排除。
 
 ## 测试与发布验证
 
-便携节点端以后统一使用下面的构建目标。一次同时构建无 CGO 的 `linux/amd64` 和 `windows/amd64`，产物目录固定包含两个 Agent 二进制、各自的 SHA-256 校验文件，以及需要复制为 `agent.yaml` 的首次绑定示例：
+便携节点端使用下面的构建目标。一次同时构建无 CGO 的 `linux/amd64` 和 `windows/amd64`，产物目录固定包含两个 Agent 二进制、各自的 SHA-256 校验文件，以及需要复制为 `agent.yaml` 的首次绑定示例：
 
 ```bash
 make build-agent-portable \
@@ -257,9 +341,9 @@ make build-agent-portable \
   COMMIT=$(git rev-parse --short HEAD)
 ```
 
-输出目录固定为 `dist/agents/`。正式 GitHub Release 使用相同的无 CGO 构建参数、文件名和配置示例；`dist` 是本地构建输出，不进入源码提交。
+输出目录固定为 `dist/agents/`。正式 GitHub Release 使用相同的无 CGO 构建参数、文件名和配置示例；`dist` 是本地构建输出，不进入源码提交。上述 Makefile 命令需要 Bash/Unix 工具环境；Windows PowerShell 可使用下述发布脚本。
 
-Windows 开发机可用一个命令构建 Windows 中心端、两个容器中心端和两个便携 Agent。脚本只执行一次宿主前端构建，容器架构按顺序导出，避免同一 Docker builder 上的并发 exporter 争用：
+Windows 开发机可用一个命令构建 Windows 中心端、两个容器中心端和两个便携 Agent。需要 PowerShell 7.4+、上述 Go/Node.js 工具链，以及可用 Docker/buildx 的 WSL 发行版；将示例中的 `l4d2` 替换为本机实际发行版名称。脚本只执行一次宿主前端构建，容器架构按顺序导出，避免同一 Docker builder 上的并发 exporter 争用：
 
 ```powershell
 .\packaging\Build-ReleaseArtifacts.ps1 `
@@ -273,6 +357,10 @@ Linux/macOS 只构建两个离线容器包时使用：
 VERSION=0.1.0 make build-container-offline
 ```
 
+容器构建需要 Docker buildx，并具备执行两个目标架构镜像的能力；跨架构执行通常需要 QEMU/binfmt。输出位于 `dist/container/`，包括两个平台的 `.tar.gz`、对应 `.sha256`、离线用 `docker-compose.yml` 和 `l4d2panel-center.env.example`；Windows 中心端 ZIP 位于 `dist/windows-center/`。
+
+[GitHub Release 工作流](.github/workflows/release.yml)在推送 `v*` 标签或手动运行时构建 Agent 和 Windows 中心端；标签运行会上传到 Release，手动运行普通分支时只保存 Actions artifacts。当前工作流不会构建并上传容器离线包，也不会推送镜像到注册表；容器包需要用上述脚本构建后单独发布。
+
 Dockerfile 使用持久的 npm、Go 模块和 Go 编译 BuildKit 缓存；`dist` 不进入构建上下文，版本或构建日期变化也不会重新安装最终 Alpine 依赖。首次构建仍需下载基础镜像和依赖，后续构建会复用缓存。如果部署者所在网络无法稳定访问默认官方源，可在确认并信任镜像运营方后显式覆盖构建源；Go 模块仍受 `go.sum` 校验，Alpine 包仍受仓库签名校验：
 
 ```powershell
@@ -285,16 +373,25 @@ Dockerfile 使用持久的 npm、Go 模块和 Go 编译 BuildKit 缓存；`dist`
 
 也可以为 `build-container-offline.sh` 设置 `GOPROXY`、`ALPINE_MIRROR`、`PLATFORMS`、`OUTPUT_DIR` 和 `GZIP_LEVEL`。生产发布应优先使用受控缓存代理；切换下载源只解决可用性，不提供发布者签名。
 
+从仓库根目录执行完整检查（迭代时先运行受影响包或页面的定向检查）：
+
 ```bash
 go test ./...
-go test -race ./...
+go test -race -timeout=20m ./...
 go vet ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 cd web
+npm ci
 npm test -- --run
 npm audit --audit-level=high
+npm run typecheck
 npm run build
+npx playwright install chromium
+npm run test:e2e
+cd ..
 ```
+
+Linux CI 使用 `npx playwright install --with-deps chromium` 同时准备浏览器的系统依赖。Playwright 流程使用模拟 API，不等同于连接真实 Control、Agent 或游戏服的端到端验收。
 
 20 节点/100 实例的中心端模拟验收使用独立临时 SQLite 文件，通过真实 HTTP 路由注册节点、并发创建实例、重放幂等请求，并通过 WebSocket 游标验证持久事件；它不连接 Agent、SteamCMD 或游戏服：
 

@@ -23,7 +23,7 @@ export function DashboardPage() {
   const canReadNotifications = hasAnyPermission(user, "notifications.read");
   const nodes = useQuery({ queryKey: ["nodes"], queryFn: api.nodes, enabled: canReadNodes, refetchInterval: polling });
   const instances = useQuery({ queryKey: ["instances"], queryFn: api.instances, enabled: canReadInstances, refetchInterval: polling });
-  const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, enabled: canReadJobs, refetchInterval: polling });
+  const jobs = useQuery({ queryKey: ["jobs", "dashboard"], queryFn: () => api.jobList({ background: "exclude", limit: 5 }), enabled: canReadJobs, refetchInterval: polling });
   const metricInstance = instances.data?.items.find((item) => item.status === "running") || instances.data?.items[0];
   const metricInstanceID = metricInstance?.id;
   const history = useQuery({
@@ -44,8 +44,8 @@ export function DashboardPage() {
   const onlineNodes = nodeList.filter((node) => node.status === "online").length;
   const running = instanceList.filter((instance) => instance.status === "running").length;
   const players = instanceList.reduce((sum, instance) => sum + instancePlayers(instance), 0);
-  const activeJobs = jobList.filter((job) => ["queued", "dispatched", "running"].includes(job.status));
-  const failedJobs = jobList.filter((job) => job.status === "failed").length;
+  const activeJobs = jobs.data?.summary?.active;
+  const failedJobs = jobs.data?.summary?.failed ?? 0;
   const offlineNodes = nodeList.filter((node) => node.status === "offline").length;
   const availableUpdates = availableInstanceUpdates(instanceList);
   const cpu = nodeList.length ? Math.round(nodeList.reduce((sum, node) => sum + node.cpu_percent, 0) / nodeList.length) : 0;
@@ -71,7 +71,7 @@ export function DashboardPage() {
 
       <section className="stat-grid" aria-label="关键状态">
         {canReadNodes && <Card className="stat-card stat-card--green"><div className="stat-card__icon"><Server /></div><div><span>在线节点</span><strong>{onlineNodes}<small> / {nodeList.length}</small></strong><em>{nodeList.length ? Math.round((onlineNodes / nodeList.length) * 100) : 0}% 可用</em></div></Card>}
-        {canReadInstances && <Card className="stat-card stat-card--amber"><div className="stat-card__icon"><Boxes /></div><div><span>运行实例</span><strong>{running}<small> / {instanceList.length}</small></strong><em>{canReadJobs ? `${activeJobs.length} 个任务进行中` : "仅显示可见实例"}</em></div></Card>}
+        {canReadInstances && <Card className="stat-card stat-card--amber"><div className="stat-card__icon"><Boxes /></div><div><span>运行实例</span><strong>{running}<small> / {instanceList.length}</small></strong><em>{canReadJobs ? `${activeJobs ?? "—"} 个任务进行中` : "仅显示可见实例"}</em></div></Card>}
         {canReadInstances && <Card className="stat-card stat-card--blue"><div className="stat-card__icon"><Users /></div><div><span>在线玩家</span><strong>{players}</strong><em>{instanceList.reduce((sum, item) => sum + item.max_players, 0)} 个总席位</em></div></Card>}
         {canReadNodes && <Card className="stat-card stat-card--slate"><div className="stat-card__icon"><Cpu /></div><div><span>平均 CPU</span><strong>{cpu}<small>%</small></strong><em>{nodeList.length} 个节点采样</em></div></Card>}
       </section>

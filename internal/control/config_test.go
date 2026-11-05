@@ -60,7 +60,7 @@ func TestConfigFromFileIsStrictAndEnvironmentWins(t *testing.T) {
 	data := `{
   "schema_version": 2,
   "listen_address": "127.0.0.1:19090",
-  "database_path": "data\\control.sqlite3",
+  "database_path": "data/control.sqlite3",
   "migrations_dir": "C:\\Program Files\\L4D2Panel\\Control\\migrations",
   "master_key": "` + strings.Repeat("ab", 32) + `",
   "cookie_secure": true,

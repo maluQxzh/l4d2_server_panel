@@ -277,19 +277,13 @@ func (s *Store) Housekeeping(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at<?1`, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE `+backgroundJobSQLPredicate+`
-		AND status IN ('succeeded','canceled') AND COALESCE(json_extract(result,'$._projection_pending'),0)<>1
-		AND finished_at<?1`, hourAgo); err != nil {
+	if err := deleteOldJobs(ctx, tx, "jobs_cleanup_background_idx", backgroundJobSQLPredicate+" AND status IN ('succeeded','canceled')", hourAgo); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE `+backgroundJobSQLPredicate+`
-		AND status='failed' AND COALESCE(json_extract(result,'$._projection_pending'),0)<>1
-		AND finished_at<?1`, dayAgo); err != nil {
+	if err := deleteOldJobs(ctx, tx, "jobs_cleanup_background_idx", backgroundJobSQLPredicate+" AND status='failed'", dayAgo); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE type IN ('logs.search','logs.chunk','backup.chunk','backup.upload.chunk')
-		AND status IN ('succeeded','failed','canceled') AND COALESCE(json_extract(result,'$._projection_pending'),0)<>1
-		AND finished_at<?1`, dayAgo); err != nil {
+	if err := deleteOldJobs(ctx, tx, "jobs_cleanup_transfer_idx", cleanupTransferPredicate, dayAgo); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE backup_uploads SET status='expired',updated_at=?1
@@ -305,17 +299,7 @@ func (s *Store) Housekeeping(ctx context.Context) error {
 		AND updated_at<?1`, monthAgo); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET
-		payload=json_remove(payload,'$.command_ciphertext','$.source_ciphertext','$.content_ciphertext','$.content_base64_ciphertext','$.share_url_ciphertext','$.archive_ciphertext','$.keyword_ciphertext','$.existing_rcon_password_ciphertext'),
-		result=json_remove(result,'$.response_ciphertext','$.content_base64_ciphertext','$.entries_ciphertext')
-		WHERE status IN ('succeeded','failed','canceled') AND finished_at<?1
-		AND COALESCE(json_extract(result,'$._projection_pending'),0)<>1
-		AND (json_type(payload,'$.command_ciphertext') IS NOT NULL OR json_type(payload,'$.source_ciphertext') IS NOT NULL
-			OR json_type(payload,'$.content_ciphertext') IS NOT NULL OR json_type(payload,'$.content_base64_ciphertext') IS NOT NULL
-			OR json_type(payload,'$.share_url_ciphertext') IS NOT NULL
-			OR json_type(payload,'$.archive_ciphertext') IS NOT NULL OR json_type(payload,'$.keyword_ciphertext') IS NOT NULL
-			OR json_type(payload,'$.existing_rcon_password_ciphertext') IS NOT NULL OR json_type(result,'$.response_ciphertext') IS NOT NULL
-			OR json_type(result,'$.content_base64_ciphertext') IS NOT NULL OR json_type(result,'$.entries_ciphertext') IS NOT NULL)`, dayAgo); err != nil {
+	if err := clearOldJobSecrets(ctx, tx, dayAgo); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM event_log WHERE created_at<?1`, monthAgo); err != nil {

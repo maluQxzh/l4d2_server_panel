@@ -1,7 +1,7 @@
 import { liveRefreshInterval, refreshQueries } from "../lib/query-refresh";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ban, CheckCircle2, ChevronDown, CircleAlert, Clock3, Filter, LoaderCircle, RadioTower, RefreshCw, Search, XCircle } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Button, Card, EmptyState, ErrorState, LoadingBlock, PageHeader, ProgressBar, StatusBadge } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { useRealtime } from "../context/RealtimeContext";
@@ -16,13 +16,22 @@ export function JobsPage() {
   const [filter, setFilter] = useState("all");
   const [view, setView] = useState<"operations" | "background">("operations");
   const [search, setSearch] = useState("");
+  const [submittedSearch, setSubmittedSearch] = useState("");
+  const [cursors, setCursors] = useState<string[]>([""]);
+  const cursor = cursors[cursors.length - 1];
+  useEffect(() => {
+    if (search.trim() === submittedSearch) return;
+    const timer = window.setTimeout(() => { setSubmittedSearch(search.trim()); setCursors([""]); }, 300);
+    return () => window.clearTimeout(timer);
+  }, [search, submittedSearch]);
   const [expanded, setExpanded] = useState<string>();
   const realtime = useRealtime();
   const canReadJobs = hasAnyPermission(user, "jobs.read");
   const canResolveTerminalConflicts = hasRootSecurityPermission(user);
   const jobs = useQuery({
-    queryKey: ["jobs", view],
-    queryFn: () => api.jobList({ background: view === "operations" ? "exclude" : "only", backgroundSummary: true }),
+    queryKey: ["jobs", view, filter, submittedSearch, cursor],
+    queryFn: () => api.jobList({ background: view === "operations" ? "exclude" : "only", backgroundSummary: true,
+      ...(filter !== "all" ? { status: filter } : {}), ...(submittedSearch ? { search: submittedSearch } : {}), ...(cursor ? { cursor } : {}) }),
     enabled: canReadJobs,
     refetchInterval: realtime.state === "live" ? liveRefreshInterval : 10_000,
   });
@@ -32,8 +41,8 @@ export function JobsPage() {
     enabled: canResolveTerminalConflicts,
     refetchInterval: 10_000,
   });
-  const list = useMemo(() => (jobs.data?.items || []).filter((job) => (filter === "all" || filter === "active" && ["queued", "dispatched", "running"].includes(job.status) || job.status === filter) && `${job.type} ${jobLabel(job)} ${job.message} ${job.id}`.toLowerCase().includes(search.toLowerCase())), [filter, jobs.data, search]);
-  const totals = useMemo(() => ({ active: (jobs.data?.items || []).filter((job) => ["queued", "dispatched", "running"].includes(job.status)).length, failed: (jobs.data?.items || []).filter((job) => job.status === "failed").length, succeeded: (jobs.data?.items || []).filter((job) => job.status === "succeeded").length }), [jobs.data]);
+  const list = jobs.data?.items || [];
+  const totals = jobs.data?.summary || { active: "—", succeeded: "—", failed: "—" };
   const background = jobs.data?.background_summary;
   const backgroundState = background?.failed ? `${background.failed} 个异常` : background ? `${background.targets} 个目标` : "—";
   const backgroundDetail = background?.latest_at ? `最近 ${dateTime(background.latest_at)}` : "暂无探测记录";
@@ -41,8 +50,9 @@ export function JobsPage() {
   return <div><PageHeader eyebrow="PERSISTENT JOB QUEUE" title="任务中心" description="用户操作与后台探测分开显示，重要任务不会再被周期性状态查询挤出列表。" actions={<Button variant="secondary" onClick={() => { void jobs.refetch(); if (canResolveTerminalConflicts) void terminalConflicts.refetch(); }}><RefreshCw size={16} />刷新</Button>} />
     {canResolveTerminalConflicts && terminalConflicts.error ? <Card className="terminal-conflict-card"><ErrorState error={terminalConflicts.error} retry={() => void terminalConflicts.refetch()} /></Card> : canResolveTerminalConflicts && terminalConflicts.data?.items.length ? <TerminalConflictPanel conflicts={terminalConflicts.data.items} /> : null}
     <section className="job-summary"><Card><LoaderCircle size={20} /><span>进行中</span><strong>{totals.active}</strong></Card><Card><CheckCircle2 size={20} /><span>已完成</span><strong>{totals.succeeded}</strong></Card><Card><CircleAlert size={20} /><span>失败</span><strong>{totals.failed}</strong></Card><Card className={background?.failed ? "job-background-card job-background-card--failed" : "job-background-card"}><RadioTower size={20} /><span>后台探测<em>{backgroundDetail}</em></span><strong>{backgroundState}</strong></Card></section>
-    <Card className="toolbar-card"><div className="search-box"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务类型、消息或 ID" aria-label="搜索任务" /></div><div className="filter-select"><RadioTower size={16} /><select aria-label="任务分类" value={view} onChange={(event) => { setView(event.target.value as "operations" | "background"); setExpanded(undefined); }}><option value="operations">重要任务</option><option value="background">后台探测</option></select></div><div className="filter-select"><Filter size={16} /><select aria-label="任务状态" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">全部状态</option><option value="active">进行中</option><option value="succeeded">已完成</option><option value="failed">失败</option><option value="canceled">已取消</option></select></div></Card>
+    <Card className="toolbar-card"><div className="search-box"><Search size={17} /><input value={search} onChange={(event) => { setSearch(event.target.value); }} placeholder="搜索任务类型代码或 ID" aria-label="搜索任务" maxLength={60} /></div><div className="filter-select"><RadioTower size={16} /><select aria-label="任务分类" value={view} onChange={(event) => { setView(event.target.value as "operations" | "background"); setCursors([""]); setExpanded(undefined); }}><option value="operations">重要任务</option><option value="background">后台探测</option></select></div><div className="filter-select"><Filter size={16} /><select aria-label="任务状态" value={filter} onChange={(event) => { setFilter(event.target.value); setCursors([""]); }}><option value="all">全部状态</option><option value="active">进行中</option><option value="succeeded">已完成</option><option value="failed">失败</option><option value="canceled">已取消</option></select></div></Card>
     {jobs.isPending ? <LoadingBlock label="正在同步任务队列…" /> : jobs.error ? <ErrorState error={jobs.error} retry={() => void jobs.refetch()} /> : list.length ? <Card className="jobs-card"><div className="jobs-table">{list.map((job) => <JobRow key={job.id} job={job} expanded={expanded === job.id} canCancel={hasJobPermission(user, job, "jobs.cancel")} canViewDetails={hasJobPermission(user, job, "jobs.details")} onToggle={() => setExpanded((value) => value === job.id ? undefined : job.id)} />)}</div></Card> : <Card><EmptyState title="没有匹配的任务" description={view === "operations" ? "后台状态查询已单独归类；实例部署、更新、备份与玩家操作会显示在这里。" : "当前没有可查看的后台探测记录。"} /></Card>}
+    <div className="form-actions"><Button variant="secondary" disabled={cursors.length === 1 || jobs.isFetching} onClick={() => { setCursors((current) => current.slice(0, -1)); setExpanded(undefined); }}>上一页</Button><span>第 {cursors.length} 页</span><Button variant="secondary" disabled={!jobs.data?.next_cursor || jobs.isFetching} onClick={() => { setCursors((current) => [...current, jobs.data!.next_cursor!]); setExpanded(undefined); }}>下一页</Button></div>
   </div>;
 }
 

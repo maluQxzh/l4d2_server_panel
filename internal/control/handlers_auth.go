@@ -23,6 +23,8 @@ type loginLimiter struct {
 	attempts map[string]loginAttempt
 	now      func() time.Time
 	checks   uint64
+	inFlight int
+	pending  map[string]int
 }
 
 const (
@@ -30,10 +32,52 @@ const (
 	loginComboLimit     = 8
 	loginIPLimit        = 32
 	loginLimiterMaxKeys = 10_000
+	loginMaxConcurrent  = 4
 )
 
 func newLoginLimiter() *loginLimiter {
 	return &loginLimiter{attempts: make(map[string]loginAttempt), now: time.Now}
+}
+
+// Reserve before looking up or hashing a password. Outstanding attempts count
+// against both scopes; no unbounded queue of expensive Argon2 work is created.
+func (l *loginLimiter) acquire(ipAddress, username string) (func(bool), bool) {
+	ipKey, comboKey := "ip\x00"+ipAddress, "combo\x00"+ipAddress+"\x00"+normalizeUsername(username)
+	l.mu.Lock()
+	now := l.now()
+	l.periodicCleanupLocked(now)
+	if l.inFlight >= loginMaxConcurrent || l.activeAttemptLocked(ipKey, now).count+l.pending[ipKey] >= loginIPLimit || l.activeAttemptLocked(comboKey, now).count+l.pending[comboKey] >= loginComboLimit {
+		l.mu.Unlock()
+		return nil, false
+	}
+	if l.pending == nil {
+		l.pending = make(map[string]int)
+	}
+	l.pending[ipKey]++
+	l.pending[comboKey]++
+	l.inFlight++
+	l.mu.Unlock()
+	var once sync.Once
+	return func(success bool) {
+		once.Do(func() {
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			l.inFlight--
+			for _, key := range []string{ipKey, comboKey} {
+				l.pending[key]--
+				if l.pending[key] == 0 {
+					delete(l.pending, key)
+				}
+			}
+			if success {
+				delete(l.attempts, comboKey)
+			} else {
+				now := l.now()
+				l.incrementLocked(ipKey, now)
+				l.incrementLocked(comboKey, now)
+			}
+		})
+	}, true
 }
 
 func (l *loginLimiter) allow(ipAddress, username string) bool {
@@ -132,11 +176,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ipAddress := remoteIP(r)
-	if !s.limiter.allow(ipAddress, request.Username) {
+	finishAttempt, allowed := s.limiter.acquire(ipAddress, request.Username)
+	if !allowed {
 		w.Header().Set("Retry-After", "300")
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many login attempts")
 		return
 	}
+	success := false
+	defer func() { finishAttempt(success) }()
 	record, err := s.store.UserForLogin(r.Context(), request.Username)
 	credentialValid := false
 	if err == nil && !record.Disabled {
@@ -151,7 +198,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil || record.Disabled || !credentialValid {
-		s.limiter.failure(ipAddress, request.Username)
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "username or password is invalid")
 		return
 	}
@@ -159,7 +205,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		totpCode := strings.TrimSpace(request.TOTPCode)
 		recoveryCode := normalizeRecoveryCode(request.RecoveryCode)
 		if totpCode == "" && recoveryCode == "" {
-			s.limiter.failure(ipAddress, request.Username)
 			writeError(w, http.StatusUnauthorized, "totp_required", "a TOTP or recovery code is required")
 			return
 		}
@@ -175,7 +220,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !secondFactorValid {
-			s.limiter.failure(ipAddress, request.Username)
 			writeError(w, http.StatusUnauthorized, "invalid_totp", "the TOTP or recovery code is invalid")
 			return
 		}
@@ -206,7 +250,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !valid {
-			s.limiter.failure(ipAddress, request.Username)
 			writeError(w, http.StatusUnauthorized, "invalid_credentials", "username or password is invalid")
 			return
 		}
@@ -214,7 +257,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.limiter.success(ipAddress, request.Username)
+	success = true
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: sessionToken, Path: "/", HttpOnly: true,
 		Secure: s.config.CookieSecure, SameSite: http.SameSiteStrictMode, Expires: expires, MaxAge: int(sessionTTL.Seconds())})
 	_ = s.store.WriteAudit(r.Context(), domain.AuditEvent{ActorID: record.User.ID, ActorName: record.User.Username,

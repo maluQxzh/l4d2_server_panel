@@ -1,6 +1,6 @@
 # Windows 便携中心端打包
 
-Windows 中心端只发布 x64 ZIP，不再构建或分发 MSI/WiX 安装包。构建需要 Go 1.25.13、Node.js 24 和 PowerShell 7.4：
+Windows 中心端只发布 x64 ZIP，不再构建或分发 MSI/WiX 安装包。构建需要 Go 1.26.10、Node.js 24 和 PowerShell 7.4：
 
 ```powershell
 .\packaging\windows\Build-WindowsPortable.ps1 -Version 0.1.0

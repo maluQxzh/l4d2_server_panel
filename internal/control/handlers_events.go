@@ -19,6 +19,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	// Browser events are server-to-client only. Bound incoming data before
+	// starting the reader; WebSocket control frames retain their own limits.
+	conn.SetReadLimit(1024)
 	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
 	live, unsubscribe := s.events.Subscribe()
 	defer unsubscribe()
@@ -105,11 +108,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	closed := make(chan struct{})
 	go func() {
 		defer close(closed)
-		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
-				return
-			}
+		// NextReader handles Ping/Pong/Close internally. Any returned data
+		// message is unsupported: reject its header without buffering payloads
+		// or waiting for a fragmented message to finish.
+		if _, _, err := conn.NextReader(); err != nil {
+			return
 		}
+		_ = conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "client data is not supported"), time.Now().Add(5*time.Second))
 	}()
 	pingTicker := time.NewTicker(25 * time.Second)
 	defer pingTicker.Stop()
